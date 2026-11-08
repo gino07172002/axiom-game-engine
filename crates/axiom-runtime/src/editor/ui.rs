@@ -1,8 +1,7 @@
 use super::{viewport, Action, Dock, Draft, Editor, Tool};
 use crate::world::WorldRuntime;
 use axiom_core::{
-    local::Target, merge_json, scene_edit::Hierarchy, Camera, CoreEdit, Edit, Entity, MeshPart,
-    RenderMesh, Request, Scene, Transform, World,
+    merge_json, scene_edit::Hierarchy, CoreEdit, Edit, Entity, Request, Transform, World,
 };
 use egui::{Color32, Frame, Layout, Margin, RichText, ScrollArea, Ui};
 use serde_json::{json, Value};
@@ -246,7 +245,7 @@ impl Editor {
                             ("camera", "Camera"),
                         ] {
                             if ui.button(label).clicked() {
-                                actions.push(self.create_object(preset, None));
+                                actions.extend(self.create_object(preset));
                                 ui.close_menu();
                             }
                         }
@@ -301,42 +300,23 @@ impl Editor {
                         .clicked()
                     {
                         let id = self.new_scene.trim().to_owned();
-                        {
-                            actions.push(self.write(
-                                vec![Edit::Core(CoreEdit::PutScene {
-                                    scene: Scene {
-                                        id,
-                                        entities: vec![],
-                                        active: true,
-                                    },
-                                })],
-                                None,
-                            ));
-                            self.new_scene.clear();
-                            ui.close_menu();
-                        }
+                        actions.extend(self.scene_create(&id));
+                        self.new_scene.clear();
+                        ui.close_menu();
                     }
-                    if let Some(scene) = self
+                    let filtered_scene = self
                         .scene
                         .as_ref()
                         .and_then(|id| self.world.scenes.iter().find(|s| &s.id == id))
-                    {
-                        let title = if scene.active {
+                        .map(|s| (s.id.clone(), s.active));
+                    if let Some((scene, active)) = filtered_scene {
+                        let title = if active {
                             "Deactivate scene"
                         } else {
                             "Activate scene"
                         };
                         if ui.button(title).clicked() {
-                            actions.push(self.write(
-                                vec![Edit::Core(CoreEdit::SetField {
-                                    target: Target::Scene {
-                                        id: scene.id.clone(),
-                                    },
-                                    field: "/active".into(),
-                                    value: json!(!scene.active),
-                                })],
-                                None,
-                            ));
+                            actions.extend(self.scene_set_active(&scene, !active));
                             ui.close_menu();
                         }
                         ui.menu_button("Delete scene…", |ui| {
@@ -345,14 +325,7 @@ impl Editor {
                                 .button(RichText::new("Delete scene").color(WARNING))
                                 .clicked()
                             {
-                                actions.push(self.write(
-                                    vec![Edit::Core(CoreEdit::RemoveObject {
-                                        target: Target::Scene {
-                                            id: scene.id.clone(),
-                                        },
-                                    })],
-                                    None,
-                                ));
+                                actions.extend(self.scene_delete(&scene));
                                 ui.close_menu();
                             }
                         });
@@ -507,14 +480,7 @@ impl Editor {
             self.click_select(Some(id), modifiers);
         }
         if let Some((entity, parent)) = reparent.filter(|_| !self.dirty()) {
-            actions.push(self.write(
-                vec![Edit::Core(CoreEdit::Reparent {
-                    entity,
-                    parent,
-                    keep_world: true,
-                })],
-                None,
-            ));
+            actions.extend(self.reparent_drop(&entity, parent.as_deref()));
         }
     }
 
@@ -745,17 +711,10 @@ impl Editor {
             actions.push(self.write(vec![Edit::Core(edit)], None));
         }
         if duplicate {
-            let new = self.next_id(&format!("{}/copy", id.chars().take(24).collect::<String>()));
-            actions.push(self.write(
-                vec![Edit::Core(CoreEdit::DuplicateEntity {
-                    source: id.clone(),
-                    id: new.clone(),
-                })],
-                Some(new),
-            ));
+            actions.extend(self.duplicate_ids(std::slice::from_ref(&id)));
         }
         if delete {
-            actions.push(self.write(vec![Edit::Core(CoreEdit::DeleteEntity { id })], None));
+            actions.extend(self.delete_ids(&[id]));
         }
     }
 
@@ -788,6 +747,7 @@ impl Editor {
         ui.separator();
         let mut jump = None;
         let mut open_prefab = None;
+        let mut instantiate: Option<String> = None;
         let mut open_material = None;
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match self.dock {
             Dock::Changes => {
@@ -957,7 +917,7 @@ impl Editor {
                 ui.horizontal_wrapped(|ui| {
                     for id in self.world.prefabs.keys() {
                         if ui.add_enabled(!self.dirty(),egui::Button::new(format!("◇  {id}"))).on_hover_text("Instantiate prefab").clicked() {
-                            actions.push(self.create_object("instance",Some(id)));
+                            instantiate = Some(id.clone());
                         }
                         if ui.add_enabled(!self.dirty(),egui::Button::new("edit").small()).on_hover_text("Edit the prefab defaults all instances inherit").clicked() {
                             open_prefab = Some(id.clone());
@@ -1019,78 +979,15 @@ impl Editor {
             self.try_select(Some(id));
             self.frame_selection = true;
         }
+        if let Some(id) = instantiate {
+            actions.extend(self.instantiate_prefab(&id));
+        }
         if let Some(id) = open_prefab {
             self.open_prefab(&id);
         }
         if let Some(id) = open_material {
             self.open_material(&id);
         }
-    }
-
-    fn next_id(&self, base: &str) -> String {
-        if self.world.entity(base).is_none() {
-            return base.to_owned();
-        }
-        (2..)
-            .map(|n| format!("{base}/{n}"))
-            .find(|id| self.world.entity(id).is_none())
-            .unwrap()
-    }
-
-    pub(super) fn create_object(&self, preset: &str, prefab: Option<&str>) -> Action {
-        let mut edits = Vec::new();
-        let id = self.next_id(preset);
-        let mut entity = Entity::new(&id);
-        entity.prefab = prefab.map(str::to_owned);
-        if prefab.is_none() {
-            let mut transform = Transform::default();
-            if preset == "cube" {
-                transform.position[1] = 0.5;
-            }
-            if preset == "camera" {
-                transform.position = [0.0, 3.0, 6.0];
-                transform.rotation = viewport::rotation([-16.0, 0.0, 0.0]);
-            }
-            entity.set("core.transform", transform).unwrap();
-        }
-        if matches!(preset, "cube" | "camera") && !self.world.capabilities.contains_key("render") {
-            let mut capabilities = self.world.capabilities.clone();
-            capabilities.insert("render".into(), 1);
-            edits.push(Edit::set("/capabilities", json!(capabilities)));
-        }
-        if preset == "cube" {
-            entity
-                .set(
-                    "render.mesh",
-                    RenderMesh {
-                        parts: vec![MeshPart {
-                            transform: Transform::default(),
-                            color: [0.20, 0.65, 0.73],
-                            emission: 0.0,
-                            grid: false,
-                        }],
-                    },
-                )
-                .unwrap();
-        }
-        if preset == "camera" {
-            let mut camera = Camera::perspective();
-            camera.active = !self.world.entities.iter().any(|e| {
-                component_value(&self.world, e, "render.camera")
-                    .and_then(|v| serde_json::from_value::<Camera>(v).ok())
-                    .is_some_and(|c| c.active)
-            });
-            entity.set("render.camera", camera).unwrap();
-        }
-        edits.push(Edit::Core(CoreEdit::PutEntity { entity }));
-        if let Some(scene) = &self.scene {
-            edits.push(Edit::Core(CoreEdit::SetSceneMembership {
-                scene: scene.clone(),
-                entity: id.clone(),
-                member: true,
-            }));
-        }
-        self.write(edits, Some(id))
     }
 }
 

@@ -7,7 +7,9 @@ mod ui;
 mod viewport;
 
 use crate::world::WorldRuntime;
-use axiom_core::{local::Target, CoreEdit, Edit, Request, Transform, World};
+#[cfg(test)]
+mod parity;
+use axiom_core::{local::Target, ops, CoreEdit, Edit, Request, Transform, World};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use viewport::{Drag, Orbit, Tool};
@@ -459,42 +461,104 @@ impl Editor {
         }
     }
 
-    fn delete_selection(&self) -> Option<Action> {
-        let ids = self.selection();
-        (!ids.is_empty()).then(|| {
-            self.write(
-                ids.into_iter()
-                    .map(|id| Edit::Core(CoreEdit::DeleteEntity { id }))
-                    .collect(),
-                None,
-            )
-        })
+    // Content-changing editor features compile through `axiom_core::ops`, the same code the
+    // headless ACL verbs use, so a human in the editor and an AI without it get identical
+    // edit batches. Failures become structured problems instead of writes.
+
+    /// Turns a shared operation into a write that selects `select`, or records its error.
+    fn op_write(
+        &mut self,
+        result: anyhow::Result<Vec<Edit>>,
+        select: Option<String>,
+    ) -> Option<Action> {
+        match result {
+            Ok(edits) => Some(self.write(edits, select)),
+            Err(error) => {
+                self.problem(&error);
+                None
+            }
+        }
     }
 
-    fn duplicate_ids(&self, ids: &[String]) -> Option<Action> {
-        let mut taken = BTreeSet::new();
-        let mut edits = vec![];
-        let mut first = None;
-        for source in ids.iter().filter(|id| self.world.entity(id).is_some()) {
-            let base = format!("{}/copy", source.chars().take(24).collect::<String>());
-            let id = (1..)
-                .map(|n| {
-                    if n == 1 {
-                        base.clone()
-                    } else {
-                        format!("{base}/{n}")
-                    }
-                })
-                .find(|id| self.world.entity(id).is_none() && !taken.contains(id))
-                .unwrap();
-            taken.insert(id.clone());
-            first.get_or_insert(id.clone());
-            edits.push(Edit::Core(CoreEdit::DuplicateEntity {
-                source: source.clone(),
-                id,
-            }));
+    /// Writes a creation op and selects the first created object.
+    fn created(&mut self, result: anyhow::Result<ops::Created>) -> Option<Action> {
+        match result {
+            Ok(created) => {
+                let first = created.ids.first().cloned();
+                Some(self.write(created.edits, first))
+            }
+            Err(error) => {
+                self.problem(&error);
+                None
+            }
         }
-        (!edits.is_empty()).then(|| self.write(edits, first))
+    }
+
+    /// New objects land in the scene the hierarchy is filtered to, if any.
+    fn placement(&self) -> ops::Placement {
+        ops::Placement {
+            scene: self.scene.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// "+ Object" presets (`ACL: create PRESET [scene=..]`).
+    pub(super) fn create_object(&mut self, preset: &str) -> Option<Action> {
+        let result = ops::create_object(&self.world, preset, &self.placement());
+        self.created(result)
+    }
+
+    /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
+    pub(super) fn instantiate_prefab(&mut self, prefab: &str) -> Option<Action> {
+        let result = ops::instantiate_prefab(&self.world, prefab, &self.placement());
+        self.created(result)
+    }
+
+    fn delete_selection(&mut self) -> Option<Action> {
+        self.delete_ids(&self.selection())
+    }
+
+    fn delete_ids(&mut self, ids: &[String]) -> Option<Action> {
+        if ids.is_empty() {
+            return None;
+        }
+        let result = ops::delete(&self.world, ids);
+        self.op_write(result, None)
+    }
+
+    /// Duplicates the existing IDs among `ids` (a pasted clipboard may hold stale ones).
+    fn duplicate_ids(&mut self, ids: &[String]) -> Option<Action> {
+        let ids: Vec<String> = ids
+            .iter()
+            .filter(|id| self.world.entity(id).is_some())
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            return None;
+        }
+        let result = ops::duplicate(&self.world, &ids);
+        self.created(result)
+    }
+
+    /// Hierarchy drag-and-drop keeps the world pose (`ACL: reparent ID PARENT|root`).
+    fn reparent_drop(&mut self, entity: &str, parent: Option<&str>) -> Option<Action> {
+        let result = ops::reparent(&self.world, entity, parent, true);
+        self.op_write(result, None)
+    }
+
+    pub(super) fn scene_create(&mut self, id: &str) -> Option<Action> {
+        let result = ops::create_scene(&self.world, id, true);
+        self.op_write(result, None)
+    }
+
+    pub(super) fn scene_set_active(&mut self, id: &str, active: bool) -> Option<Action> {
+        let result = ops::set_scene_active(&self.world, id, active);
+        self.op_write(result, None)
+    }
+
+    pub(super) fn scene_delete(&mut self, id: &str) -> Option<Action> {
+        let result = ops::delete_scene(&self.world, id);
+        self.op_write(result, None)
     }
 
     /// Remote view control from the bridge (`editor_view`). Never touches drafts.

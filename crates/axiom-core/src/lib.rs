@@ -7,6 +7,7 @@ pub mod gameplay;
 pub mod ir;
 pub mod local;
 pub mod observe;
+pub mod ops;
 pub mod package;
 pub mod protocol;
 pub mod registry;

@@ -19,6 +19,16 @@ EDIT (any number, atomic):
   set SEL F VALUE [where F OP V [and ...]]
   spawn PREFAB [count=N] [id=enemy/{i}] [from=0] [at=x,y,z] [step=x,y,z] [tag=a,b] [label=TEXT]
   delete SEL
+ editor operations (same code as the editor UI; P = [id=ID] [at=x,y,z] [parent=ID] [scene=ID]):
+  create empty|cube|camera P      new object; default id = preset name, then NAME/2, NAME/3..
+  instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
+  duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
+                                  (entities[id=a,id=b] keeps that order; otherwise ID order)
+  reparent ID PARENT|root [keep=world|local]   default keeps world pose (editor drag)
+  scene create ID [on|off] | scene activate ID on|off | scene delete ID (objects kept)
+  scene member SCENE SEL on|off
+  camera main ID                  active=true on ID, false on every other camera
+  Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
 F (field): /raw/json/pointer | label | core.health/value (first segment with a dot = component)
@@ -240,6 +250,73 @@ enum Statement {
     Set(Box<Selection>, String, Value),
     Spawn(Vec<(String, String)>, String),
     Delete(Box<Selection>),
+    Create(String, Box<crate::ops::Placement>),
+    Instantiate(String, Box<crate::ops::Placement>),
+    Duplicate(Box<Selection>),
+    Reparent(String, Option<String>, bool),
+    SceneCreate(String, bool),
+    SceneActive(String, bool),
+    SceneDelete(String),
+    SceneMember(String, Box<Selection>, bool),
+    CameraMain(String),
+}
+
+impl Statement {
+    fn is_edit(&self) -> bool {
+        !matches!(
+            self,
+            Self::Select(..) | Self::Inspect(_) | Self::History(_) | Self::Diff(..) | Self::Undo(_)
+        )
+    }
+}
+
+fn on_off(token: &str) -> Result<bool> {
+    match token {
+        "on" | "true" => Ok(true),
+        "off" | "false" => Ok(false),
+        other => bail!("expected on or off, got '{other}'"),
+    }
+}
+
+fn placement(tokens: &[String]) -> Result<crate::ops::Placement> {
+    let mut p = crate::ops::Placement::default();
+    for t in tokens {
+        let (k, v) = t
+            .split_once('=')
+            .with_context(|| format!("option '{t}' must be key=value"))?;
+        match k {
+            "id" => p.id = Some(v.into()),
+            "at" => p.position = Some(vec3(v)?),
+            "parent" => p.parent = Some(v.into()),
+            "scene" => p.scene = Some(v.into()),
+            other => bail!("unknown option '{other}' (use id, at, parent, scene)"),
+        }
+    }
+    Ok(p)
+}
+
+fn entity_ids(
+    world: &World,
+    registry: &Registry,
+    select: &Selection,
+    line: usize,
+) -> Result<Vec<String>> {
+    if select.from != Collection::Entities {
+        return Err(diag(line, "selector must name entities"));
+    }
+    let found = crate::local::matches(world, registry, select)?;
+    if found.is_empty() {
+        return Err(Diagnostic::error(
+            "no_match",
+            format!("/line/{line}"),
+            format!("line {line}: selector matched no entities"),
+        ));
+    }
+    let mut ids: Vec<String> = found.into_iter().map(|(t, _)| t.id().to_owned()).collect();
+    // Matches come back in ID order; explicitly listed IDs keep the order they were written
+    // in (the editor's selection order), which decides generated IDs and batch order.
+    ids.sort_by_key(|id| select.ids.iter().position(|s| s == id));
+    Ok(ids)
 }
 
 fn parse(tokens: &[String]) -> Result<Statement> {
@@ -322,6 +399,55 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "delete" => {
             ensure!(tokens.len() == 2, "delete takes one selector");
             Statement::Delete(Box::new(selector(arg(1)?)?))
+        }
+        "create" => Statement::Create(arg(1)?.clone(), Box::new(placement(&tokens[2..])?)),
+        "instantiate" => {
+            Statement::Instantiate(arg(1)?.clone(), Box::new(placement(&tokens[2..])?))
+        }
+        "duplicate" => {
+            ensure!(tokens.len() == 2, "duplicate takes one selector");
+            Statement::Duplicate(Box::new(selector(arg(1)?)?))
+        }
+        "reparent" => {
+            let parent = arg(2)?;
+            let keep_world = match tokens.get(3).map(String::as_str) {
+                None | Some("keep=world") => true,
+                Some("keep=local") => false,
+                Some(other) => bail!("unexpected '{other}' (expected keep=world|local)"),
+            };
+            ensure!(tokens.len() <= 4, "unexpected '{}'", tokens[4]);
+            Statement::Reparent(
+                arg(1)?.clone(),
+                (parent != "root").then(|| parent.clone()),
+                keep_world,
+            )
+        }
+        "scene" => {
+            let verb = arg(1)?.as_str();
+            let id = arg(2)?.clone();
+            let max = match verb {
+                "create" => 4,
+                "activate" => 4,
+                "delete" => 3,
+                "member" => 5,
+                other => bail!("unknown scene verb '{other}' (create, activate, delete, member)"),
+            };
+            ensure!(tokens.len() <= max, "unexpected '{}'", tokens[max]);
+            match verb {
+                "create" => {
+                    Statement::SceneCreate(id, tokens.get(3).map_or(Ok(true), |t| on_off(t))?)
+                }
+                "activate" => Statement::SceneActive(id, on_off(arg(3)?)?),
+                "delete" => Statement::SceneDelete(id),
+                _ => Statement::SceneMember(id, Box::new(selector(arg(3)?)?), on_off(arg(4)?)?),
+            }
+        }
+        "camera" => {
+            ensure!(
+                arg(1)? == "main" && tokens.len() == 3,
+                "use: camera main ID"
+            );
+            Statement::CameraMain(arg(2)?.clone())
         }
         other => bail!("unknown statement '{other}'"),
     })
@@ -487,15 +613,7 @@ pub fn run(
         }
     }
     ensure!(!statements.is_empty(), "empty ACL script");
-    let reads = statements
-        .iter()
-        .filter(|(_, s)| {
-            !matches!(
-                s,
-                Statement::Set(..) | Statement::Spawn(..) | Statement::Delete(..)
-            )
-        })
-        .count();
+    let reads = statements.iter().filter(|(_, s)| !s.is_edit()).count();
     if reads > 0 {
         if statements.len() != 1 {
             return Err(diag(
@@ -524,6 +642,7 @@ pub fn run(
     }
     let mut edits = vec![];
     let mut taken = std::collections::BTreeSet::new();
+    let mut scratch = world.clone();
     for (line, stmt) in statements {
         let wrap = |e: anyhow::Error| {
             if e.downcast_ref::<Diagnostic>().is_some() {
@@ -532,36 +651,53 @@ pub fn run(
                 diag(line, format!("{e:#}"))
             }
         };
-        match stmt {
-            Statement::Set(select, f, v) => edits.push(Edit::Core(CoreEdit::SetWhere {
+        // Each statement compiles against the world as left by the previous statements, so
+        // generated IDs stay unique and later lines can refer to objects created earlier.
+        let w = &scratch;
+        let r = &store.registry;
+        let compiled = match stmt {
+            Statement::Set(select, f, v) => Ok(vec![Edit::Core(CoreEdit::SetWhere {
                 select,
                 field: f,
                 value: v,
-            })),
-            Statement::Spawn(opts, prefab) => {
-                edits.extend(spawn(&world, &prefab, &opts, &mut taken).map_err(wrap)?)
-            }
+            })]),
+            Statement::Spawn(opts, prefab) => spawn(w, &prefab, &opts, &mut taken),
             Statement::Delete(select) => {
                 if select.from != Collection::Entities {
                     return Err(diag(line, "delete only removes entities"));
                 }
-                let found =
-                    crate::local::matches(&world, &store.registry, &select).map_err(wrap)?;
-                if found.is_empty() {
-                    return Err(Diagnostic::error(
-                        "no_match",
-                        format!("/line/{line}"),
-                        format!("line {line}: selector matched no entities"),
-                    ));
-                }
-                for (target, _) in found {
-                    edits.push(Edit::Core(CoreEdit::DeleteEntity {
-                        id: target.id().to_owned(),
-                    }));
-                }
+                entity_ids(w, r, &select, line).and_then(|ids| crate::ops::delete(w, &ids))
             }
+            Statement::Create(preset, place) => {
+                crate::ops::create_object(w, &preset, &place).map(|c| c.edits)
+            }
+            Statement::Instantiate(prefab, place) => {
+                crate::ops::instantiate_prefab(w, &prefab, &place).map(|c| c.edits)
+            }
+            Statement::Duplicate(select) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::duplicate(w, &ids))
+                .map(|c| c.edits),
+            Statement::Reparent(id, parent, keep_world) => {
+                crate::ops::reparent(w, &id, parent.as_deref(), keep_world)
+            }
+            Statement::SceneCreate(id, active) => crate::ops::create_scene(w, &id, active),
+            Statement::SceneActive(id, active) => crate::ops::set_scene_active(w, &id, active),
+            Statement::SceneDelete(id) => crate::ops::delete_scene(w, &id),
+            Statement::SceneMember(scene, select, member) => entity_ids(w, r, &select, line)
+                .and_then(|ids| {
+                    ids.iter().try_fold(vec![], |mut all, id| {
+                        all.extend(crate::ops::set_scene_membership(w, &scene, id, member)?);
+                        Ok(all)
+                    })
+                }),
+            Statement::CameraMain(id) => crate::ops::make_main_camera(w, &id),
             _ => unreachable!(),
         }
+        .map_err(wrap)?;
+        for edit in &compiled {
+            edit.clone().apply(&mut scratch, r).map_err(wrap)?;
+        }
+        edits.extend(compiled);
     }
     ensure!(
         edits.len() <= 256,

@@ -166,15 +166,8 @@ pub(super) fn degrees(transform: &Transform) -> [f32; 3] {
     let (x, y, z) = Quat::from_array(transform.rotation).to_euler(EulerRot::XYZ);
     [x.to_degrees(), y.to_degrees(), z.to_degrees()]
 }
-pub(super) fn rotation([x, y, z]: [f32; 3]) -> [f32; 4] {
-    Quat::from_euler(
-        EulerRot::XYZ,
-        x.to_radians(),
-        y.to_radians(),
-        z.to_radians(),
-    )
-    .normalize()
-    .to_array()
+pub(super) fn rotation(degrees: [f32; 3]) -> [f32; 4] {
+    axiom_core::ops::rotation_from_degrees(degrees)
 }
 
 struct ProjectionView {

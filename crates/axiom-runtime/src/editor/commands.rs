@@ -303,9 +303,9 @@ impl Editor {
             "view.palette" => {
                 self.palette = Some(Palette::default());
             }
-            "object.empty" => actions.push(self.create_object("empty", None)),
-            "object.cube" => actions.push(self.create_object("cube", None)),
-            "object.camera" => actions.push(self.create_object("camera", None)),
+            "object.empty" => actions.extend(self.create_object("empty")),
+            "object.cube" => actions.extend(self.create_object("cube")),
+            "object.camera" => actions.extend(self.create_object("camera")),
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
@@ -617,6 +617,22 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
             "cli": "axiom --connect 127.0.0.1:4252 view --command edit.duplicate",
             "rule": "same registry as the menu bar, palette and shortcuts; refused while a human draft is dirty or when the command is unavailable (the error says why)",
             "commands": COMMANDS.iter().map(|c| serde_json::json!([c.id, c.title])).collect::<Vec<_>>(),
+            // Content-changing commands share axiom_core::ops with these ACL verbs, so an agent
+            // gets the same result with no editor running (axiom --db DB acl -e "...").
+            "headless": {
+                "object.empty": "create empty",
+                "object.cube": "create cube",
+                "object.camera": "create camera",
+                "edit.duplicate": "duplicate SEL",
+                "edit.paste": "duplicate SEL",
+                "edit.delete": "delete SEL",
+                "edit.undo": "undo REV",
+                "file.verify": "axiom verify",
+                "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
+                "assets.prefab": "instantiate PREFAB",
+                "camera.main": "camera main ID",
+                "docs": "docs/editor-parity.zh-TW.md"
+            },
         }),
     );
 }
