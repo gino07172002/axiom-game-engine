@@ -1069,6 +1069,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_view_selects_and_refuses_to_clobber_drafts() {
+        let (world, _) = fixture();
+        let mut editor = Editor::new(world, 1, None);
+        editor
+            .remote_view(
+                &["stage/crate".into(), "stage/beacon".into()],
+                true,
+                Some("history"),
+            )
+            .unwrap();
+        assert_eq!(editor.selection(), ["stage/crate", "stage/beacon"]);
+        assert!(editor.frame_selection);
+        assert!(matches!(editor.dock, Dock::History));
+        assert!(editor.remote_view(&["ghost".into()], false, None).is_err());
+        assert!(editor.remote_view(&[], false, Some("bogus")).is_err());
+        let text = editor.context_text();
+        assert!(
+            text.starts_with("# world editor-lab rev 1 · selection 2"),
+            "{text}"
+        );
+        assert!(
+            text.contains("stage/crate label=\"Signal Crate\" prefab=\"cargo-crate\""),
+            "{text}"
+        );
+        assert!(text.contains("\n  render.mesh "), "{text}");
+        editor.draft.as_mut().unwrap().label_dirty = true;
+        let refused = editor
+            .remote_view(&["stage/rack".into()], false, None)
+            .unwrap_err();
+        assert!(format!("{refused:#}").contains("unsaved draft"));
+        assert_eq!(editor.selection()[0], "stage/crate");
+    }
+
+    #[test]
     fn diagnostic_paths_resolve_to_selectable_entities() {
         let (world, _) = fixture();
         use crate::editor::entity_in_path;

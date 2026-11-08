@@ -58,6 +58,8 @@ struct App {
     accumulator: f32,
     poll_elapsed: f32,
     frames: u32,
+    /// On-demand capture requested over the bridge; written on the next rendered frame.
+    pending_capture: Option<PathBuf>,
     observation: Arc<RwLock<Observation>>,
     _bridge: Option<Bridge>,
     error: Option<anyhow::Error>,
@@ -155,6 +157,7 @@ impl App {
             accumulator: 0.0,
             poll_elapsed: 0.0,
             frames: 0,
+            pending_capture: None,
             observation,
             _bridge: bridge,
             error: None,
@@ -194,6 +197,41 @@ impl App {
         }
     }
     fn runtime_request(&mut self, request: Request) -> Result<serde_json::Value> {
+        if let Request::EditorView {
+            select,
+            focus,
+            dock,
+            capture,
+        } = request
+        {
+            let editor = self.editor.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("editor_view requires a running editor (axiom editor)")
+            })?;
+            anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
+            editor.remote_view(&select, focus, dock.as_deref())?;
+            let path = match capture {
+                Some(name) => {
+                    anyhow::ensure!(
+                        !name.is_empty()
+                            && name.len() <= 64
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+                            && !name.contains(".."),
+                        "capture name must be 1..64 of [A-Za-z0-9-_.]"
+                    );
+                    let dir = std::env::current_dir()?.join("artifacts").join("captures");
+                    std::fs::create_dir_all(&dir)?;
+                    let path = dir.join(format!("{name}.png"));
+                    self.pending_capture = Some(path.clone());
+                    Some(path)
+                }
+                None => None,
+            };
+            return Ok(
+                serde_json::json!({"ok":true,"editor":self.editor.as_ref().unwrap().observation(),"capture":path,"capture_ready":"written on the next rendered frame"}),
+            );
+        }
         anyhow::ensure!(
             !self.editing(),
             "runtime commands are available during Play preview"
@@ -484,9 +522,17 @@ impl App {
         self.fps_smooth = self.fps_smooth * 0.95 + elapsed.max(0.001).recip() * 0.05;
         self.ui.fps = self.fps_smooth;
         self.poll_elapsed += elapsed;
-        if self.poll_elapsed >= 0.25 {
+        // Proposals load immediately at startup / after a resolve, then follow the poll.
+        let proposals_unknown = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.proposal_signature.is_none());
+        let poll = self.poll_elapsed >= 0.25;
+        if poll {
             self.poll_elapsed = 0.0;
             self.reload()?;
+        }
+        if poll || proposals_unknown {
             if let Some(editor) = &self.editor {
                 let signature = self.store.proposal_signature()?;
                 if editor.proposal_signature != Some(signature) {
@@ -639,10 +685,11 @@ impl App {
         );
         self.frames += 1;
         let final_frame = self.options.smoke_frames.is_some_and(|n| self.frames >= n);
+        let pending = self.pending_capture.take();
         let capture_path = if final_frame {
             self.options.screenshot.as_deref()
         } else {
-            None
+            pending.as_deref()
         };
         let frame = if editing {
             self.editor
@@ -659,6 +706,10 @@ impl App {
                 .render(&frame, &ctx, output, capture_path)?;
         if !rendered {
             self.frames -= 1;
+            // Keep an on-demand capture for the next frame that actually renders.
+            if !final_frame {
+                self.pending_capture = pending;
+            }
             return Ok(());
         }
         let mut obs = self.observation();

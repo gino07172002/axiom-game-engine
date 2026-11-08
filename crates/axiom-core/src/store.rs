@@ -340,7 +340,10 @@ impl Store {
             Request::ObserveDelta { .. } => {
                 anyhow::bail!("observe_delta requires a live engine connection")
             }
-            Request::Command { .. } | Request::Save { .. } | Request::Load { .. } => {
+            Request::Command { .. }
+            | Request::Save { .. }
+            | Request::Load { .. }
+            | Request::EditorView { .. } => {
                 anyhow::bail!("runtime request requires a live engine connection")
             }
             Request::Schema { topic } => self.registry.schema(topic.as_deref()),

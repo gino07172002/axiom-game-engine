@@ -287,6 +287,8 @@ pub(crate) struct Editor {
     proposals: Vec<Value>,
     pub(crate) proposal_signature: Option<(i64, i64)>,
     proposal_focus: Option<i64>,
+    /// (request bytes, response bytes) of the last authoring request. Bytes, not tokens.
+    last_bytes: Option<(usize, usize)>,
 }
 
 impl Editor {
@@ -328,6 +330,7 @@ impl Editor {
             proposals: Vec::new(),
             proposal_signature: None,
             proposal_focus: None,
+            last_bytes: None,
         };
         if selected
             .as_ref()
@@ -456,6 +459,88 @@ impl Editor {
         (!edits.is_empty()).then(|| self.write(edits, first))
     }
 
+    /// Remote view control from the bridge (`editor_view`). Never touches drafts.
+    pub(crate) fn remote_view(
+        &mut self,
+        select: &[String],
+        focus: bool,
+        dock: Option<&str>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.dirty() && self.drag.is_none(),
+            "the editor has an unsaved draft; ask the user to apply or reload it first"
+        );
+        for id in select {
+            if self.world.entity(id).is_none() {
+                return Err(axiom_core::Diagnostic::error(
+                    "not_found",
+                    "/select",
+                    format!("entity {id} not found"),
+                ));
+            }
+        }
+        if let Some(dock) = dock {
+            self.dock = match dock {
+                "changes" => Dock::Changes,
+                "proposals" => Dock::Proposals,
+                "history" => Dock::History,
+                "problems" => Dock::Problems,
+                "assets" => Dock::Assets,
+                "agent" => Dock::Agent,
+                other => anyhow::bail!(
+                    "unknown dock {other}; use changes|proposals|history|problems|assets|agent"
+                ),
+            };
+        }
+        if let Some((first, rest)) = select.split_first() {
+            self.select(Some(first.clone()));
+            self.extra = rest.iter().cloned().collect();
+        }
+        self.frame_selection |= focus;
+        Ok(())
+    }
+
+    /// Compact, agent-ready description of the current selection (same shape as
+    /// `axiom acl -e "inspect ID"`), for pasting into an AI conversation.
+    pub(crate) fn context_text(&self) -> String {
+        let mut out = format!(
+            "# world {} rev {} · selection {}\n",
+            self.world.id,
+            self.rev,
+            self.selection().len()
+        );
+        for id in self.selection() {
+            let Some(e) = self.world.entity(&id) else {
+                continue;
+            };
+            out.push_str(&id);
+            if let Some(label) = &e.label {
+                out.push_str(&format!(" label={}", json!(label)));
+            }
+            if let Some(prefab) = &e.prefab {
+                out.push_str(&format!(" prefab={}", json!(prefab)));
+            }
+            if !e.tags.is_empty() {
+                out.push_str(&format!(" tags={}", json!(e.tags)));
+            }
+            let mut keys: BTreeSet<&String> = e.components.keys().collect();
+            if let Some(p) = e.prefab.as_ref().and_then(|p| self.world.prefabs.get(p)) {
+                keys.extend(p.components.keys());
+            }
+            for key in keys {
+                if let Some(v) = ui::component_value(&self.world, e, key) {
+                    out.push_str(&format!(
+                        "\n  {key} {}",
+                        axiom_core::local::display_value(&v)
+                    ));
+                }
+            }
+            out.push('\n');
+        }
+        out.push_str("# edit with: axiom acl -e \"set ID component/field VALUE\" (add --propose for review)\n");
+        out
+    }
+
     pub fn set_proposals(&mut self, signature: (i64, i64), rows: &Value) {
         let previous = self.proposals.len();
         self.proposals = rows.as_array().cloned().unwrap_or_default();
@@ -581,6 +666,10 @@ impl Editor {
     }
 
     pub fn record(&mut self, request: Request, result: &Value) {
+        self.last_bytes = Some((
+            serde_json::to_vec(&request).map_or(0, |v| v.len()),
+            serde_json::to_vec(result).map_or(0, |v| v.len()),
+        ));
         self.record_changes(&result["diff"]);
         self.notice(if matches!(request, Request::Preview { .. }) {
             format!(

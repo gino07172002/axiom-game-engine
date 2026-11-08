@@ -943,8 +943,12 @@ impl Editor {
                     if ui.button("Copy scene query").clicked() {
                         ui.ctx().copy_text(json!({"op":"scene_tree","query":{"scene":self.scene,"limit":32}}).to_string());
                     }
-                    if ui.add_enabled(self.selected.is_some(), egui::Button::new("Copy selection")).clicked() {
-                        ui.ctx().copy_text(json!({"op":"select","query":{"from":"entities","ids":[self.selected],"fields":["label","components/core.transform"]}}).to_string());
+                    if ui.add_enabled(self.selected.is_some(), egui::Button::new("Copy selection context"))
+                        .on_hover_text("Compact text of every selected object (effective components) to paste into an AI conversation")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(self.context_text());
+                        self.status = format!("Copied context for {} object(s)", self.selection().len());
                     }
                     if let Some(request) = &self.last_request {
                         if ui.button("Copy last request").clicked() {
@@ -953,6 +957,12 @@ impl Editor {
                     }
                 });
                 caption(ui,"Stable IDs · expected revision · local diffs · durable execute receipts");
+                if let Some((request, response)) = self.last_bytes {
+                    caption(ui, format!("Last request {request} B → response {response} B (bytes, not tokens)"));
+                }
+                if self.selected.is_some() {
+                    ui.label(RichText::new(self.context_text()).monospace().small());
+                }
             }
         });
         if let Some(id) = resource {

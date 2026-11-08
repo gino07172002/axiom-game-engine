@@ -109,6 +109,19 @@ pub enum Request {
     },
     Verify {},
     Observe {},
+    /// Drive a running editor: select objects, frame them, switch dock tabs, capture a PNG
+    /// to `artifacts/captures/<capture>.png` on the next frame. Refused while a human draft
+    /// is dirty so remote control never clobbers unsaved edits.
+    EditorView {
+        #[serde(default)]
+        select: Vec<String>,
+        #[serde(default)]
+        focus: bool,
+        #[serde(default)]
+        dock: Option<String>,
+        #[serde(default)]
+        capture: Option<String>,
+    },
     Undo {
         rev: i64,
         #[serde(default)]
@@ -126,7 +139,7 @@ impl Request {
         }
         matches!(
             self,
-            Self::Command { .. } | Self::Save { .. } | Self::Load { .. }
+            Self::Command { .. } | Self::Save { .. } | Self::Load { .. } | Self::EditorView { .. }
         )
     }
 }

@@ -110,6 +110,18 @@ enum Command {
         #[arg(long)]
         expected_rev: Option<i64>,
     },
+    /// Drive a running editor (--connect): select/frame objects, switch dock, capture a PNG.
+    View {
+        #[arg(long)]
+        select: Vec<String>,
+        #[arg(long)]
+        focus: bool,
+        #[arg(long)]
+        dock: Option<String>,
+        /// Writes artifacts/captures/<NAME>.png (relative to the editor's working directory).
+        #[arg(long)]
+        capture: Option<String>,
+    },
     /// List queued edit proposals (newest first).
     Proposals {
         #[arg(long)]
@@ -568,6 +580,23 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 let result = runtime.command(&command)?;
                 print(&axiom_core::local::display_value(&result), cli.pretty)?;
                 return Ok(());
+            }
+        }
+        Command::View {
+            select,
+            focus,
+            dock,
+            capture,
+        } => {
+            ensure!(
+                cli.connect.is_some(),
+                "view drives a running editor; pass --connect"
+            );
+            Request::EditorView {
+                select,
+                focus,
+                dock,
+                capture,
             }
         }
         Command::Proposals { status, limit } => Request::Proposals { status, limit },
