@@ -1,254 +1,199 @@
 <p align="center">
-  <img src="assets/branding/axiom-logo-white.png" alt="Axiom" width="360">
+  <img src="assets/branding/axiom-logo-white.png" alt="Axiom" width="320">
 </p>
 
-# Axiom Engine v0.4 — AI Authoring / RTS
+<p align="center">
+  <b>An AI-native game engine written in Rust.</b><br>
+  AI agents build and change games through a small typed, transactional protocol instead of an editor or engine source code.
+</p>
 
-Rust 原生、AI-first、不使用 Bevy 的遊戲引擎。M1.5 提供穩定 ID 的局部操作、精確差異、增量觀察、安全重試與成本 benchmark；M2 加入 RTS 框選、群組命令、平面導航、採集與生產。相同執行檔可載入 FPS、ADV、RTS、空世界與雙相機內容包，交易式 authoring 與固定步進 runtime 持續分離。
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Rust" src="https://img.shields.io/badge/rust-stable-orange.svg">
+  <img alt="Status" src="https://img.shields.io/badge/status-prototype%20v0.4-yellow.svg">
+  <a href="README.zh-TW.md"><img alt="中文" src="https://img.shields.io/badge/文件-繁體中文-lightgrey.svg"></a>
+</p>
 
-骨架動畫已接上同一執行檔。雙擊 `Play Animation.cmd` 可看骨架蒙皮、動畫混合、IK 與 retargeting。匯入支援 glTF／GLB、PMX 以及 Unity Humanoid 匯出的 `.axrig`。Rigify 透過 Blender 烘焙後的變形骨架匯入。操作、座標設定和驗證方式見[骨架動畫指南](docs/skeletal-animation.zh-TW.md)。
+---
 
-雙擊 `Play Shader Lab.cmd` 可查看 Lit、Toon、自訂 WGSL 掃描線、遮罩與透明材質。方塊與匯入網格共用 `render.material`，WGSL 與材質參數可透過現有交易熱更新。詳見[Shader 系統指南](docs/shaders.zh-TW.md)。
+## What is Axiom?
 
-雙擊 `Play Effects Atlas.cmd` 開啟 36 展台的材質與 VFX 展示館，對照 Flax 官方 Materials／Particles Features Tour。包含 GPU compute 粒子、骨骼拖尾、場景熱扭曲、投影貼花與體積霧；每項實作與差異見[Effects Atlas 清單](docs/effects-atlas.zh-TW.md)。
+Most engines are built for people working in an editor. Axiom is built for AI coding agents, with people reviewing and steering the work.
 
-雙擊 `Edit Axiom.cmd` 可開啟原生場景編輯器。場景樹、3D 視口、Inspector 和 AI 協定面板共用同一個 World IR 與修訂紀錄。詳見[場景編輯器指南](docs/scene-editor.zh-TW.md)。
+- **The game is a database, not a pile of code.** A world is a typed document made of entities, components, prefabs, scenes and resources. Every change is a transaction that creates a numbered revision, and each revision can be previewed, diffed or undone.
+- **Agents read only what they need.** Agents can use selectors (`enemy/*`, `where core.health/value<50`), project only the fields they need and get compact one-line-per-object output. They never have to read a whole scene to change one value.
+- **Changes are checked before they are kept.** Schema validation, compare-and-swap revisions, idempotent retries, headless scenarios with assertions, and deterministic state hashes let an agent confirm that a change worked without looking at the screen.
+- **Separate authoring and runtime.** Authoring (`axiom-core`) is transactional and stored in SQLite. The runtime (`axiom-runtime`) steps a compiled world at a fixed 120 Hz with native Rust systems. The running game hot-reloads new revisions at safe points.
+- **No Bevy.** Axiom has its own small ECS-like world on top of `wgpu`, `winit`, `glam`, `egui` and `rapier3d`.
 
-雙擊 `Play Love No War.cmd` 可玩夜場雙人舞原型。邀舞後，用畫面上的節拍和 J／K／L 完成八拍。舞步、判定窗口及兩位舞者的動畫由內容包定義。詳見[雙人舞內容包](docs/love-no-war.zh-TW.md)。
+> **Status:** Axiom is an experimental prototype (v0.4). It has only been tested on Windows 11 (x86_64, GNU toolchain, Vulkan). APIs and file formats may change.
 
-雙擊 `Play Action.cmd` 可玩 M3 第三人稱動作原型 Ember Court。WASD 移動、滑鼠或 Q／E 環繞、F 鎖定、左鍵三段連擊、Space 翻滾。技能的取消窗、體力、傷害、無敵和音效事件使用固定步進資料。詳見 [M3 Action 指南](docs/m3-action.zh-TW.md)。
+## A 60-second tour
 
-雙擊 `Play Alliance.cmd` 可玩 M4 聯合作戰關卡 Beacon Alliance。RTS 小隊採礦與生產、Action 英雄戰鬥及 ADV 任務位於同一個世界，G 切換操控。內容包使用精確相依版本、資產摘要與跨包事件／資源契約。詳見 [M4 組合指南](docs/m4-composition.zh-TW.md)。
+Every command below uses the same database: `axiom --db lab.sqlite …`. The first command creates it from a content pack.
 
-雙擊 `Play Alliance Combat.cmd` 使用獨立資料庫體驗共用碰撞與傷害：英雄和小隊可集火同一守衛，英雄可鎖定 RTS 敵人，Action 敵人也會攻擊附近士兵。詳見 [共用戰鬥指南](docs/shared-combat.zh-TW.md)。
+```text
+$ axiom --db lab.sqlite --pack content/behavior-lab acl -e "select entities[tag=enemy] fields core.health/value limit 3"
+enemy/0 core.health/value=100
+enemy/1 core.health/value=100
+enemy/2 core.health/value=100
+matched=6 rev=1 next=l1.1.…
 
-## 啟動
+$ axiom acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=18"
+ok rev=2 changes=2
++ /entities/@enemy~14/components/core.health = {"value":40}
++ /entities/@enemy~15/components/core.health = {"value":40}
 
-Windows 工作區可直接雙擊 `Play Axiom.cmd`，或：
+$ axiom call fsm.inspect '{"id":"enemy/0"}'            # "why isn't this enemy chasing?"
+{"ok":true,"result":{"state":"idle","transitions":[…,
+  {"to":"chase","when":"near(player)<=15","measured":30.016663,"pass":false}]},"rev":2,"tick":0}
+
+$ axiom scenario examples/behavior-chase.scenario.json  # headless; same state_hash in every process
+{"ok":true,"state_hash":"…","assertions":[ 5 passed ], …}
+
+$ axiom acl -e "undo 1"
+ok rev=3 restored_from=1
+```
+
+(The edit above adds a local override to prefab instances. The prefab default stays untouched.)
+
+## Features
+
+| Area | What you get |
+|---|---|
+| **Authoring protocol** | Typed JSON requests (`select`, `preview`, `apply`, `undo`, `diff`, `history`, `discover`) and **ACL**, a terse line-based command language that compiles to the same requests. Every request uses compare-and-swap revisions and request-ID retries. |
+| **Queries** | ID globs, tag and component filters, `where` predicates that see prefab-inherited values, field projection, cursors and byte budgets. Output can be JSON or compact lines. |
+| **Batch edits** | `set_where` updates every matching object in one revision. `spawn` instantiates prefabs N times. Edits are validated against component and resource schemas. |
+| **Runtime** | Fixed-step 120 Hz simulation, generation-checked entity handles, typed component columns, and hot reload that keeps state across revisions. |
+| **Behavior** | Data-defined finite state machines (`fsm.machines`) for any entity, a shared gameplay/narrative/UI IR, and native FPS, RTS and action-combat modules. |
+| **Verification** | Scenarios with input, command and assertion timelines; `field` and `call` assertions; a seeded RNG; state hashes for cross-process comparison; checkpoints and save slots. |
+| **Rendering** | `wgpu` forward renderer with lit, toon and custom WGSL materials, skeletal animation (glTF/GLB, PMX), GPU compute particles, decals, fog and post effects. |
+| **Editor** | A native scene editor (hierarchy, viewport gizmos, inspector) that uses the same revisions as AI agents. It picks up external revisions live. |
+| **Live bridge** | Loopback JSONL (`--connect 127.0.0.1:4242`) to observe, command, edit and save a running game. MCP is not required. |
+
+## Getting started
+
+### Requirements
+
+- Rust (stable). The repository pins `stable-x86_64-pc-windows-gnu` in `rust-toolchain.toml`.
+- A GPU supported by `wgpu` (Vulkan, DirectX 12 or Metal) for the windowed modes. Headless commands do not need a GPU.
+
+### Build on Windows
 
 ```powershell
-cd D:\rust_learn
-.\target\debug\axiom.exe play
+git clone https://github.com/gino07172002/axiom-game-engine.git
+cd axiom-game-engine
+.\scripts\setup.ps1          # one-time: installs a workspace-local Rust + MinGW toolchain under .tools/
+. .\scripts\env.ps1          # every new shell: points cargo at the workspace toolchain
+cargo build --workspace
 ```
 
-從原始碼建置先執行 `. .\scripts\env.ps1`，再執行 `cargo build --workspace`。全新 Windows checkout 使用 `scripts/setup.ps1` 安裝工作區內的 Rust／GNU 工具鏈。編譯快取、工具及 temp 都留在 D 槽；建置限制為 2 個並行工作，開發版不產生除錯符號。
+### Build on Linux / macOS (untested)
+
+Change `channel` in `rust-toolchain.toml` to `stable`, then run `cargo build --workspace`. You may need your platform's usual `winit`/`wgpu` system packages.
+
+### Run something
 
 ```powershell
-.\target\debug\axiom.exe editor
-.\target\debug\axiom.exe --db data/rts-edit.sqlite --pack content/rts editor
+# Play the bundled FPS sample (WASD, mouse, left click to shoot, Tab for the console)
+target\debug\axiom.exe play
+
+# Open the scene editor
+target\debug\axiom.exe editor
+
+# Any content pack into its own database
+target\debug\axiom.exe --db data\lab.sqlite --pack content\behavior-lab play --start
 ```
 
-## 五個內容包
+On Windows you can also double-click the `Play *.cmd` and `Edit Axiom.cmd` launchers in the repository root.
 
-```powershell
-# 原有 FPS；v1 資料庫會自動追加 v2 遷移版本
-.\target\debug\axiom.exe play
+## Working with AI agents
 
-# 沒有玩家、生命、槍械、相機或物理的世界
-.\target\debug\axiom.exe --db data/empty.sqlite --pack content/empty play
+An agent only needs the `axiom` executable. A typical loop:
 
-# 同一世界的透視與正交視圖，包含通用運動系統
-.\target\debug\axiom.exe --db data/views.sqlite --pack content/two-cameras play --start
+1. **Discover**: `axiom discover acl` (grammar), `axiom discover local` (JSON schema), `axiom schema components`. Pass `--if-hash` to skip re-reading a schema that hasn't changed.
+2. **Read** only what is needed: `axiom acl -e "select … where … fields … limit N"`.
+3. **Change** in one transaction: `axiom acl --preview script.acl`, then `axiom acl script.acl`. Multi-line edit scripts commit as a single revision.
+4. **Verify** without a screen: `axiom scenario file.json`, `axiom call fsm.inspect '{"id":"…"}' --ticks 600`, `axiom verify --measure 5`.
+5. **Observe live**: `axiom --connect 127.0.0.1:4242 observe-delta --field /rev`. The running game reloads new revisions on its own.
+6. **Roll back**: `axiom undo REV` appends a restoring revision. History is never rewritten.
 
-# ADV：最後的訊號；也可雙擊 Play ADV.cmd
-.\target\debug\axiom.exe --db data/adv.sqlite --pack content/adv play --start
+ACL at a glance (`axiom discover acl` prints the full grammar):
 
-# RTS：邊境採集；也可雙擊 Play RTS.cmd
-.\target\debug\axiom.exe --db data/rts.sqlite --pack content/rts play --start
+```text
+select SEL [where F OP V [and …]] [fields F,F] [limit N]     # read
+inspect ID | history [N] | diff A B | undo REV                # read
+set SEL F VALUE [where …]                                      # edit
+spawn PREFAB count=N id=enemy/{i} at=x,y,z step=dx,dy,dz tag=a
+delete SEL
+SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health] | prefabs | resources[id=x]
+F:   core.health/value (component field) | label | /raw/json/pointer
 ```
 
-`--pack` 是內容包目錄，包含 `manifest.json` 與 World IR v2 的 `world.json`。在 play 中明確指定會以一筆交易載入該內容包；再次指定會重新載入包內的初始定義。後續保留資料庫修改時，使用相同 `--db` 並省略 `--pack`。
+The same operations are available as JSON over `axiom serve` (stdio) and the loopback bridge. [`docs/m15-implementation.md`](docs/m15-implementation.md) describes the protocol contract.
 
-未指定包時，新的資料庫優先讀取 `content/fps`；從其他工作目錄啟動、找不到包檔時使用內嵌的相同 FPS 範例。既有資料庫保留自己的世界。非 Windows 平台需自行安裝 Rust／C 工具，將 rust-toolchain channel 改成 stable；尚未跨平台實測。
+## Example content
 
-FPS 操作：WASD 移動、滑鼠視角、左鍵射擊、R 裝填、Space 跳躍、Shift 衝刺、Tab 控制台、Esc 暫停。消滅哨兵完成原型；掩體阻擋射擊，頭部命中有額外傷害。一般世界使用上方 RUN／PAUSE／RESTART／CONSOLE，無須 FPS 控制器。
+Every demo is a data-only content pack. All of them run on the same executable.
 
-ADV 操作：點擊選項推進；在工坊按 E 或點選調查箱子以取得鑰匙，再返回開門。拒絕協助、放棄搜尋、成功求救分別通往三個結局。介面上可切換 `zh-TW`／`en`、快速存讀檔；Esc 暫停，RESTART 回到開場。中文使用 Windows 已安裝的微軟正黑體，不隨專案散布系統字型。
+| Pack | What it shows |
+|---|---|
+| `content/fps` | First-person shooter: hitscan, sentinels, cover, headshots |
+| `content/rts` | Box selection, A* grid navigation, gathering, production (64–256 units) |
+| `content/action` | Third-person melee: combos, dodge windows, stamina, lock-on |
+| `content/adv` | Branching narrative with three endings, localization (zh-TW/en), save slots |
+| `content/m4` | Composition of RTS, action and ADV packs in one world with cross-pack events |
+| `content/behavior-lab` | Generic FSM agents: idle → chase → attack, inspectable per entity |
+| `content/effects-tour` | 36 material/VFX stations, including GPU particles, decals, fog and heat distortion |
+| `content/shader-lab` | Lit, toon and custom WGSL materials with hot-reloadable parameters |
+| `content/animation`, `content/love-no-war` | Skinning, blending, IK and retargeting, plus a rhythm duet prototype |
+| `content/empty`, `content/two-cameras` | Minimal worlds without gameplay, and multi-camera views |
 
-RTS 操作：左鍵拖曳框選藍方單位，Shift 加選；右鍵地面移動、資源點採集、敵人攻擊。WASD 平移相機、Q／E 縮放，Esc 暫停；下方按鈕選取礦工／士兵、採集或排入生產。初始雙方各 32 單位；礦工滿載回基地交付後繼續採集，生產礦工花費 40、士兵 60。摧毀敵方基地獲勝。HUD 文字、綁定與按鈕均來自 `content/rts/world.json`。此階段尚無 RTS 私有模擬狀態的存讀檔。
+All bundled models and images are original and generated by scripts in `scripts/` (Blender and PowerShell). The Effects Atlas reimplements the *topics* of the FlaxEngine feature-tour samples. It contains no Flax assets.
 
-## 共用玩法、敘事與存檔
+## Architecture
 
-`behavior.program` 定義 bool／i64／f64／text 變數、具型別事件、條件及動作；`narrative.graph` 組合進入動作、條件選項、節點跳轉與結局。條件支援 always／eq／ge／all／not；動作支援 set／add／emit／delay／go_to／scene／end。參照先編譯成索引，執行時不解析 JSON 路徑。每批命令或固定步進最多 512 指令、128 個待處理事件，敘事進入深度最多 16；超額失敗會保留前一份玩法狀態。
-
-`ui.document` 定義多語系 catalog、文字／變數／本地化變數／對話綁定、條件按鈕、選項、圖片及進度條。UI、ActionMap、scenario 和 loopback 命令使用相同玩法介面。包內圖片為相對路徑，載入包時檢查範圍並解析；PNG 在 runtime 準備階段解碼，缺少資產會導致啟用失敗並保留舊世界。
-
-```powershell
-.\target\debug\axiom.exe schema gameplay
-.\target\debug\axiom.exe --db data/adv.sqlite narrative-check --budget 4096
-.\target\debug\axiom.exe --db data/adv.sqlite scenario examples/adv-rescue.scenario.json
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 command examples/adv-help.command.json
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 save quick
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 load quick
-.\target\debug\axiom.exe --db data/adv.sqlite play --start --load-slot quick
+```text
+ agent / CLI / editor ──► axiom-core (authoring)            axiom-runtime (simulation)
+   ACL, JSON requests       World IR v2, schemas, registry     fixed 120 Hz step, systems
+                            transactions + revisions (SQLite)  ─► compiled world, hot reload
+                            preview / diff / undo / receipts    wgpu renderer, egui UI, bridge
 ```
 
-`narrative-check` 在明確預算內探索選項、UI 按鈕與延遲事件，回傳各結局的路徑；不包含未知的外部事件來源，預算不足時 `complete:false`，不宣稱完成證明。`observe.gameplay` 提供變數、可見選項、節點、結局、場景、UI 綁定值及最近 128 筆 trace。
+| Crate | Responsibility |
+|---|---|
+| `axiom-core` | World IR, type and capability registry, compiler, transactions, selectors, ACL, diffs, content packages |
+| `axiom-runtime` | Fixed-step world, native systems (FSM, gameplay, FPS, RTS, combat, animation, VFX), renderer, scene editor, live bridge, scenarios, checkpoints |
+| `axiom-fps` / `axiom-rts` / `axiom-action` / `axiom-combat` | Genre schemas and pure simulation libraries, each registered through the generic runtime interface |
+| `axiom-animation` | Skeleton import (glTF/GLB, PMX, Unity `.axrig`), clips, IK, retargeting |
+| `axiom-cli` | The `axiom` executable |
 
-存檔位於資料庫同層的 `saves/`，使用世界 ID 命名空間及受限 slot 名稱；最多 8 MiB。包含獨立 `save_version`、來源 authoring revision、內容定義、模擬時鐘、穩定 entity／node IDs、型別欄位、旗標、待處理事件及語系。讀檔不執行節點進入動作、不新增 SQLite revision；寫入先 flush 暫存檔並保留上一份 `.bak`，若主檔遺失可讀取備份。毀損或不相容存檔不會取代目前狀態。
+More detail: [`docs/architecture.md`](docs/architecture.md) · [roadmap (zh-TW)](docs/ai-first-general-engine-roadmap.zh-TW.md) · [current plan](docs/plan-ai-authoring-gaps.md)
 
-Checkpoint 採嚴格內容相容檢查；v0.4 亦接受已知的 v0.3.0／v0.3.1 checkpoint v1。編輯後可 undo 到相同定義，再讀舊進度，revision 編號可以不同。尚未提供任意內容版本之間的存檔遷移。原生系統必須明確支援 checkpoint；目前支援通用欄位、motion 和 shared gameplay，FPS 的 Rapier／戰鬥與 RTS 私有狀態會明確拒絕存檔。
-
-## AI 修改流程
-
-最精簡的入口是 ACL(Axiom Command Language)。一行一個敘述，輸出是精簡文字，底層仍編譯成同一套交易式協定(CAS、diff、undo、冪等重試都沿用):
-
-```powershell
-.\target\debug\axiom.exe discover acl                      # 文法
-.\target\debug\axiom.exe acl -e "spawn enemy.basic count=10 id=enemy/{i} at=0,0,0 step=2,0,0 tag=enemy"
-.\target\debug\axiom.exe acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=10"
-.\target\debug\axiom.exe acl -e "select entities[tag=enemy] where core.health/value<50 fields core.health/value limit 5"
-.\target\debug\axiom.exe acl -e "inspect enemy/3"
-.\target\debug\axiom.exe acl --preview script.acl          # 多行編輯 = 一個 revision
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 acl -e "history 5"
-```
-
-`select` 回傳 `enemy/5 core.health/value=40` 這類行，結尾 `matched=N rev=R [next=CURSOR]`。編輯回傳 `ok rev=R changes=N` 及最多 12 筆前後值。JSON 協定也可用 `{"op":"acl","text":"..."}`,`select` 另支援 `id_glob`、`where`、`format:"lines"`,編輯另有 `set_where`。
-
-### 通用行為與診斷
-
-`fsm.machines` 資源定義狀態機(動作:stop／move_toward／move_away;條件:near／far／health_below／in_state_ticks／always),實體掛 `fsm.agent` 即生效，世界需啟用 `fsm` 能力與 `fsm.step` 系統。範例見 `content/behavior-lab`。「敵人為什麼不追？」用一個呼叫回答，回傳目前狀態、上次轉移，以及每條外出條件的實測值與判定:
-
-```powershell
-.\target\debug\axiom.exe --db data/lab.sqlite --pack content/behavior-lab call fsm.inspect '{"id":"enemy/0"}'
-#  … "state":"idle","transitions":[{"to":"chase","when":"near(player)<=15","measured":30.02,"pass":false}]
-.\target\debug\axiom.exe --db data/lab.sqlite call fsm.summary --ticks 2400      # 無頭模擬 2400 tick 後
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 call fps.inspect '{"id":"enemy/0"}'   # 即時 FPS 哨兵
-```
-
-FSM 狀態目前不進 checkpoint,存檔會明確拒絕。
-
-其他 agent 也可使用 `discover` 按需探索、`select` 取得局部欄位及 `set_field` 依 ID 修改；完整 `query world` 保留給匯出與除錯。
-
-```powershell
-.\target\debug\axiom.exe discover local
-.\target\debug\axiom.exe --db data/adv.sqlite select examples/m15-select-choice.json
-.\target\debug\axiom.exe --db data/adv.sqlite preview examples/m15-edit-choice.json
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 observe-delta --field /rts/summary --field /rts/selected
-.\target\debug\axiom.exe schema rts
-.\target\debug\axiom.exe schema actions
-```
-
-範例檔的 `expected_rev` 必須依查詢結果調整。`select` 支援 entities、resources、prefabs、scenes、nodes、choices、rules、widgets、variables，預設 16 筆／8192 bytes；投影與分頁游標有明確上限。`set_field`／`put_object`／`remove_object` 使用穩定 target ID，choice 另指定 node，無須先取得整個敘事圖或陣列位置。Prefab 局部覆寫保留其他欄位的繼承。
-
-Preview／apply 回傳包含資源的 ID 差異與欄位路徑；`diff REV_A REV_B` 可分頁取完整差異。`discover TOPIC --if-hash HASH` 避免重讀相同 schema。`observe-delta --cursor CURSOR` 回傳指定投影的變更；游標失效、重啟或恢復 checkpoint 時明確 reset，trace 缺口亦會標示。
-
-`--request-id ID` 可冪等重試 apply／undo，receipt 與 revision 原子提交 SQLite。即時 command／save／load 另需 `--runtime-session`（從 observe 取得），成功結果只在該 host session 去重，舊 session 不會在新程序重新執行。詳見 [M1.5 合約與 benchmark](docs/m15-implementation.md)。
-
-```powershell
-.\target\debug\axiom.exe schema
-.\target\debug\axiom.exe schema components
-.\target\debug\axiom.exe schema systems
-.\target\debug\axiom.exe schema fps
-.\target\debug\axiom.exe query
-.\target\debug\axiom.exe preview examples/more-enemies.json
-.\target\debug\axiom.exe apply examples/more-enemies.json
-.\target\debug\axiom.exe verify --ticks 1200
-.\target\debug\axiom.exe history
-.\target\debug\axiom.exe undo 1
-```
-
-Schema 依已安裝能力註冊表產生；可查 world、components、resources、systems、edits，以及單一組件名稱。Query scopes 支援 summary、world、entities、components、resources、systems、behavior。預設回覆摘要，實體查詢可用 `--limit` 限制回傳。
-
-Preview 執行相同的編輯、型別檢查、世界編譯與約束驗證，回傳差異而不增加 revision。Apply 的整批修改通過後才 commit；錯誤回覆包含 diagnostics。`expected_rev` 提供 CAS，讓多個 agent 能偵測衝突。相同內容不新增版本。
-
-通用 v2 編輯：
-
-```json
-{"op":"apply","expected_rev":1,"edits":[
-  {"kind":"put_entity","entity":{"id":"prop","components":{
-    "core.transform":{"position":[1,0,0]},
-    "core.health":{"value":10,"max":10}
-  }}}
-]}
-```
-
-Entity 可沒有空間或生命組件。原生組件包含 Transform、Health、Motion、RenderMesh、Camera、Collider；世界也能宣告具型別的自訂 component／resource schema。Prefab 組件可局部覆寫，parent 關係會檢查循環，Scene 可以停用成員。
-
-完整可操作的非 FPS 範例：
-
-```powershell
-.\target\debug\axiom.exe --db data/sandbox.sqlite --pack content/empty query
-.\target\debug\axiom.exe --db data/sandbox.sqlite preview examples/v2-add-box.json
-.\target\debug\axiom.exe --db data/sandbox.sqlite apply examples/v2-add-box.json
-.\target\debug\axiom.exe --db data/sandbox.sqlite play --start
-```
-
-原有 `enemies.count`、`weapon.damage` 等路徑與障礙物／行為指令，由 FPS 套件的相容 adapter 處理。原本的 `examples/more-enemies.json`、`power-rifle.json`、`passive-ai.json` 可繼續使用。通用引擎不定義這些玩法欄位。
-
-## 即時更新、觀察與版本
-
-遊戲每 250 ms 檢查資料庫。在模擬安全點準備新的 compiled world、系統與呈現資料，遷移既有狀態後才切換；啟用失敗保留上一個世界。
-
-```powershell
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 apply examples/power-rifle.json
-.\target\debug\axiom.exe --connect 127.0.0.1:4242 observe
-```
-
-Observe 分開回報 `rev`（已啟用）、`requested_rev` 與 `activation`。FPS HUD 也使用同一個啟用版本。authoring commit 不代表 runtime 已啟用；`activation_failed` 帶有診斷。
-
-原生 Transform 在定義不變時保留執行位置；自訂欄位在 schema／定義不變時保留值，entity references 依穩定邏輯 ID 重新連結。FPS 模組依邏輯 ID 保留傷害、裝填、角色與擊殺狀態；變更地形或出生點會安全重置角色位置。世界 undo 恢復定義，重新開始會重建遊玩狀態。
-
-Adapter 僅綁定 loopback TCP，JSONL 協定不依賴 MCP 或特定 LLM。預設連接埠 4242，`play --port 0` 可停用；多個遊戲使用不同 `--db` 與 `--port`。Stdio 批次使用 `axiom serve`，每行一個 request／response。
-
-## 舊資料與存取
-
-`import` 接受 v1 FPS 或 v2 世界，`export` 輸出 v2。開啟舊資料庫時，舊 revision 保持原文，另追加 `migrate:1->2`。對舊 revision 執行 undo，會轉換後追加 v2 恢復版本；不回退 SQLite 實體 schema。
-
-原始 v1 範例保留在 `assets/worlds/proving-ground.json`，用於遷移與回歸。可編輯的 v2 FPS 內容位於 `content/fps/world.json`；模型方塊、材質、競技場標記都存於內容資料。`content/fps/models.json` 是基準配方的模型來源；已載入世界的外觀以 world.json／資料庫中的 `fps.visuals` 為準。
-
-## 驗證
+## Testing
 
 ```powershell
 . .\scripts\env.ps1
 cargo fmt --all
-cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace
-cargo build --workspace --examples
-.\scripts\m0-smoke-test.ps1
-.\scripts\m1-smoke-test.ps1
-.\scripts\m15-smoke-test.ps1
-cargo build --release -p axiom -j1
-.\scripts\m2-smoke-test.ps1
-.\target\debug\axiom.exe --db data/scenario.sqlite scenario examples/fps-regression.scenario.json
+cargo test --workspace
+.\scripts\m1-smoke-test.ps1        # GPU screenshots, checkpoints, live bridge, ADV endings, FPS regression
 ```
 
-Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
+Smoke scripts write reports and screenshots to `artifacts/` and use isolated databases. `scripts/m2-stress-test.ps1` measures headless RTS simulation at 64/128/256 units using a release build. CPU measurements are kept separate from GPU screenshot checks, and the project makes no token, FPS or memory claims without a recorded measurement.
 
-M2 smoke 預設包含 M1.5 → M1 → M0，不必逐一重跑上述腳本。RTS 功能場景執行 7200 ticks：64 初始單位、32 友方全數群組抵達、採集交付、生產兩單位至 66。另驗證原生 64／128／256 單位畫面、即時命令與生產冪等重試。`artifacts/m2-validation.json` 保存完整證據，`artifacts/m2-*.png` 為截圖。
+## Documentation
 
-`scripts/m2-stress-test.ps1` 使用 release 執行檔，每個數量各 3 個新程序，先暖機 240 ticks、量測 2400 ticks；雙方全體接受週期群組命令，停用戰鬥維持人口，檢查資源／路徑／無重疊不變量。報告分開列出 step 分位數、命令、驗證與全程序記憶體，位於 `artifacts/m2-stress.json`。這是 headless CPU 模擬壓測；原生 GPU 畫面驗證另行記錄。
+- [Detailed user guide (zh-TW)](docs/user-guide.zh-TW.md): controls for every demo, saves, the live bridge and protocol details
+- [Scene editor](docs/scene-editor.zh-TW.md) · [Shaders](docs/shaders.zh-TW.md) · [Skeletal animation](docs/skeletal-animation.zh-TW.md) · [Effects Atlas](docs/effects-atlas.zh-TW.md)
+- [Action combat](docs/m3-action.zh-TW.md) · [Pack composition](docs/m4-composition.zh-TW.md) · [Shared combat](docs/shared-combat.zh-TW.md) · [RTS](docs/m2-implementation.md)
 
-```powershell
-.\target\debug\axiom.exe benchmark benchmarks/m15.json --output artifacts/m15-benchmark.json
-.\target\release\axiom.exe rts-stress --units 256 --ticks 2400 --output artifacts/rts-256.json
-```
+## Contributing
 
-AI benchmark 記錄 legacy／local 計畫的 request／response bytes、工具次數、失敗及驗收成功率；可接外部 JSONL agent adapter。未提供真實模型 usage 時 tokens 為 null，bytes 不代表 tokens，尚未宣稱真實 token 節省。
+Issues and pull requests are welcome. Please read [`AGENTS.md`](AGENTS.md) first. It sets the architectural rules (no Bevy, keep authoring and simulation separate, genre code stays in its own crate) and the validation every engine change must pass. It also applies to AI agents that contribute.
 
-GPU smoke 使用隱藏原生視窗，主動推進指定畫面幀數。`frame_ms_cpu` 包含提交、可能的呈現等待，以及擷取當幀的 GPU readback／PNG 寫入；它不代表純 CPU 或 GPU 執行時間。尚未宣稱 token、FPS 或 RAM 優勢。
+Do not commit third-party assets. Local databases and reference assets belong in the ignored `data/` directory.
 
-## 結構與目前範圍
+## License
 
-| 模組 | 職責 |
-|---|---|
-| axiom-core | World IR v2、型別／能力／系統註冊、世界編譯、交易、preview、版本與套件載入 |
-| axiom-fps | FPS schema、v1 adapter、相容指令與內容配方 |
-| axiom-rts | RTS schema、平面格網 A*、有界命令／路徑服務、經濟與生產、內容配方 |
-| axiom-runtime/world.rs | 固定步進、註冊系統、typed storage、generation IDs、狀態遷移、啟用狀態 |
-| axiom-runtime/presentation.rs／render.rs | 不可變呈現快照、獨立 GPU renderer、多相機 |
-| axiom-runtime/fps | FPS 原生控制／碰撞／戰鬥、模型呈現與 HUD |
-| axiom-runtime/rts.rs | RTS 能力註冊、平面射線輸入、typed storage 同步、動態實體及呈現抽取 |
-| axiom-core/gameplay.rs | 共用玩法／敘事／UI IR、型別與引用編譯、schema |
-| axiom-runtime/gameplay.rs／narrative.rs | 有界事件與敘事執行、trace、可達性探索 |
-| axiom-runtime/bound_ui.rs／checkpoint.rs | 綁定 UI、圖片準備及獨立存讀檔 |
-| content/* | 由相同執行檔載入的世界資料與能力宣告 |
-
-目前提供 FPS、ADV、RTS 與 Action 的資料／玩法閉環。M3 Action 使用 `axiom-action` 的 Ability IR 和純模擬，原生相機、輸入、骨架與音效整合由 runtime 註冊。新增物件、變數、事件、敘事分支、UI、單位參數、生產配方與技能時序可走資料；新增原生演算法仍需 Rust 建置。共用 `RuntimeCommand::Call` 依註冊能力派送，UI／scenario／loopback 共用相同命令，核心不依遊戲類型分支。FPS 與 Action HUD 由註冊模組提供原生 UI。
-
-RTS 使用四方向格網 A*、有界排隊／快取、格子預留與阻塞重排；預設每 4 ticks 處理導航決策，移動維持 120 Hz。這是小型策略原型，非完整 navmesh 或大型戰略 AI。格網熱編輯需重新開始；`max_units` 限制包含死亡單位的 resident slots，尚未回收屍體。完整能力與限制見 [M2 實作說明](docs/m2-implementation.md)。
-
-Collider 在核心是具型別資料；現有 FPS 模組執行角色碰撞與射線，並保留原型的固定膠囊尺寸、軸對齊掩體與單一主要 FPS 視圖限制。Action 使用有界地面的平面圓形角色與矩形阻擋。骨架資產可匯入 glTF／GLB；音效目前提供資料定義的合成 PCM cues。原生場景編輯器已可用。通用剛體、任意音訊檔匯入、任意腳本、多人網路與跨平台 bit-exact 重播仍屬後續工作。
-
-更多設計：[architecture.md](docs/architecture.md)、[M2 實作說明](docs/m2-implementation.md)、[M1.5 實作說明](docs/m15-implementation.md)、[M1 實作說明](docs/m1-implementation.md)、[M0 實作說明](docs/m0-implementation.md)、[後續路線圖](docs/ai-first-general-engine-roadmap.zh-TW.md)。
+[MIT](LICENSE) © Axiom Engine contributors. The Axiom logo in `assets/branding/` is part of the project's identity. Please don't use it to imply endorsement.

@@ -20,7 +20,7 @@ Shared behavior, narrative, and UI authoring types live in `axiom-core/src/gamep
 
 ## Engine changes
 
-Run `cargo fmt --all`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. For renderer changes, run the GPU smoke examples from README and inspect the generated screenshots. `scripts/m0-smoke-test.ps1` covers FPS, empty worlds, multiple cameras, content switching, and transactional edits with the same executable. Do not claim GPU timing or token efficiency improvements without measurement. Keep request errors recoverable and protocol output compact.
+Run `cargo fmt --all`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. For renderer changes, run the GPU smoke examples from `docs/user-guide.zh-TW.md` and inspect the generated screenshots. `scripts/m0-smoke-test.ps1` covers FPS, empty worlds, multiple cameras, content switching, and transactional edits with the same executable. Do not claim GPU timing or token efficiency improvements without measurement. Keep request errors recoverable and protocol output compact.
 
 `scripts/m1-smoke-test.ps1` includes M0 plus ADV endings, localization, image bindings, checkpoints, live commands, and data-only edits. Use isolated QA databases; preserve the user's default world and saves.
 
