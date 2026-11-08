@@ -1,5 +1,12 @@
 # WORKLOG
 
+## 2026-11-08 (night 2) — Claude (Opus 5.5) — RTS Frontier playable + polish
+
+**Done (pushed `8ba9d24`):** `content/rts` is now "Frontier" (generator `axiom-rts/src/frontier.rs`, export with `export_rts_pack frontier`): `rts.session.opponent` AI director, tower `attack`, `rts.attack.engage` (attack-move), depot-based victory, `approach()` cell spreading, shots/death presentation, health/production bars, minimap (`minimap: true`), `rts.camera`, `team_colors`. Core `ui.document.styles` + `chrome:"compact"`. Old 64-unit fixture = `content/rts-bench` (byte-identical to old pack); m2/animation/shader smoke and `build-m4-content.ps1` point there. `Play RTS.cmd` uses `data/frontier.sqlite`. 250 tests; m2(+M1.5/M1/M0), combat, m4 smoke PASS; release stress PASS.
+
+**Next:** user feedback on Frontier feel/difficulty (opponent knobs live in `rts.session.opponent`; scripted win at 4:08 in `tests/rts_frontier.rs`, `FRONTIER_TRACE=1` prints a 30 s timeline). Ideas: fog of war, upgrades, more production buildings, mascot units.
+
+**Gotchas added:** Smoke scripts were written for PowerShell 7; under 5.1 add `$null=$p.Handle` after `Start-Process -PassThru` and `Get-Content -Encoding utf8` before `ConvertFrom-Json` (fixed in m2/combat/m4; `build-m4-content.ps1` still needs pwsh because of `-AsHashtable`). `cargo test` stops at the first failing test binary; use `--no-fail-fast` to see all failures. `serde_json::to_value` of f32 differs from the written file (shortest f32 text); compare via a text round-trip. GPU/debug frame timings on this laptop swing 2–5x with other load; do not compare single runs. `gh` is not installed in PowerShell; query CI via the public API by `head_sha`.
 ## 2026-11-08 (late night) — Claude (Opus 5.5) — Axiom Town, HUD regions, collision
 
 **Done (pushed):** Axiom Town social demo (`content/axiom-town`, `Play Axiom Town.cmd`, `runtime.bindings`, FSM `wander/face/clip`, `ui.nameplate`). `9429b54`: `ui.document.regions` (anchored HUD), core `nav.blocker` (module `axiom_core::blocker`) shared by Action obstacles + FSM agents, agent separation, wander resampling. 242 tests, M1 smoke PASS.
