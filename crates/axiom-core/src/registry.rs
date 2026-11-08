@@ -1,0 +1,448 @@
+use crate::*;
+use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Diagnostic {
+    pub code: String,
+    pub path: String,
+    pub message: String,
+}
+impl Diagnostic {
+    pub fn error(
+        code: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            code: code.into(),
+            path: path.into(),
+            message: message.into(),
+        })
+    }
+}
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {}: {}", self.code, self.path, self.message)
+    }
+}
+impl std::error::Error for Diagnostic {}
+pub fn error_response(e: &anyhow::Error) -> Value {
+    let d = e
+        .downcast_ref::<Diagnostic>()
+        .cloned()
+        .unwrap_or_else(|| Diagnostic {
+            code: "invalid_request".into(),
+            path: "/".into(),
+            message: format!("{e:#}"),
+        });
+    json!({"ok":false,"error":format!("{e:#}"),"diagnostics":[d]})
+}
+pub type ValueValidator = fn(&Value) -> Result<()>;
+pub type WorldValidator = fn(&World) -> Result<()>;
+pub type Migrator = fn(Value) -> Result<World>;
+pub type EditHandler = fn(&mut World, &str, &Value) -> Result<bool>;
+pub type SummaryProvider = fn(&World) -> Value;
+pub type ResourceMerger = fn(&Value, &Value) -> Result<Value>;
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NativeEvent {
+    pub version: u32,
+    pub publisher: String,
+    pub fields: BTreeMap<String, crate::gameplay::ScalarType>,
+}
+#[derive(Clone)]
+pub struct TypeDescriptor {
+    pub capability: String,
+    pub schema: Value,
+    pub validate: ValueValidator,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SystemDescriptor {
+    pub id: String,
+    pub capability: String,
+    pub phase: u32,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub after: Vec<String>,
+}
+#[derive(Clone, Default)]
+pub struct Registry {
+    pub native_events: BTreeMap<String, NativeEvent>,
+    pub event_consumers: BTreeSet<String>,
+    pub resource_mergers: BTreeMap<String, ResourceMerger>,
+    pub actions: BTreeMap<String, TypeDescriptor>,
+    pub capabilities: BTreeMap<String, u32>,
+    pub components: BTreeMap<String, TypeDescriptor>,
+    pub resources: BTreeMap<String, TypeDescriptor>,
+    pub systems: BTreeMap<String, SystemDescriptor>,
+    pub topics: BTreeMap<String, Value>,
+    pub migrations: BTreeMap<u32, Migrator>,
+    pub world_validators: Vec<WorldValidator>,
+    pub package_resolvers: Vec<fn(&std::path::Path, &mut World) -> Result<()>>,
+    pub edit_handlers: Vec<EditHandler>,
+    pub summaries: Vec<SummaryProvider>,
+}
+impl Registry {
+    pub fn core() -> Self {
+        let mut r = Self::default();
+        for id in ["core", "render", "physics", "motion"] {
+            r.capabilities.insert(id.into(), 1);
+        }
+        fn typed<T: serde::de::DeserializeOwned>(v: &Value, f: fn(&T) -> Result<()>) -> Result<()> {
+            f(&serde_json::from_value(v.clone())?)
+        }
+        r.component(
+            "core.transform",
+            "core",
+            json!({"position":"vec3","rotation":"unit quaternion xyzw","scale":"positive vec3"}),
+            |v| typed(v, Transform::validate),
+        );
+        r.component(
+            "core.health",
+            "core",
+            json!({"value":"number >= 0","max":"number > 0"}),
+            |v| typed(v, Health::validate),
+        );
+        r.component(
+            "core.motion",
+            "motion",
+            json!({"velocity":"vec3","angular_velocity":"radians/second vec3"}),
+            |v| typed(v, Motion::validate),
+        );
+        r.component(
+            "render.mesh",
+            "render",
+            json!({"parts":"1..1024 cube parts: transform, color[3], emission, grid"}),
+            |v| typed(v, RenderMesh::validate),
+        );
+        r.component("render.camera","render",json!({"projection":"{kind:perspective,fov_degrees} | {kind:orthographic,height}","near":"positive number","far":"number > near","viewport":"normalized [x,y,width,height]","active":"bool"}),|v|typed(v,Camera::validate));
+        r.component(
+            "physics.collider",
+            "physics",
+            json!({"shape":"box + half_extents[3] | capsule + half_height, radius"}),
+            |v| typed(v, Collider::validate),
+        );
+        r.resource(
+            "render.settings",
+            "render",
+            json!({"accent":"rgb[3]","shadow_extent":"positive number"}),
+            |v| {
+                let s: RenderSettings = serde_json::from_value(v.clone())?;
+                ensure!(
+                    s.accent
+                        .iter()
+                        .all(|&v| v.is_finite() && (0.0..=1.0).contains(&v))
+                        && s.shadow_extent.is_finite()
+                        && (1.0..=1000.0).contains(&s.shadow_extent),
+                    "invalid render settings"
+                );
+                Ok(())
+            },
+        );
+        r.resource("input.bindings","core",json!({"axes":"action -> positive/negative key names","buttons":"action -> key name","capture_pointer":"bool"}),|v|{let b:InputBindings=serde_json::from_value(v.clone())?;ensure!(b.axes.len()+b.buttons.len()<=64,"input binding budget exceeded");ensure!(b.buttons.iter().all(|(k,v)|k.len()<=64&&v.len()<=64)&&b.axes.iter().all(|(k,v)|k.len()<=64&&v.positive.len()<=64&&v.negative.len()<=64),"invalid input binding");Ok(())});
+        r.systems.insert(
+            "motion.integrate".into(),
+            SystemDescriptor {
+                id: "motion.integrate".into(),
+                capability: "motion".into(),
+                phase: 10,
+                reads: vec!["core.motion".into()],
+                writes: vec!["core.transform".into()],
+                after: vec![],
+            },
+        );
+        crate::gameplay::register(&mut r);
+        r.resource_mergers.insert("input.bindings".into(), |a, b| {
+            crate::package::merge_resource(a, b, &["axes", "buttons"], &[])
+        });
+        r.topics.insert("packages".into(),json!({
+            "format_version":1,"content_version":"positive integer; dependency pins require exact equality",
+            "dependencies":"package ID -> {path,content_version,fingerprint?}; local paths stay inside the root package",
+            "exports":{"events":"ID -> {version,publisher,fields}","resources":"ID -> {version,owner}"},
+            "imports":{"events":"ID -> {package,version,consumer,fields}","resources":"ID -> {package,version,consumer}"},
+            "composition":"stable IDs must be unique; installed resource types opt into disjoint map/list merges",
+            "query":{"op":"query","scope":"packages"},"lock":"World.packages persists the resolved graph and source fingerprints",
+            "fingerprint":"FNV source identity covers manifest and World JSON, including the declared asset digest inventory",
+            "assets":"optional relative filename -> SHA-256; checked at import, 256 files, 32 MiB each, 128 MiB across the graph"
+        }));
+        r.topics
+            .insert("local".into(), crate::discovery::local_schema());
+        r.topics.insert(
+            "narrative.graph".into(),
+            crate::discovery::gameplay_schema(),
+        );
+        r.topics.insert("observe_delta".into(),json!({"op":"observe_delta","cursor":"optional opaque cursor from previous response","fields":"optional array of JSON pointers; default excludes timing noise and UI text","trace_limit":"0..128; optional recent trace records","max_bytes":"256..65536; default 8192","responses":"snapshot + reset reason, or changes + cursor; expired cursors reset explicitly"}));
+        r.topics.insert("editor".into(),json!({
+            "read":{"op":"scene_tree","query":{"parent":"optional immediate parent ID","roots_only":"optional; mutually exclusive with parent","scene":"optional scene ID","text":"optional label or ID substring","limit":"1..128, default 32","max_bytes":"256..65536, default 8192","cursor":"next_cursor from same revision and filters"}},
+            "inspect":{"op":"select","query":{"from":"entities","ids":["object-id"],"fields":["label","components/core.transform"]}},
+            "edits":[
+                {"kind":"reparent","entity":"object-id","parent":null,"keep_world":true},
+                {"kind":"duplicate_entity","source":"object-id","id":"new-id"},
+                {"kind":"delete_entity","id":"object-id"},
+                {"kind":"set_scene_membership","scene":"scene-id","entity":"object-id","member":true}
+            ],
+            "rules":["label is mutable; ID is stable","duplicate copies one entity, its parent and scene memberships","delete removes incident relations and memberships; children become roots with local transforms","keep_world can reject shear or out-of-range local TRS"],
+            "write":"Use preview or apply with expected_rev; use execute with a request ID for durable retries",
+            "observe":{"op":"observe_delta","fields":["/editor","/activation"]}
+        }));
+        r.topics.insert("execute".into(),json!({"op":"execute","request_id":"1..128 ASCII letters/digits/-_.:","runtime_session":"required for command/save/load; from observe.runtime_session","request":"one apply/undo/command/save/load; nesting prohibited","guarantees":{"apply_undo":"receipt and revision commit atomically in SQLite, durable across process restarts","runtime":"successful results cached for the host session; foreign sessions rejected; cache never silently evicts"},"failures":"failed operations do not reserve request_id; conflicting successful payloads rejected"}));
+        r
+    }
+    pub fn component(
+        &mut self,
+        id: &str,
+        capability: &str,
+        schema: Value,
+        validate: ValueValidator,
+    ) {
+        self.components.insert(
+            id.into(),
+            TypeDescriptor {
+                capability: capability.into(),
+                schema,
+                validate,
+            },
+        );
+    }
+    pub fn resource(
+        &mut self,
+        id: &str,
+        capability: &str,
+        schema: Value,
+        validate: ValueValidator,
+    ) {
+        self.resources.insert(
+            id.into(),
+            TypeDescriptor {
+                capability: capability.into(),
+                schema,
+                validate,
+            },
+        );
+    }
+    pub fn action(&mut self, id: &str, capability: &str, schema: Value, validate: ValueValidator) {
+        self.actions.insert(
+            id.into(),
+            TypeDescriptor {
+                capability: capability.into(),
+                schema,
+                validate,
+            },
+        );
+    }
+    pub fn decode(&self, v: Value) -> Result<World> {
+        let version = v
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .context("missing numeric schema_version")?;
+        if version == 2 {
+            Ok(serde_json::from_value(v)?)
+        } else if let Some(m) = self.migrations.get(&(version as u32)) {
+            m(v)
+        } else {
+            bail!("unsupported world schema version {version}; no migration installed")
+        }
+    }
+    pub fn validate_capabilities(&self, w: &World) -> Result<()> {
+        ensure!(
+            w.capabilities.get("core") == Some(&1),
+            "world requires core capability version 1"
+        );
+        for (id, v) in &w.capabilities {
+            if self.capabilities.get(id) != Some(v) {
+                return Err(Diagnostic::error(
+                    "missing_capability",
+                    format!("capabilities/{id}"),
+                    format!("version {v} not installed"),
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn require(w: &World, d: &TypeDescriptor) -> Result<()> {
+        ensure!(
+            w.capabilities.get(&d.capability) == Some(&1),
+            "component/resource requires capability {}",
+            d.capability
+        );
+        Ok(())
+    }
+    pub fn validate_components(
+        &self,
+        w: &World,
+        values: &Components,
+        ids: &BTreeMap<String, usize>,
+    ) -> Result<()> {
+        ensure!(values.len() <= 64, "component budget exceeded");
+        for (id, v) in values {
+            if let Some(d) = self.components.get(id) {
+                Self::require(w, d)?;
+                (d.validate)(v).with_context(|| id.clone())?;
+            } else if let Some(s) = w.component_schemas.get(id) {
+                s.validate(v, ids)?;
+            } else {
+                bail!("unregistered component {id}");
+            }
+        }
+        Ok(())
+    }
+    pub fn validate_resource(
+        &self,
+        w: &World,
+        id: &str,
+        v: &Value,
+        ids: &BTreeMap<String, usize>,
+    ) -> Result<()> {
+        if let Some(d) = self.resources.get(id) {
+            Self::require(w, d)?;
+            (d.validate)(v).with_context(|| format!("resources/{id}"))
+        } else if let Some(s) = w.resource_schemas.get(id) {
+            s.validate(v, ids)
+        } else {
+            bail!("unregistered resource {id}")
+        }
+    }
+    pub fn validate_world(&self, w: &World) -> Result<()> {
+        for f in &self.world_validators {
+            f(w)?;
+        }
+        if let Some(value) = w.resources.get("ui.document") {
+            let doc: crate::gameplay::UiDocument = serde_json::from_value(value.clone())?;
+            for widget in &doc.widgets {
+                if let crate::gameplay::Widget::Button {
+                    id,
+                    command:
+                        crate::gameplay::RuntimeCommand::Call {
+                            capability,
+                            action,
+                            args,
+                        },
+                    ..
+                } = widget
+                {
+                    let path = format!(
+                        "{}/command",
+                        crate::local::Target::Widget { id: id.clone() }.path()
+                    );
+                    let descriptor = self
+                        .actions
+                        .get(&format!("{capability}.{action}"))
+                        .ok_or_else(|| {
+                            Diagnostic::error("unknown_action", format!("{path}/action"), action)
+                        })?;
+                    if !w.capabilities.contains_key(capability) {
+                        return Err(Diagnostic::error(
+                            "missing_capability",
+                            format!("{path}/capability"),
+                            capability,
+                        ));
+                    }
+                    crate::local::at(&format!("{path}/args"), (descriptor.validate)(args))?;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn schedule(&self, w: &World) -> Result<Vec<SystemDescriptor>> {
+        let mut pending = BTreeMap::new();
+        for id in &w.systems {
+            let d = self
+                .systems
+                .get(id)
+                .with_context(|| format!("unregistered system {id}"))?;
+            ensure!(
+                w.capabilities.contains_key(&d.capability),
+                "system {id} requires {}",
+                d.capability
+            );
+            ensure!(
+                pending.insert(id.clone(), d.clone()).is_none(),
+                "duplicate system {id}"
+            );
+        }
+        for d in pending.values() {
+            for after in &d.after {
+                ensure!(
+                    pending.contains_key(after),
+                    "system {} requires scheduled dependency {after}",
+                    d.id
+                );
+            }
+        }
+        let mut out = vec![];
+        let mut done = BTreeSet::new();
+        while !pending.is_empty() {
+            let mut ready = pending
+                .values()
+                .filter(|d| d.after.iter().all(|id| done.contains(id)))
+                .cloned()
+                .collect::<Vec<_>>();
+            ready.sort_by(|a, b| (a.phase, &a.id).cmp(&(b.phase, &b.id)));
+            let d = ready.first().context("system dependency cycle")?.clone();
+            pending.remove(&d.id);
+            done.insert(d.id.clone());
+            out.push(d);
+        }
+        Ok(out)
+    }
+    pub fn schema(&self, topic: Option<&str>) -> Result<Value> {
+        match topic {
+            None => Ok(
+                json!({"engine":"axiom","protocol":2,"world_schema":2,"operations":["schema","discover","query","select","scene_tree","preview","apply","diff","verify","observe","observe_delta","execute","undo","history","command","save","load"],"runtime_operations":["command","save","load"],"capabilities":self.capabilities,"topics":["world","components","resources","systems","actions","events","edits","packages"],"components":self.components.keys().collect::<Vec<_>>(),"resources":self.resources.keys().collect::<Vec<_>>(),"actions":self.actions.keys().collect::<Vec<_>>(),"package_topics":self.topics.keys().collect::<Vec<_>>(),"limits":{"entities":MAX_ENTITIES,"instances":MAX_INSTANCES,"cameras":MAX_CAMERAS,"edits":256,"request_bytes":1048576}}),
+            ),
+            Some("world") => Ok(
+                json!({"example":World::empty("example"),"format":"strict schema v2; unknown fields rejected","entity":{"id":"box","prefab":null,"tags":[],"components":{"core.transform":{"position":[0,0,0]},"core.health":{"value":100,"max":100}}},"custom_schema_example":{"fields":{"active":{"ty":"bool"},"score":{"ty":"int","min":0}}},"scenes":"entities absent from scenes remain active"}),
+            ),
+            Some("components") => Ok(Value::Object(
+                self.components
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            json!({"capability":v.capability,"schema":v.schema}),
+                        )
+                    })
+                    .collect(),
+            )),
+            Some("resources") => Ok(Value::Object(
+                self.resources
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            json!({"capability":v.capability,"schema":v.schema}),
+                        )
+                    })
+                    .collect(),
+            )),
+            Some("systems") => Ok(json!({"systems":self.systems.values().collect::<Vec<_>>() })),
+            Some("events") => Ok(
+                json!({"native_events":self.native_events,"consumers":self.event_consumers,"delivery":"bounded batch at the fixed-step boundary; contracts are declared by packages"}),
+            ),
+            Some("actions") => Ok(Value::Object(
+                self.actions
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            json!({"capability":v.capability,"schema":v.schema}),
+                        )
+                    })
+                    .collect(),
+            )),
+            Some("edits") => Ok(
+                json!({"kinds":["set_field","put_object","remove_object","set","put_entity","remove_entity","reparent","duplicate_entity","delete_entity","set_scene_membership","set_component","remove_component","put_prefab","set_resource","remove_resource","define_component","define_resource","put_relation","remove_relation","put_scene","set_systems","replace_world"],"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
+            ),
+            Some(name) => self
+                .topics
+                .get(name)
+                .cloned()
+                .or_else(|| self.components.get(name).map(|d| d.schema.clone()))
+                .or_else(|| self.resources.get(name).map(|d| d.schema.clone()))
+                .or_else(|| self.actions.get(name).map(|d| d.schema.clone()))
+                .with_context(|| format!("unknown schema topic {name}")),
+        }
+    }
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "proving-ground",
+  "title": "PROVING GROUND",
+  "arena": { "half_size": 22.0, "wall_height": 5.0, "accent": [0.18, 0.93, 0.78] },
+  "player": { "spawn": [0.0, 0.9, 12.0], "health": 100.0, "speed": 5.8, "sprint_multiplier": 1.65, "jump_speed": 6.5 },
+  "weapon": { "damage": 34.0, "fire_interval": 0.13, "magazine": 30, "reload_seconds": 1.6, "range": 100.0 },
+  "enemies": { "count": 8, "health": 100.0, "speed": 1.8, "damage": 8.0 },
+  "behavior": {
+    "initial": "idle",
+    "attack_interval": 1.0,
+    "transitions": [
+      { "from": "idle", "to": "chase", "when": { "kind": "distance_below", "value": 38.0 } },
+      { "from": "chase", "to": "attack", "when": { "kind": "distance_below", "value": 1.8 } },
+      { "from": "attack", "to": "chase", "when": { "kind": "distance_above", "value": 2.4 } }
+    ]
+  },
+  "obstacles": [
+    { "id": "west-01", "position": [-6.0, 1.4, 3.0], "size": [3.0, 2.8, 5.0] },
+    { "id": "east-01", "position": [6.0, 1.4, 3.0], "size": [3.0, 2.8, 5.0] },
+    { "id": "west-02", "position": [-7.0, 1.0, -7.0], "size": [4.0, 2.0, 3.0] },
+    { "id": "east-02", "position": [7.0, 1.0, -7.0], "size": [4.0, 2.0, 3.0] },
+    { "id": "reactor", "position": [0.0, 1.6, -5.0], "size": [2.8, 3.2, 2.8] }
+  ]
+}

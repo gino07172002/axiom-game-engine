@@ -1,0 +1,46 @@
+{
+ "id":"m15-authoring-v1",
+ "tasks":[
+  {
+   "id":"fps-health","instruction":"Set enemy/0 current and maximum health to 200. Keep enemy count and other entities unchanged. Discover the API, make an atomic revision-checked edit, and verify it.","pack":"content/fps",
+   "checks":[{"kind":"field","target":{"kind":"entity","id":"enemy/0"},"field":"/components/core.health","value":{"value":200,"max":200}}],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"world"},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"entities","ids":["enemy/0"],"fields":["id","/components/core.health"]}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"verify"}
+    ]
+   }
+  },
+  {
+   "id":"adv-door","instruction":"Change workshop/open so the choice is visible only when has_key is true AND clues is at least 1. Preserve all three endings. Use stable IDs, an atomic revision-checked edit, and verification.","pack":"content/adv",
+   "checks":[
+    {"kind":"field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}},
+    {"kind":"scenario","file":"examples/adv-rescue.scenario.json"},
+    {"kind":"scenario","file":"examples/adv-departure.scenario.json"},
+    {"kind":"scenario","file":"examples/adv-stranded.scenario.json"}
+   ],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"resources"},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set","path":"/resources/narrative.graph/nodes/1/choices/1/when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set","path":"/resources/narrative.graph/nodes/1/choices/1/when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"choices","parent":"workshop","ids":["open"],"fields":["id","when","next"]}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"verify"}
+    ]
+   }
+  }
+ ]
+}

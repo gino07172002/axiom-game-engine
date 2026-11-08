@@ -1,0 +1,1 @@
+fn surface(s:SurfaceInput)->vec4<f32> {let l=normalize(vec3<f32>(-0.45,0.5,-0.8));let wrap=clamp((dot(s.normal,l)+s.params.x)/(1.0+s.params.x),0.0,1.0);let back=pow(max(dot(-s.normal,l),0.0),2.0)*s.params.y;let rim=pow(1.0-max(dot(s.normal,s.view_direction),0.0),3.0);return vec4<f32>(s.base_color.rgb*(0.15+wrap)+vec3<f32>(1.0,0.16,0.05)*(back+rim*0.2),s.base_color.a);}

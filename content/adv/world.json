@@ -1,0 +1,90 @@
+{
+  "schema_version":2,"id":"last-signal","title":"Last Signal / 最後的訊號",
+  "capabilities":{"core":1,"render":1,"behavior":1,"narrative":1,"ui":1,"save":1},
+  "systems":["behavior.execute"],
+  "entities":[
+    {"id":"character/cen","tags":["character","guide"],"components":{}},
+    {"id":"character/luo","tags":["character","engineer"],"components":{}},
+    {"id":"platform","components":{"core.transform":{"position":[0,-0.4,0],"scale":[14,0.5,12]},"render.mesh":{"parts":[{"color":[0.08,0.16,0.22],"grid":true}]}}},
+    {"id":"beacon","components":{"core.transform":{"position":[0,1,0],"scale":[0.4,3,0.4]},"render.mesh":{"parts":[{"color":[0.15,0.85,0.75],"emission":0.4}]}}},
+    {"id":"workbench","tags":["investigate"],"components":{"core.transform":{"position":[0,0,0],"scale":[6,0.6,3]},"render.mesh":{"parts":[{"color":[0.18,0.3,0.34],"grid":true}]}}},
+    {"id":"key-case","components":{"core.transform":{"position":[0,0.7,0],"scale":[0.7,0.3,0.7]},"render.mesh":{"parts":[{"color":[1,0.65,0.2],"emission":0.3}]}}},
+    {"id":"camera","components":{"core.transform":{"position":[0,5,12],"rotation":[-0.19509032,0,0,0.9807853]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":55},"near":0.1,"far":100,"viewport":[0,0,1,1],"active":true}}}
+  ],
+  "scenes":[
+    {"id":"platform","entities":["character/cen","platform","beacon"],"active":true},
+    {"id":"workshop","entities":["character/luo","workbench","key-case"],"active":false}
+  ],
+  "resources":{
+    "render.settings":{"accent":[0.25,0.85,0.8],"shadow_extent":20},
+    "input.bindings":{"buttons":{"inspect":"KeyE"},"axes":{},"capture_pointer":false},
+    "behavior.program":{
+      "variables":{"has_key":false,"clues":0,"helped":false,"at_workshop":false,"signal_received":false,"chapter":"arrival_label"},
+      "events":{"inspect":{"fields":{}},"key_found":{"fields":{"item":"text"}},"signal":{"fields":{}}},
+      "inputs":{"inspect":"inspect"},
+      "rules":[
+        {"id":"investigate-case","event":"inspect","when":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"at_workshop"},"right":{"kind":"literal","value":true}},{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":false}}]},"actions":[{"kind":"set","variable":"has_key","value":{"kind":"literal","value":true}},{"kind":"add","variable":"clues","value":{"kind":"literal","value":1}},{"kind":"emit","event":"key_found","fields":{"item":{"kind":"literal","value":"brass_key"}}}]},
+        {"id":"remember-key","event":"key_found","actions":[{"kind":"set","variable":"chapter","value":{"kind":"event","field":"item"}}]},
+        {"id":"receive-signal","event":"signal","actions":[{"kind":"set","variable":"signal_received","value":{"kind":"literal","value":true}}]}
+      ]
+    },
+    "narrative.graph":{
+      "start":"arrival","nodes":[
+        {"id":"arrival","speaker":"cen","text":"arrival","choices":[
+          {"id":"help","text":"help","actions":[{"kind":"set","variable":"helped","value":{"kind":"literal","value":true}},{"kind":"delay","ticks":6,"event":"signal"}],"next":"workshop"},
+          {"id":"refuse","text":"refuse","next":"departure"}
+        ]},
+        {"id":"workshop","speaker":"luo","text":"workshop","on_enter":[{"kind":"scene","scene":"workshop"},{"kind":"set","variable":"at_workshop","value":{"kind":"literal","value":true}}],"choices":[
+          {"id":"inspect","text":"inspect","when":{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":false}},"actions":[{"kind":"emit","event":"inspect"}],"next":"clue"},
+          {"id":"open","text":"open","when":{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},"next":"rescue"},
+          {"id":"wait","text":"wait","next":"stranded"}
+        ]},
+        {"id":"clue","speaker":"luo","text":"clue","choices":[{"id":"return","text":"return","next":"workshop"}]},
+        {"id":"rescue","speaker":"cen","text":"rescue","on_enter":[{"kind":"scene","scene":"platform"},{"kind":"set","variable":"at_workshop","value":{"kind":"literal","value":false}}],"ending":"rescue"},
+        {"id":"stranded","speaker":"luo","text":"stranded","on_enter":[{"kind":"set","variable":"at_workshop","value":{"kind":"literal","value":false}}],"ending":"stranded"},
+        {"id":"departure","speaker":"cen","text":"departure","ending":"departure"}
+      ]
+    },
+    "ui.document":{
+      "locale":"zh-TW",
+      "images":{"station":"assets/station.png"},
+      "catalogs":{
+        "zh-TW":{
+          "title":"最後的訊號 · LAST SIGNAL","cen":"岑 / 引路人","luo":"洛 / 工程師",
+          "arrival":"雨停了，月台的燈卻只剩最後一盞。岑將收音機遞給你：「工坊裡的洛還沒回來。你願意幫我找她嗎？」",
+          "help":"答應協助，前往工坊","refuse":"拒絕協助，獨自離開",
+          "workshop":"洛站在緊閉的控制室前：「發射器還能用，但門鎖住了。桌上的舊箱子也許有線索。」先調查，再決定要如何回應。",
+          "inspect":"調查桌上的舊箱子 [也可按 E]","open":"使用黃銅鑰匙，打開控制室","wait":"放棄搜尋，等待救援",
+          "clue":"箱底是一把黃銅鑰匙，還有一張寫著『別讓訊號熄滅』的紙條。洛鬆了一口氣：「這就是我們需要的東西。」",
+          "return":"收好鑰匙，回到控制室門前",
+          "rescue":"結局 01 · 回聲。你們打開控制室，讓求救訊號重新穿過雨幕。月台另一端，一道光回應了你們。",
+          "stranded":"結局 02 · 長夜。你們留在工坊等待，電池卻先耗盡了。這座車站，又安靜了一夜。",
+          "departure":"結局 03 · 獨行。你沿著鐵軌離開。身後的燈熄滅前，收音機傳來一句沒有說完的道別。",
+          "inventory":"調查進度 / 鑰匙只會取得一次","chapter":"目前線索：","arrival_label":"尚未取得線索","brass_key":"已取得：黃銅鑰匙"
+        },
+        "en":{
+          "title":"LAST SIGNAL","cen":"CEN / The guide","luo":"LUO / The engineer",
+          "arrival":"The rain has stopped. One platform light remains. Cen hands you a radio: 'Luo never came back from the workshop. Will you help me find her?'",
+          "help":"Help Cen. Go to the workshop.","refuse":"Refuse. Leave the station alone.",
+          "workshop":"Luo waits beside a locked control room. 'The transmitter still works, but we need the key. Try the old case on the bench.'",
+          "inspect":"Investigate the old case [or press E]","open":"Use the brass key. Open the control room.","wait":"Give up searching. Wait for rescue.",
+          "clue":"You find a brass key and a note: 'Keep the signal alive.' Luo smiles. 'That is exactly what we need.'","return":"Take the key. Return to the door.",
+          "rescue":"ENDING 01 / ECHO. The transmitter wakes. A light beyond the platform answers your signal.",
+          "stranded":"ENDING 02 / LONG NIGHT. You wait in the workshop. The battery dies before help arrives.",
+          "departure":"ENDING 03 / ALONE. You follow the rails. The radio falls silent halfway through a farewell.",
+          "inventory":"Investigation progress / The key can only be collected once","chapter":"Current clue:","arrival_label":"No clues collected yet","brass_key":"Collected: Brass key"
+        }
+      },
+      "widgets":[
+        {"kind":"image","id":"art","image":"station"},
+        {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
+        {"kind":"text","id":"speaker","binding":{"kind":"speaker"}},
+        {"kind":"text","id":"dialogue","binding":{"kind":"line"}},
+        {"kind":"text","id":"inventory","binding":{"kind":"key","id":"inventory"}},
+        {"kind":"progress","id":"progress","variable":"clues","max":1},
+        {"kind":"text","id":"chapter","binding":{"kind":"localized_variable","id":"chapter"}},
+        {"kind":"choices","id":"choices"}
+      ]
+    }
+  }
+}

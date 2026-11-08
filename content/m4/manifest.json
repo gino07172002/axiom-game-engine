@@ -1,0 +1,40 @@
+{
+  "capabilities": {
+    "render": 1,
+    "input": 1,
+    "combat": 1,
+    "core": 1
+  },
+  "content_version": 2,
+  "world": "world.json",
+  "exports": {
+    "events": {
+      "combat.hit": {
+        "version": 1,
+        "fields": {
+          "target": "text",
+          "source": "text",
+          "amount": "number"
+        },
+        "publisher": "combat.resolve"
+      },
+      "combat.defeated": {
+        "version": 1,
+        "fields": {
+          "faction": "int",
+          "source": "text",
+          "entity": "text"
+        },
+        "publisher": "combat.resolve"
+      }
+    }
+  },
+  "dependencies": {
+    "m4.quest": {
+      "path": "packs/quest",
+      "content_version": 1
+    }
+  },
+  "id": "m4.alliance",
+  "version": 1
+}

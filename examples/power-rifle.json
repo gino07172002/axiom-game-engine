@@ -1,0 +1,1 @@
+{"op":"apply","edits":[{"kind":"set","path":"weapon.damage","value":100},{"kind":"set","path":"weapon.magazine","value":40},{"kind":"set","path":"weapon.fire_interval","value":0.09}]}

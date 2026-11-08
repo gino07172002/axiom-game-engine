@@ -1,0 +1,40 @@
+{
+  "capabilities": {
+    "render": 1,
+    "audio": 1,
+    "animation": 1,
+    "core": 1,
+    "action": 1
+  },
+  "content_version": 1,
+  "world": "world.json",
+  "exports": {
+    "resources": {
+      "action.abilities": {
+        "version": 1,
+        "owner": "action.simulate"
+      }
+    },
+    "events": {
+      "action.defeated": {
+        "version": 1,
+        "fields": {
+          "entity": "text",
+          "faction": "int"
+        },
+        "publisher": "action.simulate"
+      },
+      "action.victory": {
+        "version": 1,
+        "fields": {},
+        "publisher": "action.simulate"
+      }
+    }
+  },
+  "id": "m4.hero",
+  "version": 1,
+  "assets": {
+    "fighter-alt.glb": "cbe571a1b792fe6e0496647f22a31c69ad31cfb6190d48ca9a6c0682c3d41487",
+    "fighter.glb": "459e04b7ebbea513c89fad7e98852b27aff398b730cb10a228f09c5f602621cc"
+  }
+}

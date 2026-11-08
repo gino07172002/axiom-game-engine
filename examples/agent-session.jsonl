@@ -1,0 +1,6 @@
+{"op":"schema"}
+{"op":"query"}
+{"op":"apply","expected_rev":1,"edits":[{"kind":"set","path":"enemies.count","value":12},{"kind":"set","path":"weapon.damage","value":50}]}
+{"op":"verify"}
+{"op":"query","scope":"entities","limit":3}
+{"op":"undo","rev":1,"expected_rev":2}

@@ -1,0 +1,15 @@
+[package]
+name = "axiom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axiom-core.workspace = true
+axiom-fps.workspace = true
+axiom-runtime.workspace = true
+axiom-animation.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+

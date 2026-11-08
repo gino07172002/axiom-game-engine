@@ -1,0 +1,11 @@
+{
+  "capabilities": {
+    "core": 1,
+    "fps": 1,
+    "physics": 1,
+    "render": 1
+  },
+  "id": "axiom.fps",
+  "version": 1,
+  "world": "world.json"
+}

@@ -1,0 +1,1 @@
+{"kind":"call","capability":"rts","action":"select_rect","args":{"min":[-40,-20],"max":[-10,5]}}

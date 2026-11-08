@@ -1,0 +1,4 @@
+fn height(uv:vec2<f32>)->f32 {let tile=uv*7.0;let row=floor(tile.y);let shifted=vec2<f32>(tile.x+fract(row*0.5),tile.y);let q=fract(shifted);let bevel=smoothstep(0.01,0.12,min(min(q.x,1.0-q.x),min(q.y,1.0-q.y)));return bevel*(0.65+0.2*sin(uv.x*43.0)*sin(uv.y*38.0));}
+
+fn vertex_offset(p:vec3<f32>,n:vec3<f32>,uv:vec2<f32>,time:f32,params:vec4<f32>)->vec3<f32> {if params.x<0.5 {return p+vec3<f32>(0.0,sin(p.x*4.0+time*params.z)*params.y,0.0);}if params.x<1.5 {return p+n*sin((p.x+p.y+p.z)*5.0+time*params.z)*params.y;}return p+n*height(uv)*params.y;}
+fn surface(s:SurfaceInput)->vec4<f32> {let n=normalize(cross(dpdx(s.world_position),dpdy(s.world_position)));let light=0.25+0.75*abs(dot(n,normalize(vec3<f32>(-0.4,0.8,0.5))));return vec4<f32>(s.base_color.rgb*light,s.base_color.a);}

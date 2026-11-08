@@ -1,0 +1,402 @@
+use crate::*;
+use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Request {
+    SceneTree {
+        #[serde(default)]
+        query: crate::scene_edit::TreeQuery,
+    },
+    Select {
+        query: crate::local::Selection,
+    },
+    Discover {
+        #[serde(default)]
+        topic: Option<String>,
+        #[serde(default)]
+        if_hash: Option<String>,
+    },
+    Diff {
+        from_rev: i64,
+        to_rev: i64,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ObserveDelta {
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default)]
+        fields: Vec<String>,
+        #[serde(default)]
+        trace_limit: usize,
+        #[serde(default)]
+        max_bytes: Option<usize>,
+    },
+    Execute {
+        request_id: String,
+        #[serde(default)]
+        runtime_session: Option<String>,
+        request: Box<Request>,
+    },
+    Command {
+        command: crate::gameplay::RuntimeCommand,
+        #[serde(default)]
+        expected_rev: Option<i64>,
+    },
+    Save {
+        slot: String,
+    },
+    Load {
+        slot: String,
+    },
+    Schema {
+        #[serde(default)]
+        topic: Option<String>,
+    },
+    Query {
+        #[serde(default)]
+        scope: Scope,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    Apply {
+        #[serde(default)]
+        expected_rev: Option<i64>,
+        edits: Vec<Edit>,
+    },
+    Preview {
+        #[serde(default)]
+        expected_rev: Option<i64>,
+        edits: Vec<Edit>,
+    },
+    Verify {},
+    Observe {},
+    Undo {
+        rev: i64,
+        #[serde(default)]
+        expected_rev: Option<i64>,
+    },
+    History {
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+}
+impl Request {
+    pub fn is_runtime(&self) -> bool {
+        if let Self::Execute { request, .. } = self {
+            return request.is_runtime();
+        }
+        matches!(
+            self,
+            Self::Command { .. } | Self::Save { .. } | Self::Load { .. }
+        )
+    }
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    Packages,
+    #[default]
+    Summary,
+    World,
+    Entities,
+    Behavior,
+    Components,
+    Resources,
+    Systems,
+}
+
+/// The wire envelope stays typed; unrecognized edit names are routed only to installed adapters.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Edit {
+    Core(CoreEdit),
+    Extension(Value),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CoreEdit {
+    Reparent {
+        entity: String,
+        parent: Option<String>,
+        #[serde(default)]
+        keep_world: bool,
+    },
+    DuplicateEntity {
+        source: String,
+        id: String,
+    },
+    DeleteEntity {
+        id: String,
+    },
+    SetSceneMembership {
+        scene: String,
+        entity: String,
+        member: bool,
+    },
+    SetField {
+        target: crate::local::Target,
+        field: String,
+        value: Value,
+    },
+    PutObject {
+        target: crate::local::Target,
+        value: Value,
+    },
+    RemoveObject {
+        target: crate::local::Target,
+    },
+    Set {
+        path: String,
+        value: Value,
+    },
+    PutEntity {
+        entity: Entity,
+    },
+    RemoveEntity {
+        id: String,
+    },
+    SetComponent {
+        entity: String,
+        component: String,
+        value: Value,
+    },
+    RemoveComponent {
+        entity: String,
+        component: String,
+    },
+    PutPrefab {
+        id: String,
+        prefab: Prefab,
+    },
+    SetResource {
+        id: String,
+        value: Value,
+    },
+    RemoveResource {
+        id: String,
+    },
+    DefineComponent {
+        id: String,
+        schema: RecordSchema,
+    },
+    DefineResource {
+        id: String,
+        schema: RecordSchema,
+    },
+    PutRelation {
+        relation: Relation,
+    },
+    RemoveRelation {
+        relation: Relation,
+    },
+    PutScene {
+        scene: Scene,
+    },
+    SetSystems {
+        systems: Vec<String>,
+    },
+    ReplaceWorld {
+        world: Value,
+    },
+}
+impl Edit {
+    pub fn set(path: impl Into<String>, value: Value) -> Self {
+        Self::Core(CoreEdit::Set {
+            path: path.into(),
+            value,
+        })
+    }
+    pub fn replace(world: World) -> Self {
+        Self::Core(CoreEdit::ReplaceWorld {
+            world: json!(world),
+        })
+    }
+    pub fn apply(self, w: &mut World, r: &Registry) -> Result<()> {
+        match self {
+            Self::Core(CoreEdit::Reparent {
+                entity,
+                parent,
+                keep_world,
+            }) => crate::scene_edit::reparent(w, &entity, parent.as_deref(), keep_world)?,
+            Self::Core(CoreEdit::DuplicateEntity { source, id }) => {
+                crate::scene_edit::duplicate(w, &source, id)?
+            }
+            Self::Core(CoreEdit::DeleteEntity { id }) => crate::scene_edit::delete(w, &id)?,
+            Self::Core(CoreEdit::SetSceneMembership {
+                scene,
+                entity,
+                member,
+            }) => crate::scene_edit::membership(w, &scene, &entity, member)?,
+            Self::Core(CoreEdit::SetField {
+                target,
+                field,
+                value,
+            }) => target.edit(w, Some(&field), Some(value))?,
+            Self::Core(CoreEdit::PutObject { target, value }) => {
+                target.edit(w, None, Some(value))?
+            }
+            Self::Core(CoreEdit::RemoveObject { target }) => target.edit(w, None, None)?,
+            Self::Core(CoreEdit::Set { path, value }) => {
+                if path == "id" || path == "title" || path.starts_with('/') {
+                    ensure!(
+                        path != "/schema_version" && path != "/id/schema_version",
+                        "schema version cannot be edited"
+                    );
+                    let mut doc = json!(&w);
+                    let pointer = if path.starts_with('/') {
+                        path.clone()
+                    } else {
+                        format!("/{path}")
+                    };
+                    *doc.pointer_mut(&pointer)
+                        .with_context(|| format!("unknown path {path}"))? = value;
+                    *w = serde_json::from_value(doc)?;
+                } else {
+                    let args = json!({"path":path,"value":value});
+                    ensure!(
+                        r.edit_handlers.iter().try_fold(false, |handled, f| Ok::<
+                            _,
+                            anyhow::Error,
+                        >(
+                            handled || f(w, "set", &args)?
+                        ))?,
+                        "unknown or non-editable path {path}"
+                    );
+                }
+            }
+            Self::Core(CoreEdit::PutEntity { entity }) => {
+                if let Some(old) = w.entity_mut(&entity.id) {
+                    *old = entity;
+                } else {
+                    w.entities.push(entity);
+                }
+            }
+            Self::Core(CoreEdit::RemoveEntity { id }) => {
+                let before = w.entities.len();
+                w.entities.retain(|e| e.id != id);
+                ensure!(before != w.entities.len(), "entity not found {id}");
+            }
+            Self::Core(CoreEdit::SetComponent {
+                entity,
+                component,
+                value,
+            }) => {
+                w.entity_mut(&entity)
+                    .context("entity not found")?
+                    .components
+                    .insert(component, value);
+            }
+            Self::Core(CoreEdit::RemoveComponent { entity, component }) => {
+                ensure!(
+                    w.entity_mut(&entity)
+                        .context("entity not found")?
+                        .components
+                        .remove(&component)
+                        .is_some(),
+                    "component not found"
+                );
+            }
+            Self::Core(CoreEdit::PutPrefab { id, prefab }) => {
+                w.prefabs.insert(id, prefab);
+            }
+            Self::Core(CoreEdit::SetResource { id, value }) => {
+                w.resources.insert(id, value);
+            }
+            Self::Core(CoreEdit::RemoveResource { id }) => {
+                ensure!(w.resources.remove(&id).is_some(), "resource not found");
+            }
+            Self::Core(CoreEdit::DefineComponent { id, schema }) => {
+                w.component_schemas.insert(id, schema);
+            }
+            Self::Core(CoreEdit::DefineResource { id, schema }) => {
+                w.resource_schemas.insert(id, schema);
+            }
+            Self::Core(CoreEdit::PutRelation { relation }) => {
+                if !w.relations.contains(&relation) {
+                    w.relations.push(relation);
+                }
+            }
+            Self::Core(CoreEdit::RemoveRelation { relation }) => {
+                let n = w.relations.len();
+                w.relations.retain(|r| r != &relation);
+                ensure!(w.relations.len() != n, "relation not found");
+            }
+            Self::Core(CoreEdit::PutScene { scene }) => {
+                if let Some(old) = w.scenes.iter_mut().find(|s| s.id == scene.id) {
+                    *old = scene;
+                } else {
+                    w.scenes.push(scene);
+                }
+            }
+            Self::Core(CoreEdit::SetSystems { systems }) => w.systems = systems,
+            Self::Core(CoreEdit::ReplaceWorld { world }) => *w = r.decode(world)?,
+            Self::Extension(mut v) => {
+                let name = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .context("edit requires a kind")?
+                    .to_owned();
+                ensure!(
+                    ![
+                        "set",
+                        "set_field",
+                        "put_object",
+                        "remove_object",
+                        "put_entity",
+                        "remove_entity",
+                        "reparent",
+                        "duplicate_entity",
+                        "delete_entity",
+                        "set_scene_membership",
+                        "set_component",
+                        "remove_component",
+                        "put_prefab",
+                        "set_resource",
+                        "remove_resource",
+                        "define_component",
+                        "define_resource",
+                        "put_relation",
+                        "remove_relation",
+                        "put_scene",
+                        "set_systems",
+                        "replace_world"
+                    ]
+                    .contains(&name.as_str()),
+                    "invalid fields or types for edit {name}"
+                );
+                v.as_object_mut()
+                    .context("edit must be object")?
+                    .remove("kind");
+                let mut handled = false;
+                for f in &r.edit_handlers {
+                    if f(w, &name, &v)? {
+                        handled = true;
+                        break;
+                    }
+                }
+                ensure!(handled, "unregistered edit {name}");
+            }
+        }
+        Ok(())
+    }
+}
+pub fn parse_request(text: &str) -> Result<Request> {
+    if text.len() > 1_048_576 {
+        bail!("request exceeds 1 MiB");
+    }
+    let value: Value = serde_json::from_str(text)
+        .map_err(|e| Diagnostic::error("invalid_json", "/", e.to_string()))?;
+    if let Some(request) = value.get("request") {
+        ensure!(
+            request.get("op").and_then(Value::as_str) != Some("execute"),
+            "nested execute envelope is not allowed"
+        );
+    }
+    serde_json::from_value(value)
+        .map_err(|e| Diagnostic::error("invalid_request", "/", e.to_string()))
+}

@@ -1,0 +1,53 @@
+{
+  "id":"m4-composition-authoring-v1",
+  "tasks":[
+    {
+      "id":"hero-cancel-window",
+      "instruction":"In the composed M4 level, allow slash2 to cancel to roll at tick 25. Keep its end tick 70. Use a revision-checked edit and verify the joint RTS, Action and ADV scenario.",
+      "pack":"content/m4",
+      "checks":[
+        {"kind":"field","target":{"kind":"resource","id":"action.abilities"},"field":"/abilities/slash2/dodge_window","value":{"start":25,"end":70}},
+        {"kind":"scenario","file":"examples/m4-joint.scenario.json"}
+      ],
+      "plans":{
+        "legacy":[
+          {"op":"query","scope":"world"},
+          {"op":"preview","expected_rev":1,"edits":[{"kind":"set","path":"/resources/action.abilities/abilities/slash2/dodge_window","value":{"start":25,"end":70}}]},
+          {"op":"apply","expected_rev":1,"edits":[{"kind":"set","path":"/resources/action.abilities/abilities/slash2/dodge_window","value":{"start":25,"end":70}}]},
+          {"op":"verify"}
+        ],
+        "local":[
+          {"op":"select","query":{"from":"resources","ids":["action.abilities"],"fields":["/abilities/slash2/dodge_window"]}},
+          {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"resource","id":"action.abilities"},"field":"/abilities/slash2/dodge_window","value":{"start":25,"end":70}}]},
+          {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"resource","id":"action.abilities"},"field":"/abilities/slash2/dodge_window","value":{"start":25,"end":70}}]},
+          {"op":"verify"}
+        ]
+      }
+    },
+    {
+      "id":"mission-supply-condition",
+      "instruction":"Change both quest.complete and quest.active/assault to require 4 delivered supplies. Preserve other conditions and the imported event contracts, then verify the joint scenario.",
+      "pack":"content/m4",
+      "checks":[
+        {"kind":"field","target":{"kind":"rule","id":"quest.complete"},"field":"/when/conditions/1/right/value","value":4},
+        {"kind":"field","target":{"kind":"choice","node":"quest.active","id":"assault"},"field":"/when/right/value","value":4},
+        {"kind":"scenario","file":"examples/m4-joint.scenario.json"}
+      ],
+      "plans":{
+        "legacy":[
+          {"op":"query","scope":"world"},
+          {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"rule","id":"quest.complete"},"field":"/when/conditions/1/right/value","value":4},{"kind":"set_field","target":{"kind":"choice","node":"quest.active","id":"assault"},"field":"/when/right/value","value":4}]},
+          {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"rule","id":"quest.complete"},"field":"/when/conditions/1/right/value","value":4},{"kind":"set_field","target":{"kind":"choice","node":"quest.active","id":"assault"},"field":"/when/right/value","value":4}]},
+          {"op":"verify"}
+        ],
+        "local":[
+          {"op":"select","query":{"from":"rules","ids":["quest.complete"],"fields":["/when"]}},
+          {"op":"select","query":{"from":"choices","parent":"quest.active","ids":["assault"],"fields":["/when"]}},
+          {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"rule","id":"quest.complete"},"field":"/when/conditions/1/right/value","value":4},{"kind":"set_field","target":{"kind":"choice","node":"quest.active","id":"assault"},"field":"/when/right/value","value":4}]},
+          {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"rule","id":"quest.complete"},"field":"/when/conditions/1/right/value","value":4},{"kind":"set_field","target":{"kind":"choice","node":"quest.active","id":"assault"},"field":"/when/right/value","value":4}]},
+          {"op":"verify"}
+        ]
+      }
+    }
+  ]
+}

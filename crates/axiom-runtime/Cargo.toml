@@ -1,0 +1,28 @@
+[package]
+name = "axiom-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axiom-combat.workspace = true
+axiom-core.workspace = true
+axiom-fps.workspace = true
+axiom-rts.workspace = true
+axiom-action.workspace = true
+axiom-animation.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+glam.workspace = true
+rapier3d = { version = "0.23", features = ["simd-stable"] }
+wgpu = "24"
+naga = { version = "24", features = ["wgsl-in"] }
+winit = "0.30"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.17"
+

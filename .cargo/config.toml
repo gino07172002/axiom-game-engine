@@ -1,0 +1,3 @@
+[build]
+# Leave memory available for the desktop, especially when compiling wgpu on Windows.
+jobs = 2

@@ -1,0 +1,26 @@
+{
+  "ticks":900,
+  "commands":[
+    {"tick":0,"operation":{"op":"command","command":{"kind":"choose","node":"quest.arrival","choice":"accept"}}},
+    {"tick":1,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"gather","args":{"units":["squad/worker/0","squad/worker/1","squad/worker/2","squad/worker/3"],"target":"squad/ore"}}}},
+    {"tick":2,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"train","args":{"building":"squad/base","recipe":"soldier","count":1}}}},
+    {"tick":600,"operation":{"op":"assert","assertion":{"kind":"metric","name":"/gameplay/variables/quest.supplies","min":8,"max":160}}},
+    {"tick":600,"operation":{"op":"command","command":{"kind":"choose","node":"quest.active","choice":"assault"}}},
+    {"tick":600,"operation":{"op":"command","command":{"kind":"call","capability":"input","action":"activate","args":{"context":"hero"}}}},
+    {"tick":601,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"lock","args":{}}}},
+    {"tick":602,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}},
+    {"tick":636,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}},
+    {"tick":672,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}}
+  ],
+  "assertions":[
+    {"kind":"equals","pointer":"/gameplay/ending","value":"joined_victory"},
+    {"kind":"equals","pointer":"/gameplay/variables/quest.completed","value":true},
+    {"kind":"equals","pointer":"/gameplay/variables/quest.trained","value":1},
+    {"kind":"equals","pointer":"/action/victory","value":true},
+    {"kind":"equals","pointer":"/input/context","value":"hero"},
+    {"kind":"equals","pointer":"/events/error","value":null},
+    {"kind":"metric","name":"/events/delivered","min":4,"max":128},
+    {"kind":"equals","pointer":"/rts/summary/units_total","value":7},
+    {"kind":"finite"}
+  ]
+}

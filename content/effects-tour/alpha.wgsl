@@ -1,0 +1,1 @@
+fn surface(s:SurfaceInput)->vec4<f32> {let uv=s.uv*8.0;let d=length(fract(uv)-vec2<f32>(0.5));let a=1.0-smoothstep(s.params.x,s.params.x+0.08,d);return vec4<f32>(s.base_color.rgb*(0.4+0.6*s.diffuse),a*s.base_color.a);}

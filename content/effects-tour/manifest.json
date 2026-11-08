@@ -1,0 +1,30 @@
+{
+  "id": "axiom.effects-atlas",
+  "version": 1,
+  "content_version": 1,
+  "world": "world.json",
+  "capabilities": {
+    "core": 1,
+    "render": 1,
+    "shader": 1,
+    "vfx": 1,
+    "postfx": 1,
+    "showcase": 1,
+    "motion": 1,
+    "animation": 1
+  },
+  "assets": {
+    "alpha.wgsl": "567552dc763bbc609c79073dffa4c4c8f7b6b3a0c733141dac5712c7e86c5f78",
+    "animated.wgsl": "bdff737bf9b35be019810ad7d56fcb7f7f4f5bc45a7b97ace8ac0633a126d215",
+    "diagnostic.wgsl": "ec7f440d470c2fd9f6f23350205532d67dbc5cb812ef179e10aba80f93921b7b",
+    "emissive.wgsl": "d2efcc5a2e437275b3081fb639257b4e6d6bd5967d27c9c8e8792e5842d65e0b",
+    "fighter.glb": "459e04b7ebbea513c89fad7e98852b27aff398b730cb10a228f09c5f602621cc",
+    "inventory.json": "ec9f5033a845c87274e2f62b174483bae963563130933394d2bcc0272fe5e891",
+    "layers.wgsl": "87a0aaea6f9af8e94cc29da5ed4930c0c852f9f16467c7ddb5316245c07af9c7",
+    "pbr.wgsl": "48daa8426c71990463f2001f6bd85233c479a463e0ff03928b071630dd5b537c",
+    "relief.wgsl": "13ef15f834ca1fc9f3cb2df31b39570c097174de5fab3cd3d75258a79da5c303",
+    "subsurface.wgsl": "be963c331c75b676b4814a2cf5853e7bc3439c9f711a1e7209e7ebe55d02483f",
+    "vertex.wgsl": "73e65ffad9fedad708cbdeba1477868667b4869e1866a6655591d2d8d9c440e0",
+    "wire.wgsl": "474786e27f96001d1df280d22d9e474622261033e9571bfc9cf8f3a205afe06b"
+  }
+}

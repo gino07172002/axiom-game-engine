@@ -1,0 +1,525 @@
+{
+  "schema_version": 2,
+  "id": "animation-lab",
+  "title": "Animation Lab / Retarget + Twist + IK",
+  "capabilities": {
+    "animation": 1,
+    "behavior": 1,
+    "core": 1,
+    "render": 1,
+    "ui": 1
+  },
+  "component_schemas": {},
+  "resource_schemas": {},
+  "entities": [
+    {
+      "id": "character",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "animation.player": {
+          "asset": "character",
+          "clip": "rigify_wave",
+          "debug_skeleton": false,
+          "ik": {
+            "left_hand": {
+              "end": "DEF-hand.L",
+              "end_rotation": null,
+              "middle": "DEF-forearm.L",
+              "pole": [
+                0.6593999862670898,
+                1.0060994625091553,
+                0.45079994201660156
+              ],
+              "root": "DEF-upper_arm.L",
+              "target": [
+                0.5794000029563904,
+                1.3860995769500732,
+                0.08079993724822998
+              ],
+              "weight": 0.0
+            }
+          },
+          "looping": true,
+          "playing": true,
+          "retarget": null,
+          "skinning": "auto",
+          "speed": 1.0,
+          "twists": {}
+        },
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            -0.03999999910593033,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            7.0,
+            0.03999999910593033,
+            4.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.11999999731779099,
+                0.17000000178813934,
+                0.20000000298023224
+              ],
+              "emission": 0.0,
+              "grid": true,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "camera",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            1.28000009059906,
+            4.199999809265137
+          ],
+          "rotation": [
+            -0.05803817883133888,
+            0.0,
+            0.0,
+            0.9983144402503967
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.camera": {
+          "active": true,
+          "far": 180.0,
+          "near": 0.03999999910593033,
+          "projection": {
+            "height": 3.25,
+            "kind": "orthographic"
+          },
+          "viewport": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    }
+  ],
+  "prefabs": {},
+  "resources": {
+    "animation.library": {
+      "assets": {
+        "character": {
+          "external": false,
+          "options": {
+            "coordinates": null,
+            "strict": false
+          },
+          "path": "rigify.glb"
+        }
+      },
+      "clips": {
+        "gentle": {
+          "duration": 2.0,
+          "id": "gentle",
+          "tracks": [
+            {
+              "bone": "DEF-upper_arm.L",
+              "interpolation": "linear",
+              "property": "rotation",
+              "times": [
+                0.0,
+                1.0,
+                2.0
+              ],
+              "values": [
+                [
+                  -0.039602428674697876,
+                  -0.14788681268692017,
+                  0.8563054203987122,
+                  -0.49325671792030334
+                ],
+                [
+                  -0.07495906949043274,
+                  -0.13349157571792603,
+                  0.7076513171195984,
+                  -0.6897759437561035
+                ],
+                [
+                  -0.039602428674697876,
+                  -0.14788681268692017,
+                  0.8563054203987122,
+                  -0.49325671792030334
+                ]
+              ]
+            },
+            {
+              "bone": "DEF-forearm.L",
+              "interpolation": "linear",
+              "property": "rotation",
+              "times": [
+                0.0,
+                1.0,
+                2.0
+              ],
+              "values": [
+                [
+                  0.18627071380615234,
+                  -7.109343869160512E-08,
+                  -3.2892563694986166E-07,
+                  0.9824985265731812
+                ],
+                [
+                  0.18255776166915894,
+                  0.19519224762916565,
+                  0.0370059534907341,
+                  0.962913990020752
+                ],
+                [
+                  0.18627071380615234,
+                  -7.109343869160512E-08,
+                  -3.2892563694986166E-07,
+                  0.9824985265731812
+                ]
+              ]
+            }
+          ]
+        },
+        "wave": {
+          "duration": 2.0,
+          "id": "wave",
+          "tracks": [
+            {
+              "bone": "DEF-upper_arm.L",
+              "interpolation": "linear",
+              "property": "rotation",
+              "times": [
+                0.0,
+                1.0,
+                2.0
+              ],
+              "values": [
+                [
+                  -0.039602428674697876,
+                  -0.14788681268692017,
+                  0.8563054203987122,
+                  -0.49325671792030334
+                ],
+                [
+                  -0.07495906949043274,
+                  -0.13349157571792603,
+                  0.7076513171195984,
+                  -0.6897759437561035
+                ],
+                [
+                  -0.039602428674697876,
+                  -0.14788681268692017,
+                  0.8563054203987122,
+                  -0.49325671792030334
+                ]
+              ]
+            },
+            {
+              "bone": "DEF-forearm.L",
+              "interpolation": "linear",
+              "property": "rotation",
+              "times": [
+                0.0,
+                1.0,
+                2.0
+              ],
+              "values": [
+                [
+                  0.18627071380615234,
+                  -7.109343869160512E-08,
+                  -3.2892563694986166E-07,
+                  0.9824985265731812
+                ],
+                [
+                  0.1424679160118103,
+                  0.6329428553581238,
+                  0.11999863386154175,
+                  0.7514563798904419
+                ],
+                [
+                  0.18627071380615234,
+                  -7.109343869160512E-08,
+                  -3.2892563694986166E-07,
+                  0.9824985265731812
+                ]
+              ]
+            }
+          ]
+        }
+      },
+      "profiles": {
+        "target": {
+          "mapping": {
+            "Chest": "DEF-spine.002",
+            "Head": "DEF-spine.006",
+            "Hips": "DEF-spine",
+            "LeftFoot": "DEF-foot.L",
+            "LeftHand": "DEF-hand.L",
+            "LeftIndexDistal": "DEF-f_index.03.L",
+            "LeftIndexIntermediate": "DEF-f_index.02.L",
+            "LeftIndexProximal": "DEF-f_index.01.L",
+            "LeftLittleDistal": "DEF-f_pinky.03.L",
+            "LeftLittleIntermediate": "DEF-f_pinky.02.L",
+            "LeftLittleProximal": "DEF-f_pinky.01.L",
+            "LeftLowerArm": "DEF-forearm.L",
+            "LeftLowerLeg": "DEF-shin.L",
+            "LeftMiddleDistal": "DEF-f_middle.03.L",
+            "LeftMiddleIntermediate": "DEF-f_middle.02.L",
+            "LeftMiddleProximal": "DEF-f_middle.01.L",
+            "LeftRingDistal": "DEF-f_ring.03.L",
+            "LeftRingIntermediate": "DEF-f_ring.02.L",
+            "LeftRingProximal": "DEF-f_ring.01.L",
+            "LeftShoulder": "DEF-shoulder.L",
+            "LeftThumbDistal": "DEF-thumb.03.L",
+            "LeftThumbIntermediate": "DEF-thumb.02.L",
+            "LeftThumbProximal": "DEF-thumb.01.L",
+            "LeftToes": "DEF-toe.L",
+            "LeftUpperArm": "DEF-upper_arm.L",
+            "LeftUpperLeg": "DEF-thigh.L",
+            "Neck": "DEF-spine.004",
+            "RightFoot": "DEF-foot.R",
+            "RightHand": "DEF-hand.R",
+            "RightIndexDistal": "DEF-f_index.03.R",
+            "RightIndexIntermediate": "DEF-f_index.02.R",
+            "RightIndexProximal": "DEF-f_index.01.R",
+            "RightLittleDistal": "DEF-f_pinky.03.R",
+            "RightLittleIntermediate": "DEF-f_pinky.02.R",
+            "RightLittleProximal": "DEF-f_pinky.01.R",
+            "RightLowerArm": "DEF-forearm.R",
+            "RightLowerLeg": "DEF-shin.R",
+            "RightMiddleDistal": "DEF-f_middle.03.R",
+            "RightMiddleIntermediate": "DEF-f_middle.02.R",
+            "RightMiddleProximal": "DEF-f_middle.01.R",
+            "RightRingDistal": "DEF-f_ring.03.R",
+            "RightRingIntermediate": "DEF-f_ring.02.R",
+            "RightRingProximal": "DEF-f_ring.01.R",
+            "RightShoulder": "DEF-shoulder.R",
+            "RightThumbDistal": "DEF-thumb.03.R",
+            "RightThumbIntermediate": "DEF-thumb.02.R",
+            "RightThumbProximal": "DEF-thumb.01.R",
+            "RightToes": "DEF-toe.R",
+            "RightUpperArm": "DEF-upper_arm.R",
+            "RightUpperLeg": "DEF-thigh.R",
+            "Spine": "DEF-spine.001",
+            "UpperChest": "DEF-spine.003"
+          },
+          "reference": {}
+        }
+      }
+    },
+    "behavior.program": {
+      "variables": {}
+    },
+    "input.bindings": {
+      "axes": {},
+      "buttons": {},
+      "capture_pointer": false
+    },
+    "ui.document": {
+      "catalogs": {
+        "zh-TW": {
+          "freeze": "Pose 0.5s",
+          "gentle": "Blend",
+          "hint": "Rigify / Humanoid retarget → Twist correction → Two-bone IK → Skinning",
+          "ik-off": "IK OFF",
+          "ik-on": "IK ON",
+          "source-clip": "Imported clip",
+          "title": "ANIMATION LAB / 骨架動畫",
+          "wave": "Wave"
+        }
+      },
+      "flow": true,
+      "images": {},
+      "locale": "zh-TW",
+      "session_controls": false,
+      "widgets": [
+        {
+          "binding": {
+            "id": "title",
+            "kind": "key"
+          },
+          "id": "title",
+          "kind": "text"
+        },
+        {
+          "command": {
+            "action": "play",
+            "args": {
+              "clip": "wave",
+              "entity": "character",
+              "fade_seconds": 0.2
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "wave",
+          "kind": "button",
+          "text": "wave"
+        },
+        {
+          "command": {
+            "action": "play",
+            "args": {
+              "clip": "gentle",
+              "entity": "character",
+              "fade_seconds": 0.4
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "gentle",
+          "kind": "button",
+          "text": "gentle"
+        },
+        {
+          "command": {
+            "action": "seek",
+            "args": {
+              "entity": "character",
+              "paused": true,
+              "seconds": 0.5
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "freeze",
+          "kind": "button",
+          "text": "freeze"
+        },
+        {
+          "command": {
+            "action": "ik",
+            "args": {
+              "entity": "character",
+              "id": "left_hand",
+              "target": [
+                0.5794000029563904,
+                1.3860995769500732,
+                0.08079993724822998
+              ],
+              "weight": 1.0
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "ik-on",
+          "kind": "button",
+          "text": "ik-on"
+        },
+        {
+          "command": {
+            "action": "ik",
+            "args": {
+              "entity": "character",
+              "id": "left_hand",
+              "target": [
+                0.5794000029563904,
+                1.3860995769500732,
+                0.08079993724822998
+              ],
+              "weight": 0.0
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "ik-off",
+          "kind": "button",
+          "text": "ik-off"
+        },
+        {
+          "command": {
+            "action": "play",
+            "args": {
+              "clip": "rigify_wave",
+              "entity": "character",
+              "fade_seconds": 0.2
+            },
+            "capability": "animation",
+            "kind": "call"
+          },
+          "id": "source-clip",
+          "kind": "button",
+          "text": "source-clip"
+        },
+        {
+          "binding": {
+            "id": "hint",
+            "kind": "key"
+          },
+          "id": "hint",
+          "kind": "text"
+        }
+      ]
+    }
+  },
+  "relations": [],
+  "scenes": [],
+  "systems": [
+    "behavior.execute",
+    "animation.evaluate"
+  ]
+}

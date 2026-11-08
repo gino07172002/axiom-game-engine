@@ -1,0 +1,396 @@
+{
+  "systems": [
+    "behavior.execute"
+  ],
+  "capabilities": {
+    "behavior": 1,
+    "ui": 1,
+    "core": 1,
+    "narrative": 1
+  },
+  "resources": {
+    "behavior.program": {
+      "variables": {
+        "quest.accepted": false,
+        "quest.trained": 0,
+        "quest.boss_down": false,
+        "quest.completed": false,
+        "quest.supplies": 0
+      },
+      "rules": [
+        {
+          "actions": [
+            {
+              "kind": "add",
+              "variable": "quest.supplies",
+              "value": {
+                "kind": "event",
+                "field": "amount"
+              }
+            },
+            {
+              "kind": "emit",
+              "event": "quest.check"
+            }
+          ],
+          "when": {
+            "kind": "eq",
+            "left": {
+              "kind": "event",
+              "field": "faction"
+            },
+            "right": {
+              "kind": "literal",
+              "value": 0
+            }
+          },
+          "event": "rts.delivered",
+          "id": "quest.delivery"
+        },
+        {
+          "actions": [
+            {
+              "kind": "add",
+              "variable": "quest.trained",
+              "value": {
+                "kind": "literal",
+                "value": 1
+              }
+            }
+          ],
+          "event": "rts.produced",
+          "id": "quest.production"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "variable": "quest.boss_down",
+              "value": {
+                "kind": "literal",
+                "value": true
+              }
+            },
+            {
+              "kind": "emit",
+              "event": "quest.check"
+            }
+          ],
+          "event": "action.victory",
+          "id": "quest.boss"
+        },
+        {
+          "actions": [
+            {
+              "node": "quest.failed",
+              "kind": "go_to"
+            }
+          ],
+          "when": {
+            "kind": "eq",
+            "left": {
+              "kind": "event",
+              "field": "entity"
+            },
+            "right": {
+              "kind": "literal",
+              "value": "hero"
+            }
+          },
+          "event": "action.defeated",
+          "id": "quest.hero_fell"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "variable": "quest.completed",
+              "value": {
+                "kind": "literal",
+                "value": true
+              }
+            },
+            {
+              "node": "quest.reward",
+              "kind": "go_to"
+            }
+          ],
+          "when": {
+            "conditions": [
+              {
+                "kind": "eq",
+                "left": {
+                  "id": "quest.accepted",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": true
+                }
+              },
+              {
+                "kind": "ge",
+                "left": {
+                  "id": "quest.supplies",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": 8
+                }
+              },
+              {
+                "kind": "eq",
+                "left": {
+                  "id": "quest.boss_down",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": true
+                }
+              },
+              {
+                "kind": "eq",
+                "left": {
+                  "id": "quest.completed",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": false
+                }
+              }
+            ],
+            "kind": "all"
+          },
+          "event": "quest.check",
+          "id": "quest.complete"
+        }
+      ],
+      "events": {
+        "quest.check": {},
+        "rts.delivered": {
+          "fields": {
+            "amount": "int",
+            "faction": "int"
+          }
+        },
+        "rts.produced": {
+          "fields": {
+            "entity": "text"
+          }
+        },
+        "action.defeated": {
+          "fields": {
+            "entity": "text",
+            "faction": "int"
+          }
+        },
+        "action.victory": {}
+      }
+    },
+    "ui.document": {
+      "flow": true,
+      "widgets": [
+        {
+          "kind": "text",
+          "binding": {
+            "kind": "line"
+          },
+          "id": "quest.line"
+        },
+        {
+          "kind": "progress",
+          "variable": "quest.supplies",
+          "max": 8,
+          "id": "quest.supply_bar"
+        },
+        {
+          "id": "quest.choices",
+          "kind": "choices"
+        },
+        {
+          "kind": "button",
+          "text": "gather",
+          "command": {
+            "kind": "call",
+            "args": {
+              "target": "squad/ore",
+              "units": [
+                "squad/worker/0",
+                "squad/worker/1",
+                "squad/worker/2",
+                "squad/worker/3"
+              ]
+            },
+            "action": "gather",
+            "capability": "rts"
+          },
+          "id": "quest.gather"
+        },
+        {
+          "kind": "button",
+          "text": "train",
+          "command": {
+            "kind": "call",
+            "args": {
+              "count": 1,
+              "recipe": "soldier",
+              "building": "squad/base"
+            },
+            "action": "train",
+            "capability": "rts"
+          },
+          "id": "quest.train"
+        },
+        {
+          "kind": "button",
+          "text": "support",
+          "command": {
+            "kind": "call",
+            "args": {
+              "target": "enemy/guard",
+              "units": [
+                "squad/soldier/4",
+                "squad/soldier/5"
+              ]
+            },
+            "action": "attack",
+            "capability": "rts"
+          },
+          "id": "quest.support"
+        }
+      ],
+      "catalogs": {
+        "zh-TW": {
+          "support": "小隊支援守衛戰",
+          "arrival": "交付 8 份晶礦，再讓英雄與小隊合力擊敗守衛。G 切換操控；可按「小隊支援守衛戰」。",
+          "active": "小隊視角可框選、右鍵採集，或按「派出礦工」。交付 8 份後準備進攻。",
+          "commander": "艾拉／聯隊指揮官",
+          "squad": "小隊視角",
+          "train": "生產一名士兵",
+          "declined": "聯隊仍在此等待你的下一次決定。",
+          "reward": "補給與戰鬥都已完成。聯隊守住了信標！",
+          "failed": "英雄倒下了，重開關卡再次挑戰。",
+          "fight": "G 切英雄，F 鎖定、左鍵三段連擊、Space 翻滾。",
+          "hero": "英雄視角",
+          "accept": "接受聯隊任務",
+          "decline": "這次先不參與",
+          "assault": "補給已就緒，前往英雄視角戰鬥",
+          "gather": "派出礦工採集"
+        },
+        "en": {
+          "support": "Squad focus fire",
+          "arrival": "Deliver 8 crystals with the squad, then defeat the courtyard guard with your hero. G changes control.",
+          "active": "Box-select workers and right-click crystals, or dispatch them below. Deliver 8 supplies.",
+          "commander": "Aela / Commander",
+          "squad": "Squad view",
+          "train": "Train soldier",
+          "declined": "The operation awaits another day.",
+          "reward": "Supplies delivered. Guard defeated. The beacon is ours!",
+          "failed": "The hero fell. Restart the operation.",
+          "fight": "G hero control. F lock, left click combo, Space roll.",
+          "hero": "Hero view",
+          "accept": "Accept joint operation",
+          "decline": "Not this time",
+          "assault": "Supplies ready. Begin the assault",
+          "gather": "Dispatch miners"
+        }
+      },
+      "session_controls": false,
+      "locale": "zh-TW"
+    },
+    "narrative.graph": {
+      "nodes": [
+        {
+          "text": "arrival",
+          "choices": [
+            {
+              "actions": [
+                {
+                  "kind": "set",
+                  "variable": "quest.accepted",
+                  "value": {
+                    "kind": "literal",
+                    "value": true
+                  }
+                },
+                {
+                  "kind": "emit",
+                  "event": "quest.check"
+                }
+              ],
+              "next": "quest.active",
+              "text": "accept",
+              "id": "accept"
+            },
+            {
+              "next": "quest.declined",
+              "text": "decline",
+              "id": "decline"
+            }
+          ],
+          "speaker": "commander",
+          "id": "quest.arrival"
+        },
+        {
+          "text": "active",
+          "choices": [
+            {
+              "next": "quest.assault",
+              "text": "assault",
+              "when": {
+                "kind": "ge",
+                "left": {
+                  "id": "quest.supplies",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": 8
+                }
+              },
+              "id": "assault"
+            }
+          ],
+          "speaker": "commander",
+          "id": "quest.active"
+        },
+        {
+          "text": "fight",
+          "choices": [],
+          "speaker": "commander",
+          "id": "quest.assault"
+        },
+        {
+          "ending": "joined_victory",
+          "text": "reward",
+          "choices": [],
+          "speaker": "commander",
+          "id": "quest.reward"
+        },
+        {
+          "ending": "declined",
+          "text": "declined",
+          "choices": [],
+          "speaker": "commander",
+          "id": "quest.declined"
+        },
+        {
+          "ending": "hero_fell",
+          "text": "failed",
+          "choices": [],
+          "speaker": "commander",
+          "id": "quest.failed"
+        }
+      ],
+      "start": "quest.arrival"
+    }
+  },
+  "id": "m4-quest",
+  "title": "m4-quest",
+  "entities": [],
+  "prefabs": {},
+  "schema_version": 2
+}

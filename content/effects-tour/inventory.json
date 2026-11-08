@@ -1,0 +1,773 @@
+{
+  "source": "FlaxEngine/FlaxSamples",
+  "commit": "5f762a1a0862268c595ba2b8d6281b2379c79767",
+  "source_date": "2026-10-21T07:43:14Z",
+  "scenes": {
+    "materials": {
+      "url": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "blob": "d911c59929ab788c2fbd38414f685612f060ff3d",
+      "sha256": "bbe8b68b4cf4869eaa732ccd5e687919ef55927940e0462b7e614d911a83a232",
+      "excluded_templates": [
+        "1. Title"
+      ]
+    },
+    "particles": {
+      "url": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "blob": "cf09f655f4f36965f5f3ffe4e6e44d2c6804e311",
+      "sha256": "bc2299d0798591a61499192504a2e46be1ee0ef9cf11221e32c442a1a3f73c94",
+      "excluded_templates": [
+        "1. Title",
+        "13. "
+      ]
+    }
+  },
+  "stations": [
+    {
+      "id": "mat/01-pbr",
+      "category": "materials",
+      "number": 1,
+      "title": "物理式材質 / PBR",
+      "source_title": "1. Physically Based Rendering",
+      "source_title_actor": "9c359514490cf4bd4177d7b1cda0b8e4",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Wooden Chair",
+        "Metallic Material"
+      ],
+      "implementation": "原生等效展示",
+      "description": "GGX 微表面反射與 Fresnel；環境使用程序化天空與棚燈，未使用 Flax 的反射探針。",
+      "axiom_entities": [
+        "mat/01-pbr/plinth",
+        "mat/01-pbr/line",
+        "mat/01-pbr/wooden-chair",
+        "mat/01-pbr/red",
+        "mat/01-pbr/blue"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/02-color",
+      "category": "materials",
+      "number": 2,
+      "title": "材質色彩",
+      "source_title": "2. Material Color",
+      "source_title_actor": "425d143e47a19af8228dd9bea7a79579",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Textured",
+        "Solid Color"
+      ],
+      "implementation": "原生等效展示",
+      "description": "程序木紋與純色材質對照，使用相同表面介面。",
+      "axiom_entities": [
+        "mat/02-color/plinth",
+        "mat/02-color/line",
+        "mat/02-color/texture",
+        "mat/02-color/solid"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/03-metalness",
+      "category": "materials",
+      "number": 3,
+      "title": "金屬度",
+      "source_title": "3. Metalness",
+      "source_title_actor": "5b25c5654b0d105a7d4f46a4f5913d91",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Metal",
+        "Plastic"
+      ],
+      "implementation": "原生等效展示",
+      "description": "同色金屬與絕緣體：F0、漫反射與鏡面能量依金屬度改變。",
+      "axiom_entities": [
+        "mat/03-metalness/plinth",
+        "mat/03-metalness/line",
+        "mat/03-metalness/metal",
+        "mat/03-metalness/plastic"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/04-roughness",
+      "category": "materials",
+      "number": 4,
+      "title": "粗糙度",
+      "source_title": "4. Roughness",
+      "source_title_actor": "9c6a908f4453eca0410d6c908cc2bb64",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "0.6",
+        "0.4",
+        "0.1"
+      ],
+      "implementation": "原生等效展示",
+      "description": "粗糙度 0.1 / 0.4 / 0.6，觀察反射峰值與高光寬度。",
+      "axiom_entities": [
+        "mat/04-roughness/plinth",
+        "mat/04-roughness/line",
+        "mat/04-roughness/r0",
+        "mat/04-roughness/r1",
+        "mat/04-roughness/r2"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/05-specular",
+      "category": "materials",
+      "number": 5,
+      "title": "鏡面反射",
+      "source_title": "5. Specular",
+      "source_title_actor": "312032ef4bd37683e0052584fd603ace",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "1",
+        "0"
+      ],
+      "implementation": "原生等效展示",
+      "description": "相同漫反射色，分別關閉與開啟絕緣體鏡面反射。",
+      "axiom_entities": [
+        "mat/05-specular/plinth",
+        "mat/05-specular/line",
+        "mat/05-specular/spec0",
+        "mat/05-specular/spec1"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/06-emissive",
+      "category": "materials",
+      "number": 6,
+      "title": "自發光",
+      "source_title": "6. Emissive",
+      "source_title_actor": "088b18924b01e8ac20146697c57d0b71",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Emissive Textures",
+        "Emissive Color"
+      ],
+      "implementation": "原生等效展示",
+      "description": "顏色與程序遮罩自發光，可獨立控制強度及脈動速度；不宣稱 HDR bloom。",
+      "axiom_entities": [
+        "mat/06-emissive/plinth",
+        "mat/06-emissive/line",
+        "mat/06-emissive/solid",
+        "mat/06-emissive/pattern"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/07-animated",
+      "category": "materials",
+      "number": 7,
+      "title": "動態材質",
+      "source_title": "7. Animated",
+      "source_title_actor": "ffb11d6145e4937e60e0a885a4689c00",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Texcoords",
+        "Color"
+      ],
+      "implementation": "原生等效展示",
+      "description": "UV 移動與色彩動畫，時間來自固定步進模擬。",
+      "axiom_entities": [
+        "mat/07-animated/plinth",
+        "mat/07-animated/line",
+        "mat/07-animated/scroll",
+        "mat/07-animated/pulse"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/08-transparent",
+      "category": "materials",
+      "number": 8,
+      "title": "透明材質",
+      "source_title": "8. Transparent",
+      "source_title_actor": "768b1f474bc1f2f75f42478a8797cecc",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Reflective Glass",
+        "Colored Glass"
+      ],
+      "implementation": "透明 + 程序環境反射",
+      "description": "透明混合與 Fresnel 反射外殼；反射為程序環境，不是即時場景反射或折射。",
+      "axiom_entities": [
+        "mat/08-transparent/plinth",
+        "mat/08-transparent/line",
+        "mat/08-transparent/inside",
+        "mat/08-transparent/shell",
+        "mat/08-transparent/colored"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/09-opacity",
+      "category": "materials",
+      "number": 9,
+      "title": "不透明度",
+      "source_title": "9. Opacity",
+      "source_title_actor": "b31bf9aa4fc0cbb8d0a0848e50336576",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "0.6",
+        "0.4",
+        "0.1"
+      ],
+      "implementation": "原生等效展示",
+      "description": "Alpha 0.1 / 0.4 / 0.6，背景模型顯示實際透明混合。",
+      "axiom_entities": [
+        "mat/09-opacity/plinth",
+        "mat/09-opacity/line",
+        "mat/09-opacity/0",
+        "mat/09-opacity/back-0",
+        "mat/09-opacity/1",
+        "mat/09-opacity/back-1",
+        "mat/09-opacity/2",
+        "mat/09-opacity/back-2"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/10-alpha",
+      "category": "materials",
+      "number": 10,
+      "title": "Alpha 遮罩",
+      "source_title": "10. Alpha",
+      "source_title_actor": "ed25b93e4acdd10c22f738a8d7c8e810",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Cutoff Mask",
+        "Opacity Mask"
+      ],
+      "implementation": "原生等效展示",
+      "description": "真正的 Alpha Test 丟棄與 Alpha Blend 對照，皆使用程序圓孔遮罩。",
+      "axiom_entities": [
+        "mat/10-alpha/plinth",
+        "mat/10-alpha/line",
+        "mat/10-alpha/cutoff",
+        "mat/10-alpha/opacity"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/11-vertex",
+      "category": "materials",
+      "number": 11,
+      "title": "頂點位移",
+      "source_title": "11. Vertex Offset",
+      "source_title_actor": "f39836e74b77a3b6ad181c971562aab0",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Offset",
+        "Normal Offset"
+      ],
+      "implementation": "原生等效展示",
+      "description": "頂點階段實際改變位置：平面波浪與沿法線膨脹。",
+      "axiom_entities": [
+        "mat/11-vertex/plinth",
+        "mat/11-vertex/line",
+        "mat/11-vertex/wave",
+        "mat/11-vertex/normal-offset"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/12-normal",
+      "category": "materials",
+      "number": 12,
+      "title": "法線映射",
+      "source_title": "12. Normal Mapping",
+      "source_title_actor": "96cd6f7745f7002b168da9b60bedec37",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "程序高度場轉為切線空間法線，與平面法線比較；不需要外部貼圖資產。",
+      "axiom_entities": [
+        "mat/12-normal/plinth",
+        "mat/12-normal/line",
+        "mat/12-normal/flat",
+        "mat/12-normal/normal"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/13-parallax",
+      "category": "materials",
+      "number": 13,
+      "title": "視差遮蔽",
+      "source_title": "13. Parallax Occlusion",
+      "source_title_actor": "2fbe24b847a367da200222aa28550cce",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "16 步視差遮蔽搜尋程序高度場；A/D 改變視角可看出 UV 深度位移，輪廓仍是平面。",
+      "axiom_entities": [
+        "mat/13-parallax/plinth",
+        "mat/13-parallax/line",
+        "mat/13-parallax/surface"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/14-displacement",
+      "category": "materials",
+      "number": 14,
+      "title": "表面置換",
+      "source_title": "14. Displacement",
+      "source_title_actor": "c6df30e64e986a229a58428d30359ee7",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "程序高度場在 GPU 頂點階段實際改變細分網格的表面與輪廓。",
+      "axiom_entities": [
+        "mat/14-displacement/plinth",
+        "mat/14-displacement/line",
+        "mat/14-displacement/surface"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/15-tessellation",
+      "category": "materials",
+      "number": 15,
+      "title": "曲面細分",
+      "source_title": "15. Tessellation",
+      "source_title_actor": "d13ed9ff4abd5ca732373aaa42807873",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Phong",
+        "PN",
+        "Flat",
+        "None"
+      ],
+      "implementation": "CPU 均勻細分對照",
+      "description": "以真實三角形展示 6 / 12 / 24 / 48 段細分。對應 Flax 的細分主題；沒有宣稱 GPU adaptive、Phong 或 PN triangle 實作。",
+      "axiom_entities": [
+        "mat/15-tessellation/plinth",
+        "mat/15-tessellation/line",
+        "mat/15-tessellation/subdiv-0",
+        "mat/15-tessellation/subdiv-1",
+        "mat/15-tessellation/subdiv-2",
+        "mat/15-tessellation/subdiv-3"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/16-two-sided",
+      "category": "materials",
+      "number": 16,
+      "title": "雙面與線框",
+      "source_title": "16. Two Sided",
+      "source_title_actor": "a5322c5d4bc291621d29ecb114d925fd",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Two Sided",
+        "Normal",
+        "Wireframe"
+      ],
+      "implementation": "原生等效展示",
+      "description": "自動環繞觀察單面／雙面剔除；線框使用三角形重心座標，不依賴硬體線框功能。",
+      "axiom_entities": [
+        "mat/16-two-sided/plinth",
+        "mat/16-two-sided/line",
+        "mat/16-two-sided/single",
+        "mat/16-two-sided/double",
+        "mat/16-two-sided/wire"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/17-instances",
+      "category": "materials",
+      "number": 17,
+      "title": "材質實例",
+      "source_title": "17. Material Instances",
+      "source_title_actor": "f8f920c142f9c968a1897c916e1148bc",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Material Instance",
+        "Base Material"
+      ],
+      "implementation": "原生等效展示",
+      "description": "三個獨立材質實例共用同一份 PBR WGSL；修改參數會保留 shader pipeline。",
+      "axiom_entities": [
+        "mat/17-instances/plinth",
+        "mat/17-instances/line",
+        "mat/17-instances/instance-0",
+        "mat/17-instances/instance-1",
+        "mat/17-instances/instance-2"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/18-layered",
+      "category": "materials",
+      "number": 18,
+      "title": "分層材質",
+      "source_title": "18. Layered Materials",
+      "source_title_actor": "b640dbdd4804ff292a7f90af229ce3e0",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Mix",
+        "Layer B",
+        "Layer A"
+      ],
+      "implementation": "原生等效展示",
+      "description": "木紋、青銅與程序遮罩分層，展示基材、混合與覆蓋材。",
+      "axiom_entities": [
+        "mat/18-layered/plinth",
+        "mat/18-layered/line",
+        "mat/18-layered/layer-0",
+        "mat/18-layered/layer-1",
+        "mat/18-layered/layer-2"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/19-forward",
+      "category": "materials",
+      "number": 19,
+      "title": "Forward 材質診斷",
+      "source_title": "19. Forward Pass",
+      "source_title_actor": "f704068545a56adbdd5b158cfc6d2db4",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Sample AO",
+        "Sample Roughness"
+      ],
+      "implementation": "Forward 材質屬性視覺化",
+      "description": "AO 與 roughness 的材質輸入診斷；Axiom 目前沒有 Flax deferred G-buffer，這不是場景 G-buffer 採樣。",
+      "axiom_entities": [
+        "mat/19-forward/plinth",
+        "mat/19-forward/line",
+        "mat/19-forward/ao",
+        "mat/19-forward/roughness"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/20-postfx",
+      "category": "materials",
+      "number": 20,
+      "title": "後處理材質",
+      "source_title": "20. PostFx Material",
+      "source_title_actor": "c4ca3d024120101af64eb289d8555e9a",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Enter This Area"
+      ],
+      "implementation": "原生等效展示",
+      "description": "真正讀取已渲染的 Scene Color，執行 RGB 通道偏移與著色；UI 在後處理後繪製。",
+      "axiom_entities": [
+        "mat/20-postfx/plinth",
+        "mat/20-postfx/line",
+        "mat/20-postfx/backdrop",
+        "mat/20-postfx/bar-0",
+        "mat/20-postfx/bar-1",
+        "mat/20-postfx/bar-2",
+        "mat/20-postfx/bar-3",
+        "mat/20-postfx/bar-4"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/21-decals",
+      "category": "materials",
+      "number": 21,
+      "title": "投影貼花",
+      "source_title": "21. Decals",
+      "source_title_actor": "eb3fa757419294c111c1e48d9116303d",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "由 Scene Depth 重建世界位置，將標記投影到地面及方塊。這是軸對齊 box decal，不是漂浮的透明平面。",
+      "axiom_entities": [
+        "mat/21-decals/plinth",
+        "mat/21-decals/line",
+        "mat/21-decals/receiver",
+        "mat/21-decals/receiver-box"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/22-subsurface",
+      "category": "materials",
+      "number": 22,
+      "title": "次表面透射",
+      "source_title": "22. Subsurface",
+      "source_title_actor": "d9cc1e904d38bf32e517dcbb3abb72bf",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "薄表面透射近似",
+      "description": "使用 wrap diffuse 與背光透射近似蠟材質；不是 Flax 的屏幕空間 SSS 或體積散射解算。",
+      "axiom_entities": [
+        "mat/22-subsurface/plinth",
+        "mat/22-subsurface/line",
+        "mat/22-subsurface/opaque",
+        "mat/22-subsurface/transmission"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/23-blend",
+      "category": "materials",
+      "number": 23,
+      "title": "混合模式",
+      "source_title": "23. Blend Modes",
+      "source_title_actor": "8eb74415425f6462e6d8a683af0d96bb",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [
+        "Multiply",
+        "Additive",
+        "Transparent",
+        "Opaque"
+      ],
+      "implementation": "原生等效展示",
+      "description": "真正的 opaque、alpha、additive 與 multiply GPU blend state，依序疊在相同背景色上。",
+      "axiom_entities": [
+        "mat/23-blend/plinth",
+        "mat/23-blend/line",
+        "mat/23-blend/back-0",
+        "mat/23-blend/opaque",
+        "mat/23-blend/back-1",
+        "mat/23-blend/blend",
+        "mat/23-blend/back-2",
+        "mat/23-blend/additive",
+        "mat/23-blend/back-3",
+        "mat/23-blend/multiply"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "mat/24-cel",
+      "category": "materials",
+      "number": 24,
+      "title": "卡通渲染",
+      "source_title": "24. Cel Shading",
+      "source_title_actor": "966cd19143169174310a768e2078ec70",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/MaterialsFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "2 / 3 / 6 階光照與 Fresnel 邊緣亮度。",
+      "axiom_entities": [
+        "mat/24-cel/plinth",
+        "mat/24-cel/line",
+        "mat/24-cel/toon-0",
+        "mat/24-cel/toon-1",
+        "mat/24-cel/toon-2"
+      ],
+      "axiom_emitter": null
+    },
+    {
+      "id": "fx/01-cpu",
+      "category": "particles",
+      "number": 1,
+      "title": "CPU 粒子",
+      "source_title": "1. CPU Particles",
+      "source_title_actor": "9c359514490cf4bd4177d7b1cda0b8e4",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "固定步進 CPU 評估的帶種子噴泉；生命週期、速度、顏色與大小皆由資料控制。",
+      "axiom_entities": [
+        "fx/01-cpu/plinth",
+        "fx/01-cpu/line"
+      ],
+      "axiom_emitter": "fx/01-cpu"
+    },
+    {
+      "id": "fx/02-gpu",
+      "category": "particles",
+      "number": 2,
+      "title": "GPU 粒子",
+      "source_title": "2. GPU Particles",
+      "source_title_actor": "425d143e47a19af8228dd9bea7a79579",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "GPU compute / storage buffer",
+      "description": "真正的 compute shader 寫入粒子 storage buffer，再以 instanced sprite 繪製。CPU/GPU 共用解析式軌跡契約，另有讀回比對。",
+      "axiom_entities": [
+        "fx/02-gpu/plinth",
+        "fx/02-gpu/line"
+      ],
+      "axiom_emitter": "fx/02-gpu"
+    },
+    {
+      "id": "fx/03-lights",
+      "category": "particles",
+      "number": 3,
+      "title": "粒子光源",
+      "source_title": "3. Light Particles",
+      "source_title_actor": "5b25c5654b0d105a7d4f46a4f5913d91",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "16 個移動點光源，實際加入場景的逐像素光照，同時繪製可見光點。",
+      "axiom_entities": [
+        "fx/03-lights/plinth",
+        "fx/03-lights/line",
+        "fx/03-lights/floor"
+      ],
+      "axiom_emitter": "fx/03-lights"
+    },
+    {
+      "id": "fx/04-model",
+      "category": "particles",
+      "number": 4,
+      "title": "模型粒子",
+      "source_title": "4. Model Particles",
+      "source_title_actor": "9c6a908f4453eca0410d6c908cc2bb64",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "真正的 3D 立方體模型粒子，具有立體面與旋轉；使用 Axiom 原生幾何而非 Flax 的酪梨資產。",
+      "axiom_entities": [
+        "fx/04-model/plinth",
+        "fx/04-model/line"
+      ],
+      "axiom_emitter": "fx/04-model"
+    },
+    {
+      "id": "fx/05-ribbon",
+      "category": "particles",
+      "number": 5,
+      "title": "帶狀拖尾",
+      "source_title": "5. Ribbon Particles",
+      "source_title_actor": "312032ef4bd37683e0052584fd603ace",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "保存最近 96 個固定步進位置，生成面向相機的連續三角形帶狀拖尾；不是散點連線。",
+      "axiom_entities": [
+        "fx/05-ribbon/plinth",
+        "fx/05-ribbon/line",
+        "fx/05-ribbon/spinner"
+      ],
+      "axiom_emitter": "fx/05-ribbon"
+    },
+    {
+      "id": "fx/06-attached",
+      "category": "particles",
+      "number": 6,
+      "title": "骨骼掛點拖尾",
+      "source_title": "6. Attached Ribbons",
+      "source_title_actor": "088b18924b01e8ac20146697c57d0b71",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "兩條拖尾附在實際動畫骨架的 fore.R / fore.L，跟隨最終骨骼世界矩陣；可用於劍光與武器軌跡。",
+      "axiom_entities": [
+        "fx/06-attached/plinth",
+        "fx/06-attached/line",
+        "fx/06-attached/duelist"
+      ],
+      "axiom_emitter": "fx/06-attached"
+    },
+    {
+      "id": "fx/07-smoke",
+      "category": "particles",
+      "number": 7,
+      "title": "煙霧",
+      "source_title": "7. Smoke",
+      "source_title_actor": "ffb11d6145e4937e60e0a885a4689c00",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "帶旋轉、膨脹、色彩與 Alpha 漸變的 soft sprite 煙霧；讀取場景深度淡化交界。",
+      "axiom_entities": [
+        "fx/07-smoke/plinth",
+        "fx/07-smoke/line"
+      ],
+      "axiom_emitter": "fx/07-smoke"
+    },
+    {
+      "id": "fx/08-heat",
+      "category": "particles",
+      "number": 8,
+      "title": "熱扭曲",
+      "source_title": "8. Heat Distortion",
+      "source_title_actor": "768b1f474bc1f2f75f42478a8797cecc",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "火焰精靈前方使用真正 Scene Color UV 扭曲，背景格線隨熱流折射移動。",
+      "axiom_entities": [
+        "fx/08-heat/plinth",
+        "fx/08-heat/line",
+        "fx/08-heat/back"
+      ],
+      "axiom_emitter": "fx/08-heat"
+    },
+    {
+      "id": "fx/09-snow",
+      "category": "particles",
+      "number": 9,
+      "title": "飄雪",
+      "source_title": "9. Snow",
+      "source_title_actor": "b31bf9aa4fc0cbb8d0a0848e50336576",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "GPU compute 評估的循環飄雪，使用同一份種子契約、生命週期及深度淡化。",
+      "axiom_entities": [
+        "fx/09-snow/plinth",
+        "fx/09-snow/line"
+      ],
+      "axiom_emitter": "fx/09-snow"
+    },
+    {
+      "id": "fx/10-collision",
+      "category": "particles",
+      "number": 10,
+      "title": "粒子碰撞",
+      "source_title": "10. Collisions",
+      "source_title_actor": "ed25b93e4acdd10c22f738a8d7c8e810",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "原生等效展示",
+      "description": "CPU 解析式重力與平面碰撞：解出落地時刻，依回彈係數反射速度，最多追蹤八次碰撞。",
+      "axiom_entities": [
+        "fx/10-collision/plinth",
+        "fx/10-collision/line"
+      ],
+      "axiom_emitter": "fx/10-collision"
+    },
+    {
+      "id": "fx/11-sampling",
+      "category": "particles",
+      "number": 11,
+      "title": "貼圖採樣",
+      "source_title": "11. Sampling Textures",
+      "source_title_actor": "f39836e74b77a3b6ad181c971562aab0",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "CPU bitmap mask sampling",
+      "description": "從內容包中的二值影像採樣發射位置，粒子組成字形。此版本支援 CPU mask 取樣，未宣稱 GPU 任意貼圖採樣。",
+      "axiom_entities": [
+        "fx/11-sampling/plinth",
+        "fx/11-sampling/line"
+      ],
+      "axiom_emitter": "fx/11-sampling"
+    },
+    {
+      "id": "fx/12-fog",
+      "category": "particles",
+      "number": 12,
+      "title": "體積霧",
+      "source_title": "12. Volumetric Fog",
+      "source_title_actor": "96cd6f7745f7002b168da9b60bedec37",
+      "source_scene": "https://github.com/FlaxEngine/FlaxSamples/blob/5f762a1a0862268c595ba2b8d6281b2379c79767/ParticlesFeaturesTour/Content/Scenes/Main.scene",
+      "variants": [],
+      "implementation": "Depth-bounded volume raymarch",
+      "description": "以 12 步射線步進積分程序密度，依不透明場景深度終止，呈現霧內模型與遮擋；不是全場景體積光系統。",
+      "axiom_entities": [
+        "fx/12-fog/plinth",
+        "fx/12-fog/line",
+        "fx/12-fog/occluder"
+      ],
+      "axiom_emitter": "fx/12-fog"
+    }
+  ]
+}

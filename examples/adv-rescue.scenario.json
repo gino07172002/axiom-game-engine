@@ -1,0 +1,28 @@
+{
+  "ticks":12,
+  "commands":[
+    {"tick":0,"operation":{"op":"command","command":{"kind":"choose","node":"arrival","choice":"help"}}},
+    {"tick":1,"operation":{"op":"assert","assertion":{"kind":"choice","id":"open","visible":false}}},
+    {"tick":1,"operation":{"op":"save","slot":"before-key"}},
+    {"tick":2,"operation":{"op":"command","command":{"kind":"choose","node":"workshop","choice":"inspect"}}},
+    {"tick":3,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/variables/has_key","value":true}}},
+    {"tick":3,"operation":{"op":"save","slot":"key"}},
+    {"tick":4,"operation":{"op":"command","command":{"kind":"choose","node":"clue","choice":"return"}}},
+    {"tick":5,"operation":{"op":"assert","assertion":{"kind":"choice","id":"open","visible":true}}},
+    {"tick":5,"operation":{"op":"command","command":{"kind":"choose","node":"workshop","choice":"open"}}},
+    {"tick":6,"operation":{"op":"load","slot":"key"}},
+    {"tick":7,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/node","value":"clue"}}},
+    {"tick":8,"operation":{"op":"command","command":{"kind":"choose","node":"clue","choice":"return"}}},
+    {"tick":9,"operation":{"op":"command","command":{"kind":"choose","node":"workshop","choice":"open"}}},
+    {"tick":10,"operation":{"op":"save","slot":"ending-rescue"}}
+  ],
+  "assertions":[
+    {"kind":"finite"},
+    {"kind":"equals","pointer":"/gameplay/ending","value":"rescue"},
+    {"kind":"equals","pointer":"/gameplay/variables/has_key","value":true},
+    {"kind":"equals","pointer":"/gameplay/variables/clues","value":1},
+    {"kind":"equals","pointer":"/gameplay/variables/signal_received","value":true},
+    {"kind":"equals","pointer":"/gameplay/active_scenes","value":["platform"]},
+    {"kind":"equals","pointer":"/gameplay/bindings/chapter","value":"已取得：黃銅鑰匙"}
+  ]
+}

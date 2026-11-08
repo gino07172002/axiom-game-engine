@@ -1,0 +1,371 @@
+{
+  "systems": [
+    "animation.evaluate",
+    "audio.events",
+    "action.simulate"
+  ],
+  "capabilities": {
+    "render": 1,
+    "audio": 1,
+    "animation": 1,
+    "core": 1,
+    "action": 1
+  },
+  "resources": {
+    "action.session": {
+      "hero": "hero",
+      "camera": "camera",
+      "bounds": {
+        "max": [
+          12,
+          10
+        ],
+        "min": [
+          -12,
+          -10
+        ]
+      },
+      "obstacles": [],
+      "input_buffer_ticks": 16,
+      "lock_range": 9,
+      "camera_distance": 5.5,
+      "camera_height": 2.2,
+      "camera_yaw": 0,
+      "enemy_notice_range": 1.1,
+      "hit_sound": "impact"
+    },
+    "animation.library": {
+      "assets": {
+        "fighter": {
+          "path": "fighter.glb"
+        },
+        "sentinel": {
+          "path": "fighter-alt.glb"
+        }
+      }
+    },
+    "action.abilities": {
+      "abilities": {
+        "slash1": {
+          "kind": "attack",
+          "clip": "slash1",
+          "duration": 66,
+          "cost": 13,
+          "cooldown": 12,
+          "active": {
+            "start": 18,
+            "end": 27
+          },
+          "invulnerable": null,
+          "chain": "slash2",
+          "chain_window": {
+            "start": 34,
+            "end": 60
+          },
+          "dodge_window": {
+            "start": 28,
+            "end": 66
+          },
+          "damage": 18,
+          "range": 1.5,
+          "arc_degrees": 120,
+          "travel_speed": 0.6,
+          "events": [
+            {
+              "tick": 16,
+              "sound": "swing"
+            }
+          ]
+        },
+        "slash2": {
+          "kind": "attack",
+          "clip": "slash2",
+          "duration": 70,
+          "cost": 16,
+          "cooldown": 12,
+          "active": {
+            "start": 19,
+            "end": 30
+          },
+          "invulnerable": null,
+          "chain": "slash3",
+          "chain_window": {
+            "start": 36,
+            "end": 64
+          },
+          "dodge_window": {
+            "start": 30,
+            "end": 70
+          },
+          "damage": 22,
+          "range": 1.65,
+          "arc_degrees": 145,
+          "travel_speed": 0.7,
+          "events": [
+            {
+              "tick": 17,
+              "sound": "swing"
+            }
+          ]
+        },
+        "slash3": {
+          "kind": "attack",
+          "clip": "slash3",
+          "duration": 88,
+          "cost": 23,
+          "cooldown": 25,
+          "active": {
+            "start": 30,
+            "end": 42
+          },
+          "invulnerable": null,
+          "chain": null,
+          "chain_window": null,
+          "dodge_window": {
+            "start": 58,
+            "end": 88
+          },
+          "damage": 34,
+          "range": 1.85,
+          "arc_degrees": 110,
+          "travel_speed": 0.8,
+          "events": [
+            {
+              "tick": 28,
+              "sound": "heavy"
+            }
+          ]
+        },
+        "roll": {
+          "kind": "dodge",
+          "clip": "dodge",
+          "duration": 48,
+          "cost": 26,
+          "cooldown": 56,
+          "active": null,
+          "invulnerable": {
+            "start": 0,
+            "end": 24
+          },
+          "chain": null,
+          "chain_window": null,
+          "dodge_window": null,
+          "damage": 0,
+          "range": 0,
+          "arc_degrees": 0,
+          "travel_speed": 5.9,
+          "events": [
+            {
+              "tick": 0,
+              "sound": "roll"
+            }
+          ]
+        },
+        "cleave": {
+          "kind": "attack",
+          "clip": "enemy",
+          "duration": 144,
+          "cost": 8,
+          "cooldown": 160,
+          "active": {
+            "start": 66,
+            "end": 76
+          },
+          "invulnerable": null,
+          "chain": null,
+          "chain_window": null,
+          "dodge_window": null,
+          "damage": 18,
+          "range": 1.55,
+          "arc_degrees": 95,
+          "travel_speed": 0,
+          "events": [
+            {
+              "tick": 63,
+              "sound": "heavy"
+            }
+          ]
+        }
+      }
+    },
+    "input.bindings": {
+      "capture_pointer": true,
+      "axes": {
+        "move_x": {
+          "positive": "KeyD",
+          "negative": "KeyA"
+        },
+        "move_z": {
+          "positive": "KeyW",
+          "negative": "KeyS"
+        },
+        "orbit": {
+          "positive": "KeyE",
+          "negative": "KeyQ"
+        }
+      },
+      "buttons": {
+        "attack": "MouseLeft",
+        "dodge": "Space",
+        "lock": "KeyF"
+      }
+    },
+    "audio.library": {
+      "cues": {
+        "swing": {
+          "frequency": 420,
+          "duration_ms": 75,
+          "gain": 0.13
+        },
+        "heavy": {
+          "frequency": 170,
+          "duration_ms": 100,
+          "gain": 0.16
+        },
+        "roll": {
+          "frequency": 250,
+          "duration_ms": 90,
+          "gain": 0.1
+        },
+        "impact": {
+          "frequency": 92,
+          "duration_ms": 110,
+          "gain": 0.2
+        }
+      }
+    }
+  },
+  "id": "m4-hero",
+  "title": "m4-hero",
+  "entities": [
+    {
+      "id": "hero",
+      "label": "Ember Duelist",
+      "prefab": "duelist",
+      "components": {
+        "core.transform": {
+          "position": [
+            4.5,
+            0,
+            3.5
+          ]
+        },
+        "core.health": {
+          "max": 300,
+          "value": 300
+        }
+      }
+    },
+    {
+      "id": "enemy/guard",
+      "label": "Gate Sentinel",
+      "prefab": "sentinel",
+      "components": {
+        "core.transform": {
+          "position": [
+            4.5,
+            0,
+            1.8
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "id": "camera",
+      "label": "Third Person Camera",
+      "components": {
+        "core.transform": {
+          "position": [
+            0,
+            3.4,
+            7.8
+          ],
+          "rotation": [
+            -0.166,
+            0,
+            0,
+            0.9861257
+          ]
+        },
+        "render.camera": {
+          "projection": {
+            "kind": "perspective",
+            "fov_degrees": 54
+          },
+          "near": 0.08,
+          "far": 100,
+          "viewport": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "active": true
+        }
+      }
+    }
+  ],
+  "prefabs": {
+    "duelist": {
+      "components": {
+        "core.transform": {},
+        "core.health": {
+          "value": 100,
+          "max": 100
+        },
+        "animation.player": {
+          "asset": "fighter",
+          "clip": "idle"
+        },
+        "action.actor": {
+          "faction": 0,
+          "speed": 3.8,
+          "radius": 0.27,
+          "stamina": 100,
+          "regen": 23,
+          "idle_clip": "idle",
+          "run_clip": "run",
+          "death_clip": "death",
+          "attack": "slash1",
+          "dodge": "roll",
+          "ai": false,
+          "model_yaw": 3.1415927
+        }
+      }
+    },
+    "sentinel": {
+      "components": {
+        "core.transform": {},
+        "core.health": {
+          "value": 70,
+          "max": 70
+        },
+        "animation.player": {
+          "asset": "sentinel",
+          "clip": "idle"
+        },
+        "action.actor": {
+          "faction": 1,
+          "speed": 1.55,
+          "radius": 0.29,
+          "stamina": 100,
+          "regen": 18,
+          "idle_clip": "idle",
+          "run_clip": "run",
+          "death_clip": "death",
+          "attack": "cleave",
+          "dodge": "roll",
+          "ai": true,
+          "model_yaw": 3.1415927
+        }
+      }
+    }
+  },
+  "schema_version": 2
+}

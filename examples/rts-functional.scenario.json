@@ -1,0 +1,21 @@
+{
+ "ticks":7200,
+ "commands":[
+  {"tick":0,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/rts/summary/units_total","value":64}}},
+  {"tick":0,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"select_rect","args":{"min":[-40,-20],"max":[-10,5]}}}},
+  {"tick":0,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/rts/summary/selected","value":32}}},
+  {"tick":0,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"move","args":{"destination":[9.5,0.5]}}}},
+  {"tick":3600,"operation":{"op":"assert","assertion":{"kind":"metric","name":"/rts/summary/stats/completed_moves","min":32,"max":32}}},
+  {"tick":3600,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"gather","args":{"units":["unit/0/0","unit/0/1"],"target":"mineral/0"}}}},
+  {"tick":3600,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"train","args":{"building":"base/0","recipe":"worker","count":1}}}},
+  {"tick":3600,"operation":{"op":"command","command":{"kind":"call","capability":"rts","action":"train","args":{"building":"base/0","recipe":"soldier","count":1}}}}
+ ],
+ "assertions":[
+  {"kind":"finite"},
+  {"kind":"equals","pointer":"/rts/summary/units_total","value":66},
+  {"kind":"equals","pointer":"/rts/summary/stats/produced","value":2},
+  {"kind":"equals","pointer":"/rts/summary/stats/spent","value":100},
+  {"kind":"metric","name":"/rts/summary/stats/delivered","min":8,"max":5000},
+  {"kind":"position","entity":"unit/0/10","axis":0,"min":0,"max":20}
+ ]
+}

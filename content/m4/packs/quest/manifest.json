@@ -1,0 +1,70 @@
+{
+  "capabilities": {
+    "behavior": 1,
+    "ui": 1,
+    "core": 1,
+    "narrative": 1
+  },
+  "content_version": 1,
+  "world": "world.json",
+  "imports": {
+    "resources": {
+      "action.abilities": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "package": "m4.hero"
+      },
+      "rts.session": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "package": "m4.squad"
+      }
+    },
+    "events": {
+      "rts.delivered": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "fields": {
+          "amount": "int",
+          "faction": "int"
+        },
+        "package": "m4.squad"
+      },
+      "rts.produced": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "fields": {
+          "entity": "text"
+        },
+        "package": "m4.squad"
+      },
+      "action.defeated": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "fields": {
+          "entity": "text",
+          "faction": "int"
+        },
+        "package": "m4.hero"
+      },
+      "action.victory": {
+        "version": 1,
+        "consumer": "behavior.execute",
+        "fields": {},
+        "package": "m4.hero"
+      }
+    }
+  },
+  "dependencies": {
+    "m4.hero": {
+      "path": "../hero",
+      "content_version": 1
+    },
+    "m4.squad": {
+      "path": "../squad",
+      "content_version": 1
+    }
+  },
+  "id": "m4.quest",
+  "version": 1
+}

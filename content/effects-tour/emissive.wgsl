@@ -1,0 +1,1 @@
+fn surface(s:SurfaceInput)->vec4<f32> {let grid=step(0.74,max(fract(s.uv.x*7.0),fract(s.uv.y*7.0)));let pulse=0.7+0.3*sin(s.time*s.params.y);let mask=mix(1.0,grid,s.params.x);return vec4<f32>(s.base_color.rgb*mask*pulse*s.params.z,s.base_color.a);}

@@ -1,0 +1,18 @@
+//! AI authoring is a transactional database; the runtime only consumes validated IR.
+pub mod diff;
+pub mod discovery;
+pub mod gameplay;
+pub mod ir;
+pub mod local;
+pub mod observe;
+pub mod package;
+pub mod protocol;
+pub mod registry;
+pub mod retry;
+pub mod scene_edit;
+pub mod store;
+pub use ir::*;
+pub use package::*;
+pub use protocol::*;
+pub use registry::*;
+pub use store::*;

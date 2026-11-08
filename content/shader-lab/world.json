@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "id": "shader-lab",
+  "title": "Shader Lab / Lit · Toon · Scan · Mask · Blend",
+  "capabilities": {"core": 1, "render": 1, "shader": 1},
+  "entities": [
+    {"id":"floor","components":{"core.transform":{"position":[0,-0.25,0],"scale":[16,0.35,10]},"render.mesh":{"parts":[{"color":[0.13,0.17,0.22],"grid":true}]}}},
+    {"id":"pedestals","components":{"core.transform":{},"render.mesh":{"parts":[
+      {"transform":{"position":[-4,0.09,0],"scale":[1.7,0.2,1.6]},"color":[0.24,0.3,0.37]},
+      {"transform":{"position":[-2,0.09,0],"scale":[1.7,0.2,1.6]},"color":[0.24,0.3,0.37]},
+      {"transform":{"position":[0,0.09,0],"scale":[1.7,0.2,1.6]},"color":[0.24,0.3,0.37]},
+      {"transform":{"position":[2,0.09,0],"scale":[1.7,0.2,1.6]},"color":[0.24,0.3,0.37]},
+      {"transform":{"position":[4,0.09,0],"scale":[1.7,0.2,1.6]},"color":[0.24,0.3,0.37]}
+    ]}}},
+    {"id":"lit","components":{"core.transform":{"position":[-4,0.92,0],"rotation":[0,0.258819,0,0.9659258],"scale":[1.32,1.44,1.2]},"render.mesh":{"parts":[{"color":[0.95,0.47,0.12]}]},"render.material":{"id":"warm"}}},
+    {"id":"toon","components":{"core.transform":{"position":[-2,0.92,0],"rotation":[0,0.258819,0,0.9659258],"scale":[1.32,1.44,1.2]},"render.mesh":{"parts":[{"color":[0.45,0.18,0.82]}]},"render.material":{"id":"violet"}}},
+    {"id":"scan","components":{"core.transform":{"position":[0,0.92,0],"rotation":[0,0.258819,0,0.9659258],"scale":[1.32,1.44,1.2]},"render.mesh":{"parts":[{"color":[1,1,1]}]},"render.material":{"id":"scanner"}}},
+    {"id":"mask","components":{"core.transform":{"position":[2,0.92,0],"rotation":[0,0.258819,0,0.9659258],"scale":[1.32,1.44,0.18]},"render.mesh":{"parts":[{"color":[0.12,0.86,0.45]}]},"render.material":{"id":"lattice"}}},
+    {"id":"blend-core","components":{"core.transform":{"position":[4,0.83,0],"scale":[0.55,0.8,0.55]},"render.mesh":{"parts":[{"color":[1,0.63,0.12]}]},"render.material":{"id":"core"}}},
+    {"id":"blend","components":{"core.transform":{"position":[4,0.92,0],"rotation":[0,0.258819,0,0.9659258],"scale":[1.32,1.44,1.2]},"render.mesh":{"parts":[{"color":[0.06,0.52,0.86]}]},"render.material":{"id":"glass"}}},
+    {"id":"camera","components":{"core.transform":{"position":[0,4.3,11],"rotation":[-0.151,0,0,0.9885338]},"render.camera":{"projection":{"kind":"orthographic","height":6.5},"near":0.1,"far":100,"viewport":[0,0,1,1],"active":true}}}
+  ],
+  "resources": {
+    "render.settings": {"accent":[0.18,0.65,0.92],"shadow_extent":15},
+    "render.shaders": {
+      "shaders": {
+        "scan": {"file":"scan.wgsl","parameters":{"frequency":{"slot":0,"default":8,"min":1,"max":24},"speed":{"slot":1,"default":1,"min":0,"max":8}}},
+        "lattice": {"file":"lattice.wgsl"}
+      },
+      "materials": {
+        "warm":{"shader":"lit"},
+        "violet":{"shader":"toon","parameters":{"bands":3,"rim":0.18}},
+        "scanner":{"shader":"scan","tint":[0.05,0.7,0.92,1]},
+        "lattice":{"shader":"lattice","alpha":"mask","alpha_cutoff":0.5,"double_sided":true},
+        "core":{"shader":"unlit"},
+        "glass":{"shader":"unlit","tint":[1,1,1,0.24],"alpha":"blend"}
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+{
+  "schema_version":2,
+  "id":"ember-court",
+  "title":"Ember Court / Action Prototype",
+  "capabilities":{"action":1,"animation":1,"audio":1,"core":1,"render":1},
+  "systems":["animation.evaluate","audio.events","action.simulate"],
+  "prefabs":{
+    "duelist":{"components":{
+      "core.transform":{},
+      "core.health":{"value":100,"max":100},
+      "animation.player":{"asset":"fighter","clip":"idle"},
+      "action.actor":{"faction":0,"speed":3.8,"radius":0.27,"stamina":100,"regen":23,"idle_clip":"idle","run_clip":"run","death_clip":"death","attack":"slash1","dodge":"roll","ai":false,"model_yaw":3.1415927}
+    }},
+    "sentinel":{"components":{
+      "core.transform":{},
+      "core.health":{"value":70,"max":70},
+      "animation.player":{"asset":"sentinel","clip":"idle"},
+      "action.actor":{"faction":1,"speed":1.55,"radius":0.29,"stamina":100,"regen":18,"idle_clip":"idle","run_clip":"run","death_clip":"death","attack":"cleave","dodge":"roll","ai":true,"model_yaw":3.1415927}
+    }}
+  },
+  "entities":[
+    {"id":"hero","label":"Ember Duelist","prefab":"duelist","components":{"core.transform":{"position":[0,0,2]}}},
+    {"id":"enemy/guard","label":"Gate Sentinel","prefab":"sentinel","components":{"core.transform":{"position":[0,0,-0.8],"rotation":[0,1,0,0]}}},
+    {"id":"enemy/left","label":"West Sentinel","prefab":"sentinel","components":{"core.transform":{"position":[-3.6,0,-3.6]}}},
+    {"id":"enemy/right","label":"East Sentinel","prefab":"sentinel","components":{"core.transform":{"position":[3.6,0,-3.6]}}},
+    {"id":"camera","label":"Third Person Camera","components":{
+      "core.transform":{"position":[0,3.4,7.8],"rotation":[-0.166,0,0,0.9861257]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":54},"near":0.08,"far":100,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"court/floor","label":"Slate courtyard","components":{
+      "core.transform":{"position":[0,-0.18,0],"scale":[14,0.32,14]},
+      "render.mesh":{"parts":[{"color":[0.11,0.17,0.19],"grid":true}]}
+    }},
+    {"id":"court/walls","label":"Courtyard walls","components":{
+      "core.transform":{},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[0,0.7,-7.3],"scale":[15,1.4,0.5]},"color":[0.16,0.21,0.25]},
+        {"transform":{"position":[-7.3,0.7,0],"scale":[0.5,1.4,15]},"color":[0.16,0.21,0.25]},
+        {"transform":{"position":[7.3,0.7,0],"scale":[0.5,1.4,15]},"color":[0.16,0.21,0.25]},
+        {"transform":{"position":[0,0.7,7.3],"scale":[15,1.4,0.5]},"color":[0.16,0.21,0.25]}
+      ]}
+    }},
+    {"id":"court/pillars","label":"Collidable pillars","components":{
+      "core.transform":{},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[-2.9,0.65,-1.9],"scale":[0.8,1.3,0.8]},"color":[0.23,0.31,0.33]},
+        {"transform":{"position":[2.9,0.65,-1.9],"scale":[0.8,1.3,0.8]},"color":[0.23,0.31,0.33]},
+        {"transform":{"position":[-2.9,1.4,-1.9],"scale":[0.9,0.15,0.9]},"color":[0.92,0.43,0.13],"emission":1.3},
+        {"transform":{"position":[2.9,1.4,-1.9],"scale":[0.9,0.15,0.9]},"color":[0.92,0.43,0.13],"emission":1.3}
+      ]}
+    }},
+    {"id":"court/gate","label":"Ember gate","components":{
+      "core.transform":{},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[-1.7,1.8,-6.8],"scale":[0.35,3.6,0.4]},"color":[0.36,0.30,0.25]},
+        {"transform":{"position":[1.7,1.8,-6.8],"scale":[0.35,3.6,0.4]},"color":[0.36,0.30,0.25]},
+        {"transform":{"position":[0,3.6,-6.8],"scale":[3.8,0.22,0.4]},"color":[0.92,0.39,0.12],"emission":1.0},
+        {"transform":{"position":[0,2.85,-6.8],"rotation":[0,0,0.38268343,0.92387953],"scale":[0.36,0.36,0.12]},"color":[1,0.55,0.13],"emission":1.6}
+      ]}
+    }}
+  ],
+  "scenes":[{"id":"court","active":true,"entities":["hero","enemy/guard","enemy/left","enemy/right","camera","court/floor","court/walls","court/pillars","court/gate"]}],
+  "resources":{
+    "render.settings":{"accent":[1,0.43,0.17],"shadow_extent":21},
+    "animation.library":{"assets":{"fighter":{"path":"fighter.glb"},"sentinel":{"path":"fighter-alt.glb"}}},
+    "input.bindings":{"capture_pointer":true,
+      "axes":{"move_x":{"positive":"KeyD","negative":"KeyA"},"move_z":{"positive":"KeyW","negative":"KeyS"},"orbit":{"positive":"KeyE","negative":"KeyQ"}},
+      "buttons":{"attack":"MouseLeft","dodge":"Space","lock":"KeyF"}
+    },
+    "audio.library":{"cues":{
+      "swing":{"frequency":420,"duration_ms":75,"gain":0.13},
+      "heavy":{"frequency":170,"duration_ms":100,"gain":0.16},
+      "roll":{"frequency":250,"duration_ms":90,"gain":0.10},
+      "impact":{"frequency":92,"duration_ms":110,"gain":0.20}
+    }},
+    "action.session":{
+      "hero":"hero","camera":"camera","bounds":{"min":[-7,-7],"max":[7,7]},
+      "obstacles":[{"min":[-3.3,-2.3],"max":[-2.5,-1.5]},{"min":[2.5,-2.3],"max":[3.3,-1.5]}],
+      "input_buffer_ticks":16,"lock_range":9,"camera_distance":5.5,"camera_height":2.2,"camera_yaw":0,
+      "enemy_notice_range":6,"hit_sound":"impact"
+    },
+    "action.abilities":{"abilities":{
+      "slash1":{"kind":"attack","clip":"slash1","duration":66,"cost":13,"cooldown":12,
+        "active":{"start":18,"end":27},"invulnerable":null,
+        "chain":"slash2","chain_window":{"start":34,"end":60},"dodge_window":{"start":28,"end":66},
+        "damage":18,"range":1.50,"arc_degrees":120,"travel_speed":0.6,
+        "events":[{"tick":16,"sound":"swing"}]},
+      "slash2":{"kind":"attack","clip":"slash2","duration":70,"cost":16,"cooldown":12,
+        "active":{"start":19,"end":30},"invulnerable":null,
+        "chain":"slash3","chain_window":{"start":36,"end":64},"dodge_window":{"start":30,"end":70},
+        "damage":22,"range":1.65,"arc_degrees":145,"travel_speed":0.7,
+        "events":[{"tick":17,"sound":"swing"}]},
+      "slash3":{"kind":"attack","clip":"slash3","duration":88,"cost":23,"cooldown":25,
+        "active":{"start":30,"end":42},"invulnerable":null,
+        "chain":null,"chain_window":null,"dodge_window":{"start":58,"end":88},
+        "damage":34,"range":1.85,"arc_degrees":110,"travel_speed":0.8,
+        "events":[{"tick":28,"sound":"heavy"}]},
+      "roll":{"kind":"dodge","clip":"dodge","duration":48,"cost":26,"cooldown":56,
+        "active":null,"invulnerable":{"start":0,"end":24},
+        "chain":null,"chain_window":null,"dodge_window":null,
+        "damage":0,"range":0,"arc_degrees":0,"travel_speed":5.9,
+        "events":[{"tick":0,"sound":"roll"}]},
+      "cleave":{"kind":"attack","clip":"enemy","duration":144,"cost":8,"cooldown":160,
+        "active":{"start":66,"end":76},"invulnerable":null,
+        "chain":null,"chain_window":null,"dodge_window":null,
+        "damage":18,"range":1.55,"arc_degrees":95,"travel_speed":0,
+        "events":[{"tick":63,"sound":"heavy"}]}
+    }}
+  }
+}

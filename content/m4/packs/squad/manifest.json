@@ -1,0 +1,36 @@
+{
+  "capabilities": {
+    "render": 1,
+    "rts": 1,
+    "core": 1
+  },
+  "content_version": 1,
+  "world": "world.json",
+  "exports": {
+    "resources": {
+      "rts.session": {
+        "version": 1,
+        "owner": "rts.simulate"
+      }
+    },
+    "events": {
+      "rts.produced": {
+        "version": 1,
+        "fields": {
+          "entity": "text"
+        },
+        "publisher": "rts.simulate"
+      },
+      "rts.delivered": {
+        "version": 1,
+        "fields": {
+          "amount": "int",
+          "faction": "int"
+        },
+        "publisher": "rts.simulate"
+      }
+    }
+  },
+  "id": "m4.squad",
+  "version": 1
+}

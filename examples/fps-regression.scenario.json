@@ -1,0 +1,1 @@
+{"ticks":240,"inputs":[{"tick":0,"actions":{"move.right":1,"fire":1}},{"tick":120,"actions":{"move.right":0,"fire":0}}],"assertions":[{"kind":"finite"},{"kind":"position","entity":"player","axis":0,"min":4,"max":8},{"kind":"metric","name":"shots","min":5,"max":15},{"kind":"metric","name":"player_health","min":1,"max":100}]}

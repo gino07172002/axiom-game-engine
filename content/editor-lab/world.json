@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "id": "editor-lab",
+  "title": "Assembly Yard",
+  "capabilities": {"core": 1, "render": 1},
+  "prefabs": {
+    "cargo-crate": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {"color": [0.82, 0.39, 0.16]},
+            {"transform": {"position": [0, 0.34, 0], "scale": [1.04, 0.10, 1.04]}, "color": [0.25, 0.29, 0.36]},
+            {"transform": {"position": [0, -0.34, 0], "scale": [1.04, 0.10, 1.04]}, "color": [0.25, 0.29, 0.36]}
+          ]
+        }
+      }
+    }
+  },
+  "entities": [
+    {"id":"stage/floor","label":"Workshop Floor","components":{
+      "core.transform":{"position":[0,-0.19,0],"scale":[12,0.32,10]},
+      "render.mesh":{"parts":[{"color":[0.16,0.22,0.29],"grid":true}]}
+    }},
+    {"id":"stage/rack","label":"Assembly Rack","components":{
+      "core.transform":{"position":[-1.65,0,-0.65]},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[0,0.22,0],"scale":[2.7,0.38,1.62]},"color":[0.21,0.49,0.53]},
+        {"transform":{"position":[0,1.35,0],"scale":[2.7,0.17,1.62]},"color":[0.21,0.49,0.53]},
+        {"transform":{"position":[-1.19,0.82,0],"scale":[0.18,1.60,1.62]},"color":[0.28,0.62,0.65]},
+        {"transform":{"position":[1.19,0.82,0],"scale":[0.18,1.60,1.62]},"color":[0.28,0.62,0.65]}
+      ]}
+    }},
+    {"id":"stage/rack/cargo","label":"Rack Cargo","prefab":"cargo-crate","components":{
+      "core.transform":{"position":[0.05,0.83,0],"scale":[0.78,0.78,0.78]}
+    }},
+    {"id":"stage/crate","label":"Signal Crate","prefab":"cargo-crate","components":{
+      "core.transform":{"position":[1.42,0.63,0.82],"scale":[1.16,1.16,1.16]}
+    }},
+    {"id":"stage/beacon","label":"Work Light","components":{
+      "core.transform":{"position":[2.85,0,-1.38]},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[0,0.13,0],"scale":[0.85,0.25,0.85]},"color":[0.23,0.27,0.33]},
+        {"transform":{"position":[0,0.88,0],"scale":[0.23,1.3,0.23]},"color":[0.42,0.47,0.58]},
+        {"transform":{"position":[0,1.64,0],"scale":[0.6,0.22,0.6]},"color":[0.28,0.88,0.79],"emission":1.8}
+      ]}
+    }},
+    {"id":"stage/camera","label":"Game Camera","components":{
+      "core.transform":{"position":[0,3.1,7.3],"rotation":[-0.1593182,0,0,0.9872273]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":52},"near":0.04,"far":150,"viewport":[0,0,1,1],"active":true}
+    }}
+  ],
+  "relations": [{"kind":"parent","source":"stage/rack/cargo","target":"stage/rack"}],
+  "scenes": [
+    {"id":"assembly-yard","entities":["stage/floor","stage/rack","stage/rack/cargo","stage/crate","stage/beacon","stage/camera"],"active":true},
+    {"id":"staging","entities":[],"active":false}
+  ],
+  "resources": {"render.settings":{"accent":[0.26,0.79,0.73],"shadow_extent":18}}
+}

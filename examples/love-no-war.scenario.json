@@ -1,0 +1,25 @@
+{
+  "ticks": 1000,
+  "commands": [
+    {"tick":0,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"invite","args":{}}}},
+    {"tick":0,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"begin","args":{}}}},
+    {"tick":235,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"sway"}}}},
+    {"tick":353,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"sway"}}}},
+    {"tick":420,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"turn"}}}},
+    {"tick":504,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"reach"}}}},
+    {"tick":588,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"sway"}}}},
+    {"tick":672,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"turn"}}}},
+    {"tick":756,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"turn"}}}},
+    {"tick":840,"operation":{"op":"command","command":{"kind":"call","capability":"rhythm","action":"press","args":{"input":"reach"}}}},
+    {"tick":841,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/rhythm/phase","value":"finishing"}}},
+    {"tick":842,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/animation/players/cast~1valentina/clip","value":"reach"}}}
+  ],
+  "assertions": [
+    {"kind":"equals","pointer":"/rhythm/phase","value":"finale"},
+    {"kind":"equals","pointer":"/rhythm/hits","value":8},
+    {"kind":"equals","pointer":"/rhythm/misses","value":0},
+    {"kind":"equals","pointer":"/animation/players/cast~1valentina/clip","value":"finale"},
+    {"kind":"equals","pointer":"/animation/players/cast~1ren/clip","value":"finale"},
+    {"kind":"finite"}
+  ]
+}

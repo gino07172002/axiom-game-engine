@@ -1,0 +1,1 @@
+{"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]}

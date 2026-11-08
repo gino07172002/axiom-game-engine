@@ -1,0 +1,12 @@
+{
+  "capabilities": {
+    "animation": 1,
+    "behavior": 1,
+    "core": 1,
+    "render": 1,
+    "ui": 1
+  },
+  "id": "animation-lab",
+  "version": 1,
+  "world": "world.json"
+}

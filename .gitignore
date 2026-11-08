@@ -1,0 +1,15 @@
+/target/
+/.tools/
+/data/
+/artifacts/
+*.sqlite*
+*.log
+
+__pycache__/
+*.pyc
+# External third-party assets (PMX/FBX/Unity exports) must stay outside the repo
+*.pmx
+*.fbx
+*.axrig
+*.blend
+*.blend1

@@ -1,0 +1,1 @@
+fn surface(s:SurfaceInput)->vec4<f32> {let ao=clamp(length(s.uv-vec2<f32>(0.5))*1.6,0.0,1.0);let rough=s.uv.x;let v=mix(ao,rough,s.params.x);return vec4<f32>(mix(vec3<f32>(v),vec3<f32>(0.15,v,1.0-v),s.params.y),1.0);}

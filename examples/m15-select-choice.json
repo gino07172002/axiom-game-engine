@@ -1,0 +1,1 @@
+{"op":"select","query":{"from":"choices","parent":"workshop","ids":["open"],"fields":["id","when","next"],"max_bytes":2048}}

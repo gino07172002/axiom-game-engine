@@ -1,0 +1,22 @@
+{
+  "ticks":360,
+  "inputs":[
+    {"tick":0,"actions":{"move_z":1}},
+    {"tick":30,"actions":{"move_z":0}}
+  ],
+  "commands":[
+    {"tick":0,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"lock","args":{}}}},
+    {"tick":32,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}},
+    {"tick":66,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}},
+    {"tick":102,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"attack","args":{}}}},
+    {"tick":161,"operation":{"op":"command","command":{"kind":"call","capability":"action","action":"dodge","args":{}}}}
+  ],
+  "assertions":[
+    {"kind":"finite"},
+    {"kind":"equals","pointer":"/action/defeated","value":false},
+    {"kind":"equals","pointer":"/action/stats/chains","value":2},
+    {"kind":"equals","pointer":"/action/stats/rolls","value":1},
+    {"kind":"equals","pointer":"/action/opponents_alive","value":2},
+    {"kind":"equals","pointer":"/animation/players/hero/fault","value":null}
+  ]
+}

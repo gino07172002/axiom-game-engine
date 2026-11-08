@@ -1,0 +1,7923 @@
+{
+  "schema_version": 2,
+  "id": "effects-atlas",
+  "title": "Axiom / Effects Atlas",
+  "capabilities": {
+    "core": 1,
+    "render": 1,
+    "shader": 1,
+    "vfx": 1,
+    "postfx": 1,
+    "showcase": 1,
+    "motion": 1,
+    "animation": 1
+  },
+  "entities": [
+    {
+      "id": "atlas/floor",
+      "label": "atlas/floor",
+      "components": {
+        "core.transform": {
+          "position": [
+            0,
+            -0.34,
+            -25
+          ],
+          "scale": [
+            66,
+            0.55,
+            65
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.045,
+                0.07,
+                0.095
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tour/camera",
+      "label": "tour/camera",
+      "components": {
+        "core.transform": {
+          "position": [
+            0,
+            47,
+            35
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.camera": {
+          "projection": {
+            "kind": "orthographic",
+            "height": 59
+          },
+          "near": 0.1,
+          "far": 180,
+          "viewport": [
+            0.25,
+            0.04,
+            0.75,
+            0.84
+          ],
+          "active": true
+        }
+      }
+    },
+    {
+      "id": "mat/01-pbr/plinth",
+      "label": "mat/01-pbr/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/01-pbr/line",
+      "label": "mat/01-pbr/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/02-color/plinth",
+      "label": "mat/02-color/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/02-color/line",
+      "label": "mat/02-color/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/03-metalness/plinth",
+      "label": "mat/03-metalness/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/03-metalness/line",
+      "label": "mat/03-metalness/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/04-roughness/plinth",
+      "label": "mat/04-roughness/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/04-roughness/line",
+      "label": "mat/04-roughness/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/05-specular/plinth",
+      "label": "mat/05-specular/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/05-specular/line",
+      "label": "mat/05-specular/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/06-emissive/plinth",
+      "label": "mat/06-emissive/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            0
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/06-emissive/line",
+      "label": "mat/06-emissive/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            2.9
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/07-animated/plinth",
+      "label": "mat/07-animated/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/07-animated/line",
+      "label": "mat/07-animated/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/08-transparent/plinth",
+      "label": "mat/08-transparent/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/08-transparent/line",
+      "label": "mat/08-transparent/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/plinth",
+      "label": "mat/09-opacity/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/line",
+      "label": "mat/09-opacity/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/10-alpha/plinth",
+      "label": "mat/10-alpha/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/10-alpha/line",
+      "label": "mat/10-alpha/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/11-vertex/plinth",
+      "label": "mat/11-vertex/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/11-vertex/line",
+      "label": "mat/11-vertex/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/12-normal/plinth",
+      "label": "mat/12-normal/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            -10
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/12-normal/line",
+      "label": "mat/12-normal/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -7.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/13-parallax/plinth",
+      "label": "mat/13-parallax/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/13-parallax/line",
+      "label": "mat/13-parallax/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/14-displacement/plinth",
+      "label": "mat/14-displacement/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/14-displacement/line",
+      "label": "mat/14-displacement/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/plinth",
+      "label": "mat/15-tessellation/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/line",
+      "label": "mat/15-tessellation/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/16-two-sided/plinth",
+      "label": "mat/16-two-sided/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/16-two-sided/line",
+      "label": "mat/16-two-sided/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/17-instances/plinth",
+      "label": "mat/17-instances/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/17-instances/line",
+      "label": "mat/17-instances/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/18-layered/plinth",
+      "label": "mat/18-layered/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            -20
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/18-layered/line",
+      "label": "mat/18-layered/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -17.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/19-forward/plinth",
+      "label": "mat/19-forward/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/19-forward/line",
+      "label": "mat/19-forward/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/plinth",
+      "label": "mat/20-postfx/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/line",
+      "label": "mat/20-postfx/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/21-decals/plinth",
+      "label": "mat/21-decals/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/21-decals/line",
+      "label": "mat/21-decals/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/22-subsurface/plinth",
+      "label": "mat/22-subsurface/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/22-subsurface/line",
+      "label": "mat/22-subsurface/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/plinth",
+      "label": "mat/23-blend/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/line",
+      "label": "mat/23-blend/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/24-cel/plinth",
+      "label": "mat/24-cel/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            -30
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "mat/24-cel/line",
+      "label": "mat/24-cel/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -27.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/01-cpu/plinth",
+      "label": "fx/01-cpu/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/01-cpu/line",
+      "label": "fx/01-cpu/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/02-gpu/plinth",
+      "label": "fx/02-gpu/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/02-gpu/line",
+      "label": "fx/02-gpu/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/03-lights/plinth",
+      "label": "fx/03-lights/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/03-lights/line",
+      "label": "fx/03-lights/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/04-model/plinth",
+      "label": "fx/04-model/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/04-model/line",
+      "label": "fx/04-model/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/05-ribbon/plinth",
+      "label": "fx/05-ribbon/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/05-ribbon/line",
+      "label": "fx/05-ribbon/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/06-attached/plinth",
+      "label": "fx/06-attached/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            -40
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/06-attached/line",
+      "label": "fx/06-attached/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -37.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/07-smoke/plinth",
+      "label": "fx/07-smoke/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/07-smoke/line",
+      "label": "fx/07-smoke/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/08-heat/plinth",
+      "label": "fx/08-heat/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/08-heat/line",
+      "label": "fx/08-heat/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/09-snow/plinth",
+      "label": "fx/09-snow/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/09-snow/line",
+      "label": "fx/09-snow/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/10-collision/plinth",
+      "label": "fx/10-collision/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/10-collision/line",
+      "label": "fx/10-collision/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/11-sampling/plinth",
+      "label": "fx/11-sampling/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/11-sampling/line",
+      "label": "fx/11-sampling/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "fx/12-fog/plinth",
+      "label": "fx/12-fog/plinth",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            -0.04,
+            -50
+          ],
+          "scale": [
+            7.4,
+            0.35,
+            5.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "plinth"
+        }
+      }
+    },
+    {
+      "id": "fx/12-fog/line",
+      "label": "fx/12-fog/line",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -47.1
+          ],
+          "scale": [
+            7.3,
+            0.045,
+            0.045
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "emission": 0
+            }
+          ]
+        },
+        "render.material": {
+          "id": "line"
+        }
+      }
+    },
+    {
+      "id": "mat/01-pbr/wooden-chair",
+      "label": "mat/01-pbr/wooden-chair",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            0.2,
+            -1.9
+          ],
+          "scale": [
+            0.85,
+            0.85,
+            0.85
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.material": {
+          "id": "chair-wood"
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  -0.45,
+                  0.45,
+                  -0.4
+                ],
+                "scale": [
+                  0.12,
+                  0.9,
+                  0.12
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  -0.45,
+                  0.45,
+                  0.4
+                ],
+                "scale": [
+                  0.12,
+                  0.9,
+                  0.12
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  0.45,
+                  0.45,
+                  -0.4
+                ],
+                "scale": [
+                  0.12,
+                  0.9,
+                  0.12
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  0.45,
+                  0.45,
+                  0.4
+                ],
+                "scale": [
+                  0.12,
+                  0.9,
+                  0.12
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.95,
+                  0
+                ],
+                "scale": [
+                  1.1,
+                  0.15,
+                  1
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                1,
+                1
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.5,
+                  -0.45
+                ],
+                "scale": [
+                  1.1,
+                  0.95,
+                  0.14
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/01-pbr/red",
+      "label": "mat/01-pbr/red",
+      "components": {
+        "core.transform": {
+          "position": [
+            -26.2,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "pbr-red"
+        }
+      }
+    },
+    {
+      "id": "mat/01-pbr/blue",
+      "label": "mat/01-pbr/blue",
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.8,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "pbr-blue"
+        }
+      }
+    },
+    {
+      "id": "mat/02-color/texture",
+      "label": "mat/02-color/texture",
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.2,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20,
+          "texture": "wood"
+        },
+        "render.material": {
+          "id": "wood"
+        }
+      }
+    },
+    {
+      "id": "mat/02-color/solid",
+      "label": "mat/02-color/solid",
+      "components": {
+        "core.transform": {
+          "position": [
+            -13.8,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "solid"
+        }
+      }
+    },
+    {
+      "id": "mat/03-metalness/metal",
+      "label": "mat/03-metalness/metal",
+      "components": {
+        "core.transform": {
+          "position": [
+            -6.2,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "metal"
+        }
+      }
+    },
+    {
+      "id": "mat/03-metalness/plastic",
+      "label": "mat/03-metalness/plastic",
+      "components": {
+        "core.transform": {
+          "position": [
+            -3.8,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "plastic"
+        }
+      }
+    },
+    {
+      "id": "mat/04-roughness/r0",
+      "label": "mat/04-roughness/r0",
+      "components": {
+        "core.transform": {
+          "position": [
+            3.1,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "rough-0"
+        }
+      }
+    },
+    {
+      "id": "mat/04-roughness/r1",
+      "label": "mat/04-roughness/r1",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "rough-1"
+        }
+      }
+    },
+    {
+      "id": "mat/04-roughness/r2",
+      "label": "mat/04-roughness/r2",
+      "components": {
+        "core.transform": {
+          "position": [
+            6.9,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "rough-2"
+        }
+      }
+    },
+    {
+      "id": "mat/05-specular/spec0",
+      "label": "mat/05-specular/spec0",
+      "components": {
+        "core.transform": {
+          "position": [
+            13.8,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "spec-0"
+        }
+      }
+    },
+    {
+      "id": "mat/05-specular/spec1",
+      "label": "mat/05-specular/spec1",
+      "components": {
+        "core.transform": {
+          "position": [
+            16.2,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "spec-1"
+        }
+      }
+    },
+    {
+      "id": "mat/06-emissive/solid",
+      "label": "mat/06-emissive/solid",
+      "components": {
+        "core.transform": {
+          "position": [
+            23.8,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "emit-solid"
+        }
+      }
+    },
+    {
+      "id": "mat/06-emissive/pattern",
+      "label": "mat/06-emissive/pattern",
+      "components": {
+        "core.transform": {
+          "position": [
+            26.2,
+            1.15,
+            0
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "emit-grid"
+        }
+      }
+    },
+    {
+      "id": "mat/07-animated/scroll",
+      "label": "mat/07-animated/scroll",
+      "components": {
+        "core.transform": {
+          "position": [
+            -26.2,
+            1.15,
+            -10
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "uv-scroll"
+        }
+      }
+    },
+    {
+      "id": "mat/07-animated/pulse",
+      "label": "mat/07-animated/pulse",
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.8,
+            1.15,
+            -10
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "color-pulse"
+        }
+      }
+    },
+    {
+      "id": "mat/08-transparent/inside",
+      "label": "mat/08-transparent/inside",
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.2,
+            1.15,
+            -10
+          ],
+          "scale": [
+            0.38,
+            0.38,
+            0.38
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "glass-core"
+        }
+      }
+    },
+    {
+      "id": "mat/08-transparent/shell",
+      "label": "mat/08-transparent/shell",
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.2,
+            1.15,
+            -10
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "glass-reflect"
+        }
+      }
+    },
+    {
+      "id": "mat/08-transparent/colored",
+      "label": "mat/08-transparent/colored",
+      "components": {
+        "core.transform": {
+          "position": [
+            -13.8,
+            1.15,
+            -10
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "glass-color"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/0",
+      "label": "mat/09-opacity/0",
+      "components": {
+        "core.transform": {
+          "position": [
+            -6.9,
+            1.1,
+            -10
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "opacity-0"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/back-0",
+      "label": "mat/09-opacity/back-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            -6.9,
+            1.1,
+            -10.5
+          ],
+          "scale": [
+            1.25,
+            1.6,
+            0.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                0.42,
+                0.08
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/1",
+      "label": "mat/09-opacity/1",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            1.1,
+            -10
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "opacity-1"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/back-1",
+      "label": "mat/09-opacity/back-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            1.1,
+            -10.5
+          ],
+          "scale": [
+            1.25,
+            1.6,
+            0.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                0.42,
+                0.08
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/2",
+      "label": "mat/09-opacity/2",
+      "components": {
+        "core.transform": {
+          "position": [
+            -3.1,
+            1.1,
+            -10
+          ],
+          "scale": [
+            0.7,
+            0.7,
+            0.7
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "opacity-2"
+        }
+      }
+    },
+    {
+      "id": "mat/09-opacity/back-2",
+      "label": "mat/09-opacity/back-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            -3.1,
+            1.1,
+            -10.5
+          ],
+          "scale": [
+            1.25,
+            1.6,
+            0.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                0.42,
+                0.08
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/10-alpha/cutoff",
+      "label": "mat/10-alpha/cutoff",
+      "components": {
+        "core.transform": {
+          "position": [
+            3.8,
+            1.2,
+            -10
+          ],
+          "scale": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "cutoff"
+        }
+      }
+    },
+    {
+      "id": "mat/10-alpha/opacity",
+      "label": "mat/10-alpha/opacity",
+      "components": {
+        "core.transform": {
+          "position": [
+            6.2,
+            1.2,
+            -10
+          ],
+          "scale": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "opacity-mask"
+        }
+      }
+    },
+    {
+      "id": "mat/11-vertex/wave",
+      "label": "mat/11-vertex/wave",
+      "components": {
+        "core.transform": {
+          "position": [
+            13.7,
+            0.9,
+            -10
+          ],
+          "scale": [
+            1.3,
+            1.3,
+            1.3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "wave"
+        }
+      }
+    },
+    {
+      "id": "mat/11-vertex/normal-offset",
+      "label": "mat/11-vertex/normal-offset",
+      "components": {
+        "core.transform": {
+          "position": [
+            16.4,
+            1.15,
+            -10
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "normal-offset"
+        }
+      }
+    },
+    {
+      "id": "mat/12-normal/flat",
+      "label": "mat/12-normal/flat",
+      "components": {
+        "core.transform": {
+          "position": [
+            23.8,
+            1.2,
+            -10
+          ],
+          "scale": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "normal-flat"
+        }
+      }
+    },
+    {
+      "id": "mat/12-normal/normal",
+      "label": "mat/12-normal/normal",
+      "components": {
+        "core.transform": {
+          "position": [
+            26.2,
+            1.2,
+            -10
+          ],
+          "scale": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "normal-mapped"
+        }
+      }
+    },
+    {
+      "id": "mat/13-parallax/surface",
+      "label": "mat/13-parallax/surface",
+      "components": {
+        "core.transform": {
+          "position": [
+            -25,
+            1.2,
+            -20
+          ],
+          "scale": [
+            2.2,
+            1.7,
+            1.7
+          ],
+          "rotation": [
+            0.701589698775332,
+            0.08815834941931935,
+            -0.08815834941931934,
+            0.7015896987753321
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "pom"
+        }
+      }
+    },
+    {
+      "id": "mat/14-displacement/surface",
+      "label": "mat/14-displacement/surface",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            0.7,
+            -20
+          ],
+          "scale": [
+            2.6,
+            2.6,
+            2.6
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 48,
+          "rings": 40
+        },
+        "render.material": {
+          "id": "displacement"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/subdiv-0",
+      "label": "mat/15-tessellation/subdiv-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            -7.25,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.64,
+            0.64,
+            0.64
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 6,
+          "rings": 3,
+          "barycentric_uv": true,
+          "flat": true
+        },
+        "render.material": {
+          "id": "subdiv-0"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/subdiv-1",
+      "label": "mat/15-tessellation/subdiv-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.75,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.64,
+            0.64,
+            0.64
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 12,
+          "rings": 7,
+          "barycentric_uv": true,
+          "flat": false
+        },
+        "render.material": {
+          "id": "subdiv-1"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/subdiv-2",
+      "label": "mat/15-tessellation/subdiv-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            -4.25,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.64,
+            0.64,
+            0.64
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 24,
+          "rings": 14,
+          "barycentric_uv": true,
+          "flat": false
+        },
+        "render.material": {
+          "id": "subdiv-2"
+        }
+      }
+    },
+    {
+      "id": "mat/15-tessellation/subdiv-3",
+      "label": "mat/15-tessellation/subdiv-3",
+      "components": {
+        "core.transform": {
+          "position": [
+            -2.75,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.64,
+            0.64,
+            0.64
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 48,
+          "rings": 28,
+          "barycentric_uv": true,
+          "flat": false
+        },
+        "render.material": {
+          "id": "subdiv-3"
+        }
+      }
+    },
+    {
+      "id": "mat/16-two-sided/single",
+      "label": "mat/16-two-sided/single",
+      "components": {
+        "core.transform": {
+          "position": [
+            2.9,
+            1.2,
+            -20
+          ],
+          "scale": [
+            0.75,
+            0.75,
+            0.75
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "one-sided"
+        }
+      }
+    },
+    {
+      "id": "mat/16-two-sided/double",
+      "label": "mat/16-two-sided/double",
+      "components": {
+        "core.transform": {
+          "position": [
+            5,
+            1.2,
+            -20
+          ],
+          "scale": [
+            0.75,
+            0.75,
+            0.75
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "two-sided"
+        }
+      }
+    },
+    {
+      "id": "mat/16-two-sided/wire",
+      "label": "mat/16-two-sided/wire",
+      "components": {
+        "core.transform": {
+          "position": [
+            7.1,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.75,
+            0.75,
+            0.75
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 16,
+          "rings": 10,
+          "barycentric_uv": true
+        },
+        "render.material": {
+          "id": "wireframe"
+        }
+      }
+    },
+    {
+      "id": "mat/17-instances/instance-0",
+      "label": "mat/17-instances/instance-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            13.1,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "instance-0"
+        }
+      }
+    },
+    {
+      "id": "mat/17-instances/instance-1",
+      "label": "mat/17-instances/instance-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "instance-1"
+        }
+      }
+    },
+    {
+      "id": "mat/17-instances/instance-2",
+      "label": "mat/17-instances/instance-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            16.9,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "instance-2"
+        }
+      }
+    },
+    {
+      "id": "mat/18-layered/layer-0",
+      "label": "mat/18-layered/layer-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            23.1,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "layer-0"
+        }
+      }
+    },
+    {
+      "id": "mat/18-layered/layer-1",
+      "label": "mat/18-layered/layer-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "layer-1"
+        }
+      }
+    },
+    {
+      "id": "mat/18-layered/layer-2",
+      "label": "mat/18-layered/layer-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            26.9,
+            1.15,
+            -20
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "layer-2"
+        }
+      }
+    },
+    {
+      "id": "mat/19-forward/ao",
+      "label": "mat/19-forward/ao",
+      "components": {
+        "core.transform": {
+          "position": [
+            -26.3,
+            1.2,
+            -30
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "diagnostic-ao"
+        }
+      }
+    },
+    {
+      "id": "mat/19-forward/roughness",
+      "label": "mat/19-forward/roughness",
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.7,
+            1.2,
+            -30
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "diagnostic-roughness"
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/backdrop",
+      "label": "mat/20-postfx/backdrop",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            1.65,
+            -31
+          ],
+          "scale": [
+            2.5,
+            1.5,
+            1.5
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "grid"
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/bar-0",
+      "label": "mat/20-postfx/bar-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            -17,
+            1.2,
+            -30.65
+          ],
+          "scale": [
+            0.25,
+            2,
+            0.25
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.05,
+                0.4,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/bar-1",
+      "label": "mat/20-postfx/bar-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            -16,
+            1.2,
+            -30.65
+          ],
+          "scale": [
+            0.25,
+            2,
+            0.25
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.9,
+                0.4,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/bar-2",
+      "label": "mat/20-postfx/bar-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            1.2,
+            -30.65
+          ],
+          "scale": [
+            0.25,
+            2,
+            0.25
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.05,
+                0.4,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/bar-3",
+      "label": "mat/20-postfx/bar-3",
+      "components": {
+        "core.transform": {
+          "position": [
+            -14,
+            1.2,
+            -30.65
+          ],
+          "scale": [
+            0.25,
+            2,
+            0.25
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.9,
+                0.4,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/20-postfx/bar-4",
+      "label": "mat/20-postfx/bar-4",
+      "components": {
+        "core.transform": {
+          "position": [
+            -13,
+            1.2,
+            -30.65
+          ],
+          "scale": [
+            0.25,
+            2,
+            0.25
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.05,
+                0.4,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/21-decals/receiver",
+      "label": "mat/21-decals/receiver",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.2,
+            -30
+          ],
+          "scale": [
+            3,
+            3,
+            3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "grid"
+        }
+      }
+    },
+    {
+      "id": "mat/21-decals/receiver-box",
+      "label": "mat/21-decals/receiver-box",
+      "components": {
+        "core.transform": {
+          "position": [
+            -4.5,
+            0.6,
+            -30
+          ],
+          "scale": [
+            1.2,
+            0.9,
+            1.2
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.5,
+                0.55,
+                0.6
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/22-subsurface/opaque",
+      "label": "mat/22-subsurface/opaque",
+      "components": {
+        "core.transform": {
+          "position": [
+            3.8,
+            1.15,
+            -30
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "wax-opaque"
+        }
+      }
+    },
+    {
+      "id": "mat/22-subsurface/transmission",
+      "label": "mat/22-subsurface/transmission",
+      "components": {
+        "core.transform": {
+          "position": [
+            6.2,
+            1.15,
+            -30
+          ],
+          "scale": [
+            0.8,
+            0.8,
+            0.8
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "wax-transmission"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/back-0",
+      "label": "mat/23-blend/back-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            12.525,
+            1.1,
+            -30.4
+          ],
+          "scale": [
+            1.35,
+            1.7,
+            0.18
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.45,
+                0.6,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/opaque",
+      "label": "mat/23-blend/opaque",
+      "components": {
+        "core.transform": {
+          "position": [
+            12.525,
+            1.1,
+            -30
+          ],
+          "scale": [
+            0.65,
+            0.8,
+            0.65
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "blend-opaque"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/back-1",
+      "label": "mat/23-blend/back-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            14.175,
+            1.1,
+            -30.4
+          ],
+          "scale": [
+            1.35,
+            1.7,
+            0.18
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.45,
+                0.6,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/blend",
+      "label": "mat/23-blend/blend",
+      "components": {
+        "core.transform": {
+          "position": [
+            14.175,
+            1.1,
+            -30
+          ],
+          "scale": [
+            0.65,
+            0.8,
+            0.65
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "blend-blend"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/back-2",
+      "label": "mat/23-blend/back-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            15.825,
+            1.1,
+            -30.4
+          ],
+          "scale": [
+            1.35,
+            1.7,
+            0.18
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.45,
+                0.6,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/additive",
+      "label": "mat/23-blend/additive",
+      "components": {
+        "core.transform": {
+          "position": [
+            15.825,
+            1.1,
+            -30
+          ],
+          "scale": [
+            0.65,
+            0.8,
+            0.65
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "blend-additive"
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/back-3",
+      "label": "mat/23-blend/back-3",
+      "components": {
+        "core.transform": {
+          "position": [
+            17.475,
+            1.1,
+            -30.4
+          ],
+          "scale": [
+            1.35,
+            1.7,
+            0.18
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.45,
+                0.6,
+                0.8
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mat/23-blend/multiply",
+      "label": "mat/23-blend/multiply",
+      "components": {
+        "core.transform": {
+          "position": [
+            17.475,
+            1.1,
+            -30
+          ],
+          "scale": [
+            0.65,
+            0.8,
+            0.65
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "blend-multiply"
+        }
+      }
+    },
+    {
+      "id": "mat/24-cel/toon-0",
+      "label": "mat/24-cel/toon-0",
+      "components": {
+        "core.transform": {
+          "position": [
+            23.1,
+            1.15,
+            -30
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "toon-0"
+        }
+      }
+    },
+    {
+      "id": "mat/24-cel/toon-1",
+      "label": "mat/24-cel/toon-1",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            1.15,
+            -30
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "toon-1"
+        }
+      }
+    },
+    {
+      "id": "mat/24-cel/toon-2",
+      "label": "mat/24-cel/toon-2",
+      "components": {
+        "core.transform": {
+          "position": [
+            26.9,
+            1.15,
+            -30
+          ],
+          "scale": [
+            0.72,
+            0.72,
+            0.72
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "sphere",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "toon-2"
+        }
+      }
+    },
+    {
+      "id": "fx/03-lights/floor",
+      "label": "fx/03-lights/floor",
+      "components": {
+        "core.transform": {
+          "position": [
+            -5,
+            0.16,
+            -40
+          ],
+          "scale": [
+            3,
+            3,
+            3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "light-floor"
+        }
+      }
+    },
+    {
+      "id": "fx/05-ribbon/spinner",
+      "label": "fx/05-ribbon/spinner",
+      "components": {
+        "core.transform": {
+          "position": [
+            15,
+            0.65,
+            -40
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "core.motion": {
+          "velocity": [
+            0,
+            0,
+            0
+          ],
+          "angular_velocity": [
+            0,
+            2.1,
+            0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "transform": {
+                "position": [
+                  0.7,
+                  0,
+                  0
+                ],
+                "scale": [
+                  1.4,
+                  0.08,
+                  0.08
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              },
+              "color": [
+                1,
+                0.65,
+                0.13
+              ],
+              "emission": 0.8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fx/06-attached/duelist",
+      "label": "fx/06-attached/duelist",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.15,
+            -40
+          ],
+          "scale": [
+            1.3,
+            1.3,
+            1.3
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "animation.player": {
+          "asset": "fighter",
+          "clip": "slash3",
+          "looping": true,
+          "speed": 0.7
+        }
+      }
+    },
+    {
+      "id": "fx/08-heat/back",
+      "label": "fx/08-heat/back",
+      "components": {
+        "core.transform": {
+          "position": [
+            -15,
+            1.6,
+            -51.6
+          ],
+          "scale": [
+            2.7,
+            1.8,
+            1.8
+          ],
+          "rotation": [
+            0.7071067811865475,
+            0,
+            0,
+            0.7071067811865476
+          ]
+        },
+        "render.geometry": {
+          "shape": "plane",
+          "segments": 32,
+          "rings": 20
+        },
+        "render.material": {
+          "id": "grid"
+        }
+      }
+    },
+    {
+      "id": "fx/12-fog/occluder",
+      "label": "fx/12-fog/occluder",
+      "components": {
+        "core.transform": {
+          "position": [
+            25,
+            0.9,
+            -50
+          ],
+          "scale": [
+            0.6,
+            1.8,
+            0.6
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                1,
+                0.6,
+                0.15
+              ],
+              "emission": 0
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "prefabs": {},
+  "resources": {
+    "render.shaders": {
+      "shaders": {
+        "pbr": {
+          "file": "pbr.wgsl",
+          "parameters": {
+            "mode": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 2
+            },
+            "roughness": {
+              "slot": 1,
+              "default": 0.3,
+              "min": 0.02,
+              "max": 1
+            },
+            "metalness": {
+              "slot": 2,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            },
+            "specular": {
+              "slot": 3,
+              "default": 1,
+              "min": 0,
+              "max": 1
+            }
+          }
+        },
+        "emissive": {
+          "file": "emissive.wgsl",
+          "parameters": {
+            "pattern": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            },
+            "speed": {
+              "slot": 1,
+              "default": 2,
+              "min": 0,
+              "max": 8
+            },
+            "intensity": {
+              "slot": 2,
+              "default": 1,
+              "min": 0,
+              "max": 3
+            }
+          }
+        },
+        "animated": {
+          "file": "animated.wgsl",
+          "parameters": {
+            "mode": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            },
+            "speed": {
+              "slot": 1,
+              "default": 1,
+              "min": 0,
+              "max": 5
+            }
+          }
+        },
+        "alpha": {
+          "file": "alpha.wgsl",
+          "parameters": {
+            "radius": {
+              "slot": 0,
+              "default": 0.28,
+              "min": 0.05,
+              "max": 0.5
+            }
+          }
+        },
+        "relief": {
+          "file": "relief.wgsl",
+          "parameters": {
+            "parallax": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            },
+            "depth": {
+              "slot": 1,
+              "default": 0.1,
+              "min": 0,
+              "max": 0.3
+            },
+            "normal_strength": {
+              "slot": 2,
+              "default": 0.06,
+              "min": 0,
+              "max": 0.15
+            }
+          }
+        },
+        "vertex": {
+          "file": "vertex.wgsl",
+          "parameters": {
+            "mode": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 2
+            },
+            "amplitude": {
+              "slot": 1,
+              "default": 0.2,
+              "min": 0,
+              "max": 0.6
+            },
+            "speed": {
+              "slot": 2,
+              "default": 1.5,
+              "min": 0,
+              "max": 6
+            }
+          }
+        },
+        "wire": {
+          "file": "wire.wgsl",
+          "parameters": {
+            "width": {
+              "slot": 0,
+              "default": 1.2,
+              "min": 0.5,
+              "max": 3
+            }
+          }
+        },
+        "layers": {
+          "file": "layers.wgsl",
+          "parameters": {
+            "blend": {
+              "slot": 0,
+              "default": 0.5,
+              "min": 0,
+              "max": 1
+            },
+            "threshold": {
+              "slot": 1,
+              "default": 0.5,
+              "min": 0,
+              "max": 1
+            },
+            "mask": {
+              "slot": 2,
+              "default": 1,
+              "min": 0,
+              "max": 1
+            }
+          }
+        },
+        "diagnostic": {
+          "file": "diagnostic.wgsl",
+          "parameters": {
+            "mode": {
+              "slot": 0,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            },
+            "colorize": {
+              "slot": 1,
+              "default": 0,
+              "min": 0,
+              "max": 1
+            }
+          }
+        },
+        "subsurface": {
+          "file": "subsurface.wgsl",
+          "parameters": {
+            "wrap": {
+              "slot": 0,
+              "default": 0.55,
+              "min": 0,
+              "max": 1
+            },
+            "transmission": {
+              "slot": 1,
+              "default": 0.8,
+              "min": 0,
+              "max": 1
+            }
+          }
+        }
+      },
+      "materials": {
+        "plinth": {
+          "shader": "pbr",
+          "tint": [
+            0.12,
+            0.17,
+            0.2,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.75,
+            "metalness": 0.35
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "line": {
+          "shader": "unlit",
+          "tint": [
+            0.08,
+            0.7,
+            0.64,
+            1
+          ],
+          "parameters": {},
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "grid": {
+          "shader": "pbr",
+          "tint": [
+            0.6,
+            0.65,
+            0.7,
+            1
+          ],
+          "parameters": {
+            "mode": 2,
+            "roughness": 0.75
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "chair-wood": {
+          "shader": "pbr",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "mode": 1,
+            "roughness": 0.5
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "pbr-red": {
+          "shader": "pbr",
+          "tint": [
+            0.8,
+            0.23,
+            0.08,
+            1
+          ],
+          "parameters": {},
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "pbr-blue": {
+          "shader": "pbr",
+          "tint": [
+            0.04,
+            0.38,
+            0.92,
+            1
+          ],
+          "parameters": {
+            "metalness": 0.7,
+            "roughness": 0.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "wood": {
+          "shader": "pbr",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "mode": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "solid": {
+          "shader": "pbr",
+          "tint": [
+            0.07,
+            0.7,
+            0.5,
+            1
+          ],
+          "parameters": {},
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "metal": {
+          "shader": "pbr",
+          "tint": [
+            0.9,
+            0.64,
+            0.18,
+            1
+          ],
+          "parameters": {
+            "metalness": 1,
+            "roughness": 0.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "plastic": {
+          "shader": "pbr",
+          "tint": [
+            0.9,
+            0.64,
+            0.18,
+            1
+          ],
+          "parameters": {
+            "metalness": 0,
+            "roughness": 0.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "rough-0": {
+          "shader": "pbr",
+          "tint": [
+            0.65,
+            0.68,
+            0.72,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.1,
+            "metalness": 0.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "rough-1": {
+          "shader": "pbr",
+          "tint": [
+            0.65,
+            0.68,
+            0.72,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.4,
+            "metalness": 0.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "rough-2": {
+          "shader": "pbr",
+          "tint": [
+            0.65,
+            0.68,
+            0.72,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.6,
+            "metalness": 0.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "spec-0": {
+          "shader": "pbr",
+          "tint": [
+            0.15,
+            0.4,
+            0.9,
+            1
+          ],
+          "parameters": {
+            "specular": 0,
+            "roughness": 0.12
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "spec-1": {
+          "shader": "pbr",
+          "tint": [
+            0.15,
+            0.4,
+            0.9,
+            1
+          ],
+          "parameters": {
+            "specular": 1,
+            "roughness": 0.12
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "emit-solid": {
+          "shader": "emissive",
+          "tint": [
+            0.05,
+            0.85,
+            0.68,
+            1
+          ],
+          "parameters": {
+            "pattern": 0,
+            "speed": 1.6,
+            "intensity": 1.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "emit-grid": {
+          "shader": "emissive",
+          "tint": [
+            1,
+            0.36,
+            0.06,
+            1
+          ],
+          "parameters": {
+            "pattern": 1,
+            "speed": 2,
+            "intensity": 2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "uv-scroll": {
+          "shader": "animated",
+          "tint": [
+            0.04,
+            0.75,
+            0.95,
+            1
+          ],
+          "parameters": {
+            "mode": 0,
+            "speed": 1
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "color-pulse": {
+          "shader": "animated",
+          "tint": [
+            1,
+            0.35,
+            0.12,
+            1
+          ],
+          "parameters": {
+            "mode": 1,
+            "speed": 1
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "glass-core": {
+          "shader": "pbr",
+          "tint": [
+            1,
+            0.45,
+            0.08,
+            1
+          ],
+          "parameters": {},
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "glass-reflect": {
+          "shader": "pbr",
+          "tint": [
+            0.65,
+            0.86,
+            1,
+            0.28
+          ],
+          "parameters": {
+            "roughness": 0.04,
+            "specular": 1
+          },
+          "alpha": "blend",
+          "double_sided": false
+        },
+        "glass-color": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.68,
+            0.6,
+            0.4
+          ],
+          "parameters": {
+            "roughness": 0.08
+          },
+          "alpha": "blend",
+          "double_sided": false
+        },
+        "opacity-0": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.65,
+            0.95,
+            0.1
+          ],
+          "parameters": {
+            "roughness": 0.3
+          },
+          "alpha": "blend",
+          "double_sided": false
+        },
+        "opacity-1": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.65,
+            0.95,
+            0.4
+          ],
+          "parameters": {
+            "roughness": 0.3
+          },
+          "alpha": "blend",
+          "double_sided": false
+        },
+        "opacity-2": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.65,
+            0.95,
+            0.6
+          ],
+          "parameters": {
+            "roughness": 0.3
+          },
+          "alpha": "blend",
+          "double_sided": false
+        },
+        "cutoff": {
+          "shader": "alpha",
+          "tint": [
+            0.06,
+            0.85,
+            0.5,
+            1
+          ],
+          "parameters": {
+            "radius": 0.28
+          },
+          "alpha": "mask",
+          "double_sided": true
+        },
+        "opacity-mask": {
+          "shader": "alpha",
+          "tint": [
+            0.05,
+            0.55,
+            0.95,
+            0.7
+          ],
+          "parameters": {
+            "radius": 0.28
+          },
+          "alpha": "blend",
+          "double_sided": true
+        },
+        "wave": {
+          "shader": "vertex",
+          "tint": [
+            0.04,
+            0.7,
+            0.85,
+            1
+          ],
+          "parameters": {
+            "mode": 0,
+            "amplitude": 0.28,
+            "speed": 1.6
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "normal-offset": {
+          "shader": "vertex",
+          "tint": [
+            0.9,
+            0.35,
+            0.1,
+            1
+          ],
+          "parameters": {
+            "mode": 1,
+            "amplitude": 0.12,
+            "speed": 1.5
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "normal-flat": {
+          "shader": "pbr",
+          "tint": [
+            0.55,
+            0.26,
+            0.12,
+            1
+          ],
+          "parameters": {},
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "normal-mapped": {
+          "shader": "relief",
+          "tint": [
+            0.66,
+            0.38,
+            0.2,
+            1
+          ],
+          "parameters": {
+            "parallax": 0,
+            "depth": 0.1,
+            "normal_strength": 0.06
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "pom": {
+          "shader": "relief",
+          "tint": [
+            0.68,
+            0.43,
+            0.22,
+            1
+          ],
+          "parameters": {
+            "parallax": 1,
+            "depth": 0.12,
+            "normal_strength": 0.04
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "displacement": {
+          "shader": "vertex",
+          "tint": [
+            0.25,
+            0.58,
+            0.83,
+            1
+          ],
+          "parameters": {
+            "mode": 2,
+            "amplitude": 0.42,
+            "speed": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "subdiv-0": {
+          "shader": "wire",
+          "tint": [
+            0.08,
+            0.85,
+            0.68,
+            1
+          ],
+          "parameters": {
+            "width": 1.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "subdiv-1": {
+          "shader": "wire",
+          "tint": [
+            0.08,
+            0.85,
+            0.68,
+            1
+          ],
+          "parameters": {
+            "width": 1.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "subdiv-2": {
+          "shader": "wire",
+          "tint": [
+            0.08,
+            0.85,
+            0.68,
+            1
+          ],
+          "parameters": {
+            "width": 1.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "subdiv-3": {
+          "shader": "wire",
+          "tint": [
+            0.08,
+            0.85,
+            0.68,
+            1
+          ],
+          "parameters": {
+            "width": 1.2
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "one-sided": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.65,
+            0.85,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.3
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "two-sided": {
+          "shader": "pbr",
+          "tint": [
+            0.95,
+            0.38,
+            0.12,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.3
+          },
+          "alpha": "opaque",
+          "double_sided": true
+        },
+        "wireframe": {
+          "shader": "wire",
+          "tint": [
+            0.2,
+            0.9,
+            0.55,
+            1
+          ],
+          "parameters": {
+            "width": 1.4
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "instance-0": {
+          "shader": "pbr",
+          "tint": [
+            0.8,
+            0.8,
+            0.8,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.25
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "instance-1": {
+          "shader": "pbr",
+          "tint": [
+            0.05,
+            0.8,
+            0.6,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.45
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "instance-2": {
+          "shader": "pbr",
+          "tint": [
+            0.7,
+            0.16,
+            0.65,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.65
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "layer-0": {
+          "shader": "layers",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "blend": 0,
+            "threshold": 0.5,
+            "mask": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "layer-1": {
+          "shader": "layers",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "blend": 0.5,
+            "threshold": 0.5,
+            "mask": 1
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "layer-2": {
+          "shader": "layers",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "blend": 1,
+            "threshold": 0.5,
+            "mask": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "diagnostic-ao": {
+          "shader": "diagnostic",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "mode": 0,
+            "colorize": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "diagnostic-roughness": {
+          "shader": "diagnostic",
+          "tint": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "parameters": {
+            "mode": 1,
+            "colorize": 1
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "wax-opaque": {
+          "shader": "subsurface",
+          "tint": [
+            0.85,
+            0.22,
+            0.13,
+            1
+          ],
+          "parameters": {
+            "wrap": 0,
+            "transmission": 0
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "wax-transmission": {
+          "shader": "subsurface",
+          "tint": [
+            0.85,
+            0.22,
+            0.13,
+            1
+          ],
+          "parameters": {
+            "wrap": 0.55,
+            "transmission": 0.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "blend-opaque": {
+          "shader": "animated",
+          "tint": [
+            0.95,
+            0.3,
+            0.08,
+            0.55
+          ],
+          "parameters": {
+            "mode": 0,
+            "speed": 0.4
+          },
+          "alpha": "opaque",
+          "double_sided": true
+        },
+        "blend-blend": {
+          "shader": "animated",
+          "tint": [
+            0.95,
+            0.3,
+            0.08,
+            0.55
+          ],
+          "parameters": {
+            "mode": 0,
+            "speed": 0.4
+          },
+          "alpha": "blend",
+          "double_sided": true
+        },
+        "blend-additive": {
+          "shader": "animated",
+          "tint": [
+            0.95,
+            0.3,
+            0.08,
+            0.55
+          ],
+          "parameters": {
+            "mode": 0,
+            "speed": 0.4
+          },
+          "alpha": "additive",
+          "double_sided": true
+        },
+        "blend-multiply": {
+          "shader": "animated",
+          "tint": [
+            0.95,
+            0.3,
+            0.08,
+            0.55
+          ],
+          "parameters": {
+            "mode": 0,
+            "speed": 0.4
+          },
+          "alpha": "multiply",
+          "double_sided": true
+        },
+        "toon-0": {
+          "shader": "toon",
+          "tint": [
+            0.45,
+            0.16,
+            0.85,
+            1
+          ],
+          "parameters": {
+            "bands": 2,
+            "rim": 0.16
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "toon-1": {
+          "shader": "toon",
+          "tint": [
+            0.45,
+            0.16,
+            0.85,
+            1
+          ],
+          "parameters": {
+            "bands": 3,
+            "rim": 0.16
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "toon-2": {
+          "shader": "toon",
+          "tint": [
+            0.45,
+            0.16,
+            0.85,
+            1
+          ],
+          "parameters": {
+            "bands": 6,
+            "rim": 0.16
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        },
+        "light-floor": {
+          "shader": "pbr",
+          "tint": [
+            0.7,
+            0.72,
+            0.74,
+            1
+          ],
+          "parameters": {
+            "roughness": 0.8
+          },
+          "alpha": "opaque",
+          "double_sided": false
+        }
+      }
+    },
+    "vfx.library": {
+      "emitters": {
+        "fx/01-cpu": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 128,
+          "seed": 42,
+          "origin": [
+            -25,
+            0.3,
+            -40
+          ],
+          "velocity": [
+            0,
+            2.5,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.08,
+          "end_size": 0.02,
+          "color": [
+            0.03,
+            0.75,
+            0.95,
+            0.95
+          ],
+          "end_color": [
+            0.45,
+            0.2,
+            0.9,
+            0.08
+          ],
+          "field": "fountain"
+        },
+        "fx/02-gpu": {
+          "backend": "gpu",
+          "renderer": "sprite",
+          "count": 1024,
+          "seed": 42,
+          "origin": [
+            -15,
+            0.3,
+            -40
+          ],
+          "velocity": [
+            0,
+            2.5,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.08,
+          "end_size": 0.02,
+          "color": [
+            0.03,
+            0.75,
+            0.95,
+            0.95
+          ],
+          "end_color": [
+            0.45,
+            0.2,
+            0.9,
+            0.08
+          ],
+          "field": "fountain"
+        },
+        "fx/03-lights": {
+          "backend": "cpu",
+          "renderer": "light",
+          "count": 16,
+          "seed": 42,
+          "origin": [
+            -5,
+            0.3,
+            -40
+          ],
+          "velocity": [
+            0,
+            0.8,
+            0
+          ],
+          "acceleration": [
+            0,
+            -0.4,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.5,
+          "size": 0.13,
+          "end_size": 0.08,
+          "color": [
+            1,
+            0.18,
+            0.04,
+            1
+          ],
+          "end_color": [
+            0.05,
+            0.35,
+            1,
+            0.4
+          ],
+          "field": "fountain"
+        },
+        "fx/04-model": {
+          "backend": "cpu",
+          "renderer": "mesh",
+          "count": 36,
+          "seed": 42,
+          "origin": [
+            5,
+            0.3,
+            -40
+          ],
+          "velocity": [
+            0,
+            2,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.15,
+          "end_size": 0.08,
+          "color": [
+            1,
+            0.65,
+            0.08,
+            1
+          ],
+          "end_color": [
+            0.05,
+            0.8,
+            0.55,
+            0.15
+          ],
+          "field": "fountain"
+        },
+        "fx/05-ribbon": {
+          "backend": "cpu",
+          "renderer": "ribbon",
+          "count": 1,
+          "seed": 42,
+          "origin": [
+            1.4,
+            0,
+            0
+          ],
+          "velocity": [
+            0,
+            2.5,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.11,
+          "end_size": 0.02,
+          "color": [
+            0.04,
+            0.9,
+            0.75,
+            0.9
+          ],
+          "end_color": [
+            0.45,
+            0.2,
+            0.9,
+            0.08
+          ],
+          "field": "fountain",
+          "attachment": "fx/05-ribbon/spinner"
+        },
+        "fx/06-attached": {
+          "backend": "cpu",
+          "renderer": "ribbon",
+          "count": 1,
+          "seed": 42,
+          "origin": [
+            0,
+            0.65,
+            0
+          ],
+          "velocity": [
+            0,
+            2.5,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.12,
+          "end_size": 0.02,
+          "color": [
+            1,
+            0.42,
+            0.08,
+            0.95
+          ],
+          "end_color": [
+            0.45,
+            0.2,
+            0.9,
+            0.08
+          ],
+          "field": "fountain",
+          "attachment": "fx/06-attached/duelist",
+          "bone": "fore.R"
+        },
+        "fx/06-attached-left": {
+          "backend": "cpu",
+          "renderer": "ribbon",
+          "count": 1,
+          "seed": 42,
+          "origin": [
+            0,
+            0.65,
+            0
+          ],
+          "velocity": [
+            0,
+            2.5,
+            0
+          ],
+          "acceleration": [
+            0,
+            -1.2,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.8,
+          "size": 0.12,
+          "end_size": 0.02,
+          "color": [
+            0.08,
+            0.7,
+            1,
+            0.9
+          ],
+          "end_color": [
+            0.45,
+            0.2,
+            0.9,
+            0.08
+          ],
+          "field": "fountain",
+          "attachment": "fx/06-attached/duelist",
+          "bone": "fore.L"
+        },
+        "fx/07-smoke": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 160,
+          "seed": 42,
+          "origin": [
+            -25,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            0.9,
+            0
+          ],
+          "acceleration": [
+            0,
+            0.05,
+            0
+          ],
+          "spread": 0.4,
+          "lifetime": 3.7,
+          "size": 0.15,
+          "end_size": 0.85,
+          "color": [
+            0.52,
+            0.57,
+            0.63,
+            0.3
+          ],
+          "end_color": [
+            0.25,
+            0.3,
+            0.38,
+            0
+          ],
+          "field": "smoke"
+        },
+        "fx/08-heat": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 96,
+          "seed": 42,
+          "origin": [
+            -15,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            1.2,
+            0
+          ],
+          "acceleration": [
+            0,
+            0,
+            0
+          ],
+          "spread": 0.9,
+          "lifetime": 2.3,
+          "size": 0.16,
+          "end_size": 0.4,
+          "color": [
+            1,
+            0.27,
+            0.04,
+            0.7
+          ],
+          "end_color": [
+            0.3,
+            0.02,
+            0.01,
+            0
+          ],
+          "field": "smoke"
+        },
+        "fx/09-snow": {
+          "backend": "gpu",
+          "renderer": "sprite",
+          "count": 320,
+          "seed": 42,
+          "origin": [
+            -5,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            -0.7,
+            0
+          ],
+          "acceleration": [
+            0,
+            0,
+            0
+          ],
+          "spread": 0.35,
+          "lifetime": 4.2,
+          "size": 0.035,
+          "end_size": 0.025,
+          "color": [
+            0.75,
+            0.9,
+            1,
+            0.9
+          ],
+          "end_color": [
+            0.75,
+            0.9,
+            1,
+            0.1
+          ],
+          "field": "snow"
+        },
+        "fx/10-collision": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 144,
+          "seed": 42,
+          "origin": [
+            5,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            4.4,
+            0
+          ],
+          "acceleration": [
+            0,
+            -6,
+            0
+          ],
+          "spread": 1.2,
+          "lifetime": 3.6,
+          "size": 0.08,
+          "end_size": 0.05,
+          "color": [
+            1,
+            0.6,
+            0.05,
+            1
+          ],
+          "end_color": [
+            1,
+            0.15,
+            0.02,
+            0.3
+          ],
+          "field": "fountain",
+          "floor": 0.25,
+          "bounce": 0.72
+        },
+        "fx/11-sampling": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 180,
+          "seed": 42,
+          "origin": [
+            15,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            0,
+            0
+          ],
+          "acceleration": [
+            0,
+            0,
+            0
+          ],
+          "spread": 0,
+          "lifetime": 3,
+          "size": 0.045,
+          "end_size": 0.06,
+          "color": [
+            0.04,
+            0.9,
+            0.65,
+            1
+          ],
+          "end_color": [
+            0.1,
+            0.7,
+            1,
+            0.6
+          ],
+          "field": "texture",
+          "texture_mask": [
+            "0000011111100000",
+            "0000111111110000",
+            "0001110000111000",
+            "0011100000011100",
+            "0111000000001110",
+            "0111111111111110",
+            "1111111111111111",
+            "1110000000000111",
+            "1110000000000111",
+            "1110000000000111"
+          ]
+        },
+        "fx/12-fog": {
+          "backend": "cpu",
+          "renderer": "sprite",
+          "count": 64,
+          "seed": 42,
+          "origin": [
+            25,
+            0.3,
+            -50
+          ],
+          "velocity": [
+            0,
+            0.3,
+            0
+          ],
+          "acceleration": [
+            0,
+            0,
+            0
+          ],
+          "spread": 2.8,
+          "lifetime": 3,
+          "size": 0.35,
+          "end_size": 0.65,
+          "color": [
+            0.2,
+            0.4,
+            0.55,
+            0.08
+          ],
+          "end_color": [
+            0.2,
+            0.4,
+            0.55,
+            0
+          ],
+          "field": "smoke"
+        }
+      }
+    },
+    "postfx.settings": {
+      "volumes": [
+        {
+          "id": "material-post",
+          "kind": "chromatic",
+          "center": [
+            -15,
+            1.6,
+            -30
+          ],
+          "half_size": [
+            2,
+            1.5,
+            0.7
+          ],
+          "strength": 1.2,
+          "color": [
+            0.7,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "id": "impact-decal",
+          "kind": "decal",
+          "center": [
+            -5,
+            0.65,
+            -30
+          ],
+          "half_size": [
+            2.6,
+            0.85,
+            2.3
+          ],
+          "strength": 0.9,
+          "color": [
+            0.04,
+            0.9,
+            0.72,
+            0.95
+          ]
+        },
+        {
+          "id": "heat-plume",
+          "kind": "heat",
+          "center": [
+            -15,
+            1.6,
+            -50
+          ],
+          "half_size": [
+            1.8,
+            1.8,
+            0.9
+          ],
+          "strength": 1.1,
+          "color": [
+            1,
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "id": "fog-box",
+          "kind": "fog",
+          "center": [
+            25,
+            1.4,
+            -50
+          ],
+          "half_size": [
+            2.8,
+            1.4,
+            1.8
+          ],
+          "strength": 0.85,
+          "color": [
+            0.15,
+            0.38,
+            0.52,
+            0.8
+          ]
+        }
+      ]
+    },
+    "showcase.tour": {
+      "camera": "tour/camera",
+      "initial": null,
+      "stations": {
+        "mat/01-pbr": {
+          "title": "M01 · 物理式材質 / PBR",
+          "source_title": "1. Physically Based Rendering",
+          "category": "materials",
+          "origin": [
+            -25,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "GGX 微表面反射與 Fresnel；環境使用程序化天空與棚燈，未使用 Flax 的反射探針。",
+          "controls": [
+            {
+              "label": "粗糙度",
+              "resource": "render.shaders",
+              "field": "/materials/pbr-blue/parameters/roughness",
+              "min": 0.02,
+              "max": 1,
+              "default": 0.2
+            }
+          ],
+          "emitter": null
+        },
+        "mat/02-color": {
+          "title": "M02 · 材質色彩",
+          "source_title": "2. Material Color",
+          "category": "materials",
+          "origin": [
+            -15,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "程序木紋與純色材質對照，使用相同表面介面。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/03-metalness": {
+          "title": "M03 · 金屬度",
+          "source_title": "3. Metalness",
+          "category": "materials",
+          "origin": [
+            -5,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "同色金屬與絕緣體：F0、漫反射與鏡面能量依金屬度改變。",
+          "controls": [
+            {
+              "label": "金屬度",
+              "resource": "render.shaders",
+              "field": "/materials/metal/parameters/metalness",
+              "min": 0,
+              "max": 1,
+              "default": 1
+            }
+          ],
+          "emitter": null
+        },
+        "mat/04-roughness": {
+          "title": "M04 · 粗糙度",
+          "source_title": "4. Roughness",
+          "category": "materials",
+          "origin": [
+            5,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "粗糙度 0.1 / 0.4 / 0.6，觀察反射峰值與高光寬度。",
+          "controls": [
+            {
+              "label": "左球粗糙度",
+              "resource": "render.shaders",
+              "field": "/materials/rough-0/parameters/roughness",
+              "min": 0.02,
+              "max": 1,
+              "default": 0.1
+            }
+          ],
+          "emitter": null
+        },
+        "mat/05-specular": {
+          "title": "M05 · 鏡面反射",
+          "source_title": "5. Specular",
+          "category": "materials",
+          "origin": [
+            15,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "相同漫反射色，分別關閉與開啟絕緣體鏡面反射。",
+          "controls": [
+            {
+              "label": "鏡面強度",
+              "resource": "render.shaders",
+              "field": "/materials/spec-1/parameters/specular",
+              "min": 0,
+              "max": 1,
+              "default": 1
+            }
+          ],
+          "emitter": null
+        },
+        "mat/06-emissive": {
+          "title": "M06 · 自發光",
+          "source_title": "6. Emissive",
+          "category": "materials",
+          "origin": [
+            25,
+            0,
+            0
+          ],
+          "implementation": "原生等效展示",
+          "description": "顏色與程序遮罩自發光，可獨立控制強度及脈動速度；不宣稱 HDR bloom。",
+          "controls": [
+            {
+              "label": "發光強度",
+              "resource": "render.shaders",
+              "field": "/materials/emit-grid/parameters/intensity",
+              "min": 0,
+              "max": 3,
+              "default": 2
+            }
+          ],
+          "emitter": null
+        },
+        "mat/07-animated": {
+          "title": "M07 · 動態材質",
+          "source_title": "7. Animated",
+          "category": "materials",
+          "origin": [
+            -25,
+            0,
+            -10
+          ],
+          "implementation": "原生等效展示",
+          "description": "UV 移動與色彩動畫，時間來自固定步進模擬。",
+          "controls": [
+            {
+              "label": "UV 流速",
+              "resource": "render.shaders",
+              "field": "/materials/uv-scroll/parameters/speed",
+              "min": 0,
+              "max": 5,
+              "default": 1
+            }
+          ],
+          "emitter": null
+        },
+        "mat/08-transparent": {
+          "title": "M08 · 透明材質",
+          "source_title": "8. Transparent",
+          "category": "materials",
+          "origin": [
+            -15,
+            0,
+            -10
+          ],
+          "implementation": "透明 + 程序環境反射",
+          "description": "透明混合與 Fresnel 反射外殼；反射為程序環境，不是即時場景反射或折射。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/09-opacity": {
+          "title": "M09 · 不透明度",
+          "source_title": "9. Opacity",
+          "category": "materials",
+          "origin": [
+            -5,
+            0,
+            -10
+          ],
+          "implementation": "原生等效展示",
+          "description": "Alpha 0.1 / 0.4 / 0.6，背景模型顯示實際透明混合。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/10-alpha": {
+          "title": "M10 · Alpha 遮罩",
+          "source_title": "10. Alpha",
+          "category": "materials",
+          "origin": [
+            5,
+            0,
+            -10
+          ],
+          "implementation": "原生等效展示",
+          "description": "真正的 Alpha Test 丟棄與 Alpha Blend 對照，皆使用程序圓孔遮罩。",
+          "controls": [
+            {
+              "label": "孔徑",
+              "resource": "render.shaders",
+              "field": "/materials/cutoff/parameters/radius",
+              "min": 0.05,
+              "max": 0.5,
+              "default": 0.28
+            }
+          ],
+          "emitter": null
+        },
+        "mat/11-vertex": {
+          "title": "M11 · 頂點位移",
+          "source_title": "11. Vertex Offset",
+          "category": "materials",
+          "origin": [
+            15,
+            0,
+            -10
+          ],
+          "implementation": "原生等效展示",
+          "description": "頂點階段實際改變位置：平面波浪與沿法線膨脹。",
+          "controls": [
+            {
+              "label": "位移幅度",
+              "resource": "render.shaders",
+              "field": "/materials/wave/parameters/amplitude",
+              "min": 0,
+              "max": 0.6,
+              "default": 0.28
+            }
+          ],
+          "emitter": null
+        },
+        "mat/12-normal": {
+          "title": "M12 · 法線映射",
+          "source_title": "12. Normal Mapping",
+          "category": "materials",
+          "origin": [
+            25,
+            0,
+            -10
+          ],
+          "implementation": "原生等效展示",
+          "description": "程序高度場轉為切線空間法線，與平面法線比較；不需要外部貼圖資產。",
+          "controls": [
+            {
+              "label": "法線強度",
+              "resource": "render.shaders",
+              "field": "/materials/normal-mapped/parameters/normal_strength",
+              "min": 0,
+              "max": 0.15,
+              "default": 0.06
+            }
+          ],
+          "emitter": null
+        },
+        "mat/13-parallax": {
+          "title": "M13 · 視差遮蔽",
+          "source_title": "13. Parallax Occlusion",
+          "category": "materials",
+          "origin": [
+            -25,
+            0,
+            -20
+          ],
+          "implementation": "原生等效展示",
+          "description": "16 步視差遮蔽搜尋程序高度場；A/D 改變視角可看出 UV 深度位移，輪廓仍是平面。",
+          "controls": [
+            {
+              "label": "視差深度",
+              "resource": "render.shaders",
+              "field": "/materials/pom/parameters/depth",
+              "min": 0,
+              "max": 0.3,
+              "default": 0.12
+            }
+          ],
+          "emitter": null
+        },
+        "mat/14-displacement": {
+          "title": "M14 · 表面置換",
+          "source_title": "14. Displacement",
+          "category": "materials",
+          "origin": [
+            -15,
+            0,
+            -20
+          ],
+          "implementation": "原生等效展示",
+          "description": "程序高度場在 GPU 頂點階段實際改變細分網格的表面與輪廓。",
+          "controls": [
+            {
+              "label": "置換高度",
+              "resource": "render.shaders",
+              "field": "/materials/displacement/parameters/amplitude",
+              "min": 0,
+              "max": 0.6,
+              "default": 0.42
+            }
+          ],
+          "emitter": null
+        },
+        "mat/15-tessellation": {
+          "title": "M15 · 曲面細分",
+          "source_title": "15. Tessellation",
+          "category": "materials",
+          "origin": [
+            -5,
+            0,
+            -20
+          ],
+          "implementation": "CPU 均勻細分對照",
+          "description": "以真實三角形展示 6 / 12 / 24 / 48 段細分。對應 Flax 的細分主題；沒有宣稱 GPU adaptive、Phong 或 PN triangle 實作。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/16-two-sided": {
+          "title": "M16 · 雙面與線框",
+          "source_title": "16. Two Sided",
+          "category": "materials",
+          "origin": [
+            5,
+            0,
+            -20
+          ],
+          "implementation": "原生等效展示",
+          "description": "自動環繞觀察單面／雙面剔除；線框使用三角形重心座標，不依賴硬體線框功能。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/17-instances": {
+          "title": "M17 · 材質實例",
+          "source_title": "17. Material Instances",
+          "category": "materials",
+          "origin": [
+            15,
+            0,
+            -20
+          ],
+          "implementation": "原生等效展示",
+          "description": "三個獨立材質實例共用同一份 PBR WGSL；修改參數會保留 shader pipeline。",
+          "controls": [
+            {
+              "label": "實例粗糙度",
+              "resource": "render.shaders",
+              "field": "/materials/instance-1/parameters/roughness",
+              "min": 0.02,
+              "max": 1,
+              "default": 0.45
+            }
+          ],
+          "emitter": null
+        },
+        "mat/18-layered": {
+          "title": "M18 · 分層材質",
+          "source_title": "18. Layered Materials",
+          "category": "materials",
+          "origin": [
+            25,
+            0,
+            -20
+          ],
+          "implementation": "原生等效展示",
+          "description": "木紋、青銅與程序遮罩分層，展示基材、混合與覆蓋材。",
+          "controls": [
+            {
+              "label": "遮罩臨界",
+              "resource": "render.shaders",
+              "field": "/materials/layer-1/parameters/threshold",
+              "min": 0,
+              "max": 1,
+              "default": 0.5
+            }
+          ],
+          "emitter": null
+        },
+        "mat/19-forward": {
+          "title": "M19 · Forward 材質診斷",
+          "source_title": "19. Forward Pass",
+          "category": "materials",
+          "origin": [
+            -25,
+            0,
+            -30
+          ],
+          "implementation": "Forward 材質屬性視覺化",
+          "description": "AO 與 roughness 的材質輸入診斷；Axiom 目前沒有 Flax deferred G-buffer，這不是場景 G-buffer 採樣。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/20-postfx": {
+          "title": "M20 · 後處理材質",
+          "source_title": "20. PostFx Material",
+          "category": "materials",
+          "origin": [
+            -15,
+            0,
+            -30
+          ],
+          "implementation": "原生等效展示",
+          "description": "真正讀取已渲染的 Scene Color，執行 RGB 通道偏移與著色；UI 在後處理後繪製。",
+          "controls": [
+            {
+              "label": "通道偏移",
+              "resource": "postfx.settings",
+              "field": "/volumes/0/strength",
+              "min": 0,
+              "max": 2,
+              "default": 1.2
+            }
+          ],
+          "emitter": null
+        },
+        "mat/21-decals": {
+          "title": "M21 · 投影貼花",
+          "source_title": "21. Decals",
+          "category": "materials",
+          "origin": [
+            -5,
+            0,
+            -30
+          ],
+          "implementation": "原生等效展示",
+          "description": "由 Scene Depth 重建世界位置，將標記投影到地面及方塊。這是軸對齊 box decal，不是漂浮的透明平面。",
+          "controls": [
+            {
+              "label": "貼花強度",
+              "resource": "postfx.settings",
+              "field": "/volumes/1/strength",
+              "min": 0,
+              "max": 1,
+              "default": 0.9
+            }
+          ],
+          "emitter": null
+        },
+        "mat/22-subsurface": {
+          "title": "M22 · 次表面透射",
+          "source_title": "22. Subsurface",
+          "category": "materials",
+          "origin": [
+            5,
+            0,
+            -30
+          ],
+          "implementation": "薄表面透射近似",
+          "description": "使用 wrap diffuse 與背光透射近似蠟材質；不是 Flax 的屏幕空間 SSS 或體積散射解算。",
+          "controls": [
+            {
+              "label": "透射強度",
+              "resource": "render.shaders",
+              "field": "/materials/wax-transmission/parameters/transmission",
+              "min": 0,
+              "max": 1,
+              "default": 0.8
+            }
+          ],
+          "emitter": null
+        },
+        "mat/23-blend": {
+          "title": "M23 · 混合模式",
+          "source_title": "23. Blend Modes",
+          "category": "materials",
+          "origin": [
+            15,
+            0,
+            -30
+          ],
+          "implementation": "原生等效展示",
+          "description": "真正的 opaque、alpha、additive 與 multiply GPU blend state，依序疊在相同背景色上。",
+          "controls": [],
+          "emitter": null
+        },
+        "mat/24-cel": {
+          "title": "M24 · 卡通渲染",
+          "source_title": "24. Cel Shading",
+          "category": "materials",
+          "origin": [
+            25,
+            0,
+            -30
+          ],
+          "implementation": "原生等效展示",
+          "description": "2 / 3 / 6 階光照與 Fresnel 邊緣亮度。",
+          "controls": [
+            {
+              "label": "色階數",
+              "resource": "render.shaders",
+              "field": "/materials/toon-1/parameters/bands",
+              "min": 1,
+              "max": 8,
+              "default": 3
+            }
+          ],
+          "emitter": null
+        },
+        "fx/01-cpu": {
+          "title": "P01 · CPU 粒子",
+          "source_title": "1. CPU Particles",
+          "category": "particles",
+          "origin": [
+            -25,
+            0,
+            -40
+          ],
+          "implementation": "原生等效展示",
+          "description": "固定步進 CPU 評估的帶種子噴泉；生命週期、速度、顏色與大小皆由資料控制。",
+          "controls": [
+            {
+              "label": "生命週期",
+              "resource": "vfx.library",
+              "field": "/emitters/fx~101-cpu/lifetime",
+              "min": 0.5,
+              "max": 5,
+              "default": 2.8
+            }
+          ],
+          "emitter": "fx/01-cpu"
+        },
+        "fx/02-gpu": {
+          "title": "P02 · GPU 粒子",
+          "source_title": "2. GPU Particles",
+          "category": "particles",
+          "origin": [
+            -15,
+            0,
+            -40
+          ],
+          "implementation": "GPU compute / storage buffer",
+          "description": "真正的 compute shader 寫入粒子 storage buffer，再以 instanced sprite 繪製。CPU/GPU 共用解析式軌跡契約，另有讀回比對。",
+          "controls": [
+            {
+              "label": "生命週期",
+              "resource": "vfx.library",
+              "field": "/emitters/fx~102-gpu/lifetime",
+              "min": 0.5,
+              "max": 5,
+              "default": 2.8
+            }
+          ],
+          "emitter": "fx/02-gpu"
+        },
+        "fx/03-lights": {
+          "title": "P03 · 粒子光源",
+          "source_title": "3. Light Particles",
+          "category": "particles",
+          "origin": [
+            -5,
+            0,
+            -40
+          ],
+          "implementation": "原生等效展示",
+          "description": "16 個移動點光源，實際加入場景的逐像素光照，同時繪製可見光點。",
+          "controls": [],
+          "emitter": "fx/03-lights"
+        },
+        "fx/04-model": {
+          "title": "P04 · 模型粒子",
+          "source_title": "4. Model Particles",
+          "category": "particles",
+          "origin": [
+            5,
+            0,
+            -40
+          ],
+          "implementation": "原生等效展示",
+          "description": "真正的 3D 立方體模型粒子，具有立體面與旋轉；使用 Axiom 原生幾何而非 Flax 的酪梨資產。",
+          "controls": [],
+          "emitter": "fx/04-model"
+        },
+        "fx/05-ribbon": {
+          "title": "P05 · 帶狀拖尾",
+          "source_title": "5. Ribbon Particles",
+          "category": "particles",
+          "origin": [
+            15,
+            0,
+            -40
+          ],
+          "implementation": "原生等效展示",
+          "description": "保存最近 96 個固定步進位置，生成面向相機的連續三角形帶狀拖尾；不是散點連線。",
+          "controls": [],
+          "emitter": "fx/05-ribbon"
+        },
+        "fx/06-attached": {
+          "title": "P06 · 骨骼掛點拖尾",
+          "source_title": "6. Attached Ribbons",
+          "category": "particles",
+          "origin": [
+            25,
+            0,
+            -40
+          ],
+          "implementation": "原生等效展示",
+          "description": "兩條拖尾附在實際動畫骨架的 fore.R / fore.L，跟隨最終骨骼世界矩陣；可用於劍光與武器軌跡。",
+          "controls": [],
+          "emitter": "fx/06-attached"
+        },
+        "fx/07-smoke": {
+          "title": "P07 · 煙霧",
+          "source_title": "7. Smoke",
+          "category": "particles",
+          "origin": [
+            -25,
+            0,
+            -50
+          ],
+          "implementation": "原生等效展示",
+          "description": "帶旋轉、膨脹、色彩與 Alpha 漸變的 soft sprite 煙霧；讀取場景深度淡化交界。",
+          "controls": [],
+          "emitter": "fx/07-smoke"
+        },
+        "fx/08-heat": {
+          "title": "P08 · 熱扭曲",
+          "source_title": "8. Heat Distortion",
+          "category": "particles",
+          "origin": [
+            -15,
+            0,
+            -50
+          ],
+          "implementation": "原生等效展示",
+          "description": "火焰精靈前方使用真正 Scene Color UV 扭曲，背景格線隨熱流折射移動。",
+          "controls": [
+            {
+              "label": "扭曲強度",
+              "resource": "postfx.settings",
+              "field": "/volumes/2/strength",
+              "min": 0,
+              "max": 2,
+              "default": 1.1
+            }
+          ],
+          "emitter": "fx/08-heat"
+        },
+        "fx/09-snow": {
+          "title": "P09 · 飄雪",
+          "source_title": "9. Snow",
+          "category": "particles",
+          "origin": [
+            -5,
+            0,
+            -50
+          ],
+          "implementation": "原生等效展示",
+          "description": "GPU compute 評估的循環飄雪，使用同一份種子契約、生命週期及深度淡化。",
+          "controls": [],
+          "emitter": "fx/09-snow"
+        },
+        "fx/10-collision": {
+          "title": "P10 · 粒子碰撞",
+          "source_title": "10. Collisions",
+          "category": "particles",
+          "origin": [
+            5,
+            0,
+            -50
+          ],
+          "implementation": "原生等效展示",
+          "description": "CPU 解析式重力與平面碰撞：解出落地時刻，依回彈係數反射速度，最多追蹤八次碰撞。",
+          "controls": [
+            {
+              "label": "回彈係數",
+              "resource": "vfx.library",
+              "field": "/emitters/fx~110-collision/bounce",
+              "min": 0,
+              "max": 1,
+              "default": 0.72
+            }
+          ],
+          "emitter": "fx/10-collision"
+        },
+        "fx/11-sampling": {
+          "title": "P11 · 貼圖採樣",
+          "source_title": "11. Sampling Textures",
+          "category": "particles",
+          "origin": [
+            15,
+            0,
+            -50
+          ],
+          "implementation": "CPU bitmap mask sampling",
+          "description": "從內容包中的二值影像採樣發射位置，粒子組成字形。此版本支援 CPU mask 取樣，未宣稱 GPU 任意貼圖採樣。",
+          "controls": [],
+          "emitter": "fx/11-sampling"
+        },
+        "fx/12-fog": {
+          "title": "P12 · 體積霧",
+          "source_title": "12. Volumetric Fog",
+          "category": "particles",
+          "origin": [
+            25,
+            0,
+            -50
+          ],
+          "implementation": "Depth-bounded volume raymarch",
+          "description": "以 12 步射線步進積分程序密度，依不透明場景深度終止，呈現霧內模型與遮擋；不是全場景體積光系統。",
+          "controls": [
+            {
+              "label": "霧密度",
+              "resource": "postfx.settings",
+              "field": "/volumes/3/strength",
+              "min": 0,
+              "max": 2,
+              "default": 0.85
+            }
+          ],
+          "emitter": "fx/12-fog"
+        }
+      }
+    },
+    "render.settings": {
+      "accent": [
+        0.09,
+        0.65,
+        0.65
+      ],
+      "shadow_extent": 75
+    },
+    "input.bindings": {
+      "capture_pointer": false,
+      "axes": {
+        "view.orbit": {
+          "positive": "KeyD",
+          "negative": "KeyA"
+        },
+        "view.pitch": {
+          "positive": "KeyW",
+          "negative": "KeyS"
+        },
+        "view.zoom": {
+          "positive": "KeyQ",
+          "negative": "KeyE"
+        }
+      },
+      "buttons": {
+        "tour.next": "ArrowRight",
+        "tour.previous": "ArrowLeft",
+        "tour.overview": "KeyO"
+      }
+    },
+    "animation.library": {
+      "assets": {
+        "fighter": {
+          "path": "fighter.glb"
+        }
+      }
+    }
+  },
+  "systems": [
+    "motion.integrate",
+    "geometry.prepare",
+    "animation.evaluate",
+    "vfx.simulate",
+    "postfx.prepare",
+    "showcase.navigate"
+  ]
+}

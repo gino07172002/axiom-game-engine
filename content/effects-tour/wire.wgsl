@@ -1,0 +1,1 @@
+fn surface(s:SurfaceInput)->vec4<f32> {let edge=min(min(s.uv.x,s.uv.y),1.0-s.uv.x-s.uv.y);let width=max(fwidth(edge)*s.params.x,0.0001);let line=1.0-smoothstep(0.0,width,edge);return vec4<f32>(mix(vec3<f32>(0.025,0.055,0.07),s.base_color.rgb,line),1.0);}

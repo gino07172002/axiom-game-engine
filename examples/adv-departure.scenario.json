@@ -1,0 +1,1 @@
+{"ticks":1,"commands":[{"tick":0,"operation":{"op":"command","command":{"kind":"choose","node":"arrival","choice":"refuse"}}},{"tick":0,"operation":{"op":"save","slot":"ending-departure"}}],"assertions":[{"kind":"equals","pointer":"/gameplay/ending","value":"departure"},{"kind":"equals","pointer":"/gameplay/variables/has_key","value":false}]}

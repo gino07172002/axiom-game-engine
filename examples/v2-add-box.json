@@ -1,0 +1,5 @@
+{"op":"apply","edits":[
+ {"kind":"set","path":"/capabilities","value":{"core":1,"render":1}},
+ {"kind":"put_entity","entity":{"id":"sample/box","components":{"core.transform":{"position":[0,1,0]},"render.mesh":{"parts":[{"color":[0.2,0.85,0.5]}]}}}},
+ {"kind":"put_entity","entity":{"id":"sample/camera","components":{"core.transform":{"position":[0,2,7],"rotation":[-0.07492971,0,0,0.9971888]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.1,"far":100,"viewport":[0,0,1,1],"active":true}}}}
+]}

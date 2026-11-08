@@ -1,0 +1,5970 @@
+{
+  "schema_version": 2,
+  "id": "frontier",
+  "title": "Frontier / RTS / 64 units",
+  "capabilities": {
+    "behavior": 1,
+    "core": 1,
+    "render": 1,
+    "rts": 1,
+    "ui": 1
+  },
+  "component_schemas": {},
+  "resource_schemas": {},
+  "entities": [
+    {
+      "id": "unit/0/0",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.5,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/1",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.299999237060547,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/2",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -21.100000381469727,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/3",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -19.899999618530273,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/4",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -18.700000762939453,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/5",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -17.5,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/6",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.299999237060547,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/7",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.09999942779541,
+            0.0,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/8",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.5,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/9",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.299999237060547,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/10",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -21.100000381469727,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/11",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -19.899999618530273,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/12",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -18.700000762939453,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/13",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -17.5,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/14",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.299999237060547,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/15",
+      "prefab": "worker",
+      "tags": [
+        "faction/0",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.09999942779541,
+            0.0,
+            -6.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/16",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.5,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/17",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.299999237060547,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/18",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -21.100000381469727,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/19",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -19.899999618530273,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/20",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -18.700000762939453,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/21",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -17.5,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/22",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.299999237060547,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/23",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.09999942779541,
+            0.0,
+            -5.099999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/24",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -23.5,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/25",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.299999237060547,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/26",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -21.100000381469727,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/27",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -19.899999618530273,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/28",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -18.700000762939453,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/29",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -17.5,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/30",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -16.299999237060547,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/0/31",
+      "prefab": "soldier",
+      "tags": [
+        "faction/0",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.09999942779541,
+            0.0,
+            -3.8999998569488525
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "rts.unit": {
+          "faction": 0
+        }
+      }
+    },
+    {
+      "id": "unit/1/0",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            20.5,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/1",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            21.700000762939453,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/2",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            22.899999618530273,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/3",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            24.100000381469727,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/4",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            25.299999237060547,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/5",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            26.5,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/6",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            27.700000762939453,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/7",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            28.900001525878906,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/8",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            20.5,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/9",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            21.700000762939453,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/10",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            22.899999618530273,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/11",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            24.100000381469727,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/12",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            25.299999237060547,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/13",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            26.5,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/14",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            27.700000762939453,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/15",
+      "prefab": "worker",
+      "tags": [
+        "faction/1",
+        "worker"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            28.900001525878906,
+            0.0,
+            5.699999809265137
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/16",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            20.5,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/17",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            21.700000762939453,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/18",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            22.899999618530273,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/19",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            24.100000381469727,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/20",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            25.299999237060547,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/21",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            26.5,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/22",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            27.700000762939453,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/23",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            28.900001525878906,
+            0.0,
+            6.900000095367432
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/24",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            20.5,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/25",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            21.700000762939453,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/26",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            22.899999618530273,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/27",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            24.100000381469727,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/28",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            25.299999237060547,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/29",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            26.5,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/30",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            27.700000762939453,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "unit/1/31",
+      "prefab": "soldier",
+      "tags": [
+        "faction/1",
+        "soldier"
+      ],
+      "components": {
+        "core.transform": {
+          "position": [
+            28.900001525878906,
+            0.0,
+            8.100000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8999999761581421,
+                0.25999999046325684,
+                0.18000000715255737
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "faction": 1
+        }
+      }
+    },
+    {
+      "id": "wall/20",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -11.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/21",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -10.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/22",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -9.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/23",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -8.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/24",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/25",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -6.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/26",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -5.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/27",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/28",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            -3.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/36",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/37",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            5.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/38",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            6.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/39",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            7.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/40",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            8.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/41",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            9.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/42",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            10.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/43",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            11.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wall/44",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.5,
+            0.699999988079071,
+            12.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            0.8999999761581421,
+            1.399999976158142,
+            0.8999999761581421
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.30000001192092896,
+                0.3400000035762787
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "base/0",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.health": {
+          "max": 600.0,
+          "value": 600.0
+        },
+        "core.transform": {
+          "position": [
+            -29.5,
+            0.0,
+            0.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.07999999821186066,
+                0.44999998807907104,
+                0.6000000238418579
+              ],
+              "emission": 0.10000000149011612,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.699999988079071,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  2.799999952316284,
+                  1.399999976158142,
+                  2.799999952316284
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.75,
+                0.4000000059604645
+              ],
+              "emission": 0.30000001192092896,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  1.600000023841858,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  0.5,
+                  1.0
+                ]
+              }
+            }
+          ]
+        },
+        "rts.building": {
+          "depot": true,
+          "faction": 0,
+          "produces": [
+            "worker",
+            "soldier"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mineral/0",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            -26.5,
+            0.0,
+            -10.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.949999988079071,
+                0.699999988079071
+              ],
+              "emission": 0.4000000059604645,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.699999988079071,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.20000000298023224,
+                  0.0,
+                  0.9797958731651306
+                ],
+                "scale": [
+                  1.100000023841858,
+                  1.399999976158142,
+                  1.100000023841858
+                ]
+              }
+            }
+          ]
+        },
+        "rts.resource": {
+          "amount": 5000
+        }
+      }
+    },
+    {
+      "id": "base/1",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.health": {
+          "max": 600.0,
+          "value": 600.0
+        },
+        "core.transform": {
+          "position": [
+            29.5,
+            0.0,
+            0.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.6499999761581421,
+                0.18000000715255737,
+                0.11999999731779099
+              ],
+              "emission": 0.10000000149011612,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.699999988079071,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  2.799999952316284,
+                  1.399999976158142,
+                  2.799999952316284
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.75,
+                0.4000000059604645
+              ],
+              "emission": 0.30000001192092896,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  1.600000023841858,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  0.5,
+                  1.0
+                ]
+              }
+            }
+          ]
+        },
+        "rts.building": {
+          "depot": true,
+          "faction": 1,
+          "produces": [
+            "worker",
+            "soldier"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mineral/1",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            26.5,
+            0.0,
+            10.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.25,
+                0.949999988079071,
+                0.699999988079071
+              ],
+              "emission": 0.4000000059604645,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.699999988079071,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.20000000298023224,
+                  0.0,
+                  0.9797958731651306
+                ],
+                "scale": [
+                  1.100000023841858,
+                  1.399999976158142,
+                  1.100000023841858
+                ]
+              }
+            }
+          ]
+        },
+        "rts.resource": {
+          "amount": 5000
+        }
+      }
+    },
+    {
+      "id": "ground",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            -0.3499999940395355,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            96.0,
+            0.5,
+            64.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.12999999523162842,
+                0.2199999988079071,
+                0.20000000298023224
+              ],
+              "emission": 0.0,
+              "grid": true,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "camera",
+      "prefab": null,
+      "tags": [],
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            40.0,
+            22.0
+          ],
+          "rotation": [
+            -0.5,
+            0.0,
+            0.0,
+            0.8660253882408142
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.camera": {
+          "active": true,
+          "far": 150.0,
+          "near": 0.10000000149011612,
+          "projection": {
+            "height": 48.0,
+            "kind": "orthographic"
+          },
+          "viewport": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        }
+      }
+    }
+  ],
+  "prefabs": {
+    "soldier": {
+      "components": {
+        "core.health": {
+          "max": 100.0,
+          "value": 100.0
+        },
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.10000000149011612,
+                0.550000011920929,
+                0.8999999761581421
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "attack_range": 2.5,
+          "attack_ticks": 45,
+          "carry_capacity": 0,
+          "damage": 10.0,
+          "faction": 0,
+          "gather_ticks": 20,
+          "radius": 0.25999999046325684,
+          "role": "soldier",
+          "speed": 4.199999809265137
+        }
+      }
+    },
+    "worker": {
+      "components": {
+        "core.health": {
+          "max": 60.0,
+          "value": 60.0
+        },
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.15000000596046448,
+                0.800000011920929,
+                0.8500000238418579
+              ],
+              "emission": 0.05000000074505806,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.4000000059604645,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.5,
+                  0.699999988079071,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.800000011920929,
+                0.8999999761581421,
+                0.800000011920929
+              ],
+              "emission": 0.0,
+              "grid": false,
+              "transform": {
+                "position": [
+                  0.0,
+                  0.8500000238418579,
+                  0.0
+                ],
+                "rotation": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "scale": [
+                  0.2800000011920929,
+                  0.25,
+                  0.2800000011920929
+                ]
+              }
+            }
+          ]
+        },
+        "rts.unit": {
+          "attack_range": 1.5,
+          "attack_ticks": 60,
+          "carry_capacity": 8,
+          "damage": 4.0,
+          "faction": 0,
+          "gather_ticks": 20,
+          "radius": 0.25999999046325684,
+          "role": "worker",
+          "speed": 4.0
+        }
+      }
+    }
+  },
+  "resources": {
+    "behavior.program": {
+      "variables": {
+        "rts.defeated": false,
+        "rts.delivered": 0,
+        "rts.minerals": 300,
+        "rts.produced": 0,
+        "rts.queued": 0,
+        "rts.selected": 0,
+        "rts.units": 32,
+        "rts.victory": false
+      }
+    },
+    "input.bindings": {
+      "axes": {
+        "camera.x": {
+          "negative": "KeyA",
+          "positive": "KeyD"
+        },
+        "camera.z": {
+          "negative": "KeyW",
+          "positive": "KeyS"
+        },
+        "camera.zoom": {
+          "negative": "KeyQ",
+          "positive": "KeyE"
+        }
+      },
+      "buttons": {},
+      "capture_pointer": false
+    },
+    "render.settings": {
+      "accent": [
+        0.20000000298023224,
+        0.8500000238418579,
+        0.699999988079071
+      ],
+      "shadow_extent": 64.0
+    },
+    "rts.session": {
+      "auto_combat": true,
+      "camera": "camera",
+      "grid": {
+        "blocked": [
+          [
+            48,
+            20
+          ],
+          [
+            48,
+            21
+          ],
+          [
+            48,
+            22
+          ],
+          [
+            48,
+            23
+          ],
+          [
+            48,
+            24
+          ],
+          [
+            48,
+            25
+          ],
+          [
+            48,
+            26
+          ],
+          [
+            48,
+            27
+          ],
+          [
+            48,
+            28
+          ],
+          [
+            48,
+            36
+          ],
+          [
+            48,
+            37
+          ],
+          [
+            48,
+            38
+          ],
+          [
+            48,
+            39
+          ],
+          [
+            48,
+            40
+          ],
+          [
+            48,
+            41
+          ],
+          [
+            48,
+            42
+          ],
+          [
+            48,
+            43
+          ],
+          [
+            48,
+            44
+          ],
+          [
+            17,
+            31
+          ],
+          [
+            18,
+            31
+          ],
+          [
+            19,
+            31
+          ],
+          [
+            17,
+            32
+          ],
+          [
+            18,
+            32
+          ],
+          [
+            19,
+            32
+          ],
+          [
+            17,
+            33
+          ],
+          [
+            18,
+            33
+          ],
+          [
+            19,
+            33
+          ],
+          [
+            76,
+            31
+          ],
+          [
+            77,
+            31
+          ],
+          [
+            78,
+            31
+          ],
+          [
+            76,
+            32
+          ],
+          [
+            77,
+            32
+          ],
+          [
+            78,
+            32
+          ],
+          [
+            76,
+            33
+          ],
+          [
+            77,
+            33
+          ],
+          [
+            78,
+            33
+          ]
+        ],
+        "cell_size": 1.0,
+        "height": 64,
+        "origin": [
+          -48.0,
+          -32.0
+        ],
+        "width": 96
+      },
+      "initial_balance": [
+        300,
+        300
+      ],
+      "max_units": 512,
+      "nav_stride": 4,
+      "path_budget": 4,
+      "player_faction": 0,
+      "recipes": {
+        "soldier": {
+          "build_ticks": 180,
+          "cost": 60,
+          "prefab": "soldier"
+        },
+        "worker": {
+          "build_ticks": 120,
+          "cost": 40,
+          "prefab": "worker"
+        }
+      },
+      "search_budget": 8192,
+      "ui_bindings": {
+        "defeated": "rts.defeated",
+        "delivered": "rts.delivered",
+        "minerals": "rts.minerals",
+        "produced": "rts.produced",
+        "queued": "rts.queued",
+        "selected": "rts.selected",
+        "units": "rts.units",
+        "victory": "rts.victory"
+      }
+    },
+    "ui.document": {
+      "catalogs": {
+        "zh-TW": {
+          "attack": "攻擊敵方基地",
+          "brand": "FRONTIER",
+          "defeated": "DEFEAT / 我方基地已摧毀",
+          "delivered": "已交付",
+          "gather": "採集礦物",
+          "hint": "拖曳框選 / Shift 加選 / 右鍵移動、採集、攻擊 / WASD 平移 / Q E 縮放",
+          "minerals": "礦物",
+          "produced": "已生產",
+          "queued": "佇列",
+          "selected": "已選",
+          "soldiers": "選擇士兵",
+          "stop": "停止",
+          "train_soldier": "生產士兵 [60]",
+          "train_worker": "生產工人 [40]",
+          "units": "單位",
+          "victory": "VICTORY / 敵方基地已摧毀",
+          "workers": "選擇工人"
+        }
+      },
+      "flow": true,
+      "images": {},
+      "locale": "zh-TW",
+      "session_controls": false,
+      "widgets": [
+        {
+          "binding": {
+            "id": "brand",
+            "kind": "key"
+          },
+          "id": "brand",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "minerals",
+            "kind": "key"
+          },
+          "id": "label/minerals",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.minerals",
+            "kind": "variable"
+          },
+          "id": "value/minerals",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "units",
+            "kind": "key"
+          },
+          "id": "label/units",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.units",
+            "kind": "variable"
+          },
+          "id": "value/units",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "selected",
+            "kind": "key"
+          },
+          "id": "label/selected",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.selected",
+            "kind": "variable"
+          },
+          "id": "value/selected",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "queued",
+            "kind": "key"
+          },
+          "id": "label/queued",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.queued",
+            "kind": "variable"
+          },
+          "id": "value/queued",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "delivered",
+            "kind": "key"
+          },
+          "id": "label/delivered",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.delivered",
+            "kind": "variable"
+          },
+          "id": "value/delivered",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "produced",
+            "kind": "key"
+          },
+          "id": "label/produced",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "rts.produced",
+            "kind": "variable"
+          },
+          "id": "value/produced",
+          "kind": "text"
+        },
+        {
+          "command": {
+            "action": "select_role",
+            "args": {
+              "role": "worker"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "workers",
+          "kind": "button",
+          "text": "workers"
+        },
+        {
+          "command": {
+            "action": "select_role",
+            "args": {
+              "role": "soldier"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "soldiers",
+          "kind": "button",
+          "text": "soldiers"
+        },
+        {
+          "command": {
+            "action": "stop",
+            "args": {
+              "ids": []
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "stop",
+          "kind": "button",
+          "text": "stop"
+        },
+        {
+          "command": {
+            "action": "train",
+            "args": {
+              "building": "base/0",
+              "count": 1,
+              "recipe": "worker"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "train-worker",
+          "kind": "button",
+          "text": "train_worker"
+        },
+        {
+          "command": {
+            "action": "train",
+            "args": {
+              "building": "base/0",
+              "count": 1,
+              "recipe": "soldier"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "train-soldier",
+          "kind": "button",
+          "text": "train_soldier"
+        },
+        {
+          "command": {
+            "action": "gather",
+            "args": {
+              "target": "mineral/0"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "gather",
+          "kind": "button",
+          "text": "gather"
+        },
+        {
+          "command": {
+            "action": "attack",
+            "args": {
+              "target": "base/1"
+            },
+            "capability": "rts",
+            "kind": "call"
+          },
+          "id": "attack",
+          "kind": "button",
+          "text": "attack"
+        },
+        {
+          "binding": {
+            "id": "victory",
+            "kind": "key"
+          },
+          "id": "victory",
+          "kind": "text",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "rts.victory",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "binding": {
+            "id": "defeated",
+            "kind": "key"
+          },
+          "id": "defeated",
+          "kind": "text",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "rts.defeated",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "binding": {
+            "id": "hint",
+            "kind": "key"
+          },
+          "id": "hint",
+          "kind": "text"
+        }
+      ]
+    }
+  },
+  "relations": [],
+  "scenes": [],
+  "systems": [
+    "behavior.execute",
+    "rts.simulate"
+  ]
+}

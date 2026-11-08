@@ -1,0 +1,1 @@
+{"ticks":1,"commands":[{"tick":0,"operation":{"op":"command","command":{"kind":"locale","locale":"en"}}},{"tick":0,"operation":{"op":"save","slot":"english"}}],"assertions":[{"kind":"equals","pointer":"/gameplay/locale","value":"en"},{"kind":"equals","pointer":"/gameplay/bindings/chapter","value":"No clues collected yet"}]}
