@@ -1,0 +1,45 @@
+{
+  "schema_version": 2,
+  "id": "axiom-mascot",
+  "title": "Axiom Mascot",
+  "capabilities": {"animation":1,"core":1,"render":1},
+  "systems": ["animation.evaluate"],
+  "entities": [
+    {"id":"mascot/short","label":"Axiom mascot · short bob","components":{
+      "core.transform":{"position":[-0.42,0,0],"rotation":[0,0.104528,0,0.994522]},
+      "animation.player":{"asset":"axiom-short","clip":"idle","speed":0.8}
+    }},
+    {"id":"mascot/long","label":"Axiom mascot · long hair","components":{
+      "core.transform":{"position":[0.42,0,0],"rotation":[0,-0.104528,0,0.994522]},
+      "animation.player":{"asset":"axiom-long","clip":"idle","speed":0.8}
+    }},
+    {"id":"camera/stage","label":"Stage camera","components":{
+      "core.transform":{"position":[0,0.78,3.1],"rotation":[-0.017452,0,0,0.999848]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":35},"near":0.04,"far":40,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"stage/floor","label":"Graphite floor","components":{
+      "core.transform":{"position":[0,-0.05,-0.6],"scale":[8,0.1,6]},
+      "render.mesh":{"parts":[{"color":[0.105,0.105,0.135],"grid":true}]}
+    }},
+    {"id":"stage/backdrop","label":"White backdrop","components":{
+      "core.transform":{"position":[0,1.6,-2.4]},
+      "render.mesh":{"parts":[
+        {"transform":{"scale":[8,3.4,0.1]},"color":[0.86,0.86,0.9]},
+        {"transform":{"position":[-0.1,-0.12,0.06],"rotation":[0,0,0.38268343,0.92387953],"scale":[0.3,0.05,0.02]},"color":[1,0.23,0.28],"emission":1.2},
+        {"transform":{"position":[0.1,-0.12,0.06],"rotation":[0,0,-0.38268343,0.92387953],"scale":[0.3,0.05,0.02]},"color":[1,0.23,0.28],"emission":1.2}
+      ]}
+    }},
+    {"id":"stage/plinths","label":"Mascot plinths","components":{
+      "core.transform":{},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[-0.42,-0.02,0],"scale":[0.62,0.04,0.62]},"color":[0.17,0.17,0.21]},
+        {"transform":{"position":[0.42,-0.02,0],"scale":[0.62,0.04,0.62]},"color":[0.17,0.17,0.21]}
+      ]}
+    }}
+  ],
+  "scenes":[{"id":"mascot-stage","active":true,"entities":["mascot/short","mascot/long","camera/stage","stage/floor","stage/backdrop","stage/plinths"]}],
+  "resources": {
+    "animation.library":{"assets":{"axiom-short":{"path":"axiom-short.glb"},"axiom-long":{"path":"axiom-long.glb"}}},
+    "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":8}
+  }
+}
