@@ -45,22 +45,27 @@ impl Editor {
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
         if !text_focused {
             ctx.input(|i| {
+                // Bare letter shortcuts only; Ctrl+R / Ctrl+W etc. belong to other commands.
+                let bare = !i.modifiers.any();
                 for (key, tool) in [
                     (Key::Q, Tool::Select),
                     (Key::W, Tool::Move),
                     (Key::E, Tool::Rotate),
                     (Key::R, Tool::Scale),
                 ] {
-                    if i.key_pressed(key) && self.drag.is_none() {
+                    if bare && i.key_pressed(key) && self.drag.is_none() {
                         self.tool = tool;
                     }
                 }
-                self.frame_selection |= i.key_pressed(Key::F);
+                self.frame_selection |= bare && i.key_pressed(Key::F);
                 if i.key_pressed(Key::F5) && !self.dirty() {
                     actions.push(Action::Play);
                 }
-                if i.modifiers.command && i.key_pressed(Key::Z) && !self.dirty() {
-                    if let Some(action) = self.restore_action(i.modifiers.shift) {
+                let undo = i.modifiers.command && i.key_pressed(Key::Z);
+                let redo =
+                    i.modifiers.command && (i.key_pressed(Key::Y) || (undo && i.modifiers.shift));
+                if (undo || redo) && !self.dirty() {
+                    if let Some(action) = self.restore_action(redo) {
                         actions.push(action);
                     }
                 }
@@ -237,17 +242,23 @@ impl Editor {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_scene).hint_text("New scene ID"),
                     );
+                    let exists = self
+                        .world
+                        .scenes
+                        .iter()
+                        .any(|s| s.id == self.new_scene.trim());
+                    if exists {
+                        ui.label(RichText::new("Scene ID already exists").color(WARNING));
+                    }
                     if ui
                         .add_enabled(
-                            !self.new_scene.trim().is_empty(),
+                            !self.new_scene.trim().is_empty() && !exists,
                             egui::Button::new("Create scene"),
                         )
                         .clicked()
                     {
                         let id = self.new_scene.trim().to_owned();
-                        if self.world.scenes.iter().any(|s| s.id == id) {
-                            ui.label(RichText::new("Scene ID already exists").color(WARNING));
-                        } else {
+                        {
                             actions.push(self.write(
                                 vec![Edit::Core(CoreEdit::PutScene {
                                     scene: Scene {

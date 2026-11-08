@@ -40,6 +40,8 @@ function Wait-Editor([scriptblock]$Predicate) {
 $baseline = Invoke-EditorAxiom @('--db',$db,'editor','--port','0','--select','stage/crate','--smoke-frames','8','--screenshot',"$dir/before.png")
 if ($baseline.observation.editor.selected -ne 'stage/crate' -or $baseline.observation.tick -ne 0) { throw 'Edit mode selection or tick was incorrect' }
 $process = Start-Process -FilePath $exe -ArgumentList ('--db "{0}" editor --port {1} --select stage/crate --smoke-frames 360 --screenshot "{2}"' -f $db,$Port,"$dir/after.png") -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir/live.log" -RedirectStandardError "$dir/live-errors.log"
+# Windows PowerShell 5.1 reports ExitCode as $null unless the handle is opened while running.
+$null = $process.Handle
 try {
     $initial = Wait-Editor { param($o) $o.gpu -and $o.editor.mode -eq 'edit' }
     $discovery = Send-Editor @{op='discover';topic='editor'}

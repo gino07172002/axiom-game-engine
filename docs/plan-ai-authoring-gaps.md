@@ -139,6 +139,18 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 
 (每個 milestone 完成後追加:日期、驗收證據、偏離)
 
+- **M0(2026-11-08)**:Codex 展示台修改單獨提交 `92c29a1`;基線 `cargo test --workspace` exit 0。另加入使用者提供的 Logo(視窗圖示、編輯器工具列、README/文件)`0981847`,編輯器截圖目視確認。
+- **M1(2026-11-08)**:修正 —
+  1. 資源投影載入失敗時 `loaded=false`,Apply/Preview/Copy 與文字框停用,`request()` 拒絕(測試 `failed_root_load_cannot_replace_the_whole_resource`)。
+  2. 拖曳中外部寫入:取消拖曳、以新修訂重建草稿、顯示原因(測試 `external_write_during_drag_cancels_…`)。
+  3. Q/W/E/R/F 僅在無修飾鍵時生效;新增 Ctrl+Y 重做(測試 `modified_letter_keys_…`)。
+  4. 同一幀多個 Apply 合併成單一原子批次 `editor::coalesce`(測試 `same_frame_applies_merge_into_one_batch`)。
+  5. Scene ID 重複:持續顯示訊息並停用 Create。
+  6. F 對焦改用網格部件包圍盒(測試 `focus_uses_mesh_part_bounds_not_the_pivot`)。
+  7. `scripts/editor-smoke-test.ps1`:PowerShell 5.1 `ExitCode` 為 `$null` 的誤判(先取 `$process.Handle`)。
+  證據:clippy exit 0;workspace 184 passed / 0 failed;editor smoke `ok:true`(`artifacts/editor-20261108-134912-117`),截圖目視確認。
+  未處理:篩選時樹攤平(屬設計,移到 M9 一併處理);`Copy scene query` 的 `"scene":null` 經查 `Option` 可接受 null,非 bug。
+
 ## 修訂補記
 
 (原計畫 → 變成什麼 → 為什麼)

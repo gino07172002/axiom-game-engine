@@ -20,6 +20,43 @@ pub(crate) enum Action {
     Play,
 }
 
+/// Every action drawn in one frame was built against the same revision. Adjacent applies
+/// therefore merge into one atomic batch; otherwise the second would always fail CAS.
+pub(crate) fn coalesce(actions: Vec<Action>) -> Vec<Action> {
+    let mut out: Vec<Action> = Vec::with_capacity(actions.len());
+    for action in actions {
+        if let (
+            Some(Action::Write {
+                request:
+                    Request::Apply {
+                        expected_rev: previous_rev,
+                        edits: previous_edits,
+                    },
+                select: previous_select,
+            }),
+            Action::Write {
+                request:
+                    Request::Apply {
+                        expected_rev,
+                        edits,
+                    },
+                select,
+            },
+        ) = (out.last_mut(), &action)
+        {
+            if *previous_rev == *expected_rev {
+                previous_edits.extend(edits.iter().cloned());
+                if select.is_some() {
+                    *previous_select = select.clone();
+                }
+                continue;
+            }
+        }
+        out.push(action);
+    }
+    out
+}
+
 struct Draft {
     rev: i64,
     id: String,
@@ -201,11 +238,20 @@ impl Editor {
         }
         self.rev = rev;
         self.world = world;
-        self.drag = None;
+        // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
+        // Dropping the drag without resetting would strand an uncommittable stale draft.
+        let interrupted = self.drag.take().is_some();
+        if interrupted {
+            self.select(self.selected.clone());
+        }
         if !local {
             self.undo.clear();
             self.redo.clear();
-            if self.dirty() {
+            if interrupted {
+                self.set_error(format!(
+                    "Drag cancelled: revision {rev} arrived from another writer. Drag again."
+                ));
+            } else if self.dirty() {
                 self.set_error("World changed outside this window. Copy your draft or reload it before applying.");
             } else {
                 self.status = format!("Synchronized external revision {rev}");

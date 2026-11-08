@@ -210,6 +210,39 @@ fn box_hit(origin: Vec3, direction: Vec3, matrix: Mat4) -> Option<f32> {
     Some(near)
 }
 
+/// World-space center and full extent (largest box side, matching the previous framing scale). Mesh parts are unit boxes placed by
+/// their own transforms, so offset parts move the center instead of the entity pivot.
+pub(super) fn focus_bounds(matrix: Mat4, mesh: Option<&axiom_core::RenderMesh>) -> (Vec3, f32) {
+    let corners = |m: Mat4| {
+        (0..8).map(move |j: usize| {
+            m.transform_point3(Vec3::new(
+                (j & 1) as f32 - 0.5,
+                ((j >> 1) & 1) as f32 - 0.5,
+                ((j >> 2) & 1) as f32 - 0.5,
+            ))
+        })
+    };
+    let points: Vec<Vec3> = match mesh.filter(|m| !m.parts.is_empty()) {
+        Some(mesh) => mesh
+            .parts
+            .iter()
+            .flat_map(|part| corners(matrix * part.transform.matrix()))
+            .collect(),
+        None => corners(matrix).collect(),
+    };
+    let (min, max) = points.iter().fold(
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+    );
+    let center = (min + max) * 0.5;
+    let extent = (max - min).max_element();
+    if center.is_finite() && extent.is_finite() {
+        (center, extent)
+    } else {
+        (matrix.transform_point3(Vec3::ZERO), 1.0)
+    }
+}
+
 fn pick(
     runtime: &WorldRuntime,
     matrices: &[Mat4],
@@ -393,14 +426,8 @@ impl Editor {
         }
         if std::mem::take(&mut self.frame_selection) {
             if let Some(i) = selected {
-                let matrix = matrices[i];
-                self.orbit.target = matrix.transform_point3(Vec3::ZERO);
-                let extent = matrix
-                    .x_axis
-                    .truncate()
-                    .length()
-                    .max(matrix.y_axis.truncate().length())
-                    .max(matrix.z_axis.truncate().length());
+                let (center, extent) = focus_bounds(matrices[i], state.entities[i].mesh.as_ref());
+                self.orbit.target = center;
                 self.orbit.distance = (extent * 4.4).clamp(1.3, 4000.0);
             } else {
                 self.orbit = Orbit::default();
@@ -732,5 +759,130 @@ mod tests {
         editor.reset_draft();
         assert_eq!(editor.draft.as_ref().unwrap().label, "Agent edit");
         assert!(!editor.dirty());
+    }
+
+    /// Starts a Move drag on the crate's X handle and returns the release point.
+    fn start_drag(ctx: &egui::Context, editor: &mut Editor, runtime: &WorldRuntime) -> Pos2 {
+        frame(ctx, editor, runtime, vec![]);
+        let model = runtime.state.matrices()[runtime.state.compiled.indices["stage/crate"]];
+        let projection = ProjectionView {
+            matrix: editor.orbit.matrix(editor.viewport),
+            rect: editor.viewport,
+        };
+        let handles = Handles::new(&projection, &editor.orbit, model, Tool::Move).unwrap();
+        let start = handles.tips[0].unwrap();
+        let end = start + (start - handles.pivot).normalized() * 27.0;
+        frame(
+            ctx,
+            editor,
+            runtime,
+            vec![egui::Event::PointerMoved(start), primary(start, true)],
+        );
+        frame(ctx, editor, runtime, vec![egui::Event::PointerMoved(end)]);
+        end
+    }
+
+    #[test]
+    fn external_write_during_drag_cancels_the_drag_instead_of_stranding_a_stale_draft() {
+        let (mut world, runtime) = fixture();
+        let mut editor = Editor::new(world.clone(), 1, Some("stage/crate".into()));
+        let ctx = egui::Context::default();
+        let end = start_drag(&ctx, &mut editor, &runtime);
+        assert!(editor.drag.is_some() && editor.dirty());
+        world.entity_mut("stage/crate").unwrap().label = Some("Agent edit".into());
+        editor.update(2, world, false);
+        assert!(editor.drag.is_none());
+        assert!(
+            !editor.dirty(),
+            "gizmo state must not survive as a stale draft"
+        );
+        assert_eq!(editor.observation()["draft_rev"], 2);
+        assert!(editor.error && editor.status.contains("Drag cancelled"));
+        // Releasing the mouse afterwards commits nothing.
+        assert!(frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]).is_empty());
+    }
+
+    #[test]
+    fn modified_letter_keys_do_not_switch_tools_and_ctrl_y_redoes() {
+        let (world, runtime) = fixture();
+        let mut editor = Editor::new(world, 1, None);
+        let ctx = egui::Context::default();
+        // egui-winit reports modifiers both on the event and on RawInput; mirror that.
+        let press = |editor: &mut Editor, key, modifiers| {
+            let mut actions = Vec::new();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 760.0))),
+                    modifiers,
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    ..Default::default()
+                },
+                |ctx| actions = editor.draw(ctx, &runtime),
+            );
+            actions
+        };
+        press(&mut editor, egui::Key::R, egui::Modifiers::CTRL);
+        assert!(editor.tool == Tool::Move);
+        press(&mut editor, egui::Key::R, egui::Modifiers::NONE);
+        assert!(editor.tool == Tool::Scale);
+        editor.redo.push(1);
+        let actions = press(
+            &mut editor,
+            egui::Key::Y,
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        );
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Restore { redo: true, .. }]
+        ));
+    }
+
+    #[test]
+    fn same_frame_applies_merge_into_one_batch() {
+        let apply = |rev, id: &str, select: Option<&str>| Action::Write {
+            request: Request::Apply {
+                expected_rev: Some(rev),
+                edits: vec![Edit::Core(CoreEdit::DeleteEntity { id: id.into() })],
+            },
+            select: select.map(Into::into),
+        };
+        let merged = crate::editor::coalesce(vec![
+            apply(3, "a", None),
+            apply(3, "b", Some("b")),
+            Action::Play,
+            apply(3, "c", None),
+        ]);
+        assert_eq!(merged.len(), 3);
+        let Action::Write {
+            request: Request::Apply { edits, .. },
+            select,
+        } = &merged[0]
+        else {
+            panic!("first action must stay an apply");
+        };
+        assert_eq!(edits.len(), 2);
+        assert_eq!(select.as_deref(), Some("b"));
+        assert!(matches!(merged[1], Action::Play));
+    }
+
+    #[test]
+    fn focus_uses_mesh_part_bounds_not_the_pivot() {
+        let part: axiom_core::MeshPart = serde_json::from_value(serde_json::json!({
+            "transform": {"position": [10.0, 0.0, 0.0], "scale": [2.0, 2.0, 2.0]},
+            "color": [1.0, 1.0, 1.0]
+        }))
+        .unwrap();
+        let mesh = axiom_core::RenderMesh { parts: vec![part] };
+        let (center, extent) = focus_bounds(Mat4::IDENTITY, Some(&mesh));
+        assert!((center - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-4);
+        assert!((extent - 2.0).abs() < 1e-4);
+        let (pivot, unit) = focus_bounds(Mat4::IDENTITY, None);
+        assert_eq!((pivot, unit), (Vec3::ZERO, 1.0));
     }
 }

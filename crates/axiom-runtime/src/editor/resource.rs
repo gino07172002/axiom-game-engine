@@ -11,6 +11,9 @@ pub(super) struct ResourceDraft {
     pub field_input: String,
     text: String,
     pub dirty: bool,
+    /// True only after a projection loaded successfully. A failed root load must never
+    /// allow an empty editor to be written back as a whole-resource replacement.
+    pub loaded: bool,
 }
 impl ResourceDraft {
     pub fn load(&mut self, world: &World) -> Result<()> {
@@ -34,9 +37,14 @@ impl ResourceDraft {
         self.field = field.into();
         self.text = text;
         self.dirty = false;
+        self.loaded = true;
         Ok(())
     }
     fn request(&self, preview: bool) -> Result<Request> {
+        anyhow::ensure!(
+            self.loaded,
+            "no resource projection is loaded; choose a narrower JSON pointer and load it first"
+        );
         let value: Value = serde_json::from_str(&self.text)?;
         let target = Target::Resource {
             id: self.id.clone(),
@@ -78,6 +86,7 @@ impl Editor {
             field_input: String::new(),
             text: String::new(),
             dirty: false,
+            loaded: false,
         };
         if let Err(error) = draft.load(&self.world) {
             self.set_error(format!("{error:#}"));
@@ -87,6 +96,7 @@ impl Editor {
     pub(super) fn resource_inspector(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let draft = self.resource.as_mut().unwrap();
         let stale = draft.rev != self.rev;
+        let loaded = draft.loaded;
         ui.label(
             RichText::new(&draft.id)
                 .monospace()
@@ -100,7 +110,7 @@ impl Editor {
         ui.horizontal(|ui| {
             for (title, preview) in [("Apply", false), ("Preview", true)] {
                 if ui
-                    .add_enabled(draft.dirty && !stale, egui::Button::new(title))
+                    .add_enabled(draft.dirty && !stale && loaded, egui::Button::new(title))
                     .clicked()
                 {
                     match draft.request(preview) {
@@ -113,7 +123,10 @@ impl Editor {
                 }
             }
             reload = ui.button("Reload").clicked();
-            if ui.button("Copy JSON").clicked() {
+            if ui
+                .add_enabled(loaded, egui::Button::new("Copy JSON"))
+                .clicked()
+            {
                 match draft.request(false) {
                     Ok(request) => ui
                         .ctx()
@@ -136,8 +149,16 @@ impl Editor {
                 }
             }
         });
+        if !loaded {
+            ui.label(
+                RichText::new("Nothing loaded. Enter a JSON pointer and press Load fields.")
+                    .color(egui::Color32::from_rgb(242, 176, 92)),
+            );
+        }
         ui.label(
-            RichText::new(if draft.field.is_empty() {
+            RichText::new(if !loaded {
+                "Read-only until a projection loads".into()
+            } else if draft.field.is_empty() {
                 "Editing resource".into()
             } else {
                 format!("Editing {}", draft.field)
@@ -150,7 +171,7 @@ impl Editor {
             .show(ui, |ui| {
                 draft.dirty |= ui
                     .add_enabled(
-                        !stale,
+                        !stale && loaded,
                         egui::TextEdit::multiline(&mut draft.text)
                             .code_editor()
                             .desired_width(f32::INFINITY)
@@ -205,5 +226,39 @@ mod tests {
             "/abilities/slash2/dodge_window"
         );
         assert_eq!(editor.resource.as_ref().unwrap().rev, 2);
+    }
+
+    #[test]
+    fn failed_root_load_cannot_replace_the_whole_resource() {
+        let mut world = World::empty("huge");
+        let big = "x".repeat(70_000);
+        world
+            .resources
+            .insert("huge.blob".into(), json!({"keep":1,"payload":big}));
+        let mut editor = Editor::new(world, 1, Some("huge.blob".into()));
+        let draft = editor.resource.as_mut().unwrap();
+        assert!(
+            !draft.loaded,
+            "root projection exceeds 64 KiB and must not load"
+        );
+        // Simulate a user typing into the (disabled) editor anyway.
+        draft.text = json!({"keep":2}).to_string();
+        draft.dirty = true;
+        let error = draft.request(false).unwrap_err().to_string();
+        assert!(
+            error.contains("no resource projection is loaded"),
+            "{error}"
+        );
+        // Loading a narrow pointer re-enables writes, scoped to that field only.
+        draft.field_input = "/keep".into();
+        draft.load(&editor.world).unwrap();
+        assert!(draft.loaded);
+        match draft.request(false).unwrap() {
+            Request::Apply { edits, .. } => assert!(matches!(
+                &edits[0],
+                Edit::Core(CoreEdit::SetField { field, .. }) if field == "/keep"
+            )),
+            other => panic!("unexpected request {other:?}"),
+        }
     }
 }

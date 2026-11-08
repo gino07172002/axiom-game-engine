@@ -489,7 +489,7 @@ impl App {
             .as_mut()
             .unwrap()
             .handle_platform_output(&window, output.platform_output.clone());
-        for action in editor_actions {
+        for action in editor::coalesce(editor_actions) {
             if let Err(error) = self.editor_action(action) {
                 self.editor
                     .as_mut()
