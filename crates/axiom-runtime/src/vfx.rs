@@ -188,13 +188,17 @@ pub struct Ribbon {
     pub points: Vec<Vec3>,
     pub width: f32,
     pub color: [f32; 4],
+    /// Entity the emitter is attached to (editor-view hiding), if any.
+    pub attachment: Option<String>,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Light {
     pub position: Vec3,
     pub radius: f32,
     pub color: [f32; 3],
     pub intensity: f32,
+    /// Entity the emitting VFX is attached to (editor-view hiding), if any.
+    pub attachment: Option<String>,
 }
 #[derive(Clone, Default)]
 pub struct Frame {
@@ -406,6 +410,7 @@ impl RuntimeSystem for VfxSystem {
                     points: r.trail.iter().copied().collect(),
                     width: e.size,
                     color: e.color,
+                    attachment: e.attachment.clone(),
                 });
                 continue;
             }
@@ -428,6 +433,7 @@ impl RuntimeSystem for VfxSystem {
                         radius: 2.0,
                         color: [p.color[0], p.color[1], p.color[2]],
                         intensity: 1.8 * p.color[3],
+                        attachment: e.attachment.clone(),
                     });
                 }
             }

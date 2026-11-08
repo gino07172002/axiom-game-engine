@@ -138,6 +138,13 @@ fn duplicate_and_paste_match_acl() {
     }
     let world = store.current().unwrap().1;
     assert!(world.entity("stage/crate/copy/2").is_some());
+    // Each copy sits right after its source in the authored (sibling) order; a second
+    // duplicate lands between the source and the first copy.
+    let order: Vec<&str> = world.entities.iter().map(|e| e.id.as_str()).collect();
+    let at = |id: &str| order.iter().position(|e| *e == id).unwrap();
+    assert_eq!(at("stage/crate/copy/2"), at("stage/crate") + 1);
+    assert_eq!(at("stage/crate/copy"), at("stage/crate") + 2);
+    assert_eq!(at("stage/beacon/copy/2"), at("stage/beacon") + 1);
     assert_eq!(
         world,
         headless(
@@ -322,6 +329,63 @@ fn hierarchy_reorder_drop_matches_acl() {
         },
         "reparent stage/crate stage/rack\nmove stage/crate before stage/rack/cargo",
     );
+}
+
+#[test]
+fn drop_to_ground_matches_acl() {
+    assert_parity(
+        lab(),
+        |e| {
+            e.select(Some("stage/crate".into()));
+            e.extra.insert("stage/rack/cargo".into());
+            vec![e.run_command("object.drop_to_ground").unwrap()]
+        },
+        "ground entities[id=stage/crate,id=stage/rack/cargo]",
+    );
+    // Once grounded, the command writes nothing on either side.
+    let grounded = headless(&lab(), "ground stage/crate");
+    let mut editor = Editor::new(grounded.clone(), 2, Some("stage/crate".into()));
+    assert!(editor
+        .run_command("object.drop_to_ground")
+        .unwrap()
+        .is_empty());
+    assert!(editor.status.contains("Already on the ground"));
+    let mut s = store(&grounded);
+    let out = s
+        .execute(Request::Acl {
+            text: "ground stage/crate".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap();
+    assert!(out["text"].as_str().unwrap().starts_with("unchanged"));
+    // The crate (authored at y=0.63, floating) moved down onto the floor.
+    let crate_y = grounded.entity("stage/crate").unwrap().components["core.transform"]["position"]
+        [1]
+    .as_f64()
+    .unwrap();
+    assert!(crate_y < 0.63, "{crate_y}");
+}
+
+#[test]
+fn view_commands_never_write() {
+    let mut editor = Editor::new(lab(), 1, Some("stage/crate".into()));
+    for cmd in [
+        "view.top",
+        "view.front",
+        "view.right",
+        "view.bottom",
+        "view.back",
+        "view.left",
+        "view.perspective",
+        "view.gizmos",
+        "view.bookmark.save.1",
+        "view.bookmark.recall.1",
+    ] {
+        assert!(editor.run_command(cmd).unwrap().is_empty(), "{cmd}");
+    }
+    assert_eq!(editor.world, lab());
 }
 
 #[test]

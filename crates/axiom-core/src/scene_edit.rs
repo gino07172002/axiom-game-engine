@@ -174,7 +174,7 @@ fn require_object<'a>(graph: &Hierarchy<'a>, id: &str) -> Result<&'a Entity> {
     })
 }
 
-fn local_transform(world: &World, entity: &Entity) -> Result<Option<Transform>> {
+pub(crate) fn local_transform(world: &World, entity: &Entity) -> Result<Option<Transform>> {
     let mut value = entity
         .prefab
         .as_ref()
@@ -190,7 +190,7 @@ fn local_transform(world: &World, entity: &Entity) -> Result<Option<Transform>> 
         .map_err(Into::into)
 }
 
-fn global(world: &World, graph: &Hierarchy<'_>, id: Option<&str>) -> Result<Mat4> {
+pub(crate) fn global(world: &World, graph: &Hierarchy<'_>, id: Option<&str>) -> Result<Mat4> {
     let mut matrix = Mat4::IDENTITY;
     let mut current = id;
     let mut visited = BTreeSet::new();

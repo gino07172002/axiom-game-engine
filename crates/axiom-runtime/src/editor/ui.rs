@@ -42,8 +42,12 @@ impl Editor {
         let text_focused = ctx
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        // While RMB is held in the scene view, WASD/QE fly the camera instead of switching
+        // tools; a box selection in progress keeps Escape for itself.
+        let scene_owns_keys = self.scene_input.marquee.is_some()
+            || ctx.input(|i| super::viewport::rmb_held_in(i, self.viewport));
         // An inline rename owns the keyboard (egui drops focus on Escape before we get here).
-        if !text_focused && self.renaming.is_none() {
+        if !text_focused && self.renaming.is_none() && !scene_owns_keys {
             // Every shortcut comes from the command registry (user overrides included).
             let pressed = ctx.input(|i| self.shortcut_commands(i));
             for id in pressed {
@@ -171,7 +175,9 @@ impl Editor {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 panel(CARD, 6).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
+                    // Wraps instead of widening the central panel (which would push the viewport
+                    // under the inspector).
+                    ui.horizontal_wrapped(|ui| {
                         heading(ui, "SCENE");
                         ui.separator();
                         for (key, tool) in [
@@ -216,6 +222,53 @@ impl Editor {
                         }
                         ui.toggle_value(&mut self.prefs.grid, "Grid")
                             .on_hover_text("Always draw the ground grid");
+                        ui.toggle_value(&mut self.prefs.gizmos, "Gizmos").on_hover_text(
+                            "Camera frusta, nav.blocker, colliders and FSM agents (editor view only)",
+                        );
+                        ui.separator();
+                        let mode = self.orbit.mode;
+                        ui.menu_button(format!("View: {}", mode.name()), |ui| {
+                            for m in super::viewport::ViewMode::ALL {
+                                let text = format!(
+                                    "{}{}",
+                                    m.name(),
+                                    if m == super::viewport::ViewMode::Perspective { "" } else { " (ortho)" }
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(text)
+                                            .selected(m == mode)
+                                            .shortcut_text(self.shortcut_text(m.command())),
+                                    )
+                                    .clicked()
+                                {
+                                    self.run_into(m.command(), &mut actions);
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            for n in 1..=4 {
+                                ui.horizontal(|ui| {
+                                    let save = format!("view.bookmark.save.{n}");
+                                    let recall = format!("view.bookmark.recall.{n}");
+                                    if ui.button(format!("Save {n}")).on_hover_text(self.shortcut_text(&save)).clicked() {
+                                        self.run_into(&save, &mut actions);
+                                        ui.close_menu();
+                                    }
+                                    let blocked = self.command_blocked(&recall);
+                                    if ui
+                                        .add_enabled(blocked.is_none(), egui::Button::new(format!("Recall {n}")))
+                                        .on_hover_text(self.shortcut_text(&recall))
+                                        .clicked()
+                                    {
+                                        self.run_into(&recall, &mut actions);
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                        })
+                        .response
+                        .on_hover_text("Perspective / orthographic axis views and camera bookmarks");
                     });
                 });
                 self.scene_view(ui, runtime, &mut actions);

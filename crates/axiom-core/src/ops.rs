@@ -258,7 +258,9 @@ pub fn instantiate_prefab(world: &World, prefab: &str, place: &Placement) -> Res
 }
 
 /// Duplicates entities (same parent and scenes) with IDs `<source>/copy`, `/copy/2`, ...
-/// (the source part is cut to 24 characters). The batch keeps the given order.
+/// (the source part is cut to 24 characters). The batch keeps the given order. Each copy is
+/// placed right after its source in the authored order (= right below it among its siblings),
+/// via a `move_entity` edit when the copy would otherwise be appended at the end.
 pub fn duplicate(world: &World, ids: &[String]) -> Result<Created> {
     if ids.is_empty() {
         return Err(Diagnostic::error(
@@ -272,6 +274,8 @@ pub fn duplicate(world: &World, ids: &[String]) -> Result<Created> {
         edits: vec![],
         ids: vec![],
     };
+    // Authored order as the edits so far leave it (copies are appended, then moved).
+    let mut order: Vec<String> = world.entities.iter().map(|e| e.id.clone()).collect();
     for source in ids {
         require_entity(world, source)?;
         let base = format!("{}/copy", source.chars().take(24).collect::<String>());
@@ -280,10 +284,190 @@ pub fn duplicate(world: &World, ids: &[String]) -> Result<Created> {
         created.ids.push(id.clone());
         created.edits.push(Edit::Core(CoreEdit::DuplicateEntity {
             source: source.clone(),
-            id,
+            id: id.clone(),
         }));
+        let at = order.iter().position(|e| e == source).unwrap();
+        if let Some(next) = order.get(at + 1).cloned() {
+            created.edits.push(Edit::Core(CoreEdit::MoveEntity {
+                id: id.clone(),
+                before: Some(next),
+            }));
+            order.insert(at + 1, id);
+        } else {
+            order.push(id);
+        }
     }
     Ok(created)
+}
+
+/// Drops entities onto the ground: each moves vertically so its lowest point rests on the
+/// highest surface below it, or on the y = 0 plane when nothing is below.
+///
+/// - Lowest point: the world-space bounds of the `render.mesh` parts of the entity and its
+///   descendants (they move with it); without mesh parts, the entity pivot.
+/// - Surfaces: the tops of other entities' `render.mesh` part bounds whose XZ footprint
+///   overlaps the dropped one and that lie at or below its lowest point (1 mm tolerance).
+///   Selected objects and their descendants are never surfaces, so a batch does not stack.
+///   Imported/skinned models and procedural geometry are not surfaces (no authored bounds).
+/// - Only the local `core.transform/position` changes (the world delta is mapped through the
+///   parent). An entity whose ancestor is also selected moves only with that ancestor.
+/// - Objects already resting on their surface yield no edit; the batch may be empty.
+pub fn drop_to_ground(world: &World, ids: &[String]) -> Result<Vec<Edit>> {
+    use crate::scene_edit::{global, local_transform, Hierarchy};
+    use glam::{Mat4, Vec3};
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "nothing to drop to the ground",
+        ));
+    }
+    for id in ids {
+        require_entity(world, id)?;
+    }
+    let graph = Hierarchy::new(world);
+    let selected: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    let has_selected_ancestor = |id: &str| {
+        let mut cursor = graph.parents.get(id).copied();
+        for _ in 0..256 {
+            let Some(p) = cursor else { return false };
+            if selected.contains(p) {
+                return true;
+            }
+            cursor = graph.parents.get(p).copied();
+        }
+        false
+    };
+    let subtree = |root: &str| {
+        let mut out = vec![root.to_owned()];
+        let mut i = 0;
+        while i < out.len() {
+            let children: Vec<&str> = graph
+                .children
+                .get(&Some(out[i].as_str()))
+                .cloned()
+                .unwrap_or_default();
+            for child in children {
+                if !out.iter().any(|o| o == child) {
+                    out.push(child.to_owned());
+                }
+            }
+            i += 1;
+        }
+        out
+    };
+    // World AABBs of an entity's mesh parts (unit boxes placed by their part transforms).
+    let part_bounds = |entity: &Entity| -> Result<Vec<(Vec3, Vec3)>> {
+        let Some(mesh) = world.resolved_components(entity).remove("render.mesh") else {
+            return Ok(vec![]);
+        };
+        let Ok(mesh) = serde_json::from_value::<RenderMesh>(mesh) else {
+            return Ok(vec![]);
+        };
+        let model = global(world, &graph, Some(&entity.id))?;
+        Ok(mesh
+            .parts
+            .iter()
+            .map(|part| {
+                let m: Mat4 = model * part.transform.matrix();
+                (0..8)
+                    .map(|j: usize| {
+                        m.transform_point3(Vec3::new(
+                            (j & 1) as f32 - 0.5,
+                            ((j >> 1) & 1) as f32 - 0.5,
+                            ((j >> 2) & 1) as f32 - 0.5,
+                        ))
+                    })
+                    .fold(
+                        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                        |(lo, hi), p| (lo.min(p), hi.max(p)),
+                    )
+            })
+            .filter(|(lo, hi)| lo.is_finite() && hi.is_finite())
+            .collect())
+    };
+    let roots: Vec<&String> = {
+        let mut seen = BTreeSet::new();
+        ids.iter()
+            .filter(|id| seen.insert(id.as_str()) && !has_selected_ancestor(id))
+            .collect()
+    };
+    let moving: BTreeSet<String> = roots.iter().flat_map(|r| subtree(r)).collect();
+    let mut surfaces = vec![];
+    for e in world.entities.iter().filter(|e| !moving.contains(&e.id)) {
+        surfaces.extend(part_bounds(e)?);
+    }
+    let mut edits = vec![];
+    for root in roots {
+        let entity = world.entity(root).unwrap();
+        let path = format!("{}/components/core.transform", entity_path(root));
+        let Some(local) = local_transform(world, entity)? else {
+            return Err(Diagnostic::error(
+                "no_transform",
+                path,
+                format!("entity '{root}' has no core.transform to move"),
+            ));
+        };
+        let mut boxes = vec![];
+        for id in subtree(root) {
+            boxes.extend(part_bounds(world.entity(&id).unwrap())?);
+        }
+        let (lo, hi) = if boxes.is_empty() {
+            let pivot = global(world, &graph, Some(root))?.transform_point3(Vec3::ZERO);
+            (pivot, pivot)
+        } else {
+            boxes.iter().fold(
+                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                |(a, b), (l, h)| (a.min(*l), b.max(*h)),
+            )
+        };
+        let bottom = lo.y;
+        let overlaps = |(l, h): &(Vec3, Vec3)| {
+            l.x <= hi.x && h.x >= lo.x && l.z <= hi.z && h.z >= lo.z && h.y <= bottom + 1e-3
+        };
+        let ground = surfaces
+            .iter()
+            .filter(|s| overlaps(s))
+            .map(|(_, h)| h.y)
+            .reduce(f32::max)
+            .unwrap_or(0.0);
+        let dy = ground - bottom;
+        if !dy.is_finite() || dy.abs() < 1e-5 {
+            continue;
+        }
+        let parent = global(world, &graph, graph.parents.get(root.as_str()).copied())?;
+        let delta = parent.inverse().transform_vector3(Vec3::new(0.0, dy, 0.0));
+        let position = Vec3::from_array(local.position) + delta;
+        if !position.is_finite() {
+            return Err(Diagnostic::error(
+                "unrepresentable_transform",
+                path,
+                "the parent transform cannot express this drop",
+            ));
+        }
+        // Usually only y changes (no parent rotation): write just that leaf, so x/z keep their
+        // authored text and the diff shows one change.
+        let own_position = entity
+            .components
+            .get("core.transform")
+            .and_then(|t| t.get("position"))
+            .and_then(Value::as_array)
+            .is_some_and(|p| p.len() == 3);
+        let (field, value) = if own_position && delta.x.abs() < 1e-6 && delta.z.abs() < 1e-6 {
+            ("/components/core.transform/position/1", json!(position.y))
+        } else {
+            (
+                "/components/core.transform/position",
+                json!(position.to_array()),
+            )
+        };
+        edits.push(Edit::Core(CoreEdit::SetField {
+            target: Target::Entity { id: root.clone() },
+            field: field.into(),
+            value,
+        }));
+    }
+    Ok(edits)
 }
 
 /// Deletes entities. Children are kept (they become roots); relations and scene
@@ -667,6 +851,100 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(move_entity(&w, "c", &Order::End).unwrap().is_empty());
+    }
+
+    #[test]
+    fn duplicates_land_right_after_their_sources() {
+        let mut w = world();
+        for id in ["b", "c"] {
+            w.entities.push(Entity::new(id));
+        }
+        let ids: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let w2 = apply(w.clone(), duplicate(&w, &ids).unwrap().edits);
+        assert_eq!(order(&w2), ["a", "a/copy", "b", "b/copy", "c", "c/copy"]);
+        // Selection order is kept for IDs; placement still follows each source.
+        let ids: Vec<String> = ["c", "a"].map(String::from).to_vec();
+        let w3 = apply(w.clone(), duplicate(&w, &ids).unwrap().edits);
+        assert_eq!(order(&w3), ["a", "a/copy", "b", "c", "c/copy"]);
+    }
+
+    fn placed(id: &str, position: [f32; 3], mesh: Option<Value>) -> Entity {
+        let mut e = Entity::new(id);
+        e.components
+            .insert("core.transform".into(), json!({ "position": position }));
+        if let Some(mesh) = mesh {
+            e.components.insert("render.mesh".into(), mesh);
+        }
+        e
+    }
+
+    fn y(w: &World, id: &str) -> f32 {
+        w.entity(id).unwrap().components["core.transform"]["position"][1]
+            .as_f64()
+            .unwrap() as f32
+    }
+
+    #[test]
+    fn drop_to_ground_rests_on_surfaces_or_the_zero_plane() {
+        let unit = json!({"parts":[{"transform":{},"color":[1,1,1]}]});
+        let mut w = World::empty("ground");
+        // A 2 m tall table top under x=0 (top at y=1), a crate above it, a crate off to the side,
+        // a pivot-only empty, and a child cube under an empty parent at y=5.
+        w.entities.push(placed(
+            "table",
+            [0.0, 0.5, 0.0],
+            Some(json!({"parts":[{"transform":{"scale":[2,1,2]},"color":[1,1,1]}]})),
+        ));
+        w.entities
+            .push(placed("crate", [0.2, 4.0, 0.0], Some(unit.clone())));
+        w.entities
+            .push(placed("side", [10.0, 3.0, 0.0], Some(unit.clone())));
+        w.entities.push(placed("marker", [10.0, 2.0, 5.0], None));
+        w.entities.push(placed("group", [20.0, 5.0, 0.0], None));
+        w.entities
+            .push(placed("group/box", [0.0, 1.0, 0.0], Some(unit.clone())));
+        w.relations.push(Relation {
+            source: "group/box".into(),
+            kind: "parent".into(),
+            target: "group".into(),
+        });
+        let ids: Vec<String> = ["crate", "side", "marker", "group", "group/box"]
+            .map(String::from)
+            .to_vec();
+        let edits = drop_to_ground(&w, &ids).unwrap();
+        assert_eq!(edits.len(), 4, "group/box moves with its selected parent");
+        let after = apply(w.clone(), edits);
+        assert!(
+            (y(&after, "crate") - 1.5).abs() < 1e-5,
+            "rests on the table"
+        );
+        assert!((y(&after, "side") - 0.5).abs() < 1e-5, "rests on y=0");
+        assert!(y(&after, "marker").abs() < 1e-5, "pivot on y=0");
+        // The child box bottom was at 5+1-0.5 = 5.5; the parent drops by 5.5.
+        assert!((y(&after, "group") + 0.5).abs() < 1e-5);
+        assert_eq!(y(&after, "group/box"), 1.0);
+        // Already grounded: nothing to do.
+        assert!(drop_to_ground(&after, &ids).unwrap().is_empty());
+        // A child alone maps the world delta through its parent's scale.
+        let mut scaled = w.clone();
+        scaled.entity_mut("group").unwrap().components.insert(
+            "core.transform".into(),
+            json!({"position":[20.0, 5.0, 0.0], "scale":[1.0, 2.0, 1.0]}),
+        );
+        let edits = drop_to_ground(&scaled, &["group/box".into()]).unwrap();
+        let after = apply(scaled, edits);
+        // World bottom = 5 + 2*(1 - 0.5) = 6 -> needs -6 world = -3 local.
+        assert!((y(&after, "group/box") + 2.0).abs() < 1e-5);
+        assert_eq!(
+            code(drop_to_ground(&w, &[]).unwrap_err()),
+            "empty_selection"
+        );
+        let mut bare = World::empty("bare");
+        bare.entities.push(Entity::new("x"));
+        assert_eq!(
+            code(drop_to_ground(&bare, &["x".into()]).unwrap_err()),
+            "no_transform"
+        );
     }
 
     #[test]

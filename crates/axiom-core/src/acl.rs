@@ -32,6 +32,7 @@ EDIT (any number, atomic):
   move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
   prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
                                   prefab gets ID's resolved components, ID keeps its core.transform
+  ground SEL                      drop to the highest render.mesh top below (else y=0); moves position.y
   Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
@@ -266,6 +267,7 @@ enum Statement {
     Rename(String, String),
     Move(String, crate::ops::Order),
     PrefabCreate(Option<String>, String),
+    Ground(Box<Selection>),
 }
 
 impl Statement {
@@ -479,6 +481,10 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 _ => bail!("use: move ID before OTHER | move ID after OTHER | move ID end"),
             };
             Statement::Move(arg(1)?.clone(), to)
+        }
+        "ground" => {
+            ensure!(tokens.len() == 2, "ground takes one selector");
+            Statement::Ground(Box::new(selector(arg(1)?)?))
         }
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
@@ -736,6 +742,9 @@ pub fn run(
             Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
             Statement::PrefabCreate(id, entity) => {
                 crate::ops::create_prefab(w, id.as_deref(), &entity).map(|c| c.edits)
+            }
+            Statement::Ground(select) => {
+                entity_ids(w, r, &select, line).and_then(|ids| crate::ops::drop_to_ground(w, &ids))
             }
             _ => unreachable!(),
         }

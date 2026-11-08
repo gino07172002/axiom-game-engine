@@ -1,6 +1,7 @@
 //! Editor command registry. One table drives the menu bar, the command palette, keyboard
 //! shortcuts and the bridge (`editor_view {command}`), so a person and an agent trigger exactly
 //! the same operations through the same validators.
+use super::viewport::{Bookmark, Orbit, ViewMode, FLY_MAX, FLY_MIN};
 use super::{Action, Dock, Editor, Tool};
 use egui::{Key, RichText};
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,62 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("view.snap", "Toggle Snap", "View", ""),
     c("view.grid", "Toggle Grid", "View", ""),
     c("view.palette", "Command Palette…", "View", "Ctrl+Shift+P"),
+    c("view.gizmos", "Toggle Component Gizmos", "View", ""),
+    c("view.perspective", "Perspective View", "View", "Alt+1"),
+    c("view.top", "Top View (Ortho)", "View", "Alt+2"),
+    c("view.front", "Front View (Ortho)", "View", "Alt+3"),
+    c("view.right", "Right View (Ortho)", "View", "Alt+4"),
+    c("view.bottom", "Bottom View (Ortho)", "View", "Alt+5"),
+    c("view.back", "Back View (Ortho)", "View", "Alt+6"),
+    c("view.left", "Left View (Ortho)", "View", "Alt+7"),
+    c(
+        "view.bookmark.save.1",
+        "Save Camera Bookmark 1",
+        "View",
+        "Ctrl+F6",
+    ),
+    c(
+        "view.bookmark.save.2",
+        "Save Camera Bookmark 2",
+        "View",
+        "Ctrl+F7",
+    ),
+    c(
+        "view.bookmark.save.3",
+        "Save Camera Bookmark 3",
+        "View",
+        "Ctrl+F8",
+    ),
+    c(
+        "view.bookmark.save.4",
+        "Save Camera Bookmark 4",
+        "View",
+        "Ctrl+F9",
+    ),
+    c(
+        "view.bookmark.recall.1",
+        "Recall Camera Bookmark 1",
+        "View",
+        "F6",
+    ),
+    c(
+        "view.bookmark.recall.2",
+        "Recall Camera Bookmark 2",
+        "View",
+        "F7",
+    ),
+    c(
+        "view.bookmark.recall.3",
+        "Recall Camera Bookmark 3",
+        "View",
+        "F8",
+    ),
+    c(
+        "view.bookmark.recall.4",
+        "Recall Camera Bookmark 4",
+        "View",
+        "F9",
+    ),
     c("object.empty", "Create Empty", "Object", "Ctrl+Shift+N"),
     c("object.cube", "Create Cube", "Object", ""),
     c("object.camera", "Create Camera", "Object", ""),
@@ -79,6 +136,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Object",
         "",
     ),
+    c("object.drop_to_ground", "Drop to Ground", "Object", "End"),
     c("play.start", "Play", "Play", "F5"),
     c("window.changes", "Changes", "Window", "Ctrl+1"),
     c("window.proposals", "Proposals", "Window", "Ctrl+2"),
@@ -180,6 +238,12 @@ pub(crate) struct Prefs {
     pub hidden: BTreeMap<String, BTreeSet<String>>,
     /// Editor-view only, per world ID: objects drawn but not pickable or draggable there.
     pub locked: BTreeMap<String, BTreeSet<String>>,
+    /// Scene-view fly speed (m/s) for RMB + WASD/QE; the wheel changes it while flying.
+    pub fly_speed: f32,
+    /// Draw component gizmos (camera frusta, nav.blocker, colliders, FSM agents).
+    pub gizmos: bool,
+    /// Per world ID: saved scene-view cameras by slot ("1".."4").
+    pub bookmarks: BTreeMap<String, BTreeMap<String, Bookmark>>,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -194,6 +258,9 @@ impl Default for Prefs {
             shortcuts: BTreeMap::new(),
             hidden: BTreeMap::new(),
             locked: BTreeMap::new(),
+            fly_speed: 6.0,
+            gizmos: true,
+            bookmarks: BTreeMap::new(),
         }
     }
 }
@@ -209,6 +276,14 @@ impl Prefs {
         self.snap_move = clamp(self.snap_move, 0.001, 100.0, 0.25);
         self.snap_rotate_degrees = clamp(self.snap_rotate_degrees, 0.1, 180.0, 15.0);
         self.snap_scale = clamp(self.snap_scale, 0.001, 10.0, 0.1);
+        self.fly_speed = clamp(self.fly_speed, FLY_MIN, FLY_MAX, 6.0);
+        self.bookmarks.retain(|world, slots| {
+            slots.retain(|slot, b| matches!(slot.as_str(), "1" | "2" | "3" | "4") && b.valid());
+            world.len() <= 128 && !slots.is_empty()
+        });
+        while self.bookmarks.len() > 64 {
+            self.bookmarks.pop_first();
+        }
         self.shortcuts
             .retain(|id, keys| command(id).is_some() && keys.len() <= 64);
         for sets in [&mut self.hidden, &mut self.locked] {
@@ -314,8 +389,25 @@ impl Editor {
             {
                 Some("finish the current drag first")
             }
+            "object.drop_to_ground" if nothing => Some("nothing selected"),
+            "object.drop_to_ground" if busy => Some("apply or reload the inspector draft first"),
+            id if self.drag.is_some()
+                && (ViewMode::from_command(id).is_some()
+                    || id.starts_with("view.bookmark.recall.")) =>
+            {
+                Some("finish the current drag first")
+            }
+            id if id.starts_with("view.bookmark.recall.") && self.bookmark(id).is_none() => {
+                Some("no camera bookmark saved in this slot")
+            }
             _ => None,
         }
+    }
+
+    /// The saved camera for a `view.bookmark.*.N` command in this world.
+    fn bookmark(&self, id: &str) -> Option<&Bookmark> {
+        let slot = id.rsplit('.').next()?;
+        self.prefs.bookmarks.get(&self.world.id)?.get(slot)
     }
 
     /// Runs a registered command. Unknown or blocked commands are errors, never no-ops.
@@ -380,6 +472,32 @@ impl Editor {
                 self.pending_copy = Some(r#"{"op":"discover","topic":"editor"}"#.to_owned());
                 self.notice("Copied editor discovery request");
             }
+            "view.gizmos" => self.prefs.gizmos = !self.prefs.gizmos,
+            "object.drop_to_ground" => actions.extend(self.drop_selection_to_ground()),
+            id if ViewMode::from_command(id).is_some() => {
+                let mode = ViewMode::from_command(id).unwrap();
+                self.orbit.set_mode(mode);
+                self.notice(format!("{} view", mode.name()));
+            }
+            id if id.starts_with("view.bookmark.save.") => {
+                let slot = id.rsplit('.').next().unwrap_or("1").to_owned();
+                let bookmark = self.orbit.bookmark();
+                self.prefs
+                    .bookmarks
+                    .entry(self.world.id.clone())
+                    .or_default()
+                    .insert(slot.clone(), bookmark);
+                self.notice(format!("Saved camera bookmark {slot}"));
+            }
+            id if id.starts_with("view.bookmark.recall.") => {
+                if let Some(b) = self.bookmark(id) {
+                    self.orbit = Orbit::from_bookmark(b);
+                }
+                self.notice(format!(
+                    "Camera bookmark {}",
+                    id.rsplit('.').next().unwrap_or("")
+                ));
+            }
             other => {
                 let dock = other
                     .strip_prefix("window.")
@@ -409,7 +527,11 @@ impl Editor {
                     for cmd in COMMANDS.iter().filter(|c| c.menu == menu) {
                         if matches!(
                             cmd.id,
-                            "edit.preferences" | "file.exit" | "help.copy_discovery"
+                            "edit.preferences"
+                                | "file.exit"
+                                | "help.copy_discovery"
+                                | "view.perspective"
+                                | "view.bookmark.save.1"
                         ) {
                             ui.separator();
                         }
@@ -418,6 +540,10 @@ impl Editor {
                             "view.snap" => Some(self.prefs.snap),
                             "view.grid" => Some(self.prefs.grid),
                             "view.space" => Some(self.prefs.local_space),
+                            "view.gizmos" => Some(self.prefs.gizmos),
+                            id if ViewMode::from_command(id).is_some() => {
+                                Some(ViewMode::from_command(id) == Some(self.orbit.mode))
+                            }
                             id => id
                                 .strip_prefix("window.")
                                 .and_then(dock_from_name)
@@ -698,7 +824,8 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.child_cube": "create cube parent=ID (also empty, camera)",
                 "object.create_prefab": "prefab create [PID] from ID",
                 "hierarchy.reorder": "move ID before OTHER|after OTHER|end",
-                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children (editor view state, never content)",
+                "object.drop_to_ground": "ground SEL",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.bookmark.save|recall.N, RMB+WASD fly, box select (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
@@ -898,6 +1025,49 @@ mod tests {
             "Enter runs Create Cube"
         );
         assert!(editor.palette.is_none());
+    }
+
+    #[test]
+    fn view_modes_bookmarks_and_drop_to_ground_have_working_shortcuts() {
+        let (mut editor, runtime) = fixture();
+        let ctx = egui::Context::default();
+        let alt = egui::Modifiers::ALT;
+        key_frame(&ctx, &mut editor, &runtime, Key::Num2, alt);
+        assert!(editor.orbit.mode == ViewMode::Top, "Alt+2 = Top");
+        key_frame(&ctx, &mut editor, &runtime, Key::Num4, alt);
+        assert!(editor.orbit.mode == ViewMode::Right, "Alt+4 = Right");
+        // Ctrl+F7 saves slot 2; recall restores the exact camera after it moved.
+        let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+        assert!(editor.command_blocked("view.bookmark.recall.2").is_some());
+        key_frame(&ctx, &mut editor, &runtime, Key::F7, ctrl);
+        let saved = editor.orbit.clone();
+        key_frame(&ctx, &mut editor, &runtime, Key::Num1, alt);
+        editor.orbit.target += glam::Vec3::new(3.0, 0.0, -2.0);
+        assert!(editor.orbit != saved);
+        key_frame(&ctx, &mut editor, &runtime, Key::F7, egui::Modifiers::NONE);
+        assert!(editor.orbit == saved, "F7 recalls bookmark 2");
+        // Bookmarks persist per world in the prefs file.
+        let dir = std::env::temp_dir().join(format!("axiom-bookmarks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.editor-prefs.json");
+        let bookmarks = editor.prefs.bookmarks.clone();
+        editor.set_prefs_path(path.clone());
+        editor.prefs.bookmarks = bookmarks;
+        editor.prefs.fly_speed = 12.5;
+        editor.save_prefs();
+        let (mut again, _) = fixture();
+        again.set_prefs_path(path.clone());
+        assert_eq!(again.prefs.fly_speed, 12.5);
+        again.run_command("view.bookmark.recall.2").unwrap();
+        assert!(again.orbit == saved);
+        // Another world does not see this world's bookmarks.
+        again.world.id = "other".into();
+        assert!(again.run_command("view.bookmark.recall.2").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+        // End drops the selection to the ground (one write).
+        editor.select(Some("stage/crate".into()));
+        let actions = key_frame(&ctx, &mut editor, &runtime, Key::End, egui::Modifiers::NONE);
+        assert!(matches!(actions.as_slice(), [Action::Write { .. }]));
     }
 
     #[test]

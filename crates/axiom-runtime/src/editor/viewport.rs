@@ -3,6 +3,7 @@ use crate::{presentation::RenderView, world::WorldRuntime};
 use axiom_core::{Camera, Projection, Transform};
 use egui::{pos2, vec2, Color32, PointerButton, Pos2, Rect, Stroke, Vec2};
 use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+use serde::{Deserialize, Serialize};
 
 const FOV: f32 = 52.0;
 const NEAR: f32 = 0.04;
@@ -32,11 +33,104 @@ impl Tool {
     }
 }
 
+/// Scene-view projection: free perspective orbit, or an axis-aligned orthographic view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ViewMode {
+    Perspective,
+    Top,
+    Bottom,
+    Front,
+    Back,
+    Right,
+    Left,
+}
+impl ViewMode {
+    pub const ALL: [ViewMode; 7] = [
+        Self::Perspective,
+        Self::Top,
+        Self::Bottom,
+        Self::Front,
+        Self::Back,
+        Self::Right,
+        Self::Left,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Perspective => "Perspective",
+            Self::Top => "Top",
+            Self::Bottom => "Bottom",
+            Self::Front => "Front",
+            Self::Back => "Back",
+            Self::Right => "Right",
+            Self::Left => "Left",
+        }
+    }
+    pub fn command(self) -> &'static str {
+        match self {
+            Self::Perspective => "view.perspective",
+            Self::Top => "view.top",
+            Self::Bottom => "view.bottom",
+            Self::Front => "view.front",
+            Self::Back => "view.back",
+            Self::Right => "view.right",
+            Self::Left => "view.left",
+        }
+    }
+    pub fn from_command(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.command() == id)
+    }
+    /// Orbit yaw/pitch looking along the view axis; `None` for the free perspective view.
+    /// Front looks along -Z (eye on +Z), Right along -X (eye on +X), Top straight down with
+    /// -Z (north) up on screen.
+    fn angles(self) -> Option<(f32, f32)> {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        match self {
+            Self::Perspective => None,
+            Self::Top => Some((0.0, FRAC_PI_2)),
+            Self::Bottom => Some((0.0, -FRAC_PI_2)),
+            Self::Front => Some((0.0, 0.0)),
+            Self::Back => Some((PI, 0.0)),
+            Self::Right => Some((FRAC_PI_2, 0.0)),
+            Self::Left => Some((-FRAC_PI_2, 0.0)),
+        }
+    }
+}
+
+/// A saved scene-view camera (per world, in the editor prefs).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Bookmark {
+    pub target: [f32; 3],
+    pub distance: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub mode: ViewMode,
+}
+impl Bookmark {
+    pub fn valid(&self) -> bool {
+        self.target
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 1.0e6)
+            && self.distance.is_finite()
+            && (0.25..=4000.0).contains(&self.distance)
+            && self.yaw.is_finite()
+            && self.pitch.is_finite()
+            && self.pitch.abs() <= std::f32::consts::FRAC_PI_2 + 1e-4
+    }
+}
+
+/// Orthographic views keep the eye at least this far back so objects between the target and
+/// the eye are not clipped. Not further: the scene shader fogs by eye distance
+/// (1 - exp(-d^2 * 0.00012), about 10% at 30 m, fully fogged by ~200 m).
+const ORTHO_MIN_BACK: f32 = 30.0;
+
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Orbit {
-    target: Vec3,
-    distance: f32,
+    pub(super) target: Vec3,
+    pub(super) distance: f32,
     yaw: f32,
     pitch: f32,
+    pub(super) mode: ViewMode,
 }
 impl Default for Orbit {
     fn default() -> Self {
@@ -45,26 +139,130 @@ impl Default for Orbit {
             distance: 12.5,
             yaw: 0.70,
             pitch: 0.45,
+            mode: ViewMode::Perspective,
         }
     }
 }
 impl Orbit {
-    fn eye(&self) -> Vec3 {
-        self.target
-            + self.distance
-                * Vec3::new(
-                    self.pitch.cos() * self.yaw.sin(),
-                    self.pitch.sin(),
-                    self.pitch.cos() * self.yaw.cos(),
-                )
+    /// Unit vector from the target towards the eye.
+    fn dir(&self) -> Vec3 {
+        Vec3::new(
+            self.pitch.cos() * self.yaw.sin(),
+            self.pitch.sin(),
+            self.pitch.cos() * self.yaw.cos(),
+        )
     }
-    fn matrix(&self, rect: Rect) -> Mat4 {
-        Mat4::perspective_rh(
-            FOV.to_radians(),
-            rect.width() / rect.height().max(1.0),
-            NEAR,
-            FAR,
-        ) * Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
+    /// Screen-up vector (d dir / d pitch): equals the Y-up `look_at` basis below the poles and
+    /// stays defined straight above/below, where Top/Bottom views need it.
+    fn up(&self) -> Vec3 {
+        Vec3::new(
+            -self.pitch.sin() * self.yaw.sin(),
+            self.pitch.cos(),
+            -self.pitch.sin() * self.yaw.cos(),
+        )
+    }
+    /// (forward, right, up) of the view.
+    pub(super) fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let forward = -self.dir();
+        let up = self.up();
+        (forward, forward.cross(up).normalize_or_zero(), up)
+    }
+    pub(super) fn ortho(&self) -> bool {
+        self.mode != ViewMode::Perspective
+    }
+    fn eye(&self) -> Vec3 {
+        let back = if self.ortho() {
+            self.distance.max(ORTHO_MIN_BACK)
+        } else {
+            self.distance
+        };
+        self.target + back * self.dir()
+    }
+    /// Half the visible height at the target (orthographic views match the perspective
+    /// framing at `distance`, so switching views keeps the scale).
+    fn half_height(&self) -> f32 {
+        self.distance * (FOV.to_radians() * 0.5).tan()
+    }
+    /// Distance-equivalent for sizing screen-constant handles at `point`.
+    fn scale_at(&self, point: Vec3) -> f32 {
+        if self.ortho() {
+            self.distance
+        } else {
+            (point - self.eye()).length()
+        }
+    }
+    fn projection(&self, aspect: f32) -> Mat4 {
+        if self.ortho() {
+            let h = self.half_height();
+            Mat4::orthographic_rh(-h * aspect, h * aspect, -h, h, NEAR, FAR)
+        } else {
+            Mat4::perspective_rh(FOV.to_radians(), aspect, NEAR, FAR)
+        }
+    }
+    /// View-projection used for picking, handles and overlays; identical to what the
+    /// renderer builds from [`Orbit::view`] (projection · look_at(eye, eye+forward, up)).
+    pub(super) fn matrix(&self, rect: Rect) -> Mat4 {
+        let eye = self.eye();
+        self.projection(rect.width() / rect.height().max(1.0))
+            * Mat4::look_at_rh(eye, eye - self.dir(), self.up())
+    }
+    pub(super) fn set_mode(&mut self, mode: ViewMode) {
+        self.mode = mode;
+        match mode.angles() {
+            Some((yaw, pitch)) => {
+                self.yaw = yaw;
+                self.pitch = pitch;
+            }
+            None => self.pitch = self.pitch.clamp(-1.52, 1.52),
+        }
+    }
+    /// RMB drag: orbit around the target. Leaving an axis view returns to perspective.
+    fn orbit_by(&mut self, delta: Vec2) {
+        if self.ortho() {
+            self.set_mode(ViewMode::Perspective);
+        }
+        self.yaw -= delta.x * 0.008;
+        self.pitch = (self.pitch + delta.y * 0.008).clamp(-1.52, 1.52);
+    }
+    /// RMB drag while flying: turn around the eye (first-person look).
+    fn look_by(&mut self, delta: Vec2) {
+        if self.ortho() {
+            self.set_mode(ViewMode::Perspective);
+        }
+        let eye = self.eye();
+        self.yaw -= delta.x * 0.005;
+        self.pitch = (self.pitch + delta.y * 0.005).clamp(-1.52, 1.52);
+        self.target = eye - self.distance * self.dir();
+    }
+    /// Fly by `amount` metres along (right, up, forward) weights in `m`. Perspective moves the
+    /// eye (up/down = world Y); orthographic views pan in the view plane and forward zooms.
+    fn fly(&mut self, m: Vec3, amount: f32) {
+        let (forward, right, up) = self.basis();
+        if self.ortho() {
+            self.target += (right * m.x + up * m.y) * amount;
+            self.distance = (self.distance - m.z * amount).clamp(0.25, 4000.0);
+        } else {
+            self.target += (right * m.x + Vec3::Y * m.y + forward * m.z) * amount;
+        }
+        self.target = self.target.clamp(Vec3::splat(-1.0e6), Vec3::splat(1.0e6));
+    }
+    pub(super) fn bookmark(&self) -> Bookmark {
+        Bookmark {
+            target: self.target.to_array(),
+            distance: self.distance,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            mode: self.mode,
+        }
+    }
+    pub(super) fn from_bookmark(b: &Bookmark) -> Self {
+        Self {
+            target: Vec3::from_array(b.target),
+            distance: b.distance,
+            yaw: b.yaw,
+            pitch: b.pitch,
+            mode: b.mode,
+        }
     }
     pub fn view(&self, rect: Rect, screen: Rect) -> RenderView {
         let rect = rect.intersect(screen);
@@ -81,11 +279,17 @@ impl Orbit {
         RenderView {
             id: "editor.orbit".into(),
             eye: self.eye(),
-            forward: (self.target - self.eye()).normalize(),
-            up: Vec3::Y,
+            forward: -self.dir(),
+            up: self.up(),
             instances: vec![],
             camera: Camera {
-                projection: Projection::Perspective { fov_degrees: FOV },
+                projection: if self.ortho() {
+                    Projection::Orthographic {
+                        height: 2.0 * self.half_height(),
+                    }
+                } else {
+                    Projection::Perspective { fov_degrees: FOV }
+                },
                 near: NEAR,
                 far: FAR,
                 viewport,
@@ -94,11 +298,39 @@ impl Orbit {
         }
     }
     fn pan(&mut self, delta: Vec2, height: f32) {
-        let forward = (self.target - self.eye()).normalize();
-        let right = forward.cross(Vec3::Y).normalize();
-        let up = right.cross(forward);
+        let (_, right, up) = self.basis();
         self.target += (-right * delta.x + up * delta.y) * self.distance / height.max(1.0);
     }
+}
+
+/// Transient scene-view input state (never persisted).
+#[derive(Default)]
+pub(super) struct SceneInput {
+    /// Box-selection start while the left button is held on empty space.
+    pub marquee: Option<Pos2>,
+    /// RMB is held and a movement key was used during this press (look around the eye).
+    pub flying: bool,
+    /// Input time until which the fly speed readout stays visible.
+    pub speed_hint_until: f64,
+    /// Component gizmo primitives drawn last frame (tests, diagnostics).
+    pub gizmo_shapes: usize,
+}
+
+/// Movement weights (right, up, forward) from WASD/QE.
+fn fly_keys(i: &egui::InputState) -> Vec3 {
+    let axis = |pos: egui::Key, neg: egui::Key| {
+        f32::from(u8::from(i.key_down(pos))) - f32::from(u8::from(i.key_down(neg)))
+    };
+    Vec3::new(
+        axis(egui::Key::D, egui::Key::A),
+        axis(egui::Key::E, egui::Key::Q),
+        axis(egui::Key::W, egui::Key::S),
+    )
+}
+
+/// RMB pressed inside `rect` and still held: the scene view owns WASD/QE and the wheel.
+pub(super) fn rmb_held_in(i: &egui::InputState, rect: Rect) -> bool {
+    i.pointer.secondary_down() && i.pointer.press_origin().is_some_and(|p| rect.contains(p))
 }
 
 pub(super) struct Drag {
@@ -396,7 +628,7 @@ impl Handles {
     ) -> Option<Self> {
         let world = model.transform_point3(Vec3::ZERO);
         let pivot = view.project(world)?;
-        let units = (world - orbit.eye()).length() * 92.0 / view.rect.height().max(1.0);
+        let units = orbit.scale_at(world) * 92.0 / view.rect.height().max(1.0);
         let tips =
             AXES.map(|axis| view.project(world + handle_axis(model, axis, tool, local) * units));
         Some(Self { pivot, tips, units })
@@ -458,7 +690,354 @@ impl Handles {
     }
 }
 
+pub(super) const FLY_MIN: f32 = 0.1;
+pub(super) const FLY_MAX: f32 = 500.0;
+
+/// One clickable label of the corner axis widget.
+struct CubeLabel {
+    key: &'static str,
+    text: &'static str,
+    at: Pos2,
+    mode: ViewMode,
+    color: Color32,
+}
+impl CubeLabel {
+    fn hit_rect(&self) -> Rect {
+        let size = if self.key == "mode" {
+            vec2(120.0, 14.0)
+        } else {
+            vec2(18.0, 18.0)
+        };
+        Rect::from_center_size(self.at, size)
+    }
+}
+
+fn view_cube(orbit: &Orbit, rect: Rect) -> Vec<CubeLabel> {
+    let origin = rect.right_bottom() + vec2(-37.0, -32.0);
+    let (_, right, up) = orbit.basis();
+    let pairs = [
+        (ViewMode::Right, ViewMode::Left),
+        (ViewMode::Top, ViewMode::Bottom),
+        (ViewMode::Front, ViewMode::Back),
+    ];
+    let mut out: Vec<CubeLabel> = AXES
+        .iter()
+        .enumerate()
+        .map(|(i, axis)| {
+            let (pos, neg) = pairs[i];
+            CubeLabel {
+                key: ["x", "y", "z"][i],
+                text: ["X", "Y", "Z"][i],
+                at: origin + vec2(axis.dot(right), -axis.dot(up)) * 19.0,
+                mode: if orbit.mode == pos { neg } else { pos },
+                color: COLORS[i],
+            }
+        })
+        .collect();
+    out.push(CubeLabel {
+        key: "mode",
+        text: "",
+        at: origin + vec2(-24.0, -38.0),
+        mode: ViewMode::Perspective,
+        color: Color32::from_rgb(216, 225, 238),
+    });
+    out
+}
+
+/// Pickable objects whose projected center (mesh/skinned bounds, else pivot) lies in `area`,
+/// in authored order.
+fn marquee_hits(
+    runtime: &WorldRuntime,
+    matrices: &[Mat4],
+    view: &ProjectionView,
+    area: Rect,
+    keep: &dyn Fn(usize, &str) -> bool,
+) -> Vec<String> {
+    let state = &runtime.state.compiled;
+    let skinned: std::collections::HashMap<String, Vec3> = runtime
+        .render_frame()
+        .meshes
+        .iter()
+        .filter_map(|m| Some((m.id.clone(), mesh_bounds(m)?.transform_point3(Vec3::ZERO))))
+        .collect();
+    state
+        .entities
+        .iter()
+        .enumerate()
+        .take(runtime.authored_visibility.len())
+        .filter(|(i, e)| keep(*i, &e.id))
+        .filter_map(|(i, e)| {
+            let center = if let Some(c) = skinned.get(&e.id) {
+                *c
+            } else if e.mesh.is_some() {
+                focus_bounds(matrices[i], e.mesh.as_ref()).0
+            } else if e.transform.is_some() {
+                matrices[i].transform_point3(Vec3::ZERO)
+            } else {
+                return None;
+            };
+            view.project(center)
+                .filter(|p| area.contains(*p))
+                .map(|_| e.id.clone())
+        })
+        .collect()
+}
+
+/// Counts what it draws so tests can check the gizmo toggle.
+struct Pen<'a> {
+    painter: &'a egui::Painter,
+    view: &'a ProjectionView,
+    shapes: usize,
+}
+impl Pen<'_> {
+    fn line(&mut self, a: Vec3, b: Vec3, color: Color32) {
+        if let (Some(a), Some(b)) = (self.view.project(a), self.view.project(b)) {
+            self.painter
+                .line_segment([a, b], Stroke::new(1.3_f32, color));
+            self.shapes += 1;
+        }
+    }
+    fn loop_through(&mut self, points: &[Vec3], color: Color32) {
+        for (k, p) in points.iter().enumerate() {
+            self.line(*p, points[(k + 1) % points.len()], color);
+        }
+    }
+    fn open(&mut self, points: &[Vec3], color: Color32) {
+        for pair in points.windows(2) {
+            self.line(pair[0], pair[1], color);
+        }
+    }
+    fn label(&mut self, at: Vec3, text: &str, color: Color32) {
+        if let Some(p) = self.view.project(at) {
+            self.painter.text(
+                p + vec2(7.0, -6.0),
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::FontId::monospace(10.0),
+                color,
+            );
+            self.shapes += 1;
+        }
+    }
+}
+
+/// `n` points of a circle of radius `r` around `center` in the plane spanned by `a`, `b`
+/// (from angle `from` to `to`).
+fn arc(center: Vec3, a: Vec3, b: Vec3, r: f32, from: f32, to: f32, n: usize) -> Vec<Vec3> {
+    (0..n)
+        .map(|k| {
+            let t = from + (to - from) * k as f32 / (n - 1).max(1) as f32;
+            center + (a * t.cos() + b * t.sin()) * r
+        })
+        .collect()
+}
+
+const GIZMO_CAMERA: Color32 = Color32::from_rgb(170, 186, 206);
+const GIZMO_CAMERA_ACTIVE: Color32 = Color32::from_rgb(255, 214, 92);
+const GIZMO_BLOCKER: Color32 = Color32::from_rgb(255, 146, 72);
+const GIZMO_COLLIDER: Color32 = Color32::from_rgb(110, 232, 150);
+const GIZMO_AGENT: Color32 = Color32::from_rgb(232, 140, 255);
+
+/// Editor-only component gizmos: camera frusta (active camera highlighted), `nav.blocker`
+/// rectangles (XZ at the authored position + offset, like the runtime), `physics.collider`
+/// boxes/capsules and `fsm.agent` body radii. Returns the number of shapes drawn.
+fn draw_component_gizmos(
+    painter: &egui::Painter,
+    view: &ProjectionView,
+    runtime: &WorldRuntime,
+    matrices: &[Mat4],
+    visible: &dyn Fn(usize) -> bool,
+    selected: Option<usize>,
+) -> usize {
+    use std::f32::consts::{PI, TAU};
+    let mut pen = Pen {
+        painter,
+        view,
+        shapes: 0,
+    };
+    let state = &runtime.state.compiled;
+    for (i, e) in state
+        .entities
+        .iter()
+        .enumerate()
+        .take(runtime.authored_visibility.len())
+    {
+        if !visible(i) || e.transform.is_none() {
+            continue;
+        }
+        let (_, rotation, position) = matrices[i].to_scale_rotation_translation();
+        let (x, y, z) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
+        if let Some(camera) = &e.camera {
+            let color = if camera.active {
+                GIZMO_CAMERA_ACTIVE
+            } else {
+                GIZMO_CAMERA
+            };
+            let depth = 1.6_f32.min(camera.far).max(camera.near * 2.0);
+            let aspect = 16.0 / 9.0 * camera.viewport[2] / camera.viewport[3].max(0.001);
+            let forward = -z;
+            let rectangle = |d: f32, half: f32| {
+                let c = position + forward * d;
+                [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)]
+                    .map(|(sx, sy)| c + x * (sx * half * aspect) + y * (sy * half))
+            };
+            let (near, far, half) = match camera.projection {
+                Projection::Perspective { fov_degrees } => {
+                    let half = depth * (fov_degrees.to_radians() * 0.5).tan();
+                    (None, rectangle(depth, half), half)
+                }
+                Projection::Orthographic { height } => {
+                    let half = (height * 0.5).min(50.0);
+                    (
+                        Some(rectangle(camera.near, half)),
+                        rectangle(depth, half),
+                        half,
+                    )
+                }
+            };
+            pen.loop_through(&far, color);
+            for (k, corner) in far.iter().enumerate() {
+                let from = near.map_or(position, |n| n[k]);
+                pen.line(from, *corner, color);
+            }
+            if let Some(near) = near {
+                pen.loop_through(&near, color);
+            }
+            // "Up" notch on the top edge.
+            let top = position + forward * depth + y * half;
+            pen.open(
+                &[
+                    top - x * half * 0.3,
+                    top + y * half * 0.35,
+                    top + x * half * 0.3,
+                ],
+                color,
+            );
+            let name = if camera.active { "CAM (active)" } else { "CAM" };
+            pen.label(position, name, color);
+        }
+        if let Some(blocker) = e
+            .components
+            .get("nav.blocker")
+            .and_then(|v| serde_json::from_value::<axiom_core::blocker::NavBlocker>(v.clone()).ok())
+        {
+            // The runtime uses the authored position (see axiom_core::blocker::blockers).
+            let authored = e.transform.as_ref().map_or([0.0; 3], |t| t.position);
+            let (lo, hi) = blocker.rect(authored);
+            let h = position.y + 0.03;
+            pen.loop_through(
+                &[
+                    Vec3::new(lo[0], h, lo[1]),
+                    Vec3::new(hi[0], h, lo[1]),
+                    Vec3::new(hi[0], h, hi[1]),
+                    Vec3::new(lo[0], h, hi[1]),
+                ],
+                GIZMO_BLOCKER,
+            );
+        }
+        if let Some(collider) = &e.collider {
+            match collider.shape {
+                axiom_core::ColliderShape::Box { half_extents } => {
+                    let m = Mat4::from_rotation_translation(rotation, position)
+                        * Mat4::from_scale(Vec3::from_array(half_extents) * 2.0);
+                    let corner = |j: usize| {
+                        m.transform_point3(Vec3::new(
+                            (j & 1) as f32 - 0.5,
+                            ((j >> 1) & 1) as f32 - 0.5,
+                            ((j >> 2) & 1) as f32 - 0.5,
+                        ))
+                    };
+                    for j in 0..8 {
+                        for bit in [1, 2, 4] {
+                            if j & bit == 0 {
+                                pen.line(corner(j), corner(j | bit), GIZMO_COLLIDER);
+                            }
+                        }
+                    }
+                }
+                axiom_core::ColliderShape::Capsule {
+                    half_height,
+                    radius,
+                } => {
+                    let top = position + y * half_height;
+                    let bottom = position - y * half_height;
+                    for c in [top, bottom] {
+                        pen.loop_through(&arc(c, x, z, radius, 0.0, TAU, 17)[..16], GIZMO_COLLIDER);
+                    }
+                    for side in [x, -x, z, -z] {
+                        pen.line(top + side * radius, bottom + side * radius, GIZMO_COLLIDER);
+                    }
+                    for side in [x, z] {
+                        pen.open(&arc(top, side, y, radius, 0.0, PI, 9), GIZMO_COLLIDER);
+                        pen.open(&arc(bottom, side, -y, radius, 0.0, PI, 9), GIZMO_COLLIDER);
+                    }
+                }
+            }
+        }
+        if let Some(agent) = e.components.get("fsm.agent") {
+            let radius = agent["radius"].as_f64().map_or(0.3, |r| r as f32);
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else {
+                GIZMO_AGENT
+            };
+            pen.loop_through(
+                &arc(
+                    position + Vec3::Y * 0.02,
+                    Vec3::X,
+                    Vec3::Z,
+                    radius,
+                    0.0,
+                    TAU,
+                    21,
+                )[..20],
+                color,
+            );
+            pen.label(position + Vec3::Y * 0.02, "FSM", color);
+        }
+    }
+    pen.shapes
+}
+
 impl Editor {
+    /// Box selection result: Shift adds, Ctrl toggles (the primary selection stays), a plain
+    /// drag replaces the selection (an empty box clears it).
+    pub(super) fn box_select(&mut self, ids: Vec<String>, modifiers: egui::Modifiers) {
+        if self.dirty() {
+            self.set_error("Apply or reload the inspector draft before changing the selection.");
+            return;
+        }
+        let count = ids.len();
+        if modifiers.command {
+            for id in ids {
+                if self.selected.as_ref() == Some(&id) {
+                    continue;
+                }
+                if !self.extra.remove(&id) {
+                    if self.selected.is_none() {
+                        self.select(Some(id));
+                    } else {
+                        self.extra.insert(id);
+                    }
+                }
+            }
+        } else if modifiers.shift {
+            for id in ids {
+                if self.selected.is_none() {
+                    self.select(Some(id));
+                } else if self.selected.as_ref() != Some(&id) {
+                    self.extra.insert(id);
+                }
+            }
+        } else {
+            self.extra.clear();
+            let mut ids = ids.into_iter();
+            self.select(ids.next());
+            self.extra.extend(ids);
+        }
+        self.notice(format!("Box selected {count} object(s)"));
+    }
+
     pub(super) fn scene_view(
         &mut self,
         ui: &mut egui::Ui,
@@ -492,15 +1071,44 @@ impl Editor {
             .and_then(|id| state.indices.get(id))
             .copied();
         let delta = ui.input(|i| i.pointer.delta());
-        if self.drag.is_none() {
-            if response.dragged_by(PointerButton::Secondary) {
-                self.orbit.yaw -= delta.x * 0.008;
-                self.orbit.pitch = (self.orbit.pitch + delta.y * 0.008).clamp(-1.52, 1.52);
+        // RMB held: plain drag orbits; with WASD/QE it flies (and the mouse looks around the
+        // eye for the rest of that press). The wheel then sets the fly speed instead of zoom.
+        let rmb = ui.input(|i| rmb_held_in(i, rect));
+        if !rmb {
+            self.scene_input.flying = false;
+        }
+        if self.drag.is_none() && self.scene_input.marquee.is_none() {
+            if rmb {
+                let (keys, shift, dt, wheel, now) = ui.input(|i| {
+                    (
+                        fly_keys(i),
+                        i.modifiers.shift,
+                        i.stable_dt.clamp(0.0, 0.1),
+                        i.raw_scroll_delta.y,
+                        i.time,
+                    )
+                });
+                if keys != Vec3::ZERO {
+                    self.scene_input.flying = true;
+                }
+                if wheel != 0.0 {
+                    self.prefs.fly_speed =
+                        (self.prefs.fly_speed * (wheel * 0.004).exp()).clamp(FLY_MIN, FLY_MAX);
+                    self.scene_input.speed_hint_until = now + 1.5;
+                }
+                if self.scene_input.flying {
+                    self.orbit.look_by(delta);
+                    let speed = self.prefs.fly_speed * if shift { 3.0 } else { 1.0 };
+                    self.orbit.fly(keys, speed * dt);
+                    ui.ctx().request_repaint();
+                } else if response.dragged_by(PointerButton::Secondary) {
+                    self.orbit.orbit_by(delta);
+                }
             }
             if response.dragged_by(PointerButton::Middle) {
                 self.orbit.pan(delta, rect.height());
             }
-            if response.hovered() {
+            if response.hovered() && !rmb {
                 let wheel = ui.input(|i| i.smooth_scroll_delta.y);
                 self.orbit.distance =
                     (self.orbit.distance * (-wheel * 0.003).exp()).clamp(0.25, 4000.0);
@@ -533,6 +1141,16 @@ impl Editor {
         let view = ProjectionView {
             matrix: self.orbit.matrix(rect),
             rect,
+        };
+        let cube = view_cube(&self.orbit, rect);
+        for label in &cube {
+            self.rects
+                .insert(format!("view.cube.{}", label.key), label.hit_rect());
+        }
+        let cube_hit = |p: Pos2| {
+            cube.iter()
+                .find(|l| l.hit_rect().contains(p))
+                .map(|l| l.mode)
         };
         if self.prefs.grid
             || !state
@@ -615,14 +1233,20 @@ impl Editor {
         let hovered_axis = response
             .hover_pos()
             .and_then(|pos| handles.as_ref()?.hit(pos));
-        if response.drag_started_by(PointerButton::Primary) && !self.dirty() {
+        if response.drag_started_by(PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin());
-            if let (Some(origin), Some(handles), Some(initial)) = (
+            let hit = origin.and_then(|o| handles.as_ref()?.hit(o));
+            if hit.is_none() && ready && origin.is_some_and(|o| cube_hit(o).is_none()) {
+                // Left-drag on anything but a gizmo handle draws a selection box.
+                self.scene_input.marquee = origin;
+            }
+            if let (Some(origin), Some(handles), Some(initial), false) = (
                 origin,
                 &handles,
                 self.draft.as_ref().and_then(|d| d.transform.clone()),
+                self.dirty(),
             ) {
-                if let Some(axis) = handles.hit(origin) {
+                if let Some(axis) = hit {
                     let vector = handles.tips[axis].unwrap() - handles.pivot;
                     let model = parent * initial.matrix();
                     self.drag = Some(Drag {
@@ -672,14 +1296,49 @@ impl Editor {
                     self.select(self.selected.clone());
                 }
             }
-        } else if ready && response.clicked_by(PointerButton::Primary) {
+        } else if response.clicked_by(PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
-                if hovered_axis.is_none() {
+                if let Some(mode) = cube_hit(pos) {
+                    self.orbit.set_mode(mode);
+                    self.notice(format!("{} view", mode.name()));
+                } else if ready && hovered_axis.is_none() {
                     let modifiers = ui.input(|i| i.modifiers);
                     self.click_select(pick(runtime, &matrices, &view, pos, &skip), modifiers);
                 }
             }
         }
+        if let Some(start) = self.scene_input.marquee {
+            let (latest, down, escape, modifiers) = ui.input(|i| {
+                (
+                    i.pointer.latest_pos(),
+                    i.pointer.primary_down(),
+                    i.key_pressed(egui::Key::Escape),
+                    i.modifiers,
+                )
+            });
+            let area = Rect::from_two_pos(start, latest.unwrap_or(start));
+            if escape {
+                self.scene_input.marquee = None;
+            } else if down {
+                painter.rect_filled(area, 0.0, Color32::from_rgba_unmultiplied(90, 150, 255, 26));
+                painter.rect_stroke(
+                    area,
+                    0.0,
+                    Stroke::new(1.0_f32, Color32::from_rgb(140, 190, 255)),
+                    egui::StrokeKind::Inside,
+                );
+            } else {
+                self.scene_input.marquee = None;
+                let keep = |i: usize, id: &str| visible(i) && !skip(id);
+                let ids = marquee_hits(runtime, &matrices, &view, area, &keep);
+                self.box_select(ids, modifiers);
+            }
+        }
+        self.scene_input.gizmo_shapes = if self.prefs.gizmos {
+            draw_component_gizmos(&painter, &view, runtime, &matrices, &visible, selected)
+        } else {
+            0
+        };
         // Secondary selections: thinner, cooler outline.
         for id in &self.extra {
             if let Some(&i) = state.indices.get(id).filter(|&&i| visible(i)) {
@@ -720,24 +1379,47 @@ impl Editor {
         painter.text(
             anchor,
             egui::Align2::LEFT_BOTTOM,
-            "RMB orbit    MMB pan    Wheel zoom    F frame",
+            "RMB orbit  RMB+WASD/QE fly  MMB pan  Wheel zoom  F frame  Drag box-select",
             egui::FontId::monospace(11.0),
             Color32::from_rgb(216, 225, 238),
         );
+        // Axis view cube: click X/Y/Z for Right/Top/Front (again for the opposite side), the
+        // mode caption for Perspective.
         let axes = rect.right_bottom() + vec2(-37.0, -32.0);
-        let direction = (self.orbit.target - self.orbit.eye()).normalize();
-        let right = direction.cross(Vec3::Y).normalize();
-        let up = right.cross(direction);
-        for (i, axis) in AXES.iter().enumerate() {
-            let tip = axes + vec2(axis.dot(right), -axis.dot(up)) * 19.0;
-            painter.line_segment([axes, tip], Stroke::new(2.0_f32, COLORS[i]));
+        for label in &cube {
+            if label.key == "mode" {
+                painter.text(
+                    label.at,
+                    egui::Align2::CENTER_CENTER,
+                    format!(
+                        "{}{}",
+                        self.orbit.mode.name(),
+                        if self.orbit.ortho() { " (ortho)" } else { "" }
+                    ),
+                    egui::FontId::monospace(10.0),
+                    label.color,
+                );
+                continue;
+            }
+            painter.line_segment([axes, label.at], Stroke::new(2.0_f32, label.color));
             painter.text(
-                tip,
+                label.at,
                 egui::Align2::CENTER_BOTTOM,
-                ["X", "Y", "Z"][i],
+                label.text,
                 egui::FontId::monospace(10.0),
-                COLORS[i],
+                label.color,
             );
+        }
+        let now = ui.input(|i| i.time);
+        if now < self.scene_input.speed_hint_until {
+            painter.text(
+                rect.center_bottom() + vec2(0.0, -40.0),
+                egui::Align2::CENTER_BOTTOM,
+                format!("Fly speed {:.1} m/s", self.prefs.fly_speed),
+                egui::FontId::proportional(14.0),
+                Color32::from_rgb(255, 222, 140),
+            );
+            ui.ctx().request_repaint();
         }
         if !ready {
             painter.text(
@@ -1089,10 +1771,12 @@ mod tests {
         else {
             panic!("duplicate must be one write");
         };
+        // Copies are moved right after their sources (MoveEntity edits follow).
         let ids: Vec<_> = edits
             .iter()
-            .map(|e| match e {
-                Edit::Core(CoreEdit::DuplicateEntity { id, .. }) => id.clone(),
+            .filter_map(|e| match e {
+                Edit::Core(CoreEdit::DuplicateEntity { id, .. }) => Some(id.clone()),
+                Edit::Core(CoreEdit::MoveEntity { .. }) => None,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1561,6 +2245,398 @@ mod tests {
         // Hiding a parent hides its children too.
         editor.set_view_flag(&["stage/rack".into()], false);
         assert!(editor.view_flagged(false).contains("stage/rack/cargo"));
+    }
+
+    fn secondary(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn key(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Like `frame`, with modifiers held on the raw input; returns the painted shape count.
+    fn frame_with(
+        ctx: &egui::Context,
+        editor: &mut Editor,
+        runtime: &WorldRuntime,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> usize {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 760.0))),
+                modifiers,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                editor.draw(ctx, runtime);
+            },
+        )
+        .shapes
+        .len()
+    }
+
+    fn screen_of(editor: &Editor, point: Vec3) -> Pos2 {
+        ProjectionView {
+            matrix: editor.orbit.matrix(editor.viewport),
+            rect: editor.viewport,
+        }
+        .project(point)
+        .unwrap()
+    }
+
+    fn pivot(runtime: &WorldRuntime, id: &str) -> Vec3 {
+        runtime.state.matrices()[runtime.state.compiled.indices[id]].transform_point3(Vec3::ZERO)
+    }
+
+    #[test]
+    fn rmb_plus_wasd_flies_and_the_wheel_sets_the_speed() {
+        let (world, runtime) = fixture();
+        let mut editor = Editor::new(world, 1, None);
+        editor.tool = Tool::Select;
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let at = editor.viewport.center();
+        let (forward, _, _) = editor.orbit.basis();
+        let eye = editor.orbit.eye();
+        frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(at), secondary(at, true)],
+        );
+        frame(&ctx, &mut editor, &runtime, vec![key(egui::Key::W, true)]);
+        for _ in 0..11 {
+            frame(&ctx, &mut editor, &runtime, vec![]);
+        }
+        let moved = editor.orbit.eye() - eye;
+        // 6 m/s for 12 frames of 1/60 s = 1.2 m forward.
+        assert!(
+            (moved.dot(forward) - 1.2).abs() < 0.05,
+            "{moved:?} along {forward:?}"
+        );
+        assert!(moved.reject_from(forward).length() < 1e-3);
+        assert!(
+            editor.tool == Tool::Select,
+            "W flies instead of picking Move"
+        );
+        // Wheel while RMB is held changes the fly speed (and shows it), not the zoom.
+        let distance = editor.orbit.distance;
+        frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![
+                key(egui::Key::W, false),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, 100.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(editor.prefs.fly_speed > 8.0, "{}", editor.prefs.fly_speed);
+        assert_eq!(editor.orbit.distance, distance);
+        assert!(editor.scene_input.speed_hint_until > 0.0);
+        frame(&ctx, &mut editor, &runtime, vec![secondary(at, false)]);
+        // Released: W is the Move tool shortcut again.
+        frame(&ctx, &mut editor, &runtime, vec![key(egui::Key::W, true)]);
+        assert!(editor.tool == Tool::Move);
+        frame(&ctx, &mut editor, &runtime, vec![key(egui::Key::W, false)]);
+        // A plain RMB drag still orbits around the target.
+        let target = editor.orbit.target;
+        let yaw = editor.orbit.yaw;
+        frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(at), secondary(at, true)],
+        );
+        for step in 1..=4 {
+            frame(
+                &ctx,
+                &mut editor,
+                &runtime,
+                vec![egui::Event::PointerMoved(
+                    at + vec2(15.0 * step as f32, 0.0),
+                )],
+            );
+        }
+        frame(&ctx, &mut editor, &runtime, vec![secondary(at, false)]);
+        assert_eq!(editor.orbit.target, target);
+        assert!(
+            editor.orbit.yaw < yaw - 0.2,
+            "{} vs {yaw}",
+            editor.orbit.yaw
+        );
+    }
+
+    #[test]
+    fn orthographic_views_pick_and_drag_like_perspective() {
+        let (world, mut runtime) = fixture();
+        let mut editor = Editor::new(world, 1, None);
+        let ctx = egui::Context::default();
+        editor.run_command("view.top").unwrap();
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let view = editor.render_frame(&mut runtime, ctx.screen_rect()).views[0].clone();
+        assert!(matches!(
+            view.camera.projection,
+            Projection::Orthographic { .. }
+        ));
+        // The scene shader fogs by eye distance: an ortho eye 1 km away rendered only fog.
+        assert!((view.eye - editor.orbit.target).length() <= 30.0 + 1e-3);
+        // Top view: +X to the right, -Z up on screen.
+        let crate_at = screen_of(&editor, pivot(&runtime, "stage/crate"));
+        let beacon_at = screen_of(&editor, pivot(&runtime, "stage/beacon"));
+        assert!(beacon_at.x > crate_at.x && beacon_at.y < crate_at.y);
+        click_at(&ctx, &mut editor, &runtime, crate_at);
+        assert_eq!(editor.selected.as_deref(), Some("stage/crate"));
+        // Front view hits the same object from the side; the X handle drag still writes X.
+        editor.run_command("view.front").unwrap();
+        let end = start_drag(&ctx, &mut editor, &runtime);
+        let actions = frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]);
+        let [Action::Write {
+            request: Request::Apply { edits, .. },
+            ..
+        }] = actions.as_slice()
+        else {
+            panic!("expected one write");
+        };
+        let [Edit::Core(CoreEdit::SetField { field, value, .. })] = edits.as_slice() else {
+            panic!("{edits:?}");
+        };
+        assert_eq!(field, "/components/core.transform/position");
+        assert!(value[0].as_f64().unwrap() > 1.6, "{value}");
+        assert!((value[1].as_f64().unwrap() - 0.63).abs() < 1e-4);
+        // Orbiting out of an axis view returns to perspective.
+        editor.orbit.orbit_by(vec2(10.0, 0.0));
+        assert!(editor.orbit.mode == ViewMode::Perspective);
+        // The view cube switches views on click (Y: Top, again: Bottom).
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let y = editor.rects["view.cube.y"].center();
+        click_at(&ctx, &mut editor, &runtime, y);
+        assert!(editor.orbit.mode == ViewMode::Top);
+        // Labels move with the view (Y now points at the camera); use this frame's layout.
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let y = editor.rects["view.cube.y"].center();
+        click_at(&ctx, &mut editor, &runtime, y);
+        assert!(editor.orbit.mode == ViewMode::Bottom);
+    }
+
+    /// Left-drags a selection box from `a` to `b` with `modifiers` held.
+    fn box_drag(
+        ctx: &egui::Context,
+        editor: &mut Editor,
+        runtime: &WorldRuntime,
+        a: Pos2,
+        b: Pos2,
+        modifiers: egui::Modifiers,
+    ) {
+        frame_with(
+            ctx,
+            editor,
+            runtime,
+            vec![egui::Event::PointerMoved(a), primary(a, true)],
+            modifiers,
+        );
+        for t in [0.3, 0.7, 1.0] {
+            frame_with(
+                ctx,
+                editor,
+                runtime,
+                vec![egui::Event::PointerMoved(a + (b - a) * t)],
+                modifiers,
+            );
+        }
+        frame_with(ctx, editor, runtime, vec![primary(b, false)], modifiers);
+    }
+
+    #[test]
+    fn box_selection_selects_inside_skips_hidden_and_locked_and_honours_modifiers() {
+        let (world, runtime) = fixture();
+        let mut editor = Editor::new(world, 1, None);
+        editor.tool = Tool::Select;
+        let ctx = egui::Context::default();
+        editor.run_command("view.top").unwrap();
+        // Let the panel layout settle so projected points match the next frames.
+        for _ in 0..3 {
+            frame(&ctx, &mut editor, &runtime, vec![]);
+        }
+        let state = &runtime.state.compiled;
+        let center = |id: &str| {
+            let i = state.indices[id];
+            screen_of(
+                &editor,
+                focus_bounds(runtime.state.matrices()[i], state.entities[i].mesh.as_ref()).0,
+            )
+        };
+        let (c, b) = (center("stage/crate"), center("stage/beacon"));
+        let (a, z) = (c.min(b) - vec2(8.0, 8.0), c.max(b) + vec2(8.0, 8.0));
+        // Everything whose center falls in the box, computed independently.
+        let expected: Vec<String> = state
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| e.transform.is_some() && runtime.authored_visibility[*i])
+            .map(|(_, e)| e)
+            .filter(|e| Rect::from_two_pos(a, z).contains(center(&e.id)))
+            .map(|e| e.id.clone())
+            .collect();
+        assert!(expected.contains(&"stage/crate".to_owned()));
+        assert!(expected.contains(&"stage/beacon".to_owned()));
+        assert!(!expected.contains(&"stage/rack".to_owned()));
+        box_drag(&ctx, &mut editor, &runtime, a, z, egui::Modifiers::NONE);
+        let mut got = editor.selection();
+        got.sort();
+        let mut want = expected.clone();
+        want.sort();
+        assert_eq!(got, want);
+        assert!(editor.drag.is_none() && editor.scene_input.marquee.is_none());
+        // Shift adds to an existing selection; Ctrl toggles the boxed ones back out.
+        editor.click_select(Some("stage/rack".into()), egui::Modifiers::NONE);
+        box_drag(&ctx, &mut editor, &runtime, a, z, egui::Modifiers::SHIFT);
+        assert_eq!(editor.selection().len(), want.len() + 1);
+        assert_eq!(editor.selected.as_deref(), Some("stage/rack"));
+        let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+        box_drag(&ctx, &mut editor, &runtime, a, z, ctrl);
+        assert_eq!(editor.selection(), ["stage/rack"]);
+        // Hidden and locked objects are never boxed.
+        editor.set_view_flag(&["stage/crate".into()], false);
+        editor.set_view_flag(&["stage/beacon".into()], true);
+        box_drag(&ctx, &mut editor, &runtime, a, z, egui::Modifiers::NONE);
+        let got = editor.selection();
+        assert!(
+            !got.contains(&"stage/crate".to_owned()) && !got.contains(&"stage/beacon".to_owned())
+        );
+        assert_eq!(got.len(), want.len() - 2);
+        // An empty box clears the selection.
+        let corner = editor.viewport.left_top() + vec2(30.0, 30.0);
+        box_drag(
+            &ctx,
+            &mut editor,
+            &runtime,
+            corner,
+            corner + vec2(12.0, 12.0),
+            egui::Modifiers::NONE,
+        );
+        assert!(editor.selection().is_empty());
+    }
+
+    #[test]
+    fn component_gizmos_draw_in_the_editor_view_and_toggle_off_completely() {
+        let world = pack("axiom-town");
+        let mut runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        let mut editor = Editor::new(world, 1, None);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut editor, &runtime, vec![]);
+        }
+        let on = frame_with(&ctx, &mut editor, &runtime, vec![], egui::Modifiers::NONE);
+        let gizmos = editor.scene_input.gizmo_shapes;
+        // Camera frustum, 15 nav.blocker rectangles and 6 FSM agents (circle + label) exist;
+        // how many project in front of the default orbit depends on the layout.
+        assert!(gizmos > 50, "{gizmos}");
+        let instances = editor
+            .render_frame(&mut runtime, ctx.screen_rect())
+            .instances
+            .len();
+        editor.run_command("view.gizmos").unwrap();
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let off = frame_with(&ctx, &mut editor, &runtime, vec![], egui::Modifiers::NONE);
+        assert_eq!(editor.scene_input.gizmo_shapes, 0);
+        // Only the gizmos disappear (the toolbar toggle may differ by its highlight).
+        assert!(
+            on - off >= gizmos && on - off <= gizmos + 1,
+            "on {on} off {off} gizmos {gizmos}"
+        );
+        // Painter-only overlays: the rendered scene is identical, and play never sees them.
+        assert_eq!(
+            editor
+                .render_frame(&mut runtime, ctx.screen_rect())
+                .instances
+                .len(),
+            instances
+        );
+        // Hidden objects lose their gizmos too.
+        editor.run_command("view.gizmos").unwrap();
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        editor.set_view_flag(&["plaza/fountain".into()], false);
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        assert!(editor.scene_input.gizmo_shapes < gizmos);
+    }
+
+    #[test]
+    fn hidden_geometry_skinned_meshes_and_attached_vfx_are_not_drawn_in_the_editor() {
+        // Procedural geometry and attached VFX (Effects Atlas).
+        let world = pack("effects-tour");
+        let mut runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        let mut editor = Editor::new(world.clone(), 1, None);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 760.0));
+        let geometry = world
+            .entities
+            .iter()
+            .find(|e| world.resolved_components(e).contains_key("render.geometry"))
+            .unwrap()
+            .id
+            .clone();
+        let before = editor.render_frame(&mut runtime, screen);
+        assert!(before.meshes.iter().any(|m| m.id == geometry));
+        let attached = |f: &crate::presentation::RenderFrame, id: &str| {
+            f.vfx
+                .batches
+                .iter()
+                .filter(|b| b.emitter.attachment.as_deref() == Some(id))
+                .count()
+                + f.vfx
+                    .ribbons
+                    .iter()
+                    .filter(|r| r.attachment.as_deref() == Some(id))
+                    .count()
+        };
+        let (ribbon, duelist) = ("fx/05-ribbon/spinner", "fx/06-attached/duelist");
+        assert!(attached(&before, ribbon) > 0 && attached(&before, duelist) > 0);
+        editor.set_view_flag(&[geometry.clone(), ribbon.into(), duelist.into()], false);
+        let after = editor.render_frame(&mut runtime, screen);
+        assert!(!after.meshes.iter().any(|m| m.id == geometry));
+        assert_eq!(attached(&after, ribbon) + attached(&after, duelist), 0);
+        assert!(
+            after.vfx.batches.len() + after.vfx.ribbons.len()
+                < before.vfx.batches.len() + before.vfx.ribbons.len()
+        );
+        // Play (the runtime's own frame) still draws all of it.
+        let play = runtime.render_frame();
+        assert!(play.meshes.iter().any(|m| m.id == geometry));
+        assert!(attached(&play, ribbon) > 0 && attached(&play, duelist) > 0);
+        // Skinned glTF characters (mascot).
+        let world = pack("mascot");
+        let mut runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        let mut editor = Editor::new(world, 1, None);
+        let id = runtime.render_frame().meshes[0].id.clone();
+        assert!(editor
+            .render_frame(&mut runtime, screen)
+            .meshes
+            .iter()
+            .any(|m| m.id == id));
+        editor.set_view_flag(std::slice::from_ref(&id), false);
+        assert!(!editor
+            .render_frame(&mut runtime, screen)
+            .meshes
+            .iter()
+            .any(|m| m.id == id));
+        assert!(runtime.render_frame().meshes.iter().any(|m| m.id == id));
     }
 
     #[test]

@@ -14,7 +14,7 @@ mod parity;
 use axiom_core::{local::Target, ops, CoreEdit, Edit, Request, Transform, World};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use viewport::{Drag, Orbit, Tool};
+use viewport::{Drag, Orbit, SceneInput, Tool};
 
 pub(crate) enum Action {
     Write {
@@ -323,6 +323,8 @@ pub(crate) struct Editor {
     renaming: Option<Rename>,
     /// Screen rects of hierarchy rows and context-menu items drawn last frame (tests, focus).
     pub(crate) rects: std::collections::HashMap<String, egui::Rect>,
+    /// Scene-view input state: box selection, fly mode, speed readout.
+    scene_input: SceneInput,
 }
 
 /// Inline rename state: the row being renamed, the text being typed, focus requested yet.
@@ -386,6 +388,7 @@ impl Editor {
             prefab: None,
             renaming: None,
             rects: Default::default(),
+            scene_input: SceneInput::default(),
         };
         if selected
             .as_ref()
@@ -601,6 +604,18 @@ impl Editor {
             self.notice(format!("Prefab {} created from {id}", created.ids[0]));
         }
         self.op_write(result.map(|c| c.edits), Some(id))
+    }
+
+    /// Object ▸ Drop to Ground (`ACL: ground SEL`). Already grounded writes nothing.
+    pub(super) fn drop_selection_to_ground(&mut self) -> Option<Action> {
+        let ids = self.selection();
+        match ops::drop_to_ground(&self.world, &ids) {
+            Ok(edits) if edits.is_empty() => {
+                self.notice("Already on the ground");
+                None
+            }
+            result => self.op_write(result, None),
+        }
     }
 
     /// Starts the inline hierarchy rename of the primary selection (F2).
@@ -1089,6 +1104,8 @@ impl Editor {
             "draft_rev":self.resource.as_ref().map(|draft|draft.rev).or_else(||self.draft.as_ref().map(|draft| draft.rev)),
             "draft_dirty":self.dirty(),
             "tool":self.tool.name(),
+            "view":self.orbit.mode.name(),
+            "gizmos":self.prefs.gizmos,
             "pending_proposals":self.proposals.len(),
             "hidden":self.prefs.hidden.get(&self.world.id),
             "locked":self.prefs.locked.get(&self.world.id),
@@ -1136,6 +1153,15 @@ impl Editor {
             std::mem::replace(&mut runtime.state.compiled.enabled, visibility);
         let mut frame = runtime.render_frame();
         runtime.state.compiled.enabled = original_visibility;
+        // VFX live in a resource, not on entities: drop the emitters attached to hidden objects.
+        // (Meshes, procedural geometry and skinned models already skip disabled slots.)
+        let hidden = self.view_flagged(false);
+        if !hidden.is_empty() {
+            let gone = |a: &Option<String>| a.as_ref().is_some_and(|id| hidden.contains(id));
+            frame.vfx.batches.retain(|b| !gone(&b.emitter.attachment));
+            frame.vfx.ribbons.retain(|r| !gone(&r.attachment));
+            frame.lights.retain(|l| !gone(&l.attachment));
+        }
         if let Some((slot, transform)) = original {
             runtime.state.transforms[slot] = transform;
         }

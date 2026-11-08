@@ -116,6 +116,16 @@ fn acl_verbs_compile_to_the_shared_ops() {
                 .unwrap()
                 .edits,
         ),
+        (
+            "ground entities[id=stage/crate,id=stage/rack]",
+            ops::drop_to_ground(&start, &["stage/crate".into(), "stage/rack".into()]).unwrap(),
+        ),
+        (
+            "duplicate entities[id=stage/crate,id=stage/floor]",
+            ops::duplicate(&start, &["stage/crate".into(), "stage/floor".into()])
+                .unwrap()
+                .edits,
+        ),
     ];
     for (script, edits) in cases {
         let mut s = store();
@@ -247,6 +257,8 @@ fn bad_input_reports_structured_errors() {
         ("create cube parent=nope", "not_found"),
         ("instantiate nope", "not_found"),
         ("duplicate nope/*", "no_match"),
+        ("ground nope/*", "no_match"),
+        ("ground a b", "acl_syntax"),
         ("create cube colour=red", "acl_syntax"),
         ("scene rename a b", "acl_syntax"),
         ("camera follow a", "acl_syntax"),
