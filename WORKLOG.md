@@ -1,5 +1,13 @@
 # WORKLOG
 
+## 2026-11-08 (later) — Claude (Opus 5.5) — milestones M4–M7 + README
+
+**Done (pushed):** M4 `bc73b91` generic FSM (`fsm.rs`, `content/behavior-lab`, `fsm.inspect`, `fps.inspect`, `axiom call`). M5 `46e5dea` seeded RNG (`core.rng`, checkpoint `rng`), FSM `chance`, scenario `field`/`call` assertions, `state_hash`. README rewritten for open source (`40de979`; old one is `docs/user-guide.zh-TW.md`). M6 `2d4fa4b` `verify --measure`, gpu/process memory; spike S1 → no binary cache. M7 `f9302ca` `Plugin`, `RuntimeRegistry::with/try_with`, CLI is now a lib (`axiom::main_with`), example `crates/axiom-cli/examples/custom_plugin` + `examples/spin-pack`.
+
+**Next:** M8 editor schema-driven component forms + history timeline + diagnostics panel; then M9 (multi-select, clipboard, drag-reparent, snapping, picking, grid, tree-filter depth), M10 (proposals table + review panel, selection→ACL context, bytes, CAS conflict view, bridge editor.select/focus/screenshot), M11 (scenario panel, FSM overlay in play-in-editor), M12 (prefab body, material controls, graph read-only view).
+
+**Gotchas added:** `cargo fmt` reflows freshly written files; re-read before follow-up edits. wgpu 24 on Vulkan returns no allocator report (VRAM honestly `available:false`). Release build: `cargo build --release -p axiom -j1` (~5–10 min); don't edit CLI sources while it runs. Workspace tests: 212 passed at M7.
+
 ## 2026-11-08 — Claude (Opus 5.5) — AI authoring gaps, milestones M0–M3
 
 **Plan:** `docs/plan-ai-authoring-gaps.md` (milestones M0–M12; M13 dropped — the engine is driven by AI agents through the CLI, not through an external model API). Each milestone has an execution-log entry with evidence.
