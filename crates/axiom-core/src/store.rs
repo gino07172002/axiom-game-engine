@@ -188,6 +188,11 @@ impl Store {
                 let (rev, w) = self.current()?;
                 crate::local::select(&w, &self.registry, rev, &query)
             }
+            Request::Acl {
+                text,
+                preview,
+                expected_rev,
+            } => crate::acl::run(self, &text, preview, expected_rev),
             Request::Diff {
                 from_rev,
                 to_rev,

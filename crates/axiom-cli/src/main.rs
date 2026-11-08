@@ -84,6 +84,19 @@ enum Command {
     Select {
         file: PathBuf,
     },
+    /// Run a terse ACL script (`discover acl` lists the grammar). Prints compact lines.
+    Acl {
+        /// Script file; omit to read stdin.
+        file: Option<PathBuf>,
+        /// Inline script; `;` separates statements.
+        #[arg(short = 'e', long = "eval")]
+        eval: Option<String>,
+        /// Validate and show the diff without writing a revision.
+        #[arg(long)]
+        preview: bool,
+        #[arg(long)]
+        expected_rev: Option<i64>,
+    },
     Discover {
         topic: Option<String>,
         #[arg(long)]
@@ -484,6 +497,28 @@ fn execute() -> Result<()> {
                 Request::Select {
                     query: serde_json::from_value(value)?,
                 }
+            }
+        }
+        Command::Acl {
+            file,
+            eval,
+            preview,
+            expected_rev,
+        } => {
+            let text = match (eval, file) {
+                (Some(_), Some(_)) => anyhow::bail!("use either -e or a script file"),
+                (Some(inline), None) => inline,
+                (None, Some(path)) => std::fs::read_to_string(path)?,
+                (None, None) => {
+                    let mut raw = String::new();
+                    std::io::stdin().take(65_537).read_to_string(&mut raw)?;
+                    raw
+                }
+            };
+            Request::Acl {
+                text,
+                preview,
+                expected_rev,
             }
         }
         Command::Discover { topic, if_hash } => Request::Discover { topic, if_hash },

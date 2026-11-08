@@ -138,6 +138,13 @@ fn set_where_rejects_empty_and_oversized_matches_without_writing() {
 }
 
 #[test]
+fn compact_text_rounds_f32_noise_for_display_only() {
+    use axiom_core::local::display_value;
+    let noisy = json!({"p":[0.8999999761581421_f64, 1.7999999523162842_f64, 100.0, 3]});
+    assert_eq!(display_value(&noisy), json!({"p":[0.9, 1.8, 100.0, 3]}));
+}
+
+#[test]
 fn glob_supports_star_and_question_mark() {
     use axiom_core::local::glob_match;
     assert!(glob_match("enemy/*", "enemy/007"));

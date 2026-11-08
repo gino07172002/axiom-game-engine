@@ -91,7 +91,21 @@ Checkpoint 採嚴格內容相容檢查；v0.4 亦接受已知的 v0.3.0／v0.3.1
 
 ## AI 修改流程
 
-新 agent 優先使用 `discover` 按需探索、`select` 取得局部欄位及 `set_field` 依 ID 修改；完整 `query world` 保留給匯出與除錯。
+最精簡的入口是 ACL(Axiom Command Language)。一行一個敘述，輸出是精簡文字，底層仍編譯成同一套交易式協定(CAS、diff、undo、冪等重試都沿用):
+
+```powershell
+.\target\debug\axiom.exe discover acl                      # 文法
+.\target\debug\axiom.exe acl -e "spawn enemy.basic count=10 id=enemy/{i} at=0,0,0 step=2,0,0 tag=enemy"
+.\target\debug\axiom.exe acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=10"
+.\target\debug\axiom.exe acl -e "select entities[tag=enemy] where core.health/value<50 fields core.health/value limit 5"
+.\target\debug\axiom.exe acl -e "inspect enemy/3"
+.\target\debug\axiom.exe acl --preview script.acl          # 多行編輯 = 一個 revision
+.\target\debug\axiom.exe --connect 127.0.0.1:4242 acl -e "history 5"
+```
+
+`select` 回傳 `enemy/5 core.health/value=40` 這類行，結尾 `matched=N rev=R [next=CURSOR]`。編輯回傳 `ok rev=R changes=N` 及最多 12 筆前後值。JSON 協定也可用 `{"op":"acl","text":"..."}`,`select` 另支援 `id_glob`、`where`、`format:"lines"`,編輯另有 `set_where`。
+
+其他 agent 也可使用 `discover` 按需探索、`select` 取得局部欄位及 `set_field` 依 ID 修改；完整 `query world` 保留給匯出與除錯。
 
 ```powershell
 .\target\debug\axiom.exe discover local

@@ -1,4 +1,5 @@
 //! AI authoring is a transactional database; the runtime only consumes validated IR.
+pub mod acl;
 pub mod diff;
 pub mod discovery;
 pub mod gameplay;

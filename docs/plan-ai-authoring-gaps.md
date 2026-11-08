@@ -152,6 +152,9 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
   未處理:篩選時樹攤平(屬設計,移到 M9 一併處理);`Copy scene query` 的 `"scene":null` 經查 `Option` 可接受 null,非 bug。
 - **M2(2026-11-08)**:`Selection` 新增 `id_glob`、`where`(eq/ne/lt/le/gt/ge,AND,作用於含 prefab 繼承的 compiled 值)、`format:"lines"`;抽出 `local::matches()`;新增 `CoreEdit::SetWhere`(交易內決定性展開、預設上限 4096、零匹配/超量回結構化診斷);CLI 對 lines 結果直接印文字;`discover local` schema 已更新。證據:`tests/selectors.rs` 5 項;clippy exit 0;workspace 189 passed;FPS 內容實測 `set_where enemy*` → 8 筆變更、1 個 revision、回應 1136 bytes。
   偏離:`Request::Select.query` 與 `SetWhere.select` 改為 `Box<Selection>`(clippy large_enum_variant;JSON 線格式不變)。
+- **M3(2026-11-08)**:`axiom-core/src/acl.rs` + `Request::Acl` + `axiom acl [-e|FILE|stdin] [--preview] [--expected-rev]` + `discover acl`。敘述:select/inspect/history/diff/undo(單獨)與 set/spawn/delete(可多行、同一 revision、以編譯時 rev 做 CAS)。`;` 只在引號/括號外分隔。lines/inspect/diff 顯示時把浮點數四捨五入到 6 位(`local::display_value`,不影響儲存)。
+  證據:`tests/acl.rs` 4 項 + 單元 3 項 + `display_value` 1 項;clippy exit 0;workspace 197 passed。FPS 實測:`select … limit 4` 回應 264 B(舊 `query entities --limit 9` 3617 B);`set enemy* … where …>=100` → 8 筆、回應 538 B;經 `--connect` 對執行中的編輯器 `acl set` → `ok rev=2`,編輯器 1.58 s 內 authoring_rev=2。
+  已知:PowerShell 5.1 傳給原生程式時會吃掉內嵌雙引號,需寫 `\"`;bash 不受影響。
 
 ## 修訂補記
 

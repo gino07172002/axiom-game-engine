@@ -667,6 +667,28 @@ pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value>
     }
     Ok(result)
 }
+/// Display-only rounding to 6 decimals so f32 storage noise (0.8999999761581421) costs no
+/// tokens in compact text. Never used for stored or JSON-protocol values.
+pub fn display_value(v: &Value) -> Value {
+    match v {
+        Value::Number(n) if n.is_f64() => {
+            let x = n.as_f64().unwrap();
+            let r = (x * 1e6).round() / 1e6;
+            if r.is_finite() {
+                json!(r)
+            } else {
+                v.clone()
+            }
+        }
+        Value::Array(a) => Value::Array(a.iter().map(display_value).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), display_value(v)))
+                .collect(),
+        ),
+        _ => v.clone(),
+    }
+}
 /// Compact text projection: `id field=value ...` per object, then a footer.
 fn render_lines(result: &Value, fields: &[String]) -> String {
     let mut out = String::new();
@@ -686,7 +708,7 @@ fn render_lines(result: &Value, fields: &[String]) -> String {
         } else {
             for field in fields {
                 match data.get(field) {
-                    Some(value) => out.push_str(&format!(" {field}={value}")),
+                    Some(value) => out.push_str(&format!(" {field}={}", display_value(value))),
                     None => out.push_str(&format!(" {field}=?")),
                 }
             }

@@ -170,6 +170,10 @@ impl Registry {
         r.topics
             .insert("local".into(), crate::discovery::local_schema());
         r.topics.insert(
+            "acl".into(),
+            json!({"op":"acl","request":{"op":"acl","text":"script","preview":"optional bool","expected_rev":"optional CAS revision"},"cli":"axiom acl -e \"select enemy/* fields core.health/value limit 5\" | axiom acl FILE | stdin","grammar":crate::acl::GRAMMAR}),
+        );
+        r.topics.insert(
             "narrative.graph".into(),
             crate::discovery::gameplay_schema(),
         );

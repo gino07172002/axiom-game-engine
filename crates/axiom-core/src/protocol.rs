@@ -12,6 +12,14 @@ pub enum Request {
     Select {
         query: Box<crate::local::Selection>,
     },
+    /// Terse line-oriented script (see `discover acl`), compiled to typed requests.
+    Acl {
+        text: String,
+        #[serde(default)]
+        preview: bool,
+        #[serde(default)]
+        expected_rev: Option<i64>,
+    },
     Discover {
         #[serde(default)]
         topic: Option<String>,
