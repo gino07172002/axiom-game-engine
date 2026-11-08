@@ -1,5 +1,13 @@
 # WORKLOG
 
+## 2026-11-08 (night) — Claude (Opus 5.5) — round 2: CI, data-only combat, benchmark, editor polish
+
+**Done (pushed):** `.gitattributes` + Windows CI (green from `b567f5b`). FSM `attack` + state `emit` → `content/skirmish` (data-only victory/defeat). `benchmarks/ai-tasks.json` + `docs/benchmark-ai-tasks.md` (ACL 9.5 KB vs selective JSON 18.8 KB vs legacy 136.6 KB, replay, bytes not tokens). Editor `ab42cc4`: search `tag:/has:/prefab:`, component picker, Global/Local gizmo (Rotate default changed to Global), skinned-mesh picking/focus, `view --open`. 234 tests.
+
+**Next candidates:** agent-driven benchmark (real exploration/retries), death visuals + ranged attacks, mascot as a controllable character, cross-platform build check.
+
+**Gotchas added:** In PowerShell, `R` is an alias of `Invoke-History`; never name helper functions `R`. Commit messages containing double quotes break native arg passing in PS 5.1, so use `git commit -F file`, and write the file with `[IO.File]::WriteAllText` (no BOM); `Set-Content -Encoding utf8` adds a BOM that ends up in the subject (happened in `ab42cc4`). Poll CI by `head_sha`, not "latest run".
+
 ## 2026-11-08 (evening) — Claude (Opus 5.5) — editor milestones M8–M12 done; plan complete
 
 **Done (pushed):** M8 `076e339` schema forms, History, Problems. M9 `44dfb38` multi-select, clipboard (egui Copy/Paste events), drag reparent, snap, grid. M10a `b667169` proposal queue (`propose`/`proposals`/`resolve_proposal`, ACL `--propose`, Proposals tab). M10b `c77714d` `editor_view` (select/focus/dock/capture), selection context, request bytes. M11 `feb1849` FSM overlay in Play preview, Scenarios tab, `view --play`. M12 `7a09af2` prefab + material inspectors, color pickers, Graphs tab. Workspace tests: 228 passed.
