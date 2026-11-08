@@ -211,6 +211,7 @@ dependencies = [
  "axiom-fps",
  "axiom-runtime",
  "clap",
+ "glam",
  "serde_json",
 ]
 

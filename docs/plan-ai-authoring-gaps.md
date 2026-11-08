@@ -165,6 +165,9 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
   **Spike S1 結論(release,中位數,9 次)**:fps 105 KB → read+decode 1.60 ms / compile 5.78 ms / runtime build 7.77 ms;rts 1.22 / 2.98 / 13.49;effects-tour 2.58 / 19.58 / 92.83;behavior-lab 0.10 / 0.12 / 0.83。二進位格式只能取代 read+decode(≤ 2.6 ms,遠低於 20 ms 門檻)→ **不做二進位場景快取**(決策 9)。effects-tour 的成本在原生系統建置,屬另一個效能題目。
   VRAM:wgpu 24 在 Vulkan 後端不提供 allocator report,實測回 `available:false`,如實回報而非估算。工作集:無頭 14.5 MB,FPS 開視窗遊玩 378 MB(含驅動與視窗)。
   證據:`tests/measure.rs`;clippy exit 0;workspace 208 passed。
+- **M7(2026-11-08)**:`world::Plugin` trait、`RuntimeRegistry::with/try_with`(拒絕悄悄取代既有 system factory 或 action schema);CLI 拆成 library(`axiom::main_with(registry)`),`main.rs` 只剩一行。外部範例 `crates/axiom-cli/examples/custom_plugin`(`spin` 能力、`spin.rate` 元件、`spin.step` 系統,只用公開 API)+ `examples/spin-pack`。
+  證據:`axiom-cli/tests/plugin.rs` 4 項(系統生效 60 tick=45°、無外掛的 registry 拒絕內容包、外掛 schema 套用於 ACL 編輯、取代既有系統被拒);clippy exit 0;workspace 212 passed;範例執行檔 GPU smoke `systems=spin.step`、ACL 查詢正常;原版 `axiom` 對 spin-pack 回 `missing_capability`。
+  偏離:未拆分 `RuntimeSystem` trait 的類型專屬 hook(R5:hook 皆有預設實作,外掛不需實作;拆分屬重構,另案)。
 
 ## 修訂補記
 

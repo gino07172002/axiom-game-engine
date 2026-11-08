@@ -1,0 +1,9 @@
+{
+ "schema_version":2,"id":"spin-pack","title":"Spin Plugin Example",
+ "capabilities":{"core":1,"render":1,"spin":1},"systems":["spin.step"],
+ "entities":[
+  {"id":"cube","components":{"core.transform":{"position":[0,1,0]},"spin.rate":{"degrees_per_second":90},"render.mesh":{"parts":[{"color":[0.95,0.3,0.3]}]}}},
+  {"id":"floor","components":{"core.transform":{"position":[0,-0.3,0],"scale":[8,0.5,8]},"render.mesh":{"parts":[{"color":[0.15,0.19,0.23],"grid":true}]}}},
+  {"id":"camera","components":{"core.transform":{"position":[0,3,7],"rotation":[-0.17364818,0,0,0.9848077]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.1,"far":100,"viewport":[0,0,1,1],"active":true}}}
+ ]
+}

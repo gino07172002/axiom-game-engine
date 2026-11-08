@@ -158,6 +158,32 @@ F:   core.health/value(元件欄位)| label | /raw/json/pointer
 
 延伸閱讀：[`docs/architecture.md`](docs/architecture.md) · [路線圖](docs/ai-first-general-engine-roadmap.zh-TW.md) · [目前計畫](docs/plan-ai-authoring-gaps.md)
 
+## 用原生外掛擴充
+
+大部分遊戲修改都只需要改資料。需要新的 Rust 程式時，在你自己的 crate 寫一個 `Plugin`,再發行自己的 `axiom` 執行檔。CLI、編輯器、協定和 scenario 都照常可用，引擎的 crate 一行都不用改:
+
+```rust
+use axiom_runtime::world::{Plugin, RuntimeRegistry};
+
+struct SpinPlugin;
+impl Plugin for SpinPlugin {
+    fn id(&self) -> &str { "example.spin" }
+    fn register(&self, r: &mut RuntimeRegistry) {
+        // 能力、component/resource schema、action、系統與 factory
+    }
+}
+
+fn main() {
+    axiom::main_with(axiom_runtime::installed_registry().with(SpinPlugin));
+}
+```
+
+外掛若會悄悄取代已安裝的系統或 action,`try_with` 會拒絕載入。完整範例在 [`crates/axiom-cli/examples/custom_plugin`](crates/axiom-cli/examples/custom_plugin),搭配的內容包在 [`examples/spin-pack`](examples/spin-pack):
+
+```powershell
+cargo run -p axiom --example custom_plugin -- --db data\spin.sqlite --pack examples\spin-pack play --start
+```
+
 ## 測試
 
 ```powershell

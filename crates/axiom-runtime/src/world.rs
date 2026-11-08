@@ -371,7 +371,42 @@ pub struct RuntimeRegistry {
     pub authoring: Registry,
     pub factories: BTreeMap<String, SystemFactory>,
 }
+/// A native extension: registers capabilities, schemas, actions, systems and factories.
+/// Game crates compose plugins without editing `axiom-runtime`:
+/// `axiom_runtime::installed_registry().with(MyPlugin)`.
+pub trait Plugin {
+    fn id(&self) -> &str;
+    fn register(&self, registry: &mut RuntimeRegistry);
+}
 impl RuntimeRegistry {
+    /// Adds a plugin. Fails if it would silently replace an installed system or action,
+    /// so extensions cannot shadow built-in behavior by accident.
+    pub fn try_with(mut self, plugin: impl Plugin) -> Result<Self> {
+        let systems: Vec<String> = self.factories.keys().cloned().collect();
+        let actions: Vec<String> = self.authoring.actions.keys().cloned().collect();
+        let mut added = self.clone();
+        plugin.register(&mut added);
+        for id in &systems {
+            ensure!(
+                added.factories[id] as usize == self.factories[id] as usize,
+                "plugin {} replaces installed system {id}",
+                plugin.id()
+            );
+        }
+        for id in &actions {
+            ensure!(
+                added.authoring.actions[id].schema == self.authoring.actions[id].schema,
+                "plugin {} replaces installed action {id}",
+                plugin.id()
+            );
+        }
+        self = added;
+        Ok(self)
+    }
+    /// `try_with` that panics on conflicts; convenient in `main`.
+    pub fn with(self, plugin: impl Plugin) -> Self {
+        self.try_with(plugin).unwrap_or_else(|e| panic!("{e:#}"))
+    }
     pub fn core() -> Self {
         let mut authoring = Registry::core();
         authoring.resource(
