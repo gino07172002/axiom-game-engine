@@ -319,6 +319,7 @@ pub fn register(r: &mut Registry) {
     r.capabilities.insert("rts".into(), 1);
     r.action("rts.select_role","rts",json!({"type":"object","properties":{"role":{"enum":["worker","soldier"]},"additive":{"type":"boolean"}},"required":["role"],"additionalProperties":false}),|v|{let _:RoleArgs=serde_json::from_value(v.clone())?;Ok(())});
     r.component("rts.unit","rts",json!({"faction":"0|1","role":"worker|soldier","speed":"units/second","radius":"0.1..0.4","carry_capacity":"0..100","gather_ticks":"positive integer","damage":"number","attack_range":"number","attack_ticks":"positive integer"}),|v|serde_json::from_value::<UnitDef>(v.clone())?.validate());
+    r.movers.insert("rts.unit".into(), "rts.simulate".into());
     r.component(
         "rts.building",
         "rts",

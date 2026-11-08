@@ -314,6 +314,24 @@ pub(super) struct SceneInput {
     pub speed_hint_until: f64,
     /// Component gizmo primitives drawn last frame (tests, diagnostics).
     pub gizmo_shapes: usize,
+    /// Selected control point of the selected path (Path ▸ Add / Remove Point act on it).
+    pub path_point: Option<usize>,
+    /// A path point handle being dragged.
+    pub point_drag: Option<PointDrag>,
+    /// Screen positions of the selected path's point handles drawn last frame (tests).
+    pub point_handles: Vec<Pos2>,
+}
+
+/// Dragging one path control point on the horizontal plane through it (world Y kept).
+pub(super) struct PointDrag {
+    id: String,
+    index: usize,
+    /// Rigid world frame of the path entity (scale ignored, like the runtime).
+    rotation: Quat,
+    translation: Vec3,
+    /// World position of the point when the drag started, and now.
+    from: Vec3,
+    at: Vec3,
 }
 
 /// Movement weights (right, up, forward) from WASD/QE.
@@ -841,6 +859,41 @@ const GIZMO_LIGHT: Color32 = Color32::from_rgb(255, 222, 120);
 const GIZMO_LIGHT_OFF: Color32 = Color32::from_rgb(130, 120, 90);
 const GIZMO_TRIGGER: Color32 = Color32::from_rgb(120, 230, 210);
 const GIZMO_TRIGGER_OFF: Color32 = Color32::from_rgb(80, 120, 115);
+const GIZMO_PATH: Color32 = Color32::from_rgb(255, 176, 72);
+/// Line pieces drawn per path; denser polylines (Catmull-Rom) are drawn with a stride.
+const PATH_GIZMO_PIECES: usize = 512;
+
+/// A path polyline (local nodes placed by the entity's rotation and position, scale ignored
+/// like the runtime) with an arrow at the middle of its first piece showing the direction.
+fn draw_path_gizmo(
+    pen: &mut Pen,
+    nodes: impl ExactSizeIterator<Item = Vec3>,
+    rotation: Quat,
+    position: Vec3,
+    color: Color32,
+) {
+    let count = nodes.len();
+    let stride = count.div_ceil(PATH_GIZMO_PIECES).max(1);
+    let mut previous: Option<Vec3> = None;
+    let mut arrow = None;
+    for (k, local) in nodes.enumerate() {
+        if k % stride != 0 && k + 1 != count {
+            continue;
+        }
+        let at = rotation * local + position;
+        if let Some(from) = previous {
+            pen.line(from, at, color);
+            arrow.get_or_insert((from, at));
+        }
+        previous = Some(at);
+    }
+    if let Some((a, b)) = arrow {
+        let mid = (a + b) * 0.5;
+        let along = (b - a).normalize_or_zero() * 0.35;
+        let side = Vec3::new(-along.z, 0.0, along.x);
+        pen.open(&[mid - along + side, mid, mid - along - side], color);
+    }
+}
 
 /// `trigger.zone` wireframe: a box along the entity's world axes (scale ignored, like the
 /// runtime) or three sphere circles; `exit_margin` adds a dim ring / rectangle at mid height.
@@ -1071,6 +1124,45 @@ fn draw_component_gizmos(
                 GIZMO_TRIGGER_OFF
             };
             draw_trigger_gizmo(&mut pen, zone, position, [x, y, z], color);
+        }
+        if let Some(spline) = &e.path {
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else {
+                GIZMO_PATH
+            };
+            let system = runtime.system::<crate::path_follow::PathSystem>();
+            match system.and_then(|s| s.polyline(i)) {
+                Some(nodes) => draw_path_gizmo(&mut pen, nodes, rotation, position, color),
+                None => {
+                    // Worlds without path.move have no runtime tables; sample here.
+                    let mut nodes = vec![];
+                    spline.polyline(&mut nodes);
+                    draw_path_gizmo(&mut pen, nodes.into_iter(), rotation, position, color);
+                }
+            }
+            for p in &spline.points {
+                let at = rotation * Vec3::from_array(*p) + position;
+                pen.line(at - x * 0.12, at + x * 0.12, color);
+                pen.line(at - z * 0.12, at + z * 0.12, color);
+            }
+            if let Some(first) = spline.points.first() {
+                pen.label(
+                    rotation * Vec3::from_array(*first) + position,
+                    "PATH",
+                    color,
+                );
+            }
+        }
+        if e.follow.is_some() {
+            // Dim line to where the follower starts on its path (it moves only in Play).
+            let start = runtime
+                .system::<crate::path_follow::PathSystem>()
+                .and_then(|s| s.start_point(&runtime.state, i));
+            if let Some(start) = start {
+                pen.line(position, start, GIZMO_PATH.gamma_multiply(0.5));
+            }
+            pen.label(position, "FOLLOW", GIZMO_PATH);
         }
         if let Some(blocker) = e
             .components
@@ -1389,7 +1481,60 @@ impl Editor {
         let hovered_axis = response
             .hover_pos()
             .and_then(|pos| handles.as_ref()?.hit(pos));
-        if response.drag_started_by(PointerButton::Primary) {
+        // Control point handles of the selected path (Gizmos on, visible, not locked).
+        let path_frame = selected
+            .filter(|&i| {
+                self.prefs.gizmos
+                    && ready
+                    && visible(i)
+                    && !selected_locked
+                    && state.entities[i].path.is_some()
+            })
+            .map(|i| {
+                let (_, rotation, translation) = matrices[i].to_scale_rotation_translation();
+                (i, rotation, translation)
+            });
+        let point_handles: Vec<(usize, Pos2, Vec3)> = path_frame
+            .and_then(|(i, rotation, translation)| {
+                let spline = state.entities[i].path.as_ref()?;
+                Some(
+                    spline
+                        .points
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, p)| {
+                            let at = rotation * Vec3::from_array(*p) + translation;
+                            Some((k, view.project(at)?, at))
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        let point_hit = |p: Pos2| {
+            point_handles
+                .iter()
+                .filter(|(_, s, _)| s.distance(p) <= 7.0)
+                .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)))
+                .map(|(k, _, at)| (*k, *at))
+        };
+        let point_press = response
+            .drag_started_by(PointerButton::Primary)
+            .then(|| ui.input(|i| i.pointer.press_origin()))
+            .flatten()
+            .and_then(point_hit);
+        if let (Some((index, at)), Some((_, rotation, translation)), Some(id), false) =
+            (point_press, path_frame, self.selected.clone(), self.dirty())
+        {
+            self.scene_input.path_point = Some(index);
+            self.scene_input.point_drag = Some(PointDrag {
+                id,
+                index,
+                rotation,
+                translation,
+                from: at,
+                at,
+            });
+        } else if response.drag_started_by(PointerButton::Primary) && point_press.is_none() {
             let origin = ui.input(|i| i.pointer.press_origin());
             let hit = origin.and_then(|o| handles.as_ref()?.hit(o));
             if hit.is_none() && ready && origin.is_some_and(|o| cube_hit(o).is_none()) {
@@ -1425,6 +1570,47 @@ impl Editor {
             }
         }
         let snap_steps = self.snap_steps();
+        if let Some(mut point) = self.scene_input.point_drag.take() {
+            let (cursor, down, cancel, command) = ui.input(|i| {
+                (
+                    i.pointer.latest_pos(),
+                    i.pointer.primary_down(),
+                    i.key_pressed(egui::Key::Escape) || !i.focused,
+                    i.modifiers.command,
+                )
+            });
+            if !cancel {
+                // Follow the cursor on the horizontal plane through the point (views looking
+                // along the horizon cannot move it).
+                if let Some((origin, direction)) = cursor.map(|c| view.ray(c)) {
+                    let t = (point.at.y - origin.y) / direction.y;
+                    if direction.y.abs() > 1e-4 && t > 0.0 && t.is_finite() {
+                        let mut at = origin + direction * t;
+                        if self.prefs.snap != command {
+                            let step = snap_steps[0];
+                            at.x = (at.x / step).round() * step;
+                            at.z = (at.z / step).round() * step;
+                        }
+                        point.at = at;
+                    }
+                }
+                if let Some(p) = view.project(point.at) {
+                    painter.circle_filled(p, 5.0, Color32::from_rgb(255, 214, 92));
+                }
+                if down {
+                    self.scene_input.point_drag = Some(point);
+                } else if point.at.distance(point.from) > 1e-4 {
+                    // Path-local, rounded to a millimetre for tidy diffs.
+                    let local = (point.rotation.inverse() * (point.at - point.translation))
+                        .to_array()
+                        .map(|v| (v * 1000.0).round() / 1000.0);
+                    actions.extend(self.edit_path_point(
+                        &point.id,
+                        axiom_core::ops::PointEdit::Move(point.index, local),
+                    ));
+                }
+            }
+        }
         if let Some(drag) = &self.drag {
             let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
             if cancel {
@@ -1457,6 +1643,8 @@ impl Editor {
                 if let Some(mode) = cube_hit(pos) {
                     self.orbit.set_mode(mode);
                     self.notice(format!("{} view", mode.name()));
+                } else if let Some((index, _)) = point_hit(pos) {
+                    self.scene_input.path_point = Some(index);
                 } else if ready && hovered_axis.is_none() {
                     let modifiers = ui.input(|i| i.modifiers);
                     self.click_select(pick(runtime, &matrices, &view, pos, &skip), modifiers);
@@ -1495,6 +1683,23 @@ impl Editor {
         } else {
             0
         };
+        let dragged = self.scene_input.point_drag.as_ref().map(|d| d.index);
+        for (k, at, _) in &point_handles {
+            let chosen = self.scene_input.path_point == Some(*k);
+            let color = if chosen || dragged == Some(*k) {
+                Color32::from_rgb(255, 214, 92)
+            } else {
+                Color32::WHITE
+            };
+            let size = if chosen { 5.0 } else { 3.5 };
+            painter.rect_stroke(
+                Rect::from_center_size(*at, vec2(size, size) * 2.0),
+                0.0,
+                Stroke::new(1.5_f32, color),
+                egui::StrokeKind::Middle,
+            );
+        }
+        self.scene_input.point_handles = point_handles.iter().map(|(_, s, _)| *s).collect();
         // Secondary selections: thinner, cooler outline.
         for id in &self.extra {
             if let Some(&i) = state.indices.get(id).filter(|&&i| visible(i)) {
@@ -2732,6 +2937,126 @@ mod tests {
         editor.set_view_flag(&["plaza/fountain".into()], false);
         frame(&ctx, &mut editor, &runtime, vec![]);
         assert!(editor.scene_input.gizmo_shapes < gizmos);
+    }
+
+    /// editor-lab plus a path `road` (8 x 6 m rectangle at the origin) followed by `car`.
+    fn path_fixture() -> (World, WorldRuntime) {
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, fixture().0).unwrap();
+        store
+            .execute(Request::Acl {
+                text: "create path id=road\ncreate cube id=car at=8,0.5,0\nfollow car road".into(),
+                preview: false,
+                expected_rev: None,
+                propose: false,
+            })
+            .unwrap();
+        let world = store.current().unwrap().1;
+        let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        (world, runtime)
+    }
+
+    #[test]
+    fn path_point_handles_drag_one_point_through_the_shared_op() {
+        let (world, runtime) = path_fixture();
+        let mut editor = Editor::new(world.clone(), 1, Some("road".into()));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            frame(&ctx, &mut editor, &runtime, vec![]);
+        }
+        let handles = editor.scene_input.point_handles.clone();
+        assert_eq!(handles.len(), 4);
+        assert!(
+            handles.iter().all(|p| editor.viewport.contains(*p)),
+            "{handles:?}"
+        );
+        // Drag point 1 (local 4,0,-3) by some pixels; it stays on its horizontal plane.
+        let start = handles[1];
+        let end = start + vec2(30.0, 20.0);
+        assert!(frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(start), primary(start, true)]
+        )
+        .is_empty());
+        assert!(frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(end)]
+        )
+        .is_empty());
+        assert!(editor.scene_input.point_drag.is_some());
+        assert_eq!(editor.scene_input.path_point, Some(1));
+        let actions = frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]);
+        let [Action::Write { request, .. }] = actions.as_slice() else {
+            panic!("expected one write on release, got {}", actions.len());
+        };
+        let Request::Apply { edits, .. } = request else {
+            panic!("expected an apply");
+        };
+        let [Edit::Core(CoreEdit::SetField { field, value, .. })] = edits.as_slice() else {
+            panic!("expected one points edit");
+        };
+        assert_eq!(field, "/components/path.spline/points");
+        let points: Vec<[f32; 3]> = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(points[0], [-4.0, 0.0, -3.0]);
+        assert_eq!(points[2], [4.0, 0.0, 3.0]);
+        assert_eq!(points[1][1], 0.0);
+        assert!(Vec3::from_array(points[1]).distance(Vec3::new(4.0, 0.0, -3.0)) > 0.1);
+        // Same world as the ACL move of that point.
+        let mut a =
+            Store::memory_with(crate::installed_registry().authoring, world.clone()).unwrap();
+        a.execute(request.clone()).unwrap();
+        let [x, y, z] = points[1];
+        let mut b = Store::memory_with(crate::installed_registry().authoring, world).unwrap();
+        b.execute(Request::Acl {
+            text: format!("path road move 1 {x},{y},{z}"),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap();
+        assert_eq!(a.current().unwrap().1, b.current().unwrap().1);
+        // A click on a handle selects that point without changing the selection.
+        let other = handles[3];
+        frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(other), primary(other, true)],
+        );
+        frame(&ctx, &mut editor, &runtime, vec![primary(other, false)]);
+        assert_eq!(editor.scene_input.path_point, Some(3));
+        assert_eq!(editor.observation()["selected"], "road");
+    }
+
+    #[test]
+    fn path_gizmos_follow_hidden_and_toggle() {
+        let (world, runtime) = path_fixture();
+        let mut editor = Editor::new(world, 1, Some("road".into()));
+        let ctx = egui::Context::default();
+        let draw = |editor: &mut Editor| {
+            for _ in 0..2 {
+                frame(&ctx, editor, &runtime, vec![]);
+            }
+            (
+                editor.scene_input.gizmo_shapes,
+                editor.scene_input.point_handles.len(),
+            )
+        };
+        let (all, handles) = draw(&mut editor);
+        assert_eq!(handles, 4);
+        // Hiding the path removes its 4 pieces + arrow + 4 crosses + label and the handles.
+        editor.set_view_flag(&["road".into()], false);
+        let (without, handles) = draw(&mut editor);
+        assert!(all - without >= 15, "{all} -> {without}");
+        assert_eq!(handles, 0);
+        editor.set_view_flag(&["road".into()], false);
+        assert_eq!(draw(&mut editor), (all, 4));
+        editor.run_command("view.gizmos").unwrap();
+        assert_eq!(draw(&mut editor), (0, 0));
     }
 
     #[test]

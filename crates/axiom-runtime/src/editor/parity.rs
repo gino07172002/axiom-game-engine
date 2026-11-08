@@ -168,6 +168,110 @@ fn trigger_presets_and_field_edits_match_acl() {
 }
 
 #[test]
+fn path_presets_follow_and_point_edits_match_acl() {
+    // Create path: Object menu / palette and the hierarchy "+ Object" menu.
+    assert_parity(
+        lab(),
+        |e| vec![e.run_command("object.path").unwrap()],
+        "create path",
+    );
+    assert_parity(
+        lab(),
+        |e| vec![e.create_object("path").into_iter().collect()],
+        "create path",
+    );
+    // Empty world: the path capability and the path.move system are added (not render).
+    let blank = World::empty("blank");
+    assert_parity(
+        blank.clone(),
+        |e| vec![e.run_command("object.path").unwrap()],
+        "create path",
+    );
+    let made = headless(&blank, "create path");
+    assert_eq!(made.capabilities.get("path"), Some(&1));
+    assert!(!made.capabilities.contains_key("render"));
+    assert!(made.systems.iter().any(|s| s == "path.move"));
+    // Follow Path: the selected objects follow the selected path; two start evenly spaced.
+    let start = headless(
+        &lab(),
+        "create path id=road\ncreate cube id=car\ncreate cube id=bus",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            e.extra.insert("bus".into());
+            e.extra.insert("road".into());
+            vec![e.run_command("object.follow_path").unwrap()]
+        },
+        "follow entities[id=car,id=bus] road",
+    );
+    let both = headless(&start, "follow entities[id=car,id=bus] road");
+    let fraction =
+        |id: &str| both.entity(id).unwrap().components["path.follow"]["start_fraction"].clone();
+    assert_eq!((fraction("car"), fraction("bus")), (0.0.into(), 0.5.into()));
+    // With no path selected, the world's only path is used.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            vec![e.run_command("object.follow_path").unwrap()]
+        },
+        "follow car road",
+    );
+    // Two paths and none selected: a problem, not a write.
+    let two = headless(&start, "create path id=other");
+    let mut e = Editor::new(two, 1, Some("car".into()));
+    assert!(e.run_command("object.follow_path").unwrap().is_empty());
+    // Point edits (Path ▸ Add / Remove Point, Inspector buttons, handle drag).
+    let road = headless(&lab(), "create path id=road");
+    // No point selected on a closed path: split the closing piece, appended at the end.
+    assert_parity(
+        road.clone(),
+        |e| {
+            e.select(Some("road".into()));
+            vec![e.run_command("path.add_point").unwrap()]
+        },
+        "path road add",
+    );
+    // After the selected point 1: split the piece 1 -> 2.
+    assert_parity(
+        road.clone(),
+        |e| {
+            e.select(Some("road".into()));
+            e.scene_input.path_point = Some(1);
+            vec![e.run_command("path.add_point").unwrap()]
+        },
+        "path road insert 2",
+    );
+    assert_parity(
+        road.clone(),
+        |e| {
+            e.select(Some("road".into()));
+            e.scene_input.path_point = Some(0);
+            vec![e.run_command("path.remove_point").unwrap()]
+        },
+        "path road remove 0",
+    );
+    // The handle drag commits through edit_path_point (driven with egui in viewport tests).
+    assert_parity(
+        road.clone(),
+        |e| {
+            vec![e
+                .edit_path_point("road", axiom_core::ops::PointEdit::Move(2, [5.0, 0.0, 4.5]))
+                .into_iter()
+                .collect()]
+        },
+        "path road move 2 5,0,4.5",
+    );
+    // Removing below the minimum (3 points on a closed path) is a problem, not a write.
+    let small = headless(&road, "path road remove 0");
+    let mut e = Editor::new(small, 1, Some("road".into()));
+    assert!(e.run_command("path.remove_point").unwrap().is_empty());
+    assert!(e.run_command("object.path_unknown").is_err());
+}
+
+#[test]
 fn remove_component_matches_acl() {
     let start = headless(&lab(), "create trigger box id=gate");
     assert_parity(

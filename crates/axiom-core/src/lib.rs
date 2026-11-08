@@ -10,6 +10,7 @@ pub mod local;
 pub mod observe;
 pub mod ops;
 pub mod package;
+pub mod path;
 pub mod protocol;
 pub mod registry;
 pub mod retry;

@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 /// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is
 /// shorthand for `create light.point` (and `create trigger box` for `create trigger.box`).
-pub const PRESETS: [&str; 9] = [
+pub const PRESETS: [&str; 10] = [
     "empty",
     "cube",
     "camera",
@@ -23,6 +23,7 @@ pub const PRESETS: [&str; 9] = [
     "light.area",
     "trigger.box",
     "trigger.sphere",
+    "path",
 ];
 
 /// An edit batch that creates objects, and the created IDs (first = the one to select).
@@ -234,13 +235,30 @@ pub fn preset_trigger(preset: &str) -> Option<crate::trigger::TriggerZone> {
     Some(zone)
 }
 
+/// Edits that add `capability` and `system` to the world when it lacks them.
+fn enable_system(world: &World, capability: Option<&str>, system: Option<&str>) -> Vec<Edit> {
+    let mut edits = vec![];
+    if let Some(capability) = capability.filter(|c| !world.capabilities.contains_key(*c)) {
+        let mut capabilities = world.capabilities.clone();
+        capabilities.insert(capability.into(), 1);
+        edits.push(Edit::set("/capabilities", json!(capabilities)));
+    }
+    if let Some(system) = system.filter(|s| !world.systems.iter().any(|x| x == s)) {
+        let mut systems = world.systems.clone();
+        systems.push(system.into());
+        edits.push(Edit::set("/systems", json!(systems)));
+    }
+    edits
+}
+
 /// Creates an object from an editor preset: `empty`, `cube` (one default mesh part),
 /// `camera` (perspective; active only when no other camera is active) or a light
 /// (`light.directional|point|spot|area`: a `render.light` aimed along local -Z; the
 /// directional one matches the engine's default sun, the others point straight down).
 /// Trigger presets (`trigger.box|sphere`) add a `trigger.zone` and, when missing, the
-/// `trigger` capability and the `trigger.detect` system. Every other preset but `empty` adds
-/// the `render` capability when the world lacks it.
+/// `trigger` capability and the `trigger.detect` system; `path` adds an 8 x 6 m closed
+/// rectangle `path.spline` and, when missing, the `path` capability and the `path.move`
+/// system. Every other preset but `empty` adds the `render` capability when the world lacks it.
 pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<Created> {
     if !PRESETS.contains(&preset) {
         let hint = match preset {
@@ -252,7 +270,7 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
             "unknown_preset",
             "/preset",
             format!(
-                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area, trigger.box|sphere){hint}"
+                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area, trigger.box|sphere, path){hint}"
             ),
         ));
     }
@@ -306,25 +324,19 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
         entity.set("render.light", light)?;
     }
     let trigger = preset_trigger(preset);
-    let capability = match (preset, &trigger) {
-        ("empty", _) => None,
-        (_, Some(_)) => Some("trigger"),
-        _ => Some("render"),
+    let (capability, system) = match (preset, &trigger) {
+        ("empty", _) => (None, None),
+        (_, Some(_)) => (Some("trigger"), Some("trigger.detect")),
+        ("path", _) => (Some("path"), Some("path.move")),
+        _ => (Some("render"), None),
     };
     if let Some(zone) = trigger {
         entity.set("trigger.zone", zone)?;
     }
-    let mut edits = vec![];
-    if let Some(capability) = capability.filter(|c| !world.capabilities.contains_key(*c)) {
-        let mut capabilities = world.capabilities.clone();
-        capabilities.insert(capability.into(), 1);
-        edits.push(Edit::set("/capabilities", json!(capabilities)));
+    if preset == "path" {
+        entity.set("path.spline", crate::path::PathSpline::preset())?;
     }
-    if capability == Some("trigger") && !world.systems.iter().any(|s| s == "trigger.detect") {
-        let mut systems = world.systems.clone();
-        systems.push("trigger.detect".into());
-        edits.push(Edit::set("/systems", json!(systems)));
-    }
+    let mut edits = enable_system(world, capability, system);
     edits.extend(place_entity(entity, place));
     Ok(Created {
         edits,
@@ -741,6 +753,183 @@ pub fn remove_component(world: &World, ids: &[String], component: &str) -> Resul
         }));
     }
     Ok(edits)
+}
+
+/// Options of `follow_path` (`None` = the `path.follow` default).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FollowOptions {
+    pub speed: Option<f32>,
+    pub end: Option<crate::path::PathEnd>,
+    pub offset: Option<f32>,
+}
+
+/// The effective `path.spline` of an entity (prefab-inherited + authored).
+fn path_of(world: &World, id: &str) -> Result<crate::path::PathSpline> {
+    let entity = world
+        .entity(id)
+        .ok_or_else(|| not_found(entity_path(id), format!("entity '{id}' not found")))?;
+    let value = world
+        .resolved_components(entity)
+        .remove("path.spline")
+        .ok_or_else(|| {
+            Diagnostic::error(
+                "not_a_path",
+                entity_path(id),
+                format!("entity '{id}' has no path.spline component"),
+            )
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        Diagnostic::error(
+            "invalid_path",
+            format!("{}/components/path.spline", entity_path(id)),
+            format!("{e}"),
+        )
+    })
+}
+
+/// Object ▸ Follow Path: puts a `path.follow` on each entity (replacing an existing one) that
+/// follows `path`. Several followers start evenly spaced (`start_fraction` k/n in the given
+/// order) so they do not overlap. Adds the `path` capability and the `path.move` system when
+/// missing.
+pub fn follow_path(
+    world: &World,
+    ids: &[String],
+    path: &str,
+    options: &FollowOptions,
+) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that should follow the path",
+        ));
+    }
+    path_of(world, path)?;
+    let mut edits = enable_system(world, Some("path"), Some("path.move"));
+    let mut followers: Vec<&String> = vec![];
+    for id in ids {
+        require_entity(world, id)?;
+        if id == path {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                entity_path(id),
+                format!("'{id}' is the path itself; select the objects that should follow it"),
+            ));
+        }
+        if !followers.contains(&id) {
+            followers.push(id);
+        }
+    }
+    let n = followers.len();
+    for (k, id) in followers.into_iter().enumerate() {
+        let mut follow = crate::path::PathFollow::new(path);
+        follow.speed = options.speed.unwrap_or(follow.speed);
+        follow.end = options.end.unwrap_or(follow.end);
+        follow.offset = options.offset.unwrap_or(follow.offset);
+        if n > 1 {
+            follow.start_fraction = Some(k as f32 / n as f32);
+        }
+        follow.validate().map_err(|e| {
+            Diagnostic::error(
+                "invalid_value",
+                format!("{}/components/path.follow", entity_path(id)),
+                format!("{e:#}"),
+            )
+        })?;
+        edits.push(Edit::Core(CoreEdit::SetComponent {
+            entity: id.clone(),
+            component: "path.follow".into(),
+            value: json!(follow),
+        }));
+    }
+    Ok(edits)
+}
+
+/// One change to a path's points (local coordinates of the path entity).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PointEdit {
+    /// Append; `None` extends the last piece by its own length.
+    Add(Option<[f32; 3]>),
+    /// Insert before index I (I = count appends); `None` splits the piece that ends at I
+    /// (the closing piece for I = 0 or count on a closed path; an open path extends instead).
+    Insert(usize, Option<[f32; 3]>),
+    Move(usize, [f32; 3]),
+    Remove(usize),
+}
+
+/// Where a new point goes when no coordinates are given (see `PointEdit::Insert`).
+fn new_point(spline: &crate::path::PathSpline, index: usize) -> [f32; 3] {
+    let p = |i: usize| glam::Vec3::from_array(spline.points[i]);
+    let n = spline.points.len();
+    let at = if spline.closed && (index == 0 || index == n) {
+        (p(n - 1) + p(0)) * 0.5
+    } else if index == 0 {
+        p(0) * 2.0 - p(1)
+    } else if index >= n {
+        p(n - 1) * 2.0 - p(n - 2)
+    } else {
+        (p(index - 1) + p(index)) * 0.5
+    };
+    at.to_array()
+}
+
+/// Edits one point of the path on entity `id` (editor point handles and Inspector ▸ Path
+/// points; ACL `path ID add|insert|move|remove`). Writes the whole `points` array; the result
+/// must still be a valid path (2+ points, 3+ when closed, no coincident neighbours).
+pub fn edit_path_point(world: &World, id: &str, edit: &PointEdit) -> Result<Vec<Edit>> {
+    let mut spline = path_of(world, id)?;
+    let n = spline.points.len();
+    let points_path = format!("{}/components/path.spline/points", entity_path(id));
+    let index_error = |i: usize, max: usize| {
+        Diagnostic::error(
+            "invalid_value",
+            format!("{points_path}/{i}"),
+            format!("point index {i} is out of range 0..{max}"),
+        )
+    };
+    let checked = |at: [f32; 3]| -> Result<[f32; 3]> {
+        if !at.iter().all(|v| v.is_finite()) {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                points_path.clone(),
+                "point coordinates must be finite",
+            ));
+        }
+        Ok(at)
+    };
+    match *edit {
+        PointEdit::Add(at) => {
+            let at = checked(at.unwrap_or_else(|| new_point(&spline, n)))?;
+            spline.points.push(at);
+        }
+        PointEdit::Insert(i, at) => {
+            if i > n {
+                return Err(index_error(i, n));
+            }
+            let at = checked(at.unwrap_or_else(|| new_point(&spline, i)))?;
+            spline.points.insert(i, at);
+        }
+        PointEdit::Move(i, at) => {
+            if i >= n {
+                return Err(index_error(i, n - 1));
+            }
+            spline.points[i] = checked(at)?;
+        }
+        PointEdit::Remove(i) => {
+            if i >= n {
+                return Err(index_error(i, n - 1));
+            }
+            spline.points.remove(i);
+        }
+    }
+    spline
+        .validate()
+        .map_err(|e| Diagnostic::error("invalid_path", points_path.clone(), format!("{e:#}")))?;
+    Ok(vec![Edit::Core(CoreEdit::SetField {
+        target: Target::Entity { id: id.to_owned() },
+        field: "/components/path.spline/points".into(),
+        value: json!(spline.points),
+    })])
 }
 
 /// Where `move_entity` puts an entity in the authored order (= sibling order).

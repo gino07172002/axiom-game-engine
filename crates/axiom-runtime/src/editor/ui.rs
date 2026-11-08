@@ -303,6 +303,7 @@ impl Editor {
                             ("light.area", "Area light (approximate)"),
                             ("trigger.box", "Box trigger"),
                             ("trigger.sphere", "Sphere trigger"),
+                            ("path", "Path"),
                         ] {
                             if ui.button(label).clicked() {
                                 actions.extend(self.create_object(preset));
@@ -733,6 +734,9 @@ impl Editor {
             self.prefab_inspector(ui, actions);
             return;
         }
+        let path = self.selected.as_deref().and_then(|id| self.path_spline(id));
+        let mut path_point = self.scene_input.path_point;
+        let mut path_command = None;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -875,6 +879,43 @@ impl Editor {
                                 )
                                 .or(structural.take());
                             });
+                        if let Some(spline) = &path {
+                            egui::CollapsingHeader::new("Path points")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    caption(
+                                        ui,
+                                        format!(
+                                            "{} points · {} · local · drag the handles in the scene view",
+                                            spline.points.len(),
+                                            if spline.closed { "closed" } else { "open" }
+                                        ),
+                                    );
+                                    for (k, p) in spline.points.iter().enumerate() {
+                                        let text =
+                                            format!("{k}: {:.2}, {:.2}, {:.2}", p[0], p[1], p[2]);
+                                        if ui
+                                            .selectable_label(
+                                                path_point == Some(k),
+                                                RichText::new(text).monospace(),
+                                            )
+                                            .clicked()
+                                        {
+                                            path_point = Some(k);
+                                        }
+                                    }
+                                    ui.add_enabled_ui(!draft.dirty(), |ui| {
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Add point").clicked() {
+                                                path_command = Some("path.add_point");
+                                            }
+                                            if ui.button("Remove point").clicked() {
+                                                path_command = Some("path.remove_point");
+                                            }
+                                        });
+                                    });
+                                });
+                        }
                         ui.separator();
                         ui.add_enabled_ui(!draft.dirty(), |ui| {
                             ui.horizontal(|ui| {
@@ -948,6 +989,13 @@ impl Editor {
             }
             Some(edit) => actions.push(self.write(vec![Edit::Core(edit)], None)),
             None => {}
+        }
+        self.scene_input.path_point = path_point;
+        if let Some(command) = path_command {
+            match self.run_command(command) {
+                Ok(more) => actions.extend(more),
+                Err(error) => self.set_error(format!("{error:#}")),
+            }
         }
         if duplicate {
             actions.extend(self.duplicate_ids(std::slice::from_ref(&id)));
@@ -1275,6 +1323,8 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("animation.player", "SKIN", Color32::from_rgb(200, 150, 255)),
         ("fsm.agent", "FSM", Color32::from_rgb(255, 170, 100)),
         ("trigger.zone", "TRIG", Color32::from_rgb(120, 230, 210)),
+        ("path.spline", "PATH", Color32::from_rgb(255, 176, 72)),
+        ("path.follow", "FOLLOW", Color32::from_rgb(255, 214, 150)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1295,6 +1345,8 @@ fn badge_meaning(text: &str) -> &'static str {
         "SKIN" => "animation.player (glTF skinned model)",
         "FSM" => "fsm.agent (state machine behaviour)",
         "TRIG" => "trigger.zone (enter/exit events)",
+        "PATH" => "path.spline (route for path followers)",
+        "FOLLOW" => "path.follow (moves along a path)",
         _ => "prefab instance",
     }
 }

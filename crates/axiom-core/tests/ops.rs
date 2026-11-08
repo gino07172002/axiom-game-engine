@@ -515,3 +515,148 @@ fn remove_verb_matches_the_op_and_reports_inherited_components() {
         "{error}"
     );
 }
+
+#[test]
+fn path_verbs_match_the_ops_and_report_structured_errors() {
+    use axiom_core::path::{PathEnd, PathFollow, PathSpline};
+    let mut s = store();
+    acl(
+        &mut s,
+        "create path id=road\ncreate cube id=car\ncreate cube id=bus",
+    )
+    .unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        t.current().unwrap().1
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    // follow: options parse into the shared op.
+    let options = ops::FollowOptions {
+        speed: Some(3.0),
+        end: Some(PathEnd::PingPong),
+        offset: Some(-1.5),
+    };
+    let expected = ops::follow_path(&start, &["car".into()], "road", &options).unwrap();
+    let followed = after(&start, "follow car road speed=3 end=ping_pong offset=-1.5");
+    assert_eq!(followed, applied(&start, expected));
+    let follow: PathFollow =
+        serde_json::from_value(followed.entity("car").unwrap().components["path.follow"].clone())
+            .unwrap();
+    assert_eq!(
+        (follow.speed, follow.end, follow.offset),
+        (3.0, PathEnd::PingPong, -1.5)
+    );
+    // path ID verbs: the shared op, default positions for add / insert without coordinates.
+    for (text, edit) in [
+        (
+            "path road add 0,1,9",
+            ops::PointEdit::Add(Some([0.0, 1.0, 9.0])),
+        ),
+        ("path road add", ops::PointEdit::Add(None)),
+        ("path road insert 1", ops::PointEdit::Insert(1, None)),
+        (
+            "path road insert 0 [1,2,3]",
+            ops::PointEdit::Insert(0, Some([1.0, 2.0, 3.0])),
+        ),
+        (
+            "path road move 3 -4,0,4",
+            ops::PointEdit::Move(3, [-4.0, 0.0, 4.0]),
+        ),
+        ("path road remove 2", ops::PointEdit::Remove(2)),
+    ] {
+        let expected = ops::edit_path_point(&start, "road", &edit).unwrap();
+        assert_eq!(after(&start, text), applied(&start, expected), "{text}");
+    }
+    let spline = |world: &World| -> PathSpline {
+        serde_json::from_value(world.entity("road").unwrap().components["path.spline"].clone())
+            .unwrap()
+    };
+    // Closed rectangle: add splits the closing piece; insert 1 splits piece 0 -> 1.
+    assert_eq!(
+        spline(&after(&start, "path road add")).points[4],
+        [-4.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        spline(&after(&start, "path road insert 1")).points[1],
+        [0.0, 0.0, -3.0]
+    );
+    // Open path: add extends the last piece by its own length.
+    let open = after(&start, "set road path.spline/closed false");
+    assert_eq!(
+        spline(&after(&open, "path road add")).points[4],
+        [-12.0, 0.0, 3.0]
+    );
+    // Structured errors.
+    let mut e = Store::memory_with(Registry::core(), start.clone()).unwrap();
+    assert_eq!(
+        code(acl(&mut e, "follow car nowhere").unwrap_err()),
+        "not_found"
+    );
+    assert_eq!(
+        code(acl(&mut e, "follow car bus").unwrap_err()),
+        "not_a_path"
+    );
+    assert_eq!(
+        code(acl(&mut e, "follow road road").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(acl(&mut e, "follow car road speed=500").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(acl(&mut e, "follow car road speed=fast").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "follow car road end=reverse").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "path road move 9 1,0,0").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(acl(&mut e, "path road move 0 4,0,-3").unwrap_err()),
+        "invalid_path"
+    );
+    assert_eq!(code(acl(&mut e, "path car add").unwrap_err()), "not_a_path");
+    assert_eq!(
+        code(acl(&mut e, "path road twist 1").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "path road add 1,2").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "path road remove 0 1").unwrap_err()),
+        "acl_syntax"
+    );
+    acl(&mut e, "path road remove 0").unwrap();
+    assert_eq!(
+        code(acl(&mut e, "path road remove 0").unwrap_err()),
+        "invalid_path"
+    );
+    // A second mover on a follower is refused at commit with path_conflict.
+    acl(&mut e, "follow car road").unwrap();
+    let mut capabilities = start.capabilities.clone();
+    capabilities.insert("motion".into(), 1);
+    e.execute(Request::Apply {
+        expected_rev: None,
+        edits: vec![Edit::set("/capabilities", serde_json::json!(capabilities))],
+    })
+    .unwrap();
+    let conflict = acl(&mut e, "set car core.motion {\"velocity\":[1,0,0]}").unwrap_err();
+    assert_eq!(code(conflict.clone()), "path_conflict", "{conflict}");
+}

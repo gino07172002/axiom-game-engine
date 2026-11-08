@@ -855,6 +855,9 @@ pub fn register(r: &mut RuntimeRegistry) {
             valid_id(&a.machine)
         },
     );
+    r.authoring
+        .movers
+        .insert("fsm.agent".into(), "fsm.step".into());
     r.authoring.action("fsm.inspect", "fsm", json!({"id":"agent entity ID; returns state, last transition and each outgoing condition with measured value"}), |v| {
         ensure!(v.get("id").and_then(Value::as_str).is_some(), "fsm.inspect needs id");
         Ok(())

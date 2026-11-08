@@ -50,6 +50,9 @@ pub fn register(r: &mut Registry) {
             Ok(())
         },
     );
+    for mover in ["fps.controller", "fps.sentinel"] {
+        r.movers.insert(mover.into(), "fps.simulate".into());
+    }
     r.component("fps.cover", "fps", json!({"id":"string"}), |v| {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]

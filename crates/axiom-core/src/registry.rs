@@ -83,11 +83,14 @@ pub struct Registry {
     pub package_resolvers: Vec<fn(&std::path::Path, &mut World) -> Result<()>>,
     pub edit_handlers: Vec<EditHandler>,
     pub summaries: Vec<SummaryProvider>,
+    /// Component -> the system that writes the transform of entities carrying it. An entity
+    /// may have at most one mover; `path.follow` next to one of these is an authoring error.
+    pub movers: BTreeMap<String, String>,
 }
 impl Registry {
     pub fn core() -> Self {
         let mut r = Self::default();
-        for id in ["core", "render", "physics", "motion", "trigger"] {
+        for id in ["core", "render", "physics", "motion", "trigger", "path"] {
             r.capabilities.insert(id.into(), 1);
         }
         fn typed<T: serde::de::DeserializeOwned>(v: &Value, f: fn(&T) -> Result<()>) -> Result<()> {
@@ -142,6 +145,14 @@ impl Registry {
             crate::trigger::trigger_schema(),
             |v| typed(v, crate::trigger::TriggerZone::validate),
         );
+        r.component("path.spline", "path", crate::path::spline_schema(), |v| {
+            typed(v, crate::path::PathSpline::validate)
+        });
+        r.component("path.follow", "path", crate::path::follow_schema(), |v| {
+            typed(v, crate::path::PathFollow::validate)
+        });
+        r.movers
+            .insert("core.motion".into(), "motion.integrate".into());
         r.component(
             "physics.collider",
             "physics",
@@ -186,6 +197,23 @@ impl Registry {
                 phase: 25,
                 reads: vec!["trigger.zone".into(), "core.transform".into()],
                 writes: vec!["runtime.events".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "path.move".into(),
+            SystemDescriptor {
+                id: "path.move".into(),
+                capability: "path".into(),
+                // After motion (10) so a moving path parent is current; before rts (15) and
+                // trigger.detect (25) so zones see the followers' new positions.
+                phase: 12,
+                reads: vec![
+                    "path.spline".into(),
+                    "path.follow".into(),
+                    "core.transform".into(),
+                ],
+                writes: vec!["core.transform".into(), "runtime.events".into()],
                 after: vec![],
             },
         );

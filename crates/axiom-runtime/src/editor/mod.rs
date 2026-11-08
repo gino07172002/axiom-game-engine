@@ -449,7 +449,7 @@ impl Editor {
         }
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
         // Dropping the drag without resetting would strand an uncommittable stale draft.
-        let interrupted = self.drag.take().is_some();
+        let interrupted = self.drag.take().is_some() | self.scene_input.point_drag.take().is_some();
         if interrupted {
             self.select(self.selected.clone());
         }
@@ -572,6 +572,95 @@ impl Editor {
     pub(super) fn remove_component(&mut self, id: &str, component: &str) -> Option<Action> {
         let result = ops::remove_component(&self.world, &[id.to_owned()], component);
         self.op_write(result, None)
+    }
+
+    /// The effective `path.spline` of `id`, if it has a valid one.
+    pub(super) fn path_spline(&self, id: &str) -> Option<axiom_core::path::PathSpline> {
+        let entity = self.world.entity(id)?;
+        serde_json::from_value(
+            self.world
+                .resolved_components(entity)
+                .remove("path.spline")?,
+        )
+        .ok()
+    }
+
+    /// Object ▸ Follow Path (`ACL: follow SEL PATH`): the selected objects follow the one
+    /// selected path, or the world's only path when no path is selected.
+    pub(super) fn follow_selection(&mut self) -> Option<Action> {
+        let selection = self.selection();
+        let mut paths: Vec<String> = selection
+            .iter()
+            .filter(|id| self.path_spline(id).is_some())
+            .cloned()
+            .collect();
+        if paths.is_empty() {
+            paths = self
+                .world
+                .entities
+                .iter()
+                .filter(|e| self.path_spline(&e.id).is_some())
+                .map(|e| e.id.clone())
+                .collect();
+        }
+        let [path] = paths.as_slice() else {
+            self.set_error(
+                "Select one path together with the objects that should follow it (Ctrl+click)",
+            );
+            return None;
+        };
+        let followers: Vec<String> = selection.into_iter().filter(|id| id != path).collect();
+        let result = ops::follow_path(
+            &self.world,
+            &followers,
+            path,
+            &ops::FollowOptions::default(),
+        );
+        self.op_write(result, None)
+    }
+
+    /// Path point handles and Inspector ▸ Path points (`ACL: path ID add|insert|move|remove`).
+    pub(super) fn edit_path_point(&mut self, id: &str, edit: ops::PointEdit) -> Option<Action> {
+        let result = ops::edit_path_point(&self.world, id, &edit);
+        self.op_write(result, None)
+    }
+
+    /// Path ▸ Add Point: after the selected point (splitting the piece to the next point, or
+    /// extending an open path's end), else at the end. Selects the new point.
+    pub(super) fn add_path_point(&mut self) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let spline = self.path_spline(&id)?;
+        let n = spline.points.len();
+        let at = match self.scene_input.path_point.filter(|&i| i < n) {
+            Some(i) if i + 1 < n || spline.closed => i + 1,
+            _ => n,
+        };
+        let edit = if at == n && !spline.closed {
+            ops::PointEdit::Add(None)
+        } else {
+            ops::PointEdit::Insert(at, None)
+        };
+        let action = self.edit_path_point(&id, edit);
+        if action.is_some() {
+            self.scene_input.path_point = Some(at);
+        }
+        action
+    }
+
+    /// Path ▸ Remove Point: the selected point, else the last one.
+    pub(super) fn remove_path_point(&mut self) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let n = self.path_spline(&id)?.points.len();
+        let index = self
+            .scene_input
+            .path_point
+            .filter(|&i| i < n)
+            .unwrap_or(n - 1);
+        let action = self.edit_path_point(&id, ops::PointEdit::Remove(index));
+        if action.is_some() {
+            self.scene_input.path_point = index.checked_sub(1);
+        }
+        action
     }
 
     /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
@@ -1098,8 +1187,13 @@ impl Editor {
         self.material = None;
         self.prefab = None;
         let entity = id.as_deref().and_then(|id| self.world.entity(id));
-        self.selected = entity.map(|e| e.id.clone());
+        let selected = entity.map(|e| e.id.clone());
+        if selected != self.selected {
+            self.scene_input.path_point = None;
+        }
+        self.selected = selected;
         self.drag = None;
+        self.scene_input.point_drag = None;
         self.scroll_selection = true;
         self.draft = entity.map(|e| {
             let transform = crate::editor::ui::component_value(&self.world, e, "core.transform")

@@ -138,7 +138,7 @@ fn local(state: &RuntimeState, i: usize) -> Mat4 {
 }
 
 /// World matrix by walking the parent chain (no allocation; depth is acyclic and small).
-fn world_matrix(state: &RuntimeState, slot: usize) -> Mat4 {
+pub(crate) fn world_matrix(state: &RuntimeState, slot: usize) -> Mat4 {
     let mut m = local(state, slot);
     let mut parent = state.compiled.parents[slot];
     while let Some(p) = parent {

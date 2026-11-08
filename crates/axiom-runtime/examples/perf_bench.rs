@@ -3,6 +3,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --pack content/rts`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated 4096`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-triggers 256x1024`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-paths 64x1024`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -109,6 +110,43 @@ fn generated_triggers(zones: usize, movers: usize) -> Result<World> {
     }))?)
 }
 
+/// `paths` closed paths 30 m apart (even: linear 20 x 10 m rectangles, odd: Catmull-Rom
+/// circles of 16 points, radius 8 m) and `followers` spread evenly over them (start fraction,
+/// speed 1.5..3 m/s, lateral offset +-1 m, every other one with a 180 deg/s turn rate).
+fn generated_paths(paths: usize, followers: usize) -> Result<World> {
+    let mut entities = vec![];
+    for i in 0..paths {
+        let (x, z) = ((i % 8) as f32 * 30.0, (i / 8) as f32 * 30.0);
+        let spline = if i % 2 == 0 {
+            json!({"points":[[-10,0,-5],[10,0,-5],[10,0,5],[-10,0,5]],"closed":true})
+        } else {
+            let points: Vec<[f32; 3]> = (0..16)
+                .map(|k| {
+                    let a = k as f32 / 16.0 * std::f32::consts::TAU;
+                    [8.0 * a.cos(), 0.0, 8.0 * a.sin()]
+                })
+                .collect();
+            json!({"points":points,"closed":true,"interpolation":"catmull_rom"})
+        };
+        entities.push(json!({"id":format!("path/{i}"),"components":{"core.transform":{"position":[x,0,z]},"path.spline":spline}}));
+    }
+    let per_path = followers.div_ceil(paths.max(1));
+    for i in 0..followers {
+        let (path, k) = (i % paths.max(1), i / paths.max(1));
+        let mut follow = json!({"path":format!("path/{path}"),"speed":1.5 + (i % 4) as f32 * 0.5,
+            "start_fraction":k as f32 / per_path as f32,"offset":if i % 2 == 0 { 1.0 } else { -1.0 }});
+        if i % 2 == 1 {
+            follow["turn_rate"] = json!(180.0);
+        }
+        entities.push(json!({"id":format!("follower/{i}"),"components":{"core.transform":{},"path.follow":follow}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("paths-{paths}x{followers}"),"title":"Path bench",
+        "capabilities":{"core":1,"path":1},"systems":["path.move"],
+        "entities":entities
+    }))?)
+}
+
 /// A one-field edit on an entity that owns its transform position (non-camera preferred).
 fn edit_target(world: &World) -> Result<(String, Vec<f64>)> {
     let pick = |skip_camera: bool| {
@@ -148,6 +186,12 @@ fn main() -> Result<()> {
             .context("--generated-triggers ZONESxMOVERS")?;
         let world = generated_triggers(zones.parse()?, movers.parse()?)?;
         (world.id.clone(), world)
+    } else if let Some(spec) = arg("--generated-paths") {
+        let (paths, followers) = spec
+            .split_once('x')
+            .context("--generated-paths PATHSxFOLLOWERS")?;
+        let world = generated_paths(paths.parse()?, followers.parse()?)?;
+        (world.id.clone(), world)
     } else {
         let pack = arg("--pack").context("--pack DIR or --generated N")?;
         let world = axiom_core::ContentPackage::load(&pack, &registry.authoring)?.world;
@@ -181,6 +225,7 @@ fn main() -> Result<()> {
     // Headless simulation.
     let mut runtime = WorldRuntime::new(world.clone(), 1, registry.clone())?;
     let build = runtime.build_timings;
+    let system_build_ms = runtime.system_build_ms.clone();
     let input = ActionMap::default();
     for _ in 0..120 {
         runtime.step(&input);
@@ -285,6 +330,7 @@ fn main() -> Result<()> {
         "world_json_bytes":world_bytes,
         "pack_load_ms":load_ms,
         "runtime_new":build,
+        "system_build_ms":system_build_ms,
         "entities":entity_count,
         "instances":instances,
         "step":{"ticks":ticks,"ms":dist(step_ms),"allocs":dist(step_allocs),"alloc_bytes":dist(step_bytes)},

@@ -24,6 +24,11 @@ EDIT (any number, atomic):
   create empty|cube|camera P      new object; default id = preset name, then NAME/2, NAME/3..
   create light directional|point|spot|area P   render.light aimed along local -Z (id light.KIND)
   create trigger box|sphere P      trigger.zone for tag player, no events yet (id trigger.SHAPE)
+  create path P                   path.spline: closed 8x6 m rectangle on local XZ (id path)
+  follow SEL PATH [speed=M/S] [end=loop|ping_pong|stop] [offset=M]   path.follow on each object;
+                                  several followers start evenly spaced along the path
+  path ID add [x,y,z] | path ID insert I [x,y,z] | path ID move I x,y,z | path ID remove I
+                                  edit points (path-local); no x,y,z = extend the end / split the piece
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -272,6 +277,8 @@ enum Statement {
     Move(String, crate::ops::Order),
     PrefabCreate(Option<String>, String),
     Ground(Box<Selection>),
+    Follow(Box<Selection>, String, crate::ops::FollowOptions),
+    PathPoint(String, crate::ops::PointEdit),
 }
 
 impl Statement {
@@ -508,6 +515,53 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "ground" => {
             ensure!(tokens.len() == 2, "ground takes one selector");
             Statement::Ground(Box::new(selector(arg(1)?)?))
+        }
+        "follow" => {
+            let select = selector(arg(1)?)?;
+            let path = arg(2)?.clone();
+            let mut options = crate::ops::FollowOptions::default();
+            for t in &tokens[3..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("option '{t}' must be key=value"))?;
+                let number = || {
+                    v.parse::<f32>()
+                        .with_context(|| format!("{k} must be a number"))
+                };
+                match k {
+                    "speed" => options.speed = Some(number()?),
+                    "offset" => options.offset = Some(number()?),
+                    "end" => {
+                        options.end = Some(match v {
+                            "loop" => crate::path::PathEnd::Loop,
+                            "ping_pong" | "pingpong" => crate::path::PathEnd::PingPong,
+                            "stop" => crate::path::PathEnd::Stop,
+                            other => bail!("unknown end '{other}' (use loop, ping_pong, stop)"),
+                        })
+                    }
+                    other => bail!("unknown option '{other}' (use speed, end, offset)"),
+                }
+            }
+            Statement::Follow(Box::new(select), path, options)
+        }
+        "path" => {
+            use crate::ops::PointEdit;
+            let id = arg(1)?.clone();
+            let index = |n: usize| -> Result<usize> {
+                arg(n)?
+                    .parse()
+                    .context("point index must be a non-negative integer")
+            };
+            let at = |n: usize| tokens.get(n).map(|t| vec3(t)).transpose();
+            let (edit, max) = match arg(2)?.as_str() {
+                "add" => (PointEdit::Add(at(3)?), 4),
+                "insert" => (PointEdit::Insert(index(3)?, at(4)?), 5),
+                "move" => (PointEdit::Move(index(3)?, vec3(arg(4)?)?), 5),
+                "remove" => (PointEdit::Remove(index(3)?), 4),
+                other => bail!("unknown path verb '{other}' (add, insert, move, remove)"),
+            };
+            ensure!(tokens.len() <= max, "unexpected '{}'", tokens[max]);
+            Statement::PathPoint(id, edit)
         }
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
@@ -771,6 +825,9 @@ pub fn run(
             Statement::Ground(select) => {
                 entity_ids(w, r, &select, line).and_then(|ids| crate::ops::drop_to_ground(w, &ids))
             }
+            Statement::Follow(select, path, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::follow_path(w, &ids, &path, &options)),
+            Statement::PathPoint(id, edit) => crate::ops::edit_path_point(w, &id, &edit),
             _ => unreachable!(),
         }
         .map_err(wrap)?;

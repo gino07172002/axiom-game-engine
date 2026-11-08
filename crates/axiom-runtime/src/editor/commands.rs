@@ -143,6 +143,10 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Object",
         "",
     ),
+    c("object.path", "Create Path", "Object", ""),
+    c("object.follow_path", "Follow Path", "Object", ""),
+    c("path.add_point", "Add Path Point", "Object", ""),
+    c("path.remove_point", "Remove Path Point", "Object", ""),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -375,9 +379,19 @@ impl Editor {
             | "object.child_cube"
             | "object.child_camera"
             | "object.create_prefab"
+            | "object.follow_path"
                 if nothing =>
             {
                 Some("nothing selected")
+            }
+            "path.add_point" | "path.remove_point"
+                if self
+                    .selected
+                    .as_deref()
+                    .and_then(|id| self.path_spline(id))
+                    .is_none() =>
+            {
+                Some("select a path")
             }
             "play.start" if self.previewing => Some("already playing"),
             "edit.undo"
@@ -395,6 +409,10 @@ impl Editor {
             | "object.light_area"
             | "object.trigger_box"
             | "object.trigger_sphere"
+            | "object.path"
+            | "object.follow_path"
+            | "path.add_point"
+            | "path.remove_point"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -494,6 +512,10 @@ impl Editor {
             "object.light_area" => actions.extend(self.create_object("light.area")),
             "object.trigger_box" => actions.extend(self.create_object("trigger.box")),
             "object.trigger_sphere" => actions.extend(self.create_object("trigger.sphere")),
+            "object.path" => actions.extend(self.create_object("path")),
+            "object.follow_path" => actions.extend(self.follow_selection()),
+            "path.add_point" => actions.extend(self.add_path_point()),
+            "path.remove_point" => actions.extend(self.remove_path_point()),
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
@@ -857,6 +879,11 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.camera": "create camera",
                 "object.light_point": "create light point (also directional, spot, area)",
                 "object.trigger_box": "create trigger box (also sphere)",
+                "object.path": "create path",
+                "object.follow_path": "follow SEL PATH [speed=] [end=loop|ping_pong|stop] [offset=]",
+                "path.add_point": "path ID add [x,y,z] | path ID insert I [x,y,z]",
+                "path.remove_point": "path ID remove I",
+                "path.point_drag": "path ID move I x,y,z",
                 "inspector.remove_component": "remove SEL COMPONENT",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",

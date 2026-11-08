@@ -407,6 +407,8 @@ pub fn register(r: &mut Registry) {
     );
     r.capabilities.insert("action".into(), 1);
     r.component("action.actor","action",json!({"faction":"0|1","speed":"meters/second","radius":"planar meters","stamina":"max","regen":"per second","idle_clip":"clip","run_clip":"clip","death_clip":"clip","attack":"ability ID","dodge":"ability ID","ai":"bool"}),|v|serde_json::from_value::<ActorDef>(v.clone())?.validate());
+    r.movers
+        .insert("action.actor".into(), "action.simulate".into());
     r.resource(ABILITIES,"action",json!({"abilities":"stable ID -> {kind:attack|dodge,clip,duration,cost,cooldown,active?,invulnerable?,chain?,chain_window?,dodge_window?,damage,range,arc_degrees,travel_speed,events:[{tick,sound}]}","windows":"half-open [start,end), fixed 120 Hz ticks","duration":"1..2400","cost":"0..1000","range":"0..6"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
     r.resource(SESSION,"action",json!({"hero":"entity ID","camera":"entity ID","bounds":"{min:[x,z],max:[x,z]}","obstacles":"bounded planar rectangles","input_buffer_ticks":"0..60","lock_range":"meters","camera_distance":"meters","camera_height":"meters","camera_yaw":"radians","enemy_notice_range":"meters","hit_sound":"audio cue ID"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
     r.systems.insert(

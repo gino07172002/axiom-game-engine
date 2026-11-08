@@ -22,6 +22,7 @@ pub mod measure;
 mod mesh_render;
 pub mod nameplate;
 pub mod narrative;
+pub mod path_follow;
 pub mod postfx;
 mod postfx_gpu;
 pub mod presentation;
@@ -53,6 +54,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     geometry::register(&mut r);
     fsm::register(&mut r);
     trigger::register(&mut r);
+    path_follow::register(&mut r);
     nameplate::register(&mut r);
     vfx::register(&mut r);
     postfx::register(&mut r);
