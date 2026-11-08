@@ -142,6 +142,98 @@ fn fsm_entry_clips_and_wander_stay_near_home() {
 }
 
 #[test]
+fn wanderers_never_enter_blockers_and_agents_keep_apart() {
+    let mut w = with_machine(json!({"initial":"stroll","states":{
+        "stroll":{"action":{"kind":"wander","radius":4.0,"speed":2.0}}
+    }}));
+    // A wall right next to the wanderer's home.
+    let home = w.entity("mascot/long").unwrap().components["core.transform"]["position"].clone();
+    let (hx, hz) = (
+        home[0].as_f64().unwrap() as f32,
+        home[2].as_f64().unwrap() as f32,
+    );
+    let mut wall = axiom_core::Entity::new("wall");
+    wall.set("core.transform", json!({"position":[hx + 1.5, 0.0, hz]}))
+        .unwrap();
+    wall.set("nav.blocker", json!({"half":[0.5,3.0]})).unwrap();
+    w.entities.push(wall);
+    // A second agent with the same machine shares the space.
+    let mut twin = w.entity("mascot/long").unwrap().clone();
+    twin.id = "twin".into();
+    twin.components.remove("animation.player");
+    twin.components.insert(
+        "core.transform".into(),
+        json!({"position":[hx - 0.2, 0.0, hz]}),
+    );
+    w.entities.push(twin);
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    // Wall rectangle (x 1.0..2.0 from home, z ±3); bodies have radius 0.3.
+    let (min, max) = ([hx + 1.0, hz - 3.0], [hx + 2.0, hz + 3.0]);
+    let mut closest: f32 = f32::MAX;
+    for _ in 0..3000 {
+        run(&mut r, 1);
+        for id in ["mascot/long", "twin"] {
+            let p = position(&r, id);
+            let q = [p.x.clamp(min[0], max[0]), p.z.clamp(min[1], max[1])];
+            let gap = ((p.x - q[0]).powi(2) + (p.z - q[1]).powi(2)).sqrt();
+            // Another body may nudge it slightly after its own resolution; allow 5 cm.
+            assert!(gap > 0.25, "{id} entered the wall at {p:?} (gap {gap})");
+        }
+        let (a, b) = (position(&r, "mascot/long"), position(&r, "twin"));
+        closest = closest.min(Vec3::new(a.x - b.x, 0.0, a.z - b.z).length());
+    }
+    // Each agent yields on its own step, so allow a small transient overlap.
+    assert!(
+        closest > 0.5,
+        "agents should keep ~0.6 m apart, closest {closest}"
+    );
+}
+
+#[test]
+fn hud_regions_must_reference_real_widgets() {
+    let registry = axiom_runtime::installed_registry();
+    let mut town = ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+        &registry.authoring,
+    )
+    .unwrap()
+    .world;
+    town.compile(&registry.authoring).unwrap();
+    town.resources.get_mut("ui.document").unwrap()["regions"]["ghost"] = json!("top_left");
+    let error = format!("{:#}", town.compile(&registry.authoring).unwrap_err());
+    assert!(error.contains("unknown widget ghost"), "{error}");
+    let mut bad = town.clone();
+    bad.resources.get_mut("ui.document").unwrap()["regions"] = json!({"title":"upper_middle"});
+    assert!(bad.compile(&registry.authoring).is_err());
+}
+
+#[test]
+fn the_action_hero_is_stopped_by_nav_blockers() {
+    let world = ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+        &axiom_runtime::installed_registry().authoring,
+    )
+    .unwrap()
+    .world;
+    let mut r = WorldRuntime::new(world, 1, axiom_runtime::installed_registry()).unwrap();
+    let mut forward = ActionMap::default();
+    forward.0.insert("move_z".into(), 1.0);
+    for _ in 0..600 {
+        r.step(&forward);
+    }
+    // Straight ahead from z=9 is the fountain (blocker half 2.2 around the origin).
+    let hero = position(&r, "hero");
+    assert!(
+        hero.z > 2.2 + 0.2,
+        "hero walked into the fountain: {hero:?}"
+    );
+    assert!(
+        hero.z < 4.0,
+        "hero should have reached the fountain edge: {hero:?}"
+    );
+}
+
+#[test]
 fn face_turns_toward_the_target_and_unknown_clips_are_reported() {
     let w = with_machine(json!({"initial":"look","states":{
         "look":{"action":{"kind":"face","tag":"player"},"clip":"no-such-clip"}

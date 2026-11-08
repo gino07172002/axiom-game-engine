@@ -103,7 +103,15 @@ pub fn facing(d: Vec2) -> f32 {
 
 impl Simulation {
     pub fn new(compiled: &CompiledWorld) -> Result<Self> {
-        let session: Session = compiled.source.resource(SESSION)?;
+        let mut session: Session = compiled.source.resource(SESSION)?;
+        // Shared static blockers join the session's own obstacle list.
+        for (min, max) in axiom_core::blocker::blockers(&compiled.entities)? {
+            session.obstacles.push(crate::Obstacle { min, max });
+        }
+        anyhow::ensure!(
+            session.obstacles.len() <= 640,
+            "action obstacle budget (session + nav.blocker) is 640"
+        );
         let library: Library = compiled.source.resource(ABILITIES)?;
         let mut actors = vec![];
         for e in &compiled.entities {

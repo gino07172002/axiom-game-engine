@@ -4,7 +4,7 @@ use crate::{
     ui::{Action, UiState},
 };
 use anyhow::{ensure, Result};
-use axiom_core::gameplay::{BoundText, BoundWidget, RuntimeCommand, Scalar};
+use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar};
 use egui::{Color32, RichText, Vec2};
 #[derive(Clone)]
 pub struct PreparedImage {
@@ -73,6 +73,56 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
     state
         .textures
         .retain(|key, _| g.images.values().any(|p| &p.key == key));
+    let region_of = |w: &BoundWidget| doc.regions.get(widget_id(w)).copied();
+    // HUD regions: compact translucent panels anchored over the 3D view.
+    for region in REGIONS {
+        let visible = g
+            .compiled
+            .widgets
+            .iter()
+            .any(|w| region_of(w) == Some(region) && widget_visible(g, w));
+        let controls = region == Region::TopRight
+            && doc.session_controls
+            && !doc.regions.is_empty()
+            && g.compiled.widgets.iter().all(|w| region_of(w).is_some());
+        if !visible && !controls {
+            continue;
+        }
+        let (align, offset, width, flow) = anchor(region);
+        egui::Area::new(egui::Id::new(("bound_region", region)))
+            .anchor(align, offset)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(12, 16, 24, 205))
+                    .corner_radius(8.0)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(width);
+                        if controls {
+                            session_controls(ui, doc, g, state, &mut actions);
+                        }
+                        let filter = |w: &BoundWidget| region_of(w) == Some(region);
+                        if flow {
+                            ui.horizontal_wrapped(|ui| {
+                                draw_widgets(ui, g, state, &mut actions, &filter, true)
+                            });
+                        } else {
+                            draw_widgets(ui, g, state, &mut actions, &filter, false);
+                        }
+                    });
+            });
+    }
+    let unplaced = g.compiled.widgets.iter().any(|w| region_of(w).is_none());
+    if !doc.regions.is_empty() && !unplaced {
+        if let Some(error) = &g.fault {
+            egui::Area::new(egui::Id::new("bound_fault"))
+                .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
+                .show(ctx, |ui| {
+                    ui.colored_label(Color32::LIGHT_RED, error.to_string())
+                });
+        }
+        return actions;
+    }
     egui::TopBottomPanel::bottom("bound_document")
         .resizable(false)
         .show(ctx, |ui| {
@@ -80,39 +130,15 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(8.0);
                 if doc.session_controls {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("AXIOM / NARRATIVE")
-                                .small()
-                                .color(Color32::from_rgb(102, 245, 205)),
-                        );
-                        for locale in doc.catalogs.keys() {
-                            if ui
-                                .selectable_label(g.locale.as_ref() == Some(locale), locale)
-                                .clicked()
-                            {
-                                actions.push(Action::Gameplay(RuntimeCommand::Locale {
-                                    locale: locale.clone(),
-                                }));
-                            }
-                        }
-                        if ui.button("SAVE / 存檔").clicked() {
-                            actions.push(Action::Save);
-                        }
-                        if ui.button("LOAD / 讀檔").clicked() {
-                            actions.push(Action::Load);
-                        }
-                        ui.label(if state.playing {
-                            ""
-                        } else {
-                            "PAUSED / 按 RUN 繼續"
-                        });
-                    });
+                    session_controls(ui, doc, g, state, &mut actions);
                 }
+                let filter = |w: &BoundWidget| region_of(w).is_none();
                 if doc.flow {
-                    ui.horizontal_wrapped(|ui| draw_widgets(ui, g, state, &mut actions));
+                    ui.horizontal_wrapped(|ui| {
+                        draw_widgets(ui, g, state, &mut actions, &filter, true)
+                    });
                 } else {
-                    draw_widgets(ui, g, state, &mut actions);
+                    draw_widgets(ui, g, state, &mut actions, &filter, false);
                 }
                 if let Some(error) = &g.fault {
                     ui.colored_label(Color32::LIGHT_RED, error.to_string());
@@ -126,8 +152,101 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
     actions
 }
 
-fn draw_widgets(ui: &mut egui::Ui, g: &Gameplay, state: &mut UiState, actions: &mut Vec<Action>) {
-    for widget in &g.compiled.widgets {
+const REGIONS: [Region; 9] = [
+    Region::TopLeft,
+    Region::Top,
+    Region::TopRight,
+    Region::Left,
+    Region::Center,
+    Region::Right,
+    Region::BottomLeft,
+    Region::Bottom,
+    Region::BottomRight,
+];
+
+/// (anchor, offset, max width, horizontal flow). Offsets keep clear of the generic top bar.
+fn anchor(region: Region) -> (egui::Align2, [f32; 2], f32, bool) {
+    use egui::Align2 as A;
+    match region {
+        Region::TopLeft => (A::LEFT_TOP, [12.0, 44.0], 300.0, false),
+        Region::Top => (A::CENTER_TOP, [0.0, 44.0], 760.0, true),
+        Region::TopRight => (A::RIGHT_TOP, [-12.0, 44.0], 340.0, false),
+        Region::Left => (A::LEFT_CENTER, [12.0, 0.0], 240.0, true),
+        Region::Center => (A::CENTER_CENTER, [0.0, 0.0], 560.0, false),
+        Region::Right => (A::RIGHT_CENTER, [-12.0, 0.0], 240.0, true),
+        Region::BottomLeft => (A::LEFT_BOTTOM, [12.0, -12.0], 340.0, false),
+        Region::Bottom => (A::CENTER_BOTTOM, [0.0, -12.0], 900.0, true),
+        Region::BottomRight => (A::RIGHT_BOTTOM, [-12.0, -12.0], 420.0, false),
+    }
+}
+
+fn widget_id(w: &BoundWidget) -> &str {
+    match w {
+        BoundWidget::Text(id, ..)
+        | BoundWidget::Button(id, ..)
+        | BoundWidget::Choices(id)
+        | BoundWidget::Image(id, _)
+        | BoundWidget::Progress(id, ..) => id,
+    }
+}
+
+/// Whether a widget would draw anything now (empty regions are not drawn at all).
+fn widget_visible(g: &Gameplay, w: &BoundWidget) -> bool {
+    match w {
+        BoundWidget::Text(_, binding, when) => g.test(when) && !g.bound_text(binding).is_empty(),
+        BoundWidget::Button(_, _, _, when) => g.test(when),
+        BoundWidget::Choices(_) => !g.choices().is_empty(),
+        BoundWidget::Image(_, image) => g.images.contains_key(image),
+        BoundWidget::Progress(..) => true,
+    }
+}
+
+fn session_controls(
+    ui: &mut egui::Ui,
+    doc: &axiom_core::gameplay::UiDocument,
+    g: &Gameplay,
+    state: &UiState,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("AXIOM / NARRATIVE")
+                .small()
+                .color(Color32::from_rgb(102, 245, 205)),
+        );
+        for locale in doc.catalogs.keys() {
+            if ui
+                .selectable_label(g.locale.as_ref() == Some(locale), locale)
+                .clicked()
+            {
+                actions.push(Action::Gameplay(RuntimeCommand::Locale {
+                    locale: locale.clone(),
+                }));
+            }
+        }
+        if ui.button("SAVE / 存檔").clicked() {
+            actions.push(Action::Save);
+        }
+        if ui.button("LOAD / 讀檔").clicked() {
+            actions.push(Action::Load);
+        }
+        ui.label(if state.playing {
+            ""
+        } else {
+            "PAUSED / 按 RUN 繼續"
+        });
+    });
+}
+
+fn draw_widgets(
+    ui: &mut egui::Ui,
+    g: &Gameplay,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+    filter: &dyn Fn(&BoundWidget) -> bool,
+    flow: bool,
+) {
+    for widget in g.compiled.widgets.iter().filter(|w| filter(w)) {
         match widget {
             BoundWidget::Text(id, binding, when) if g.test(when) => {
                 let text = g.bound_text(binding);
@@ -136,7 +255,7 @@ fn draw_widgets(ui: &mut egui::Ui, g: &Gameplay, state: &mut UiState, actions: &
                 } else {
                     18.0
                 };
-                if g.compiled.ui.as_ref().is_some_and(|u| u.flow) {
+                if flow {
                     let width = ui
                         .painter()
                         .layout_no_wrap(
@@ -157,7 +276,6 @@ fn draw_widgets(ui: &mut egui::Ui, g: &Gameplay, state: &mut UiState, actions: &
             }
             BoundWidget::Button(id, text, command, when) if g.test(when) => {
                 let text = g.text(text);
-                let flow = g.compiled.ui.as_ref().is_some_and(|u| u.flow);
                 if flow {
                     let font = egui::TextStyle::Button.resolve(ui.style());
                     let width = ui
@@ -183,7 +301,6 @@ fn draw_widgets(ui: &mut egui::Ui, g: &Gameplay, state: &mut UiState, actions: &
                 });
             }
             BoundWidget::Choices(id) => {
-                let flow = g.compiled.ui.as_ref().is_some_and(|doc| doc.flow);
                 if flow {
                     ui.end_row();
                 }

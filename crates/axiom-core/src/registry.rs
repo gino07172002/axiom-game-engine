@@ -100,6 +100,12 @@ impl Registry {
             |v| typed(v, Transform::validate),
         );
         r.component(
+            "nav.blocker",
+            "core",
+            json!({"half":"[hx,hz] meters 0.01..500","offset":"optional [ox,oz] from the entity position"}),
+            |v| typed(v, crate::blocker::NavBlocker::validate),
+        );
+        r.component(
             "core.health",
             "core",
             json!({"value":"number >= 0","max":"number > 0"}),

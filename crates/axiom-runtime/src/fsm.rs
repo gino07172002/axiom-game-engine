@@ -127,6 +127,12 @@ pub struct Machines {
 #[serde(deny_unknown_fields)]
 pub struct Agent {
     pub machine: String,
+    /// Body radius for separation and blocker collision (meters).
+    #[serde(default = "agent_radius")]
+    pub radius: f32,
+}
+fn agent_radius() -> f32 {
+    0.3
 }
 fn finite(x: f32, lo: f32, hi: f32) -> bool {
     x.is_finite() && (lo..=hi).contains(&x)
@@ -303,11 +309,17 @@ struct Agents {
     goal: Vec<Option<Vec3>>,
     /// Whether the entry clip of the current state has been cued.
     clip_cued: Vec<bool>,
+    radius: Vec<f32>,
+    /// Consecutive ticks a wanderer barely progressed (repick goal when stuck).
+    stuck: Vec<u16>,
 }
 
 pub struct FsmSystem {
     machines: Vec<Compiled>,
     agents: Agents,
+    /// Static `nav.blocker` rectangles and every moving body (slot, radius) to keep apart from.
+    blockers: Vec<axiom_core::blocker::Rect2>,
+    bodies: Vec<(usize, f32)>,
     /// Emitted event -> whether its payload declares a text `agent` field.
     events: BTreeMap<String, bool>,
     hits: u64,
@@ -388,7 +400,25 @@ impl FsmSystem {
             ));
             agents.goal.push(None);
             agents.clip_cued.push(false);
+            ensure!(
+                agent.radius.is_finite() && (0.05..=5.0).contains(&agent.radius),
+                "fsm agent {} radius must be 0.05..5",
+                e.id
+            );
+            agents.radius.push(agent.radius);
+            agents.stuck.push(0);
         }
+        // Moving bodies: FSM agents and action actors (the player) keep apart.
+        let mut bodies = vec![];
+        for (slot, e) in state.compiled.entities.iter().enumerate() {
+            if let Some(i) = agents.slots.iter().position(|s| *s == slot) {
+                bodies.push((slot, agents.radius[i]));
+            } else if let Some(actor) = e.components.get("action.actor") {
+                let r = actor["radius"].as_f64().unwrap_or(0.3) as f32;
+                bodies.push((slot, r));
+            }
+        }
+        let blockers = axiom_core::blocker::blockers(&state.compiled.entities)?;
         // Every emitted event must exist in behavior.program and need at most an `agent` field.
         let mut events = BTreeMap::new();
         let program = state.compiled.source.resources.get("behavior.program");
@@ -425,6 +455,8 @@ impl FsmSystem {
         Ok(Self {
             machines,
             agents,
+            blockers,
+            bodies,
             events,
             hits: 0,
             emitted: 0,
@@ -645,12 +677,27 @@ impl RuntimeSystem for FsmSystem {
                     .map_or(Vec3::ZERO, |t| Vec3::from_array(t.position));
                 let reached = self.agents.goal[a]
                     .is_none_or(|g| Vec3::new(g.x - here.x, 0.0, g.z - here.z).length() < 0.2);
-                if reached {
-                    let angle = state.random_f32() * std::f32::consts::TAU;
-                    let r = radius * state.random_f32().sqrt();
+                if reached || self.agents.stuck[a] > 90 {
+                    self.agents.stuck[a] = 0;
                     let home = self.agents.home[a];
-                    self.agents.goal[a] =
-                        Some(home + Vec3::new(angle.cos() * r, 0.0, angle.sin() * r));
+                    let body = self.agents.radius[a];
+                    // Resample goals that land inside a blocker (bounded tries, seeded).
+                    let mut goal = home;
+                    for _ in 0..8 {
+                        let angle = state.random_f32() * std::f32::consts::TAU;
+                        let r = radius * state.random_f32().sqrt();
+                        goal = home + Vec3::new(angle.cos() * r, 0.0, angle.sin() * r);
+                        let blocked = self.blockers.iter().any(|(min, max)| {
+                            goal.x > min[0] - body
+                                && goal.x < max[0] + body
+                                && goal.z > min[1] - body
+                                && goal.z < max[1] + body
+                        });
+                        if !blocked {
+                            break;
+                        }
+                    }
+                    self.agents.goal[a] = Some(goal);
                 }
             }
             let action = &self.machines[mi].states[s].1;
@@ -686,10 +733,46 @@ impl RuntimeSystem for FsmSystem {
                     })
                 }
             };
-            if let Some(t) = state.transforms[slot].as_mut() {
-                if let Some(delta) = step {
-                    t.position = (Vec3::from_array(t.position) + delta).to_array();
+            let before = state.transforms[slot]
+                .as_ref()
+                .map_or(Vec3::ZERO, |t| Vec3::from_array(t.position));
+            let mut next = before + step.unwrap_or(Vec3::ZERO);
+            // Keep apart from other bodies (only this agent yields), then leave blockers.
+            let r = self.agents.radius[a];
+            for &(other, other_r) in &self.bodies {
+                if other == slot
+                    || !state.compiled.enabled[other]
+                    || state.health[other].as_ref().is_some_and(|h| h.value <= 0.0)
+                {
+                    continue;
                 }
+                let Some(o) = state.transforms[other].as_ref() else {
+                    continue;
+                };
+                let d = Vec3::new(next.x - o.position[0], 0.0, next.z - o.position[2]);
+                let len = d.length();
+                let min = r + other_r;
+                if len < min {
+                    let dir = if len > 1e-4 { d / len } else { Vec3::X };
+                    next += dir * (min - len);
+                }
+            }
+            for rect in &self.blockers {
+                let [x, z] = axiom_core::blocker::push_out([next.x, next.z], r, rect);
+                next.x = x;
+                next.z = z;
+            }
+            // Stuck detection for wanderers: little progress against the intended step.
+            if let Some(delta) = step {
+                let progress = (next - before).dot(delta) / delta.length_squared().max(1e-8);
+                self.agents.stuck[a] = if progress < 0.25 {
+                    self.agents.stuck[a].saturating_add(1)
+                } else {
+                    0
+                };
+            }
+            if let Some(t) = state.transforms[slot].as_mut() {
+                t.position = next.to_array();
                 // Agents face where they move (or their target); models look along +Z.
                 if let Some(dir) = facing.or(step).filter(|d| d.length_squared() > 1e-8) {
                     t.rotation = glam::Quat::from_rotation_y(dir.x.atan2(dir.z)).to_array();

@@ -194,6 +194,23 @@ pub struct UiDocument {
     pub widgets: Vec<Widget>,
     #[serde(default)]
     pub images: BTreeMap<String, String>,
+    /// HUD placement: widget ID -> screen anchor. Placed widgets draw in compact floating
+    /// panels over the 3D view; unplaced widgets keep the bottom document panel.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub regions: BTreeMap<String, Region>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Region {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
 }
 fn yes() -> bool {
     true
@@ -799,6 +816,12 @@ impl CompiledGameplay {
                 valid_id(id)?;
                 ensure!(ids.insert(id), "duplicate widget id");
                 widgets.push(bound);
+            }
+            for id in u.regions.keys() {
+                ensure!(
+                    ids.contains(id),
+                    "ui.document region refers to unknown widget {id}"
+                );
             }
             for path in u.images.values() {
                 ensure!(
