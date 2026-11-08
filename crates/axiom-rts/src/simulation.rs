@@ -23,6 +23,12 @@ pub struct Unit {
     pub carried: u32,
     pub produced: Option<String>,
     pub yaw: f32,
+    /// Tick at which the unit died (presentation fades the body out).
+    pub died: Option<u64>,
+    /// Building to resume attacking after an intercepted defender dies.
+    fallback: Option<String>,
+    /// Current attack order is an attack-move (engages units met on the way).
+    engage: bool,
     path: VecDeque<[i32; 2]>,
     goal: Option<[i32; 2]>,
     generation: u64,
@@ -44,7 +50,50 @@ pub struct Building {
     pub def: BuildingDef,
     pub position: [f32; 2],
     pub health: f32,
+    pub max_health: f32,
     pub queue: VecDeque<Job>,
+    cooldown: u32,
+}
+/// One resolved attack, kept briefly for presentation (tracers, projectiles, impacts).
+#[derive(Clone, Debug, Serialize)]
+pub struct Shot {
+    pub tick: u64,
+    pub from: [f32; 2],
+    pub to: [f32; 2],
+    pub faction: u8,
+    pub ranged: bool,
+}
+/// Opponent director state (part of the simulation, restored on hot reload).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AiState {
+    pub wave: u32,
+    pub wave_tick: Option<u64>,
+    pub defending: bool,
+    next_army: usize,
+}
+fn new_unit(id: String, def: UnitDef, position: [f32; 2], health: f32, max: f32) -> Unit {
+    Unit {
+        id,
+        def,
+        position,
+        health,
+        max_health: max,
+        order: Order::Idle,
+        carried: 0,
+        produced: None,
+        yaw: 0.0,
+        died: None,
+        fallback: None,
+        engage: false,
+        path: VecDeque::new(),
+        goal: None,
+        generation: 0,
+        pending: false,
+        cooldown: 0,
+        stuck: 0,
+        retry_after: 0,
+        moving_to: None,
+    }
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -102,6 +151,8 @@ pub struct Simulation {
     serial: u64,
     pub combat: Option<axiom_combat::Scene>,
     pub hits: Vec<axiom_combat::Hit>,
+    pub shots: VecDeque<Shot>,
+    pub ai: AiState,
 }
 impl Simulation {
     pub fn select_role(&mut self, args: RoleArgs) -> Result<Value> {
@@ -152,6 +203,8 @@ impl Simulation {
             serial: 0,
             combat: None,
             hits: vec![],
+            shots: VecDeque::new(),
+            ai: AiState::default(),
         };
         for e in &w.entities {
             let p = e
@@ -159,33 +212,25 @@ impl Simulation {
                 .as_ref()
                 .map_or([0.0; 2], |t| [t.position[0], t.position[2]]);
             if let Some(v) = e.components.get("rts.unit") {
-                s.units.push(Unit {
-                    id: e.id.clone(),
-                    def: serde_json::from_value(v.clone())?,
-                    position: p,
-                    health: e.health.as_ref().unwrap().value,
-                    max_health: e.health.as_ref().unwrap().max,
-                    order: Order::Idle,
-                    carried: 0,
-                    produced: None,
-                    yaw: 0.0,
-                    path: VecDeque::new(),
-                    goal: None,
-                    generation: 0,
-                    pending: false,
-                    cooldown: 0,
-                    stuck: 0,
-                    retry_after: 0,
-                    moving_to: None,
-                });
+                let h = e.health.as_ref().unwrap();
+                s.units.push(new_unit(
+                    e.id.clone(),
+                    serde_json::from_value(v.clone())?,
+                    p,
+                    h.value,
+                    h.max,
+                ));
             }
             if let Some(v) = e.components.get("rts.building") {
+                let h = e.health.as_ref().unwrap();
                 s.buildings.push(Building {
                     id: e.id.clone(),
                     def: serde_json::from_value(v.clone())?,
                     position: p,
-                    health: e.health.as_ref().unwrap().value,
+                    health: h.value,
+                    max_health: h.max,
                     queue: VecDeque::new(),
+                    cooldown: 0,
                 });
             }
             if let Some(v) = e.components.get("rts.resource") {
@@ -344,6 +389,8 @@ impl Simulation {
             goals.push((*i, goal));
         }
         for (i, goal) in goals {
+            self.units[i].fallback = None;
+            self.units[i].engage = false;
             self.units[i].order = Order::Move {
                 destination: self.grid.center(goal),
             };
@@ -360,6 +407,7 @@ impl Simulation {
             .find(|r| r.id == a.target)
             .context("resource target missing")?;
         ensure!(node.remaining > 0, "resource depleted");
+        let node_position = node.position;
         let goal = self
             .grid
             .cell(node.position)
@@ -377,10 +425,15 @@ impl Simulation {
             );
         }
         for &i in &units {
+            self.units[i].fallback = None;
+            self.units[i].engage = false;
             self.units[i].order = Order::Gather {
                 target: a.target.clone(),
                 returning: self.units[i].carried > 0,
             };
+            let goal = self
+                .approach(i, node_position, GATHER_REACH)
+                .unwrap_or(goal);
             self.request_path(i, goal);
         }
         self.stats.orders += 1;
@@ -417,10 +470,16 @@ impl Simulation {
             .cell(p)
             .and_then(|c| self.grid.nearest(c, 4))
             .context("attack target inaccessible")?;
+        let reach_bonus = self.target_radius(&a.target);
         for &i in &units {
+            self.units[i].fallback = None;
+            self.units[i].engage = a.engage;
             self.units[i].order = Order::Attack {
                 target: a.target.clone(),
             };
+            let goal = self
+                .approach(i, p, self.units[i].def.attack_range + reach_bonus)
+                .unwrap_or(goal);
             self.request_path(i, goal);
         }
         self.stats.orders += 1;
@@ -429,6 +488,8 @@ impl Simulation {
     pub fn stop(&mut self, a: SelectArgs) -> Result<Value> {
         let units = self.owned(if a.ids.is_empty() { None } else { Some(&a.ids) })?;
         for &i in &units {
+            self.units[i].fallback = None;
+            self.units[i].engage = false;
             self.units[i].order = Order::Idle;
             self.clear_path(i);
         }
@@ -602,7 +663,7 @@ impl Simulation {
                     if returning {
                         if let Some(depot) = self.depot(self.units[i].def.faction, p) {
                             let bp = self.buildings[depot].position;
-                            if dist(p, bp) <= 2.2 {
+                            if dist(p, bp) <= DELIVER_REACH {
                                 let amount = self.units[i].carried;
                                 let faction = self.units[i].def.faction as usize;
                                 self.balance[faction] += amount;
@@ -618,7 +679,9 @@ impl Simulation {
                                     };
                                 }
                             } else if let Some(goal) =
-                                self.grid.cell(bp).and_then(|c| self.grid.nearest(c, 5))
+                                self.approach(i, bp, DELIVER_REACH).or_else(|| {
+                                    self.grid.cell(bp).and_then(|c| self.grid.nearest(c, 5))
+                                })
                             {
                                 self.request_path(i, goal);
                             }
@@ -635,7 +698,7 @@ impl Simulation {
                             returning: true,
                         };
                         self.clear_path(i);
-                    } else if dist(p, self.resources[node].position) <= 1.6 {
+                    } else if dist(p, self.resources[node].position) <= GATHER_REACH {
                         self.clear_path(i);
                         if self.units[i].cooldown == 0 {
                             self.resources[node].remaining -= 1;
@@ -644,30 +707,62 @@ impl Simulation {
                             self.units[i].cooldown = self.units[i].def.gather_ticks;
                         }
                     } else if let Some(goal) = self
-                        .grid
-                        .cell(self.resources[node].position)
-                        .and_then(|c| self.grid.nearest(c, 4))
+                        .approach(i, self.resources[node].position, GATHER_REACH)
+                        .or_else(|| {
+                            self.grid
+                                .cell(self.resources[node].position)
+                                .and_then(|c| self.grid.nearest(c, 4))
+                        })
                     {
                         self.request_path(i, goal);
                     }
                 }
                 Order::Attack { target } => {
-                    if let Some((p, _, hp)) = self.target(&target) {
-                        if hp <= 0.0 {
-                            self.units[i].order = Order::Idle;
-                            self.clear_path(i);
-                        } else if dist(self.units[i].position, p)
-                            <= self.units[i].def.attack_range
-                                + self
-                                    .combat
-                                    .as_ref()
-                                    .and_then(|s| s.bodies.get(&target))
-                                    .map_or(0.0, |b| b.radius)
+                    // Attack-move (engage): fight defenders that come within reach, then resume
+                    // the structure. Plain attack orders stay literal.
+                    if self.units[i].engage
+                        && self.units[i].def.role == Role::Soldier
+                        && self.buildings.iter().any(|b| b.id == target)
+                    {
+                        if let Some(defender) =
+                            self.nearest_enemy_unit(i, self.units[i].def.attack_range + 2.0)
                         {
+                            self.units[i].fallback = Some(target);
+                            self.units[i].order = Order::Attack {
+                                target: defender.clone(),
+                            };
+                            self.clear_path(i);
+                            continue;
+                        }
+                    }
+                    let target_state = self.target(&target);
+                    if target_state.is_none_or(|(_, _, hp)| hp <= 0.0) {
+                        let resume = self.units[i]
+                            .fallback
+                            .take()
+                            .filter(|f| self.target(f).is_some_and(|(_, _, hp)| hp > 0.0));
+                        self.clear_path(i);
+                        self.units[i].order = match resume {
+                            Some(target) => Order::Attack { target },
+                            None => Order::Idle,
+                        };
+                        continue;
+                    }
+                    if let Some((p, _, _)) = target_state {
+                        let reach = self.units[i].def.attack_range + self.target_radius(&target);
+                        if dist(self.units[i].position, p) <= reach {
                             self.clear_path(i);
                             if self.units[i].cooldown == 0 {
                                 let damage = self.units[i].def.damage;
                                 self.units[i].cooldown = self.units[i].def.attack_ticks;
+                                let from = self.units[i].position;
+                                self.units[i].yaw = (p[0] - from[0]).atan2(p[1] - from[1]);
+                                self.record_shot(
+                                    from,
+                                    p,
+                                    self.units[i].def.faction,
+                                    self.units[i].def.attack_range >= 4.0,
+                                );
                                 if let Some(scene) = &self.combat {
                                     if let Some(hit) = scene.attempt(
                                         &self.units[i].id,
@@ -683,8 +778,9 @@ impl Simulation {
                                 }
                                 self.stats.attacks += 1;
                             }
-                        } else if let Some(goal) =
-                            self.grid.cell(p).and_then(|c| self.grid.nearest(c, 4))
+                        } else if let Some(goal) = self
+                            .approach(i, p, reach)
+                            .or_else(|| self.grid.cell(p).and_then(|c| self.grid.nearest(c, 4)))
                         {
                             self.request_path(i, goal);
                         }
@@ -706,7 +802,7 @@ impl Simulation {
                         .filter(|t| {
                             t.health > 0.0
                                 && t.def.faction != u.def.faction
-                                && dist(t.position, u.position) <= 4.0
+                                && dist(t.position, u.position) <= acquire_range(&u.def)
                         })
                         .min_by(|a, b| {
                             dist(a.position, u.position).total_cmp(&dist(b.position, u.position))
@@ -728,7 +824,8 @@ impl Simulation {
                             .filter(|b| {
                                 b.alive()
                                     && b.faction != u.def.faction
-                                    && b.position.distance(Vec2::from_array(u.position)) <= 4.0
+                                    && b.position.distance(Vec2::from_array(u.position))
+                                        <= acquire_range(&u.def)
                             })
                             .min_by(|a, b| {
                                 a.position
@@ -749,11 +846,305 @@ impl Simulation {
             }
         }
     }
+    /// A walkable cell within `reach` of `target` for unit `i`, spreading units over distinct
+    /// cells (goals and parked units count as taken). Keeps the current goal while still valid,
+    /// so crowds around a mineral, depot or target do not converge on one cell and thrash.
+    fn approach(&self, i: usize, target: [f32; 2], reach: f32) -> Option<[i32; 2]> {
+        let center = self.grid.cell(target)?;
+        let valid = |c: [i32; 2]| {
+            self.grid.walkable(c) && dist(self.grid.center(c), target) <= reach - 0.05
+        };
+        let taken: BTreeSet<[i32; 2]> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(j, u)| *j != i && u.health > 0.0)
+            .filter_map(|(_, u)| {
+                u.goal.or_else(|| {
+                    (u.path.is_empty() && !u.pending)
+                        .then(|| self.grid.cell(u.position))
+                        .flatten()
+                })
+            })
+            .collect();
+        if let Some(goal) = self.units[i].goal {
+            if valid(goal) && !taken.contains(&goal) {
+                return Some(goal);
+            }
+        }
+        let me = self.units[i].position;
+        let span = reach.ceil() as i32 + 1;
+        let mut best: Option<(f32, [i32; 2])> = None;
+        for dz in -span..=span {
+            for dx in -span..=span {
+                let c = [center[0] + dx, center[1] + dz];
+                if !valid(c) {
+                    continue;
+                }
+                let crowd = if taken.contains(&c) { 1000.0 } else { 0.0 };
+                let score = crowd + dist(me, self.grid.center(c));
+                if best.is_none_or(|(s, _)| score < s) {
+                    best = Some((score, c));
+                }
+            }
+        }
+        best.map(|(_, c)| c)
+    }
+    /// Extra reach for a target's footprint: the shared combat body when present, otherwise
+    /// half of a structure's 3x3 blocked footprint.
+    fn target_radius(&self, id: &str) -> f32 {
+        self.combat
+            .as_ref()
+            .and_then(|s| s.bodies.get(id))
+            .map(|b| b.radius)
+            .unwrap_or_else(|| {
+                if self.buildings.iter().any(|b| b.id == id) {
+                    1.5
+                } else {
+                    0.0
+                }
+            })
+    }
+    fn nearest_enemy_unit(&self, i: usize, range: f32) -> Option<String> {
+        let me = &self.units[i];
+        self.units
+            .iter()
+            .filter(|t| {
+                t.health > 0.0
+                    && t.def.faction != me.def.faction
+                    && dist(t.position, me.position) <= range
+            })
+            .min_by(|a, b| dist(a.position, me.position).total_cmp(&dist(b.position, me.position)))
+            .map(|t| t.id.clone())
+    }
+    fn record_shot(&mut self, from: [f32; 2], to: [f32; 2], faction: u8, ranged: bool) {
+        if self.shots.len() >= 256 {
+            self.shots.pop_front();
+        }
+        self.shots.push_back(Shot {
+            tick: self.tick,
+            from,
+            to,
+            faction,
+            ranged,
+        });
+    }
+    /// Run a checked command with another faction's authority (AI directors).
+    fn as_faction<T>(&mut self, faction: u8, op: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let player = self.session.player_faction;
+        self.session.player_faction = faction;
+        let result = op(self);
+        self.session.player_faction = player;
+        result
+    }
+    fn towers(&mut self) {
+        for b in 0..self.buildings.len() {
+            let building = &mut self.buildings[b];
+            building.cooldown = building.cooldown.saturating_sub(1);
+            let Some(attack) = building.def.attack.clone() else {
+                continue;
+            };
+            if building.health <= 0.0 || building.cooldown > 0 {
+                continue;
+            }
+            let (p, faction) = (building.position, building.def.faction);
+            let Some(t) = self
+                .units
+                .iter()
+                .filter(|u| {
+                    u.health > 0.0
+                        && u.def.faction != faction
+                        && dist(u.position, p) <= attack.range
+                })
+                .min_by(|a, b| dist(a.position, p).total_cmp(&dist(b.position, p)))
+                .map(|u| (u.id.clone(), u.position))
+            else {
+                continue;
+            };
+            self.buildings[b].cooldown = attack.interval_ticks;
+            self.record_shot(p, t.1, faction, true);
+            let id = self.buildings[b].id.clone();
+            match &self.combat {
+                Some(scene) => {
+                    if let Some(hit) = scene.attempt(&id, &t.0, attack.damage, attack.range, None) {
+                        self.hits.push(hit);
+                    }
+                }
+                None => self.damage(&t.0, attack.damage),
+            }
+            self.stats.attacks += 1;
+        }
+    }
+    /// The opponent director: economy, production, defense, then escalating attack waves.
+    fn think(&mut self) {
+        let Some(ai) = self.session.opponent.clone() else {
+            return;
+        };
+        if self.victory || self.defeated || !self.tick.is_multiple_of(ai.think_ticks) {
+            return;
+        }
+        let f = ai.faction;
+        let Some(hq) = self.depot(f, [0.0, 0.0]) else {
+            return;
+        };
+        let home = self.buildings[hq].position;
+        let alive = |u: &Unit| u.health > 0.0 && u.def.faction == f;
+        // Economy: idle workers mine the node closest to home.
+        let idle_workers: Vec<String> = self
+            .units
+            .iter()
+            .filter(|u| alive(u) && u.def.role == Role::Worker && u.order == Order::Idle)
+            .map(|u| u.id.clone())
+            .collect();
+        if let Some(node) = self
+            .resources
+            .iter()
+            .filter(|r| r.remaining > 0)
+            .min_by(|a, b| dist(a.position, home).total_cmp(&dist(b.position, home)))
+            .map(|r| r.id.clone())
+        {
+            if !idle_workers.is_empty() {
+                let _ = self.as_faction(f, |s| {
+                    s.gather(TargetArgs {
+                        units: Some(idle_workers),
+                        target: node,
+                        engage: false,
+                    })
+                });
+            }
+        }
+        // Production: keep two jobs queued; workers first, then the army rotation.
+        if self.buildings[hq].queue.len() < 2 {
+            let workers = self
+                .units
+                .iter()
+                .filter(|u| alive(u) && u.def.role == Role::Worker)
+                .count()
+                + self.buildings[hq]
+                    .queue
+                    .iter()
+                    .filter(|j| j.recipe == ai.worker_recipe)
+                    .count();
+            let army = workers >= ai.workers as usize;
+            let recipe = if army {
+                ai.army[self.ai.next_army % ai.army.len()].clone()
+            } else {
+                ai.worker_recipe.clone()
+            };
+            let building = self.buildings[hq].id.clone();
+            let trained = self.as_faction(f, |s| {
+                s.train(TrainArgs {
+                    building,
+                    recipe,
+                    count: 1,
+                })
+            });
+            if trained.is_ok() && army {
+                self.ai.next_army += 1;
+            }
+        }
+        // Defense: enemies near any owned building pull the home guard.
+        let owned: Vec<[f32; 2]> = self
+            .buildings
+            .iter()
+            .filter(|b| b.health > 0.0 && b.def.faction == f)
+            .map(|b| b.position)
+            .collect();
+        let intruders: Vec<(String, [f32; 2])> = self
+            .units
+            .iter()
+            .filter(|u| {
+                u.health > 0.0
+                    && u.def.faction != f
+                    && owned
+                        .iter()
+                        .any(|p| dist(*p, u.position) <= ai.defend_radius)
+            })
+            .map(|u| (u.id.clone(), u.position))
+            .collect();
+        self.ai.defending = !intruders.is_empty();
+        let soldiers: Vec<usize> = (0..self.units.len())
+            .filter(|&i| alive(&self.units[i]) && self.units[i].def.role == Role::Soldier)
+            .collect();
+        if !intruders.is_empty() {
+            for &i in &soldiers {
+                let u = &self.units[i];
+                let busy = matches!(&u.order, Order::Attack { target }
+                    if intruders.iter().any(|(id, _)| id == target));
+                if busy || dist(u.position, home) > ai.defend_radius * 1.6 {
+                    continue;
+                }
+                let target = intruders
+                    .iter()
+                    .min_by(|a, b| dist(a.1, u.position).total_cmp(&dist(b.1, u.position)))
+                    .map(|t| t.0.clone())
+                    .unwrap();
+                let id = u.id.clone();
+                let _ = self.as_faction(f, |s| {
+                    s.attack(TargetArgs {
+                        units: Some(vec![id]),
+                        target,
+                        engage: false,
+                    })
+                });
+            }
+            return;
+        }
+        // Offense: the nearest live enemy structure.
+        let Some(objective) = self
+            .buildings
+            .iter()
+            .filter(|b| b.health > 0.0 && b.def.faction != f)
+            .min_by(|a, b| dist(a.position, home).total_cmp(&dist(b.position, home)))
+            .map(|b| b.id.clone())
+        else {
+            return;
+        };
+        let idle: Vec<usize> = soldiers
+            .iter()
+            .copied()
+            .filter(|&i| self.units[i].order == Order::Idle)
+            .collect();
+        let (at_home, abroad): (Vec<usize>, Vec<usize>) = idle
+            .into_iter()
+            .partition(|&i| dist(self.units[i].position, home) <= ai.defend_radius * 1.6);
+        let threshold = (ai.wave_size + self.ai.wave * ai.wave_growth) as usize;
+        let mut send = abroad;
+        if self.tick >= ai.first_wave_tick && at_home.len() >= threshold {
+            send.extend(at_home);
+            self.ai.wave += 1;
+            self.ai.wave_tick = Some(self.tick);
+        }
+        if !send.is_empty() {
+            let ids = send.iter().map(|&i| self.units[i].id.clone()).collect();
+            let _ = self.as_faction(f, |s| {
+                s.attack(TargetArgs {
+                    units: Some(ids),
+                    target: objective,
+                    engage: true,
+                })
+            });
+        }
+    }
+    fn update_outcome(&mut self) {
+        let player = self.session.player_faction;
+        let fallen = |mine: bool| {
+            let mut depots = self
+                .buildings
+                .iter()
+                .filter(|b| b.def.depot && (b.def.faction == player) == mine)
+                .peekable();
+            depots.peek().is_some() && depots.all(|b| b.health == 0.0)
+        };
+        self.victory = fallen(false);
+        self.defeated = fallen(true);
+    }
     fn damage(&mut self, id: &str, damage: f32) {
         if let Some(i) = self.units.iter().position(|u| u.id == id) {
             let before = self.units[i].health;
             self.units[i].health = (before - damage).max(0.0);
             if before > 0.0 && self.units[i].health == 0.0 {
+                self.units[i].died = Some(self.tick);
                 self.stats.kills += 1;
                 self.stats.lost += self.units[i].carried as u64;
                 self.units[i].carried = 0;
@@ -822,25 +1213,9 @@ impl Simulation {
             let id = format!("produced/{}/{}", self.buildings[i].def.faction, self.serial);
             let mut def = def;
             def.faction = self.buildings[i].def.faction;
-            self.units.push(Unit {
-                id: id.clone(),
-                def,
-                position,
-                health: hp,
-                max_health: hp,
-                order: Order::Idle,
-                carried: 0,
-                produced: Some(prefab),
-                yaw: 0.0,
-                path: VecDeque::new(),
-                goal: None,
-                generation: 0,
-                pending: false,
-                cooldown: 0,
-                stuck: 0,
-                retry_after: 0,
-                moving_to: None,
-            });
+            let mut unit = new_unit(id.clone(), def, position, hp, hp);
+            unit.produced = Some(prefab);
+            self.units.push(unit);
             self.spawned.push(id);
             self.stats.produced += 1;
         }
@@ -975,20 +1350,14 @@ impl Simulation {
             u.cooldown = u.cooldown.saturating_sub(1);
         }
         self.production(templates);
+        self.think();
         if self.tick.is_multiple_of(self.session.nav_stride) {
             self.decision();
             self.navigate();
         }
+        self.towers();
         self.move_units();
-        let player = self.session.player_faction;
-        self.victory = self
-            .buildings
-            .iter()
-            .any(|b| b.def.faction != player && b.health == 0.0);
-        self.defeated = self
-            .buildings
-            .iter()
-            .any(|b| b.def.faction == player && b.health == 0.0);
+        self.update_outcome();
     }
     pub fn set_combat(&mut self, scene: Option<axiom_combat::Scene>) {
         if let Some(scene) = &scene {
@@ -1047,7 +1416,7 @@ impl Simulation {
                 radius: 1.0,
                 faction: b.def.faction,
                 health: b.health,
-                max_health: b.health.max(1.0),
+                max_health: b.max_health.max(1.0),
                 invulnerable: false,
             }))
             .collect()
@@ -1079,14 +1448,7 @@ impl Simulation {
                 .iter()
                 .filter(|r| r.owner == "rts.simulate" && r.killed)
                 .count() as u64;
-        self.victory = self
-            .buildings
-            .iter()
-            .any(|b| b.def.faction != self.session.player_faction && b.health == 0.0);
-        self.defeated = self
-            .buildings
-            .iter()
-            .any(|b| b.def.faction == self.session.player_faction && b.health == 0.0);
+        self.update_outcome();
         self.combat = Some(scene.clone());
     }
     pub fn inspect(&self, args: InspectArgs) -> Result<Value> {
@@ -1142,7 +1504,7 @@ impl Simulation {
         )
     }
     pub fn summary(&self) -> Value {
-        json!({"tick":self.tick,"units_total":self.units.len(),"units_alive":self.units.iter().filter(|u|u.health>0.0).count(),"friendly_alive":self.units.iter().filter(|u|u.health>0.0&&u.def.faction==self.session.player_faction).count(),"selected":self.selected_ids().len(),"balance":self.balance,"queued_units":self.buildings.iter().map(|b|b.queue.len()).sum::<usize>(),"nav_queue":self.nav_queue.len(),"stats":self.stats,"remaining_resources":self.resources.iter().map(|r|r.remaining as u64).sum::<u64>(),"carried":self.units.iter().map(|u|u.carried as u64).sum::<u64>(),"last_error":self.last_error,"victory":self.victory,"defeated":self.defeated})
+        json!({"tick":self.tick,"units_total":self.units.len(),"units_alive":self.units.iter().filter(|u|u.health>0.0).count(),"friendly_alive":self.units.iter().filter(|u|u.health>0.0&&u.def.faction==self.session.player_faction).count(),"selected":self.selected_ids().len(),"balance":self.balance,"queued_units":self.buildings.iter().map(|b|b.queue.len()).sum::<usize>(),"nav_queue":self.nav_queue.len(),"stats":self.stats,"remaining_resources":self.resources.iter().map(|r|r.remaining as u64).sum::<u64>(),"carried":self.units.iter().map(|u|u.carried as u64).sum::<u64>(),"last_error":self.last_error,"victory":self.victory,"defeated":self.defeated,"opponent":self.session.opponent.as_ref().map(|_|json!(self.ai))})
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -1257,6 +1619,7 @@ impl Simulation {
         self.balance = old.balance;
         self.initial_economy = old.initial_economy;
         self.stats = old.stats.clone();
+        self.ai = old.ai.clone();
         self.tick = old.tick;
         self.serial = old.serial;
         self.selected = old
@@ -1275,6 +1638,15 @@ impl Simulation {
         }
         Ok(())
     }
+}
+/// Workers mine from any cell within this distance of a crystal node.
+const GATHER_REACH: f32 = 1.6;
+/// Workers deliver from any cell within this distance of a depot center (covers the ring of
+/// cells around a 3x3 footprint, so a crowd can unload side by side).
+const DELIVER_REACH: f32 = 2.9;
+/// Idle soldiers engage enemies within this distance (never less than the historical 4 m).
+fn acquire_range(def: &UnitDef) -> f32 {
+    (def.attack_range + 1.5).max(4.0)
 }
 pub fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     Vec2::from_array(a).distance(Vec2::from_array(b))

@@ -4,7 +4,7 @@ use crate::{
     ui::{Action, UiState},
 };
 use anyhow::{ensure, Result};
-use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar};
+use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar, TextStyle};
 use egui::{Color32, RichText, Vec2};
 #[derive(Clone)]
 pub struct PreparedImage {
@@ -88,7 +88,11 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
         if !visible && !controls {
             continue;
         }
-        let (align, offset, width, flow) = anchor(region);
+        let (align, mut offset, width, flow) = anchor(region);
+        if matches!(region, Region::TopLeft | Region::Top | Region::TopRight) {
+            // Clear whatever top panel the active chrome drew (none for compact chrome).
+            offset[1] = ctx.available_rect().top() - ctx.screen_rect().top() + 10.0;
+        }
         egui::Area::new(egui::Id::new(("bound_region", region)))
             .anchor(align, offset)
             .show(ctx, |ui| {
@@ -164,7 +168,8 @@ const REGIONS: [Region; 9] = [
     Region::BottomRight,
 ];
 
-/// (anchor, offset, max width, horizontal flow). Offsets keep clear of the generic top bar.
+/// (anchor, offset, max width, horizontal flow). Top offsets are recomputed against the
+/// available rect when drawn.
 fn anchor(region: Region) -> (egui::Align2, [f32; 2], f32, bool) {
     use egui::Align2 as A;
     match region {
@@ -250,10 +255,18 @@ fn draw_widgets(
         match widget {
             BoundWidget::Text(id, binding, when) if g.test(when) => {
                 let text = g.bound_text(binding);
-                let size = if matches!(binding, BoundText::Speaker) {
-                    22.0
-                } else {
-                    18.0
+                let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
+                let (size, color, strong) = match style {
+                    Some(TextStyle::Title) => (42.0, Some(Color32::from_rgb(255, 214, 102)), true),
+                    Some(TextStyle::Heading) => {
+                        (17.0, Some(Color32::from_rgb(102, 245, 205)), true)
+                    }
+                    Some(TextStyle::Banner) => (20.0, Some(Color32::from_rgb(255, 118, 84)), true),
+                    Some(TextStyle::Value) => (20.0, Some(Color32::WHITE), true),
+                    Some(TextStyle::Label) => (13.0, Some(Color32::from_rgb(158, 176, 182)), false),
+                    Some(TextStyle::Muted) => (13.0, Some(Color32::from_rgb(130, 142, 148)), false),
+                    None if matches!(binding, BoundText::Speaker) => (22.0, None, false),
+                    None => (18.0, None, false),
                 };
                 if flow {
                     let width = ui
@@ -269,10 +282,22 @@ fn draw_widgets(
                         ui.end_row();
                     }
                 }
+                if matches!(style, Some(TextStyle::Banner)) && flow {
+                    ui.end_row();
+                }
                 ui.push_id(id, |ui| {
-                    let label = egui::Label::new(RichText::new(text).size(size));
-                    ui.add(label.wrap());
+                    let mut rich = RichText::new(text).size(size);
+                    if let Some(color) = color {
+                        rich = rich.color(color);
+                    }
+                    if strong {
+                        rich = rich.strong();
+                    }
+                    ui.add(egui::Label::new(rich).wrap());
                 });
+                if matches!(style, Some(TextStyle::Value)) && flow {
+                    ui.add_space(10.0);
+                }
             }
             BoundWidget::Button(id, text, command, when) if g.test(when) => {
                 let text = g.text(text);

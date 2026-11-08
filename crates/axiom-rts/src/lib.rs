@@ -1,4 +1,5 @@
 pub mod content;
+pub mod frontier;
 pub mod nav;
 pub mod simulation;
 use anyhow::{ensure, Context, Result};
@@ -51,6 +52,91 @@ pub struct BuildingDef {
     pub faction: u8,
     pub depot: bool,
     pub produces: Vec<String>,
+    /// Defensive structures fire at the nearest enemy unit in range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack: Option<BuildingAttack>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BuildingAttack {
+    pub damage: f32,
+    pub range: f32,
+    pub interval_ticks: u32,
+}
+impl BuildingDef {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.faction < 2 && self.produces.len() <= 16,
+            "invalid building"
+        );
+        if let Some(a) = &self.attack {
+            ensure!(
+                a.damage.is_finite()
+                    && (0.0..=1000.0).contains(&a.damage)
+                    && a.range.is_finite()
+                    && (1.0..=20.0).contains(&a.range)
+                    && (1..=6000).contains(&a.interval_ticks),
+                "building attack: damage 0..1000, range 1..20, interval_ticks 1..6000"
+            );
+        }
+        Ok(())
+    }
+}
+/// Data-driven opponent director for a non-player faction: economy, production, defense and
+/// escalating attack waves. Deterministic; it issues the same checked orders as the player.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Opponent {
+    pub faction: u8,
+    /// Decision interval in fixed ticks.
+    #[serde(default = "think_ticks")]
+    pub think_ticks: u64,
+    /// Recipe used to keep the worker count at `workers`.
+    pub worker_recipe: String,
+    pub workers: u32,
+    /// Army recipes, produced in rotation once the worker target is met.
+    pub army: Vec<String>,
+    /// No attack wave launches before this tick.
+    pub first_wave_tick: u64,
+    /// Idle combat units at home required to launch the first wave.
+    pub wave_size: u32,
+    /// Extra units required for each following wave.
+    #[serde(default)]
+    pub wave_growth: u32,
+    /// Enemy units this close to an owned building trigger a defense.
+    #[serde(default = "defend_radius")]
+    pub defend_radius: f32,
+}
+fn think_ticks() -> u64 {
+    60
+}
+fn defend_radius() -> f32 {
+    14.0
+}
+impl Opponent {
+    pub fn validate(&self, session: &Session) -> Result<()> {
+        ensure!(
+            self.faction < 2 && self.faction != session.player_faction,
+            "opponent faction must be the non-player faction"
+        );
+        ensure!(
+            (10..=1200).contains(&self.think_ticks)
+                && self.workers <= 64
+                && (1..=64).contains(&self.wave_size)
+                && self.wave_growth <= 16
+                && self.defend_radius.is_finite()
+                && (2.0..=60.0).contains(&self.defend_radius)
+                && (1..=8).contains(&self.army.len()),
+            "opponent budgets: think_ticks 10..1200, workers <=64, wave_size 1..64, wave_growth <=16, defend_radius 2..60, army 1..8 recipes"
+        );
+        for r in self.army.iter().chain([&self.worker_recipe]) {
+            ensure!(
+                session.recipes.contains_key(r),
+                "opponent recipe {r} missing"
+            );
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -80,6 +166,16 @@ pub struct Session {
     pub search_budget: usize,
     pub camera: String,
     pub recipes: BTreeMap<String, Recipe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent: Option<Opponent>,
+    /// Faction-1 recolor for produced units: mesh parts whose color equals `[0]` become `[1]`.
+    /// Empty keeps the legacy rule (first part turns red).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_colors: Vec<[[f32; 3]; 2]>,
+    /// Draw the interactive minimap (bottom-left). Off by default so composed worlds keep
+    /// their own bottom panels clickable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub minimap: bool,
 }
 fn enabled() -> bool {
     true
@@ -102,8 +198,26 @@ impl Session {
                 "invalid production recipe"
             );
         }
+        if let Some(o) = &self.opponent {
+            o.validate(self)?;
+        }
+        ensure!(
+            self.team_colors.len() <= 16
+                && self
+                    .team_colors
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|c| c.is_finite() && (0.0..=1.0).contains(c)),
+            "team_colors: up to 16 pairs of 0..1 colors"
+        );
         Ok(())
     }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraArgs {
+    pub center: [f32; 2],
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +254,10 @@ pub struct TargetArgs {
     #[serde(default)]
     pub units: Option<Vec<String>>,
     pub target: String,
+    /// Attack only: fight enemy units met on the way to a structure, then resume it
+    /// (attack-move). Default false keeps the order literal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub engage: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -204,12 +322,8 @@ pub fn register(r: &mut Registry) {
     r.component(
         "rts.building",
         "rts",
-        json!({"faction":"0|1","depot":"bool","produces":"recipe IDs"}),
-        |v| {
-            let d: BuildingDef = serde_json::from_value(v.clone())?;
-            ensure!(d.faction < 2 && d.produces.len() <= 16, "invalid building");
-            Ok(())
-        },
+        json!({"faction":"0|1","depot":"bool","produces":"recipe IDs","attack":"optional {damage, range 1..20, interval_ticks}: defensive tower"}),
+        |v| serde_json::from_value::<BuildingDef>(v.clone())?.validate(),
     );
     r.component(
         "rts.resource",
@@ -221,7 +335,7 @@ pub fn register(r: &mut Registry) {
             Ok(())
         },
     );
-    r.resource("rts.session","rts",json!({"grid":"bounded planar cells and static blocked cells","player_faction":"0|1","max_units":"1..1024 including produced units","nav_stride":"fixed-tick decision interval","path_budget":"requests solved per decision step","search_budget":"expanded nodes per request","initial_balance":"two factions","camera":"entity ID","recipes":"recipe ID -> prefab, cost, build_ticks"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
+    r.resource("rts.session","rts",json!({"grid":"bounded planar cells and static blocked cells","player_faction":"0|1","max_units":"1..1024 including produced units","nav_stride":"fixed-tick decision interval","path_budget":"requests solved per decision step","search_budget":"expanded nodes per request","initial_balance":"two factions","camera":"entity ID","recipes":"recipe ID -> prefab, cost, build_ticks","opponent":"optional AI director {faction, worker_recipe, workers, army:[recipes], first_wave_tick, wave_size, wave_growth?, defend_radius?, think_ticks?}","team_colors":"[[faction-0 color],[faction-1 color]] recolor pairs for produced units","minimap":"bool, draw the interactive minimap"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
     r.systems.insert(
         "rts.simulate".into(),
         SystemDescriptor {
@@ -274,7 +388,7 @@ pub fn register(r: &mut Registry) {
         r.action(
             id,
             "rts",
-            json!({"units":"optional owned unit IDs","target":"resource or enemy entity ID"}),
+            json!({"units":"optional owned unit IDs","target":"resource or enemy entity ID","engage":"attack only: optional bool, fight defenders met on the way to a structure, then resume (attack-move)"}),
             |v| {
                 let a: TargetArgs = serde_json::from_value(v.clone())?;
                 ensure!(
@@ -301,9 +415,19 @@ pub fn register(r: &mut Registry) {
         ensure!(a.ids.len() <= 1024, "unit budget exceeded");
         Ok(())
     });
+    r.action(
+        "rts.camera",
+        "rts",
+        json!({"center":"[world x,z] the RTS camera looks at"}),
+        |v| {
+            let a: CameraArgs = serde_json::from_value(v.clone())?;
+            ensure!(a.center.iter().all(|v| v.is_finite()), "non-finite center");
+            Ok(())
+        },
+    );
     r.action("rts.inspect","rts",json!({"ids":"up to 128 unit IDs","fields":"id/position/faction/role/health/order/carried; omitted selects metadata"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.ids.len()<=128&&a.fields.len()<=16,"inspection budget exceeded");Ok(())});
     r.world_validators.push(validate_world);
-    r.topics.insert("rts".into(),json!({"actions":["select","select_rect","move","gather","attack","train","stop","inspect"],"call":{"kind":"call","capability":"rts","action":"move","args":{"destination":[8,0]}},"navigation":"4-neighbor A*, bounded queue/cache/search; command replacement invalidates stale jobs","economy":"cost reserved at queue time; delivery credits the owner; depleted resources complete when carried minerals are delivered","stress":"64-unit functional world; 128/256 independent measured runs; no predetermined frame-rate claim"}));
+    r.topics.insert("rts".into(),json!({"actions":["select","select_rect","move","gather","attack","train","stop","camera","inspect"],"opponent":"rts.session.opponent drives the other faction (gather, train, defend within defend_radius, attack waves of wave_size + n*wave_growth after first_wave_tick); summary.opponent reports wave state","ui_metrics":"minerals units workers soldiers enemy_units selected queued delivered produced wave base_health enemy_base_health (percent) victory defeated alert","victory":"all enemy depot buildings destroyed","call":{"kind":"call","capability":"rts","action":"move","args":{"destination":[8,0]}},"navigation":"4-neighbor A*, bounded queue/cache/search; command replacement invalidates stale jobs","economy":"cost reserved at queue time; delivery credits the owner; depleted resources complete when carried minerals are delivered","stress":"64-unit functional world; 128/256 independent measured runs; no predetermined frame-rate claim"}));
 }
 fn validate_world(w: &World) -> Result<()> {
     if !w.capabilities.contains_key("rts") {
@@ -315,10 +439,10 @@ fn validate_world(w: &World) -> Result<()> {
         let program: axiom_core::gameplay::Program = w.resource("behavior.program")?;
         for (metric, variable) in &session.ui_bindings {
             let expected = match metric.as_str() {
-                "victory" | "defeated" => axiom_core::gameplay::ScalarType::Bool,
-                "minerals" | "units" | "selected" | "queued" | "delivered" | "produced" => {
-                    axiom_core::gameplay::ScalarType::Int
-                }
+                "victory" | "defeated" | "alert" => axiom_core::gameplay::ScalarType::Bool,
+                "minerals" | "units" | "selected" | "queued" | "delivered" | "produced"
+                | "workers" | "soldiers" | "enemy_units" | "wave" | "base_health"
+                | "enemy_base_health" => axiom_core::gameplay::ScalarType::Int,
                 _ => anyhow::bail!("unknown RTS UI metric {metric}"),
             };
             ensure!(

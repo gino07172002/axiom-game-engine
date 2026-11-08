@@ -46,7 +46,7 @@ foreach($file in @('fighter.glb','fighter-alt.glb')) {
 }
 Write-M4Package 'packs/hero' $heroManifest $hero
 
-$rts=Get-Content 'content/rts/world.json' -Raw|ConvertFrom-Json -AsHashtable
+$rts=Get-Content 'content/rts-bench/world.json' -Raw|ConvertFrom-Json -AsHashtable
 $squad=New-M4World 'm4-squad' @{core=1;render=1;rts=1}
 $squad.systems=@('rts.simulate')
 $squad.prefabs=@{'squad.worker'=$rts.prefabs.worker;'squad.soldier'=$rts.prefabs.soldier}

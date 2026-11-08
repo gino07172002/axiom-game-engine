@@ -198,6 +198,39 @@ pub struct UiDocument {
     /// panels over the 3D view; unplaced widgets keep the bottom document panel.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub regions: BTreeMap<String, Region>,
+    /// Text presentation: widget ID -> style (title, heading, banner, value, label, muted).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub styles: BTreeMap<String, TextStyle>,
+    /// Session chrome: `full` (debug bar across the top) or `compact` (small corner pill),
+    /// for content that draws its own HUD.
+    #[serde(default, skip_serializing_if = "is_full")]
+    pub chrome: Chrome,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Chrome {
+    #[default]
+    Full,
+    Compact,
+}
+fn is_full(c: &Chrome) -> bool {
+    *c == Chrome::Full
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextStyle {
+    /// Large centered announcement (victory, chapter titles).
+    Title,
+    /// Panel heading.
+    Heading,
+    /// Warning strip.
+    Banner,
+    /// Emphasized number.
+    Value,
+    /// Small caption next to a value.
+    Label,
+    /// Help text.
+    Muted,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -821,6 +854,12 @@ impl CompiledGameplay {
                 ensure!(
                     ids.contains(id),
                     "ui.document region refers to unknown widget {id}"
+                );
+            }
+            for id in u.styles.keys() {
+                ensure!(
+                    ids.contains(id),
+                    "ui.document style refers to unknown widget {id}"
                 );
             }
             for path in u.images.values() {

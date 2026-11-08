@@ -1,4 +1,6 @@
+pub use crate::frontier::frontier_world;
 use crate::*;
+/// Fixed benchmark/regression fixture (no opponent AI). The playable map is `frontier_world`.
 pub fn demo_world(population: usize) -> Result<World> {
     ensure!(
         [64, 128, 256].contains(&population),
@@ -186,6 +188,7 @@ pub fn demo_world(population: usize) -> Result<World> {
                 faction,
                 depot: true,
                 produces: vec!["worker".into(), "soldier".into()],
+                attack: None,
             },
         )?;
         base.set(
@@ -345,7 +348,10 @@ pub fn demo_world(population: usize) -> Result<World> {
                         build_ticks: 180
                     }
                 )
-            ])
+            ]),
+            opponent: None,
+            team_colors: vec![],
+            minimap: false,
         }),
     );
     w.resources.insert(

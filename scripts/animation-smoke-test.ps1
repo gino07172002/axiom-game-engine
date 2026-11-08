@@ -61,7 +61,7 @@ try{
     if(-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0){throw 'Native animation rendering failed'}
 }finally{if(-not $process.HasExited){Stop-Process -Id $process.Id;[void]$process.WaitForExit(5000)}}
 $rtsDb=Join-Path $PWD "data/animation-rts-regression-$stamp.sqlite"
-$rts=Run-Axiom @('--db',$rtsDb,'--pack','content/rts','scenario','examples/rts-functional.scenario.json')
+$rts=Run-Axiom @('--db',$rtsDb,'--pack','content/rts-bench','scenario','examples/rts-functional.scenario.json')
 $rtsGpu=Run-Axiom @('--db',$rtsDb,'play','--start','--port','0','--smoke-frames','8','--screenshot',"$runDir/rts.png")
 if($rts.observation.rts.summary.stats.completed_moves -ne 32 -or $rtsGpu.observation.rts.summary.units_total -ne 64){throw 'RTS regression'}
 $bundled=Run-Axiom @('--db',"data/animation-bundled-$stamp.sqlite",'--pack','content/animation','play','--start','--port','0','--smoke-frames','32','--screenshot',"$runDir/bundled.png")

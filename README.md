@@ -139,7 +139,8 @@ Every demo is a data-only content pack. All of them run on the same executable.
 | Pack | What it shows |
 |---|---|
 | `content/fps` | First-person shooter: hitscan, sentinels, cover, headshots |
-| `content/rts` | Box selection, A* grid navigation, gathering, production (64–256 units) |
+| `content/rts` | Frontier skirmish vs. a data-driven AI opponent: three lanes, towers, three unit types, minimap, health bars and combat effects |
+| `content/rts-bench` | Fixed 64-unit RTS regression / stress fixture (box selection, A* navigation, gathering, production; 128/256 via `export_rts_pack`) |
 | `content/action` | Third-person melee: combos, dodge windows, stamina, lock-on |
 | `content/adv` | Branching narrative with three endings, localization (zh-TW/en), save slots |
 | `content/m4` | Composition of RTS, action and ADV packs in one world with cross-pack events |

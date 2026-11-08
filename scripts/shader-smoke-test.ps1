@@ -98,7 +98,7 @@ $triangles = Count-Pixels "$reportDir/mesh.png" $magentaPixels
 if ($after -lt 100 -or $after -lt $before + 100 -or $triangles -lt 50) { throw "GPU color evidence failed: red $before -> $after, magenta mesh $triangles" }
 
 $rtsDb = "data/shader-rts-$stamp.sqlite"
-$rts = Invoke-ShaderAxiom @('--db',$rtsDb,'--pack','content/rts','scenario','examples/rts-functional.scenario.json')
+$rts = Invoke-ShaderAxiom @('--db',$rtsDb,'--pack','content/rts-bench','scenario','examples/rts-functional.scenario.json')
 $rtsGpu = Invoke-ShaderAxiom @('--db',$rtsDb,'play','--start','--port','0','--smoke-frames','8','--screenshot',"$reportDir/rts.png")
 if ($rts.observation.rts.summary.units_total -ne 66 -or $rtsGpu.observation.rts.summary.units_total -ne 64) { throw 'RTS regression' }
 $undo = Invoke-ShaderAxiom @('--db',$db,'undo',"$($active.rev)",'--expected-rev',"$($failure.rev)")

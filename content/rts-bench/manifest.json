@@ -1,0 +1,12 @@
+{
+  "capabilities": {
+    "behavior": 1,
+    "core": 1,
+    "render": 1,
+    "rts": 1,
+    "ui": 1
+  },
+  "id": "frontier",
+  "version": 1,
+  "world": "world.json"
+}

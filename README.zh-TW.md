@@ -134,7 +134,8 @@ F:   core.health/value(元件欄位)| label | /raw/json/pointer
 | 內容包 | 展示內容 |
 |---|---|
 | `content/fps` | 第一人稱射擊：hitscan、哨兵、掩體、爆頭 |
-| `content/rts` | 框選、A* 格網導航、採集、生產(64–256 單位) |
+| `content/rts` | 邊境之戰：對抗資料驅動的電腦對手，三條路線、防禦塔、三種單位、小地圖、血條與戰鬥特效 |
+| `content/rts-bench` | 固定的 64 單位 RTS 回歸／壓測場景(框選、A* 導航、採集、生產;128／256 由 `export_rts_pack` 產生) |
 | `content/action` | 第三人稱近戰：連段、閃避窗、體力、鎖定 |
 | `content/adv` | 三種結局的分支敘事、中英在地化、存檔欄位 |
 | `content/m4` | RTS、動作、ADV 三個內容包組合在同一世界，含跨包事件 |

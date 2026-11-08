@@ -122,6 +122,7 @@ fn gathering_delivery_and_production_conserve_resources() {
     s.gather(TargetArgs {
         units: Some(vec!["unit/0/0".into(), "unit/0/1".into()]),
         target: "mineral/0".into(),
+        engage: false,
     })
     .unwrap();
     s.train(TrainArgs {
@@ -168,7 +169,8 @@ fn insufficient_funds_enemy_orders_and_invalid_targets_are_atomic() {
     assert!(s
         .gather(TargetArgs {
             units: Some(vec!["unit/0/20".into()]),
-            target: "mineral/0".into()
+            target: "mineral/0".into(),
+            engage: false,
         })
         .is_err());
     assert_eq!(s.summary(), before);
@@ -215,6 +217,7 @@ fn depleted_node_finishes_after_delivery_and_never_goes_negative() {
     s.gather(TargetArgs {
         units: Some(vec!["unit/0/0".into()]),
         target: "mineral/0".into(),
+        engage: false,
     })
     .unwrap();
     for _ in 0..3000 {

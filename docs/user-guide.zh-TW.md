@@ -53,8 +53,8 @@ cd D:\rust_learn
 # ADV：最後的訊號；也可雙擊 Play ADV.cmd
 .\target\debug\axiom.exe --db data/adv.sqlite --pack content/adv play --start
 
-# RTS：邊境採集；也可雙擊 Play RTS.cmd
-.\target\debug\axiom.exe --db data/rts.sqlite --pack content/rts play --start
+# RTS：邊境之戰（對抗電腦）；也可雙擊 Play RTS.cmd
+.\target\debug\axiom.exe --db data/frontier.sqlite --pack content/rts play --start
 ```
 
 `--pack` 是內容包目錄，包含 `manifest.json` 與 World IR v2 的 `world.json`。在 play 中明確指定會以一筆交易載入該內容包；再次指定會重新載入包內的初始定義。後續保留資料庫修改時，使用相同 `--db` 並省略 `--pack`。
@@ -65,7 +65,7 @@ FPS 操作：WASD 移動、滑鼠視角、左鍵射擊、R 裝填、Space 跳躍
 
 ADV 操作：點擊選項推進；在工坊按 E 或點選調查箱子以取得鑰匙，再返回開門。拒絕協助、放棄搜尋、成功求救分別通往三個結局。介面上可切換 `zh-TW`／`en`、快速存讀檔；Esc 暫停，RESTART 回到開場。中文使用 Windows 已安裝的微軟正黑體，不隨專案散布系統字型。
 
-RTS 操作：左鍵拖曳框選藍方單位，Shift 加選；右鍵地面移動、資源點採集、敵人攻擊。WASD 平移相機、Q／E 縮放，Esc 暫停；下方按鈕選取礦工／士兵、採集或排入生產。初始雙方各 32 單位；礦工滿載回基地交付後繼續採集，生產礦工花費 40、士兵 60。摧毀敵方基地獲勝。HUD 文字、綁定與按鈕均來自 `content/rts/world.json`。此階段尚無 RTS 私有模擬狀態的存讀檔。
+RTS 操作（`content/rts`，邊境之戰）：左鍵拖曳框選藍方單位，Shift 加選；右鍵地面移動、水晶採集、敵人或建築攻擊。WASD 平移鏡頭、Q／E 縮放；左下小地圖左鍵跳轉鏡頭、右鍵移動選取單位。下方指令列可選取工人／部隊、採集、「進攻敵方主堡」（攻擊移動：沿途迎擊防守者再回頭打主堡）與生產工人 50、衛兵 75（近戰、高血量）、弓手 90（射程 6 m）。地圖分北、中、南三條路線，各方有主堡、兩座防禦塔與兩處礦區，中路兩側另有可爭奪的大礦。敵方由資料驅動的電腦指揮（`rts.session.opponent`）：採礦、生產、主堡附近遇敵會回防，約 2:30 起發動逐波增強的攻勢。摧毀敵方主堡獲勝，主堡被毀則失敗。單位與建築上方顯示血條與生產進度，攻擊有投射物與斬擊特效，倒下的單位會淡出、被毀建築留下廢墟。HUD 文字、版面（`regions`、`styles`、`chrome:"compact"`）與按鈕均來自 `content/rts/world.json`，由 `export_rts_pack frontier` 產生。`content/rts-bench` 是固定的 64 單位回歸／壓測場景（無電腦指揮）。此階段尚無 RTS 私有模擬狀態的存讀檔。
 
 ## 共用玩法、敘事與存檔
 
@@ -216,7 +216,7 @@ cargo build --release -p axiom -j1
 
 Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
 
-M2 smoke 預設包含 M1.5 → M1 → M0，不必逐一重跑上述腳本。RTS 功能場景執行 7200 ticks：64 初始單位、32 友方全數群組抵達、採集交付、生產兩單位至 66。另驗證原生 64／128／256 單位畫面、即時命令與生產冪等重試。`artifacts/m2-validation.json` 保存完整證據，`artifacts/m2-*.png` 為截圖。
+M2 smoke 預設包含 M1.5 → M1 → M0，不必逐一重跑上述腳本。RTS 功能場景（`content/rts-bench`）執行 7200 ticks：64 初始單位、32 友方全數群組抵達、採集交付、生產兩單位至 66。另驗證原生 64／128／256 單位畫面、即時命令與生產冪等重試。`artifacts/m2-validation.json` 保存完整證據，`artifacts/m2-*.png` 為截圖。
 
 `scripts/m2-stress-test.ps1` 使用 release 執行檔，每個數量各 3 個新程序，先暖機 240 ticks、量測 2400 ticks；雙方全體接受週期群組命令，停用戰鬥維持人口，檢查資源／路徑／無重疊不變量。報告分開列出 step 分位數、命令、驗證與全程序記憶體，位於 `artifacts/m2-stress.json`。這是 headless CPU 模擬壓測；原生 GPU 畫面驗證另行記錄。
 

@@ -52,8 +52,13 @@ struct NameplateSystem {
 }
 
 impl NameplateSystem {
-    /// The first active camera, reconstructed from its live transform.
     fn view(state: &RuntimeState) -> Option<RenderView> {
+        active_view(state)
+    }
+}
+/// The first active camera, reconstructed from its live transform (for screen-space overlays).
+pub(crate) fn active_view(state: &RuntimeState) -> Option<RenderView> {
+    {
         let matrices = state.matrices();
         state
             .compiled

@@ -49,6 +49,7 @@ $scenario=Invoke-Combat @('--db',$db,'--pack','content/m4','scenario','examples/
 if($scenario.observation.gameplay.ending -ne 'joined_victory' -or $scenario.observation.rts.summary.stats.kills -ne 1){throw 'Headless mutual support failed'}
 $baseline=Invoke-Combat @('--db',$db,'play','--start','--port','0','--smoke-frames','12','--screenshot',"$dir/initial.png")
 $process=Start-Process -FilePath $exe -ArgumentList ('--db "{0}" play --start --port {1} --smoke-frames 1200 --screenshot "{2}"' -f $db,$Port,"$dir/support.png") -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir/live.log" -RedirectStandardError "$dir/live-errors.log"
+$null=$process.Handle
 try {
     $ready=Wait-Combat {param($o)$o.gpu -and $o.combat.bodies -eq 9}
     $initialDelta=Send-Combat @{op='observe_delta';fields=@('/combat','/gameplay/ending')}
@@ -72,7 +73,7 @@ try {
     $hero=Call-Combat input activate @{context='hero'}
     if(-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0){throw 'Native shared combat capture failed'}
 } finally {if(-not $process.HasExited){Stop-Process -Id $process.Id;[void]$process.WaitForExit(5000)}}
-$capture=Get-Content "$dir/support.json" -Raw|ConvertFrom-Json
+$capture=Get-Content "$dir/support.json" -Raw -Encoding utf8|ConvertFrom-Json
 if($capture.gameplay.ending -ne 'joined_victory' -or $capture.combat.deaths -ne 1){throw 'Native capture did not preserve the joint ending'}
 if((Get-FileHash -LiteralPath $exe).Hash -ne $hash){throw 'Executable changed during combat QA'}
 $report=@{ok=$true;exe_sha256=$hash;scenario=$scenario;initial=$baseline;hero_hit=$heroHit;inspection=$inspection;attack_receipt=$ordered;authoring=$applied;completed=$capture;delta=$delta;screenshot="$dir/support.png"}

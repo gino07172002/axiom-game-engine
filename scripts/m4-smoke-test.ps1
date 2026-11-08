@@ -50,6 +50,7 @@ $graph=Invoke-M4 @('--db',$db,'query','packages')
 if($graph.packages.packages.Count -ne 4){throw 'Expected four resolved packages'}
 $baseline=Invoke-M4 @('--db',$db,'play','--start','--port','0','--smoke-frames','12','--screenshot',"$dir/squad.png")
 $process=Start-Process -FilePath $exe -ArgumentList ('--db "{0}" play --start --port {1} --smoke-frames 800 --screenshot "{2}"' -f $db,$Port,"$dir/joined-victory.png") -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir/live.log" -RedirectStandardError "$dir/live-errors.log"
+$null=$process.Handle
 try{
     $ready=Wait-M4 {param($o)$o.gpu -and $o.input.context -eq 'squad'}
     $fields=@('/gameplay/variables','/input','/events/delivered','/rev')
@@ -90,7 +91,7 @@ try{
 }finally{
     if(-not $process.HasExited){Stop-Process -Id $process.Id;[void]$process.WaitForExit(5000)}
 }
-$capture=Get-Content "$dir/joined-victory.json" -Raw|ConvertFrom-Json
+$capture=Get-Content "$dir/joined-victory.json" -Raw -Encoding utf8|ConvertFrom-Json
 if($capture.gameplay.ending -ne 'joined_victory' -or $capture.input.context -ne 'hero'){throw 'Final screenshot is not the completed joint operation'}
 $benchmark=Invoke-M4 @('benchmark','benchmarks/m4.json','--output',"$dir/benchmark.json")
 if(-not $benchmark.ok){throw 'M4 AI authoring benchmark failed'}

@@ -4,9 +4,9 @@ v0.4 使用同一執行檔載入 FPS、ADV 與 RTS，沒有加入 Bevy。RTS 是
 
 ## 遊玩與資料
 
-雙擊 `Play RTS.cmd`；初次建立 `data/rts.sqlite`，後續保留該資料庫修改。明確使用 `--pack content/rts` 會重新載入初始定義。左鍵框選、Shift 加選，右鍵地面／資源／敵人分別送出移動／採集／攻擊；WASD 平移、Q／E 縮放。HUD 可選礦工／士兵、採集、生產；Esc 暫停。
+雙擊 `Play RTS.cmd` 遊玩「邊境之戰」（`content/rts`）；初次建立 `data/frontier.sqlite`，後續保留該資料庫修改。明確使用 `--pack content/rts` 會重新載入初始定義。左鍵框選、Shift 加選，右鍵地面／資源／敵人或建築分別送出移動／採集／攻擊；WASD 平移、Q／E 縮放，左下小地圖可跳轉鏡頭或下達移動。Esc 暫停。
 
-`content/rts` 初始雙方各 32 單位、各一座基地與礦點，兩種生產配方及一面有通道的牆。礦工滿載回友方 depot 交付後繼續採集；排入生產時扣款，完成後尋找空閒出生格。摧毀敵方基地獲勝，己方基地毀損則失敗。敵方以簡單原生自動警戒／戰鬥為主，沒有完整戰略 AI。
+`content/rts-bench`（`export_rts_pack 64`）是固定回歸場景：雙方各 32 單位、各一座基地與礦點，兩種生產配方及一面有通道的牆，沒有電腦指揮，敵方只有閒置士兵的自動警戒。`content/rts`（`export_rts_pack frontier`）是可遊玩的對戰地圖：各方 6 工人＋4 衛兵、主堡（depot）、兩座帶 `attack` 的防禦塔、三種配方（工人、衛兵、弓手）、三條被岩脊分隔的路線與中路爭奪礦；`rts.session.opponent` 指定電腦陣營的經濟、生產、防守半徑與逐波進攻（`wave_size + wave × wave_growth`）。礦工滿載回友方 depot 交付後繼續採集；單位會分散到目標周圍不同的格子（採集 1.6 m、交付 2.9 m、攻擊距離含建築占地），避免擠在同一格反覆重算路徑。`rts.attack` 的 `engage:true` 為攻擊移動（沿途迎擊防守者，再回頭攻擊建築）；一般攻擊命令維持字面目標。排入生產時扣款，完成後尋找空閒出生格。摧毀敵方所有 depot 建築獲勝，己方 depot 全毀則失敗。
 
 `rts.unit` 定義 faction、role、speed、radius、carry_capacity、gather_ticks 與攻擊參數；`rts.building` 定義陣營、depot 及可生產配方；`rts.resource` 定義礦量。`rts.session` 定義格網、預算、起始資源、人口上限、相機、配方及 UI metric 對應。內容中的單位只覆寫 faction，其他屬性繼承 prefab，可用 M1.5 局部編輯調整整類單位。
 

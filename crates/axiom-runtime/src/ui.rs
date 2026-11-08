@@ -64,6 +64,14 @@ pub fn draw_generic(
     state: &crate::world::RuntimeState,
     ui: &mut UiState,
 ) -> Vec<Action> {
+    let compact = state
+        .gameplay
+        .as_ref()
+        .and_then(|g| g.compiled.ui.as_ref())
+        .is_some_and(|d| d.chrome == axiom_core::gameplay::Chrome::Compact);
+    if compact {
+        return draw_compact(ctx, state, ui);
+    }
     let mut actions = vec![];
     egui::TopBottomPanel::top("world_status").show(ctx, |p| {
         p.horizontal(|p| {
@@ -100,6 +108,64 @@ pub fn draw_generic(
             }
         });
     });
+    draw_world_overlays(ctx, state, ui, &mut actions);
+    actions
+}
+
+/// Game-style chrome (`ui.document.chrome: "compact"`): a small session pill in the top-right
+/// corner instead of the full-width debug bar. Console and pause behave the same.
+fn draw_compact(
+    ctx: &egui::Context,
+    state: &crate::world::RuntimeState,
+    ui: &mut UiState,
+) -> Vec<Action> {
+    let mut actions = vec![];
+    egui::Area::new(egui::Id::new("compact_session"))
+        .anchor(Align2::RIGHT_TOP, [-10.0, 10.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |p| {
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(10, 14, 20, 215))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .show(p, |p| {
+                    p.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+                    p.horizontal(|p| {
+                        let small = |t: &str| RichText::new(t).size(13.0);
+                        if !ui.playing {
+                            p.label(RichText::new("PAUSED").size(13.0).color(MINT));
+                        }
+                        if p.button(small(if ui.playing { "PAUSE" } else { "RUN" }))
+                            .clicked()
+                        {
+                            if ui.playing {
+                                ui.playing = false;
+                            } else {
+                                actions.push(Action::Start);
+                            }
+                        }
+                        if p.button(small("RESTART")).clicked() {
+                            actions.push(Action::Restart);
+                        }
+                        if p.button(small("CONSOLE")).clicked() {
+                            ui.console = !ui.console;
+                        }
+                        if p.button(small("EXIT")).clicked() {
+                            actions.push(Action::Quit);
+                        }
+                    });
+                });
+        });
+    draw_world_overlays(ctx, state, ui, &mut actions);
+    actions
+}
+
+fn draw_world_overlays(
+    ctx: &egui::Context,
+    state: &crate::world::RuntimeState,
+    ui: &mut UiState,
+    actions: &mut Vec<Action>,
+) {
     if state.compiled.is_empty() {
         egui::Area::new("empty_world".into())
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -130,5 +196,4 @@ pub fn draw_generic(
                 });
             });
     }
-    actions
 }
