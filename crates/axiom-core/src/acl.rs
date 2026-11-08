@@ -465,8 +465,13 @@ pub fn run(
     text: &str,
     preview: bool,
     expected_rev: Option<i64>,
+    propose: bool,
 ) -> Result<Value> {
     ensure!(text.len() <= 65536, "ACL script exceeds 64 KiB");
+    ensure!(
+        !(preview && propose),
+        "use either --preview or --propose (a proposal already includes a preview)"
+    );
     let mut statements = vec![];
     for (n, raw) in text.lines().enumerate() {
         if raw.trim_start().starts_with('#') {
@@ -563,6 +568,25 @@ pub fn run(
         "script expands to {} edits; the batch limit is 256",
         edits.len()
     );
+    if propose {
+        let note: String = text.trim().chars().take(2048).collect();
+        let result = store.execute(Request::Propose {
+            expected_rev: Some(rev),
+            edits,
+            note,
+        })?;
+        let summary = edit_summary(&json!({"rev":rev,"diff":result["diff"]}), true);
+        let body = summary.split_once('\n').map_or("", |(_, rest)| rest);
+        let mut text = format!(
+            "proposal #{} pending base_rev={rev} changes={}",
+            result["proposal"], result["diff"]["total_changes"]
+        );
+        if !body.is_empty() {
+            text.push('\n');
+            text.push_str(body);
+        }
+        return Ok(json!({"ok":true,"format":"lines","proposal":result["proposal"],"text":text}));
+    }
     let result = store.execute(if preview {
         Request::Preview {
             expected_rev: Some(rev),

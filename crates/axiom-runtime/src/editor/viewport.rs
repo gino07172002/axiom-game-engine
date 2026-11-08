@@ -1041,6 +1041,34 @@ mod tests {
     }
 
     #[test]
+    fn proposals_panel_lists_pending_reviews_from_the_store() {
+        let (world, runtime) = fixture();
+        let mut store = Store::memory_with(crate::installed_registry().authoring, world).unwrap();
+        store
+            .execute(Request::Acl {
+                text: "set stage/crate label Proposed".into(),
+                preview: false,
+                expected_rev: None,
+                propose: true,
+            })
+            .unwrap();
+        let (rev, current) = store.current().unwrap();
+        let mut editor = Editor::new(current, rev, None);
+        let rows = store
+            .execute(Request::Proposals {
+                status: Some("pending".into()),
+                limit: Some(32),
+            })
+            .unwrap();
+        editor.set_proposals(store.proposal_signature().unwrap(), &rows["proposals"]);
+        assert_eq!(editor.observation()["pending_proposals"], 1);
+        assert_eq!(editor.proposal_focus, Some(1));
+        assert!(editor.status.contains("awaiting review"));
+        editor.dock = Dock::Proposals;
+        assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
+    }
+
+    #[test]
     fn diagnostic_paths_resolve_to_selectable_entities() {
         let (world, _) = fixture();
         use crate::editor::entity_in_path;

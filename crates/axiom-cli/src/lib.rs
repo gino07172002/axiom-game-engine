@@ -104,8 +104,29 @@ enum Command {
         /// Validate and show the diff without writing a revision.
         #[arg(long)]
         preview: bool,
+        /// Queue the edits for human review (editor Proposals panel) instead of applying.
+        #[arg(long)]
+        propose: bool,
         #[arg(long)]
         expected_rev: Option<i64>,
+    },
+    /// List queued edit proposals (newest first).
+    Proposals {
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Approve or reject a queued proposal.
+    Resolve {
+        id: i64,
+        #[arg(long, conflicts_with = "reject")]
+        approve: bool,
+        #[arg(long)]
+        reject: bool,
+        /// Re-validate against the current revision instead of the proposal's base.
+        #[arg(long)]
+        rebase: bool,
     },
     Discover {
         topic: Option<String>,
@@ -549,10 +570,28 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 return Ok(());
             }
         }
+        Command::Proposals { status, limit } => Request::Proposals { status, limit },
+        Command::Resolve {
+            id,
+            approve,
+            reject,
+            rebase,
+        } => {
+            ensure!(
+                approve != reject,
+                "pass exactly one of --approve or --reject"
+            );
+            Request::ResolveProposal {
+                id,
+                approve,
+                rebase,
+            }
+        }
         Command::Acl {
             file,
             eval,
             preview,
+            propose,
             expected_rev,
         } => {
             let text = match (eval, file) {
@@ -569,6 +608,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 text,
                 preview,
                 expected_rev,
+                propose,
             }
         }
         Command::Discover { topic, if_hash } => Request::Discover { topic, if_hash },

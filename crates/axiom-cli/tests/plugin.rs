@@ -56,6 +56,7 @@ fn plugin_schema_validation_applies_to_edits() {
             text: "set cube spin.rate/degrees_per_second 99999".into(),
             preview: false,
             expected_rev: None,
+            propose: false,
         })
         .unwrap_err();
     assert!(format!("{error:#}").contains("-3600..3600"), "{error:#}");

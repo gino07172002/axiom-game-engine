@@ -31,6 +31,7 @@ fn acl_with(store: &mut Store, text: &str, preview: bool) -> Result<String, Valu
             text: text.into(),
             preview,
             expected_rev: None,
+            propose: false,
         })
         .map(|v| v["text"].as_str().unwrap().to_owned())
         .map_err(|e| error_response(&e))
@@ -137,6 +138,7 @@ fn errors_name_the_line_and_keep_structured_codes() {
             text: "set player label x".into(),
             preview: false,
             expected_rev: Some(1),
+            propose: false,
         })
         .unwrap_err();
     assert_eq!(

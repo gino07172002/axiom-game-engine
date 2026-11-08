@@ -767,8 +767,14 @@ impl Editor {
             } else {
                 format!("Problems ({})", self.problems.len())
             };
+            let proposals = if self.proposals.is_empty() {
+                "Proposals".to_owned()
+            } else {
+                format!("Proposals ({})", self.proposals.len())
+            };
             for (dock, title) in [
                 (Dock::Changes, "Changes"),
+                (Dock::Proposals, proposals.as_str()),
                 (Dock::History, "History"),
                 (Dock::Problems, problems.as_str()),
                 (Dock::Assets, "Assets"),
@@ -792,6 +798,55 @@ impl Editor {
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
+            }
+            Dock::Proposals => {
+                if self.proposals.is_empty() {
+                    caption(ui, "No pending proposals. Agents queue edits with `axiom acl --propose …` or {\"op\":\"propose\"}.");
+                }
+                ui.columns(2, |cols| {
+                    for p in &self.proposals {
+                        let id = p["id"].as_i64().unwrap_or(0);
+                        let base = p["base_rev"].as_i64().unwrap_or(0);
+                        let note = p["note"].as_str().unwrap_or("").lines().next().unwrap_or("");
+                        let stale = if base != self.rev { "  · stale base" } else { "" };
+                        let text = format!("#{id}  rev {base}  {} change(s){stale}\n{}", p["diff"]["total_changes"], truncate(note, 48));
+                        if cols[0].selectable_label(self.proposal_focus == Some(id), RichText::new(text).monospace().small()).clicked() {
+                            self.proposal_focus = Some(id);
+                        }
+                    }
+                    let Some(p) = self.proposals.iter().find(|p| p["id"].as_i64() == self.proposal_focus) else { return };
+                    let id = p["id"].as_i64().unwrap_or(0);
+                    let base = p["base_rev"].as_i64().unwrap_or(0);
+                    cols[1].horizontal(|ui| {
+                        let clean = !self.dirty();
+                        if ui.add_enabled(clean && base == self.rev, egui::Button::new("Approve"))
+                            .on_hover_text("Apply against the proposal's base revision")
+                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: false }); }
+                        if ui.add_enabled(clean, egui::Button::new("Rebase & approve"))
+                            .on_hover_text("Re-validate against the current revision, then apply")
+                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: true }); }
+                        if ui.button(RichText::new("Reject").color(WARNING)).clicked() {
+                            actions.push(Action::ResolveProposal { id, approve: false, rebase: false });
+                        }
+                    });
+                    if base != self.rev {
+                        cols[1].label(RichText::new(format!("Base revision {base} is behind current {}. Approving as-is would conflict; rebase re-validates the same edits on top of the latest world.", self.rev)).small().color(WARNING));
+                    }
+                    for change in p["diff"]["changes"].as_array().into_iter().flatten() {
+                        let path = change["path"].as_str().unwrap_or("?");
+                        let short = |v: &Value| { let s = axiom_core::local::display_value(v).to_string(); if s.chars().count() > 40 { format!("{}…", s.chars().take(39).collect::<String>()) } else { s } };
+                        let line = match change["kind"].as_str() {
+                            Some("added") => format!("+ {path} = {}", short(&change["after"])),
+                            Some("removed") => format!("- {path}"),
+                            _ => format!("~ {path}: {} → {}", short(&change["before"]), short(&change["after"])),
+                        };
+                        let label = cols[1].label(RichText::new(line).monospace().small());
+                        if let Some(target) = super::entity_in_path(path, &self.world) {
+                            if label.on_hover_text("Click to select").clicked() { jump = Some(target); }
+                        }
+                    }
+                    if p["diff"]["truncated"] == true { cols[1].label(RichText::new("… diff truncated to 64 changes").small().color(MUTED)); }
+                });
             }
             Dock::History => {
                 ui.columns(2, |cols| {

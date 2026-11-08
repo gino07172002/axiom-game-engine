@@ -31,6 +31,7 @@ impl Store {
         connection.busy_timeout(Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS revisions(rev INTEGER PRIMARY KEY AUTOINCREMENT,world TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS request_receipts(request_id TEXT PRIMARY KEY,payload TEXT NOT NULL,response TEXT NOT NULL);")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS proposals(id INTEGER PRIMARY KEY AUTOINCREMENT,status TEXT NOT NULL DEFAULT 'pending',note TEXT NOT NULL,base_rev INTEGER NOT NULL,edits TEXT NOT NULL,preview TEXT NOT NULL,resolved_rev INTEGER,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));")?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let old: Option<(i64, String)> = tx
             .query_row(
@@ -70,6 +71,14 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         Ok((rev, self.registry.decode(serde_json::from_str(&raw)?)?))
+    }
+    /// Cheap change signal for polling UIs: (pending count, newest proposal ID).
+    pub fn proposal_signature(&self) -> Result<(i64, i64)> {
+        Ok(self.connection.query_row(
+            "SELECT COUNT(*) FILTER (WHERE status='pending'),COALESCE(MAX(id),0) FROM proposals",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
     }
     pub fn revision(&self) -> Result<i64> {
         Ok(self
@@ -192,7 +201,108 @@ impl Store {
                 text,
                 preview,
                 expected_rev,
-            } => crate::acl::run(self, &text, preview, expected_rev),
+                propose,
+            } => crate::acl::run(self, &text, preview, expected_rev, propose),
+            Request::Propose {
+                expected_rev,
+                edits,
+                note,
+            } => {
+                ensure!(note.len() <= 2048, "proposal note exceeds 2 KiB");
+                let base = match expected_rev {
+                    Some(rev) => rev,
+                    None => self.revision()?,
+                };
+                let payload = serde_json::to_string(&edits)?;
+                let preview = self.edit(Some(base), edits, false)?;
+                let pending: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM proposals WHERE status='pending'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                ensure!(
+                    pending < 256,
+                    "proposal queue is full; resolve pending proposals first"
+                );
+                self.connection.execute(
+                    "INSERT INTO proposals(note,base_rev,edits,preview) VALUES (?1,?2,?3,?4)",
+                    params![
+                        note,
+                        base,
+                        payload,
+                        serde_json::to_string(&preview["diff"])?
+                    ],
+                )?;
+                Ok(
+                    json!({"ok":true,"proposal":self.connection.last_insert_rowid(),"status":"pending","base_rev":base,"diff":preview["diff"]}),
+                )
+            }
+            Request::Proposals { status, limit } => {
+                let limit = limit.unwrap_or(16);
+                ensure!((1..=64).contains(&limit), "proposal limit must be 1..64");
+                if let Some(s) = &status {
+                    ensure!(
+                        ["pending", "approved", "rejected"].contains(&s.as_str()),
+                        "status must be pending, approved or rejected"
+                    );
+                }
+                let mut q = self.connection.prepare(
+                    "SELECT id,status,note,base_rev,preview,resolved_rev,created_at FROM proposals WHERE (?1 IS NULL OR status=?1) ORDER BY id DESC LIMIT ?2",
+                )?;
+                let rows = q
+                    .query_map(params![status, limit as i64], |r| {
+                        let preview: String = r.get(4)?;
+                        Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"note":r.get::<_,String>(2)?,"base_rev":r.get::<_,i64>(3)?,"diff":serde_json::from_str::<Value>(&preview).unwrap_or(Value::Null),"resolved_rev":r.get::<_,Option<i64>>(5)?,"created_at":r.get::<_,String>(6)?}))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(json!({"ok":true,"proposals":rows}))
+            }
+            Request::ResolveProposal {
+                id,
+                approve,
+                rebase,
+            } => {
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let (status, base, edits): (String, i64, String) = tx
+                    .query_row(
+                        "SELECT status,base_rev,edits FROM proposals WHERE id=?1",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?
+                    .ok_or_else(|| {
+                        Diagnostic::error("not_found", "/id", format!("proposal {id} not found"))
+                    })?;
+                if status != "pending" {
+                    return Err(Diagnostic::error(
+                        "proposal_resolved",
+                        "/id",
+                        format!("proposal {id} is already {status}"),
+                    ));
+                }
+                if !approve {
+                    tx.execute("UPDATE proposals SET status='rejected' WHERE id=?1", [id])?;
+                    tx.commit()?;
+                    return Ok(json!({"ok":true,"proposal":id,"status":"rejected"}));
+                }
+                let expected = if rebase {
+                    tx.query_row("SELECT MAX(rev) FROM revisions", [], |r| r.get(0))?
+                } else {
+                    base
+                };
+                let edits: Vec<Edit> = serde_json::from_str(&edits)?;
+                let mut result = Self::edit_in(&tx, &self.registry, Some(expected), edits, true)?;
+                tx.execute(
+                    "UPDATE proposals SET status='approved',resolved_rev=?2 WHERE id=?1",
+                    params![id, result["rev"].as_i64()],
+                )?;
+                tx.commit()?;
+                result["proposal"] = json!(id);
+                result["status"] = json!("approved");
+                Ok(result)
+            }
             Request::Diff {
                 from_rev,
                 to_rev,

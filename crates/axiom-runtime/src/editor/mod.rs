@@ -28,6 +28,11 @@ pub(crate) enum Action {
         rev: i64,
     },
     Verify,
+    ResolveProposal {
+        id: i64,
+        approve: bool,
+        rebase: bool,
+    },
 }
 
 /// Entity ID referenced by a diagnostic path, if any (`/entities/@a~1b/...` or
@@ -231,6 +236,7 @@ impl Draft {
 #[derive(Clone, Copy, PartialEq)]
 enum Dock {
     Changes,
+    Proposals,
     History,
     Problems,
     Assets,
@@ -277,6 +283,10 @@ pub(crate) struct Editor {
     snap: bool,
     /// Always draw the ground grid (otherwise only in worlds without meshes).
     grid: bool,
+    /// Pending AI proposals awaiting review, newest first, and the store signature they match.
+    proposals: Vec<Value>,
+    pub(crate) proposal_signature: Option<(i64, i64)>,
+    proposal_focus: Option<i64>,
 }
 
 impl Editor {
@@ -315,6 +325,9 @@ impl Editor {
             clipboard: Vec::new(),
             snap: false,
             grid: false,
+            proposals: Vec::new(),
+            proposal_signature: None,
+            proposal_focus: None,
         };
         if selected
             .as_ref()
@@ -441,6 +454,24 @@ impl Editor {
             }));
         }
         (!edits.is_empty()).then(|| self.write(edits, first))
+    }
+
+    pub fn set_proposals(&mut self, signature: (i64, i64), rows: &Value) {
+        let previous = self.proposals.len();
+        self.proposals = rows.as_array().cloned().unwrap_or_default();
+        self.proposal_signature = Some(signature);
+        if self
+            .proposal_focus
+            .is_none_or(|id| !self.proposals.iter().any(|p| p["id"] == id))
+        {
+            self.proposal_focus = self.proposals.first().and_then(|p| p["id"].as_i64());
+        }
+        if self.proposals.len() > previous && !self.error {
+            self.status = format!(
+                "{} proposal(s) awaiting review in the Proposals tab",
+                self.proposals.len()
+            );
+        }
     }
 
     pub fn set_history(&mut self, rows: &Value) {
@@ -603,7 +634,9 @@ impl Editor {
             "scene":self.scene,
             "draft_rev":self.resource.as_ref().map(|draft|draft.rev).or_else(||self.draft.as_ref().map(|draft| draft.rev)),
             "draft_dirty":self.dirty(),
-            "tool":self.tool.name()
+            "tool":self.tool.name(),
+            "pending_proposals":self.proposals.len(),
+            "selection":self.selection()
         })
     }
 

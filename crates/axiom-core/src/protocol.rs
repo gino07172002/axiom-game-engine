@@ -19,6 +19,32 @@ pub enum Request {
         preview: bool,
         #[serde(default)]
         expected_rev: Option<i64>,
+        /// Queue edit scripts for human review instead of applying them.
+        #[serde(default)]
+        propose: bool,
+    },
+    /// Validate an edit batch (preview) and queue it for review without writing a revision.
+    Propose {
+        #[serde(default)]
+        expected_rev: Option<i64>,
+        edits: Vec<Edit>,
+        #[serde(default)]
+        note: String,
+    },
+    Proposals {
+        /// pending | approved | rejected; omitted lists all.
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Approve (apply against the proposal's base revision, or the current one with
+    /// `rebase`) or reject a pending proposal.
+    ResolveProposal {
+        id: i64,
+        approve: bool,
+        #[serde(default)]
+        rebase: bool,
     },
     Discover {
         #[serde(default)]

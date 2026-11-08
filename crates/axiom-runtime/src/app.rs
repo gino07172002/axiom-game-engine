@@ -365,6 +365,30 @@ impl App {
                 editor.record(request, &result);
                 self.reload_after(result["rev"].as_i64())
             }
+            editor::Action::ResolveProposal {
+                id,
+                approve,
+                rebase,
+            } => {
+                let result = self.store.execute(Request::ResolveProposal {
+                    id,
+                    approve,
+                    rebase,
+                })?;
+                let editor = self.editor.as_mut().unwrap();
+                editor.proposal_signature = None;
+                if approve {
+                    editor.record_apply(editor.rev);
+                    editor.notice(format!(
+                        "Approved proposal #{id} · committed revision {}",
+                        result["rev"]
+                    ));
+                    self.reload_after(result["rev"].as_i64())
+                } else {
+                    editor.notice(format!("Rejected proposal #{id}; nothing was written"));
+                    Ok(())
+                }
+            }
             editor::Action::Verify => {
                 let result = self.store.execute(Request::Verify {})?;
                 self.editor.as_mut().unwrap().notice(format!(
@@ -463,6 +487,19 @@ impl App {
         if self.poll_elapsed >= 0.25 {
             self.poll_elapsed = 0.0;
             self.reload()?;
+            if let Some(editor) = &self.editor {
+                let signature = self.store.proposal_signature()?;
+                if editor.proposal_signature != Some(signature) {
+                    let rows = self.store.execute(Request::Proposals {
+                        status: Some("pending".into()),
+                        limit: Some(32),
+                    })?;
+                    self.editor
+                        .as_mut()
+                        .unwrap()
+                        .set_proposals(signature, &rows["proposals"]);
+                }
+            }
         }
         if self.ui.playing
             && !self.ui.console
