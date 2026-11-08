@@ -371,6 +371,62 @@ fn nav_agents_obstacles_and_targets_match_acl() {
     assert!(e.run_command("nav.target_point").is_err());
 }
 #[test]
+fn make_interactable_and_field_edits_match_acl() {
+    // Object ▸ Make Interactable on the selection (selection order) = ACL interact SEL.
+    let start = headless(&lab(), "create cube id=npc\ncreate cube id=door at=3,0,0");
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            e.extra.insert("npc".into());
+            vec![e.run_command("object.interactable").unwrap()]
+        },
+        "interact entities[id=door,id=npc]",
+    );
+    // Empty world: capability, systems, program with the event and the KeyE binding appear.
+    let blank = headless(&World::empty("blank"), "create empty id=sign");
+    assert_parity(
+        blank.clone(),
+        |e| {
+            e.select(Some("sign".into()));
+            vec![e.run_command("object.interactable").unwrap()]
+        },
+        "interact sign",
+    );
+    let made = headless(&blank, "interact sign");
+    for system in ["interact.focus", "behavior.execute"] {
+        assert!(made.systems.iter().any(|s| s == system), "{system}");
+    }
+    assert_eq!(
+        made.resources["input.bindings"]["buttons"]["interact"],
+        "KeyE"
+    );
+    // Inspector form edit of the created target (changed leaves only) = ACL set.
+    let target = headless(&start, "interact npc");
+    assert_parity(
+        target,
+        |e| {
+            e.select(Some("npc".into()));
+            let entity = e.world.entity("npc").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "interact.target");
+            let form = draft.form.as_mut().unwrap();
+            form["range"] = serde_json::json!(3.0);
+            form["prompt"] = serde_json::json!("和露米聊聊");
+            form["priority"] = serde_json::json!(2);
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            assert_eq!(edits.len(), 3);
+            vec![vec![e.write(edits, None)]]
+        },
+        "set npc interact.target/range 3.0\nset npc interact.target/prompt \"和露米聊聊\"\nset npc interact.target/priority 2",
+    );
+    // Nothing selected: the command is unavailable.
+    let mut e = Editor::new(start, 1, None);
+    assert!(e.run_command("object.interactable").is_err());
+}
+#[test]
 fn remove_component_matches_acl() {
     let start = headless(&lab(), "create trigger box id=gate");
     assert_parity(

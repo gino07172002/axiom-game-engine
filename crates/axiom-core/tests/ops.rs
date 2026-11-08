@@ -800,3 +800,95 @@ fn nav_verbs_match_the_ops_and_report_structured_errors() {
     let conflict = acl(&mut e, "set ann core.motion {\"velocity\":[1,0,0]}").unwrap_err();
     assert_eq!(code(conflict.clone()), "nav_conflict", "{conflict}");
 }
+
+#[test]
+fn interact_verb_matches_the_op_and_wires_events_and_bindings() {
+    use axiom_core::interact::InteractTarget;
+    let mut s = store();
+    acl(&mut s, "create cube id=npc\ncreate cube id=door at=4,0,2").unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        t.current().unwrap().1
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    let target = |world: &World, id: &str| -> InteractTarget {
+        serde_json::from_value(world.entity(id).unwrap().components["interact.target"].clone())
+            .unwrap()
+    };
+    // Defaults: event `interacted` declared (and behavior.program created), action interact
+    // bound to KeyE, capabilities and systems added once.
+    let ids = ["npc".to_owned(), "door".to_owned()];
+    let expected = ops::make_interactable(&start, &ids, &ops::InteractOptions::default()).unwrap();
+    let made = after(&start, "interact entities[id=npc,id=door]");
+    assert_eq!(made, applied(&start, expected));
+    assert_eq!(target(&made, "door").event, "interacted");
+    assert_eq!(target(&made, "door").interactor.tags, ["player"]);
+    assert_eq!(
+        made.resources["behavior.program"]["events"]["interacted"],
+        serde_json::json!({"fields":{"interactor":"text","target":"text"}})
+    );
+    assert_eq!(
+        made.resources["input.bindings"]["buttons"]["interact"],
+        "KeyE"
+    );
+    for (capability, system) in [
+        ("interact", "interact.focus"),
+        ("behavior", "behavior.execute"),
+    ] {
+        assert_eq!(made.capabilities.get(capability), Some(&1));
+        assert_eq!(made.systems.iter().filter(|s| *s == system).count(), 1);
+    }
+    // Options (quoted CJK prompt); an existing program keeps its events and gains the new one.
+    let options = ops::InteractOptions {
+        event: Some("open_door".into()),
+        prompt: Some("開門".into()),
+        range: Some(1.5),
+        action: Some("interact".into()),
+    };
+    let expected = ops::make_interactable(&made, &["door".to_owned()], &options).unwrap();
+    let door = after(
+        &made,
+        "interact door event=open_door prompt=\"開門\" range=1.5 action=interact",
+    );
+    assert_eq!(door, applied(&made, expected));
+    let t = target(&door, "door");
+    assert_eq!(
+        (t.event.as_str(), t.prompt.as_str(), t.range),
+        ("open_door", "開門", 1.5)
+    );
+    let events = door.resources["behavior.program"]["events"]
+        .as_object()
+        .unwrap();
+    assert!(events.contains_key("interacted") && events.contains_key("open_door"));
+    // Field edits are plain `set`.
+    let edited = after(&door, "set door interact.target/once true");
+    assert!(target(&edited, "door").once);
+    // Structured errors.
+    let mut e = Store::memory_with(Registry::core(), door.clone()).unwrap();
+    for (text, expect) in [
+        ("interact door range=500", "invalid_value"),
+        ("interact door range=far", "acl_syntax"),
+        ("interact door color=red", "acl_syntax"),
+        ("interact door event=\"bad event\"", "invalid_value"),
+        ("interact nobody", "no_match"),
+        // A new button while KeyE is taken by `interact`.
+        ("interact door action=use", "missing_binding"),
+    ] {
+        assert_eq!(code(acl(&mut e, text).unwrap_err()), expect, "{text}");
+    }
+    // A target without a transform is refused when the batch compiles.
+    acl(&mut e, "create empty id=ghost").unwrap();
+    acl(&mut e, "remove ghost core.transform").unwrap();
+    let error = acl(&mut e, "interact ghost").unwrap_err();
+    assert!(error.to_string().contains("core.transform"), "{error}");
+}

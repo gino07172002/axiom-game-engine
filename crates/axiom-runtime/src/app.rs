@@ -1178,6 +1178,21 @@ impl App {
             } else {
                 vec![]
             };
+        // Interactors to their focused interactables (same overlay switch).
+        let mut focus_lines: Vec<([f32; 2], [f32; 2])> = vec![];
+        if let (true, Some(interact), Some(view)) = (
+            !editing && self.editor.as_ref().is_some_and(|e| e.overlay),
+            self.runtime.system::<crate::interact::InteractSystem>(),
+            crate::nameplate::active_view(&self.runtime.state),
+        ) {
+            let screen = self.ctx.screen_rect();
+            let bounds = [screen.min.x, screen.min.y, screen.width(), screen.height()];
+            for (a, b) in interact.focus_lines(&self.runtime.state) {
+                if let (Some(a), Some(b)) = (view.project(a, bounds), view.project(b, bounds)) {
+                    focus_lines.push((a, b));
+                }
+            }
+        }
         let output = ctx.run(raw, |ctx| {
             if editing {
                 let editor = self.editor.as_mut().unwrap();
@@ -1224,6 +1239,12 @@ impl App {
                         painter.line_segment(
                             [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
                             egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(170, 240, 120)),
+                        );
+                    }
+                    for ([ax, ay], [bx, by]) in &focus_lines {
+                        painter.line_segment(
+                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 205, 90)),
                         );
                     }
                     for ([x, y], text) in &overlay {

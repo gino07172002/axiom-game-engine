@@ -263,6 +263,7 @@ pub enum TextBinding {
     Speaker {},
     Line {},
     Ending {},
+    Prompt {},
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -348,6 +349,7 @@ pub enum BoundText {
     Speaker,
     Line,
     Ending,
+    Prompt,
 }
 #[derive(Clone, Debug)]
 pub enum BoundWidget {
@@ -804,6 +806,7 @@ impl CompiledGameplay {
                                 BoundText::Line
                             }
                             TextBinding::Ending {} => BoundText::Ending,
+                            TextBinding::Prompt {} => BoundText::Prompt,
                         };
                         (id, BoundWidget::Text(id.clone(), b, c.test(when, &[], 0)?))
                     }
@@ -946,7 +949,7 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding / button command / choices / image / progress","images":"asset ID -> PNG path"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command / choices / image / progress","images":"asset ID -> PNG path"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {

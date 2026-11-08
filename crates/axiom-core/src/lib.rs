@@ -5,6 +5,7 @@ pub mod diff;
 pub mod discovery;
 pub mod gameplay;
 pub mod grid_search;
+pub mod interact;
 pub mod ir;
 pub mod light;
 pub mod local;

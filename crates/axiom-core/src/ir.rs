@@ -194,6 +194,7 @@ impl World {
             let path = decode::<crate::path::PathSpline>(&c, "path.spline")?;
             let follow = decode::<crate::path::PathFollow>(&c, "path.follow")?;
             let nav_agent = decode::<crate::navigation::NavAgent>(&c, "nav.agent")?;
+            let interact = decode::<crate::interact::InteractTarget>(&c, "interact.target")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -205,6 +206,7 @@ impl World {
                     && path.is_none()
                     && follow.is_none()
                     && nav_agent.is_none()
+                    && interact.is_none()
                     && collider.is_none()
                     && motion.is_none())
                     || transform.is_some(),
@@ -234,6 +236,7 @@ impl World {
                 path,
                 follow,
                 nav_agent,
+                interact,
                 collider,
                 health,
                 motion,
@@ -250,6 +253,11 @@ impl World {
             .filter_map(|e| Some((e.id.as_str(), e.trigger.as_ref()?)))
             .collect();
         crate::trigger::validate_world(self, &zones)?;
+        let interactables: Vec<(&str, &crate::interact::InteractTarget)> = entities
+            .iter()
+            .filter_map(|e| Some((e.id.as_str(), e.interact.as_ref()?)))
+            .collect();
+        crate::interact::validate_world(self, &interactables)?;
         ensure!(
             instances <= MAX_INSTANCES,
             "render instance budget exceeded"
@@ -844,6 +852,7 @@ pub struct CompiledEntity {
     pub path: Option<crate::path::PathSpline>,
     pub follow: Option<crate::path::PathFollow>,
     pub nav_agent: Option<crate::navigation::NavAgent>,
+    pub interact: Option<crate::interact::InteractTarget>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,

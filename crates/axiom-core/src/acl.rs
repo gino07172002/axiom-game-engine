@@ -32,6 +32,8 @@ EDIT (any number, atomic):
   create obstacle P               1 m cube + nav.blocker (agents walk around it; id obstacle)
   nav SEL agent [speed=M/S] [radius=M]   nav.agent on each object (no target yet)
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
+  interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
+                                  (defaults: event interacted declared with interactor/target, action interact -> KeyE)
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -284,6 +286,7 @@ enum Statement {
     PathPoint(String, crate::ops::PointEdit),
     NavAgent(Box<Selection>, crate::ops::NavOptions),
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
+    Interact(Box<Selection>, crate::ops::InteractOptions),
 }
 
 impl Statement {
@@ -606,6 +609,32 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 other => bail!("unknown nav verb '{other}' (agent, target)"),
             }
         }
+        "interact" => {
+            let select = Box::new(selector(arg(1)?)?);
+            let mut options = crate::ops::InteractOptions::default();
+            for t in &tokens[2..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("option '{t}' must be key=value"))?;
+                let text = match value(v) {
+                    Value::String(s) => s,
+                    _ => v.to_owned(),
+                };
+                match k {
+                    "event" => options.event = Some(text),
+                    "prompt" => options.prompt = Some(text),
+                    "action" => options.action = Some(text),
+                    "range" => {
+                        options.range = Some(
+                            v.parse::<f32>()
+                                .with_context(|| "range must be a number".to_owned())?,
+                        )
+                    }
+                    other => bail!("unknown option '{other}' (use event, prompt, range, action)"),
+                }
+            }
+            Statement::Interact(select, options)
+        }
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             match rest.as_slice() {
@@ -875,6 +904,8 @@ pub fn run(
                 .and_then(|ids| crate::ops::add_nav_agent(w, &ids, &options)),
             Statement::NavTarget(select, target) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_nav_target(w, &ids, target.as_ref())),
+            Statement::Interact(select, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
             _ => unreachable!(),
         }
         .map_err(wrap)?;

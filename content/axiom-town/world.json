@@ -2,8 +2,8 @@
   "schema_version": 2,
   "id": "axiom-town",
   "title": "Axiom Town / Social Plaza",
-  "capabilities": {"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1,"trigger":1},
-  "systems": ["animation.evaluate","audio.events","action.simulate","fsm.step","trigger.detect","behavior.execute","ui.nameplates"],
+  "capabilities": {"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1,"trigger":1,"interact":1},
+  "systems": ["animation.evaluate","audio.events","action.simulate","fsm.step","trigger.detect","interact.focus","behavior.execute","ui.nameplates"],
   "prefabs": {
     
     "lamp": {"components": {"core.transform": {}, "nav.blocker": {"half":[0.12,0.12]}, "render.mesh": {"parts": [
@@ -34,12 +34,14 @@
       "core.transform":{"position":[2.6,0,1.8]},
       "animation.player":{"asset":"axiom-long","clip":"idle","speed":0.9},
       "fsm.agent":{"machine":"lumi"},
+      "interact.target":{"range":2.4,"exit_margin":0.8,"prompt":"talk_lumi","event":"talk_lumi"},
       "ui.nameplate":{"text":"Lumi  ♥","height":1.6,"color":[1,0.6,0.7]}
     }},
     {"id":"npc/rin","label":"Rin (crepe stand)","tags":["npc"],"components":{
       "core.transform":{"position":[9,0,-6.2]},
       "animation.player":{"asset":"axiom-short","clip":"idle"},
       "fsm.agent":{"machine":"shopkeeper"},
+      "interact.target":{"range":2.6,"exit_margin":0.8,"prompt":"talk_rin","event":"talk_rin"},
       "ui.nameplate":{"text":"Rin  ·  Crepes","height":1.55,"color":[0.6,0.9,1]}
     }},
     {"id":"pc/nova","label":"Nova (wandering player)","tags":["npc"],"components":{
@@ -211,26 +213,24 @@
         ]}
     }},
     "behavior.program": {
-      "variables": {"at_bench":false,"at_clip":false,"nearby":"none","coins":20,"affection":0,"quest":"quest_none","has_crepe":false,"clip_found":false,"sitting":false},
+      "variables": {"at_bench":false,"at_clip":false,"coins":20,"affection":0,"quest":"quest_none","has_crepe":false,"clip_found":false,"sitting":false},
       "events": {
         "near_lumi":{"fields":{"agent":"text"}},"left_lumi":{"fields":{"agent":"text"}},
         "near_rin":{"fields":{"agent":"text"}},"left_rin":{"fields":{"agent":"text"}},
-        "interact":{"fields":{}},"near_bench":{"fields":{}},"left_bench":{"fields":{}},"near_clip":{"fields":{}},"left_clip":{"fields":{}},
+        "talk_lumi":{"fields":{}},"talk_rin":{"fields":{}},"near_bench":{"fields":{}},"left_bench":{"fields":{}},"near_clip":{"fields":{}},"left_clip":{"fields":{}},
         "emote_wave":{"fields":{}},"emote_bow":{"fields":{}},"emote_dance":{"fields":{}},"emote_cheer":{"fields":{}},"emote_pose":{"fields":{}},"emote_think":{"fields":{}},
         "dance_together":{"fields":{}},"photo":{"fields":{}},"eat":{"fields":{}},"sit":{"fields":{}},"stand":{"fields":{}},"thanks":{"fields":{}}
       },
-      "inputs": {"interact":"interact","emote_wave":"emote_wave","emote_bow":"emote_bow","emote_dance":"emote_dance","emote_cheer":"emote_cheer","emote_pose":"emote_pose","emote_think":"emote_think"},
+      "inputs": {"emote_wave":"emote_wave","emote_bow":"emote_bow","emote_dance":"emote_dance","emote_cheer":"emote_cheer","emote_pose":"emote_pose","emote_think":"emote_think"},
       "rules": [
         {"id":"bench-near","event":"near_bench","actions":[{"kind":"set","variable":"at_bench","value":{"kind":"literal","value":true}}]},
         {"id":"bench-left","event":"left_bench","actions":[{"kind":"set","variable":"at_bench","value":{"kind":"literal","value":false}},{"kind":"set","variable":"sitting","value":{"kind":"literal","value":false}}]},
         {"id":"clip-near","event":"near_clip","actions":[{"kind":"set","variable":"at_clip","value":{"kind":"literal","value":true}}]},
         {"id":"clip-left","event":"left_clip","actions":[{"kind":"set","variable":"at_clip","value":{"kind":"literal","value":false}}]},
-        {"id":"lumi-near","event":"near_lumi","actions":[{"kind":"set","variable":"nearby","value":{"kind":"literal","value":"lumi"}}]},
-        {"id":"rin-near","event":"near_rin","actions":[{"kind":"set","variable":"nearby","value":{"kind":"literal","value":"rin"}}]},
-        {"id":"lumi-left","event":"left_lumi","actions":[{"kind":"set","variable":"nearby","value":{"kind":"literal","value":"none"}},{"kind":"go_to","node":"hub"}]},
-        {"id":"rin-left","event":"left_rin","actions":[{"kind":"set","variable":"nearby","value":{"kind":"literal","value":"none"}},{"kind":"go_to","node":"hub"}]},
-        {"id":"talk-lumi","event":"interact","when":{"kind":"eq","left":{"kind":"variable","id":"nearby"},"right":{"kind":"literal","value":"lumi"}},"actions":[{"kind":"go_to","node":"lumi"}]},
-        {"id":"talk-rin","event":"interact","when":{"kind":"eq","left":{"kind":"variable","id":"nearby"},"right":{"kind":"literal","value":"rin"}},"actions":[{"kind":"go_to","node":"rin"}]}
+        {"id":"lumi-left","event":"left_lumi","actions":[{"kind":"go_to","node":"hub"}]},
+        {"id":"rin-left","event":"left_rin","actions":[{"kind":"go_to","node":"hub"}]},
+        {"id":"talk-lumi","event":"talk_lumi","actions":[{"kind":"go_to","node":"lumi"}]},
+        {"id":"talk-rin","event":"talk_rin","actions":[{"kind":"go_to","node":"rin"}]}
       ]
     },
     "runtime.bindings": {"events": [
@@ -287,13 +287,13 @@
     "ui.document": {
       "locale":"zh-TW",
       "regions":{
-        "title":"top_left","quest":"top_left","coins_label":"top_left","coins":"top_left","affection":"top_left",
+        "title":"top_left","quest":"top_left","prompt":"top","coins_label":"top_left","coins":"top_left","affection":"top_left",
         "speaker":"bottom","line":"bottom","choices":"bottom",
         "emote_wave":"right","emote_bow":"right","emote_dance":"right","emote_cheer":"right","emote_pose":"right","emote_think":"right"
       },
       "catalogs":{
         "zh-TW":{
-          "title":"AXIOM TOWN · 中央廣場","town":"廣場","lumi":"露米","rin":"琳 · 可麗餅攤",
+          "title":"AXIOM TOWN · 中央廣場","town":"廣場","talk_lumi":"和露米聊聊","talk_rin":"和琳說話","lumi":"露米","rin":"琳 · 可麗餅攤",
           "hub":"WASD 移動 · Z/C 轉視角 · Space 小跳 · R 揮手 · 靠近角色按 E 交談 · 1-6 表情。",
           "sit_choice":"坐下休息","stand_choice":"站起來","pickup_choice":"撿起噴泉旁的紅色髮夾",
           "lumi_hello":"嗨！今天的廣場好熱鬧呢。要一起做點什麼嗎？",
@@ -309,7 +309,7 @@
           "e_wave":"1 揮手","e_bow":"2 鞠躬","e_dance":"3 跳舞","e_cheer":"4 歡呼","e_pose":"5 比 YA","e_think":"6 思考"
         },
         "en":{
-          "title":"AXIOM TOWN · Central Plaza","town":"Plaza","lumi":"Lumi","rin":"Rin · Crepe stand",
+          "title":"AXIOM TOWN · Central Plaza","town":"Plaza","talk_lumi":"Talk to Lumi","talk_rin":"Talk to Rin","lumi":"Lumi","rin":"Rin · Crepe stand",
           "hub":"WASD move · Z/C orbit · Space hop · R wave · E talk when close · 1-6 emotes.",
           "sit_choice":"Sit and rest","stand_choice":"Stand up","pickup_choice":"Pick up the red hair clip by the fountain",
           "lumi_hello":"Hi! The plaza is lively today. Want to do something together?",
@@ -328,6 +328,7 @@
       "widgets":[
         {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
         {"kind":"text","id":"quest","binding":{"kind":"localized_variable","id":"quest"}},
+        {"kind":"text","id":"prompt","binding":{"kind":"prompt"}},
         {"kind":"text","id":"coins_label","binding":{"kind":"key","id":"coins_label"}},
         {"kind":"text","id":"coins","binding":{"kind":"variable","id":"coins"}},
         {"kind":"progress","id":"affection","variable":"affection","max":100},

@@ -4,7 +4,8 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated 4096`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-triggers 256x1024`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-paths 64x1024`
-//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-nav 256 [--nav-budget 4096]`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-nav 256 [--nav-budget 4096]
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-interact 256x64``
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -108,6 +109,32 @@ fn generated_triggers(zones: usize, movers: usize) -> Result<World> {
         "schema_version":2,"id":format!("triggers-{zones}x{movers}"),"title":"Trigger bench",
         "capabilities":{"core":1,"motion":1,"trigger":1},"systems":["motion.integrate","trigger.detect"],
         "entities":entities
+    }))?)
+}
+
+/// `targets` interactables (range 2 m, 3 m grid, alternate priorities, every third with a
+/// 120 degree view angle) and `players` tagged interactors drifting through them (0.6 m/s,
+/// spinning so facing changes): `targets x players` brute-force focus tests per step.
+fn generated_interact(targets: usize, players: usize) -> Result<World> {
+    let mut entities = vec![];
+    for i in 0..targets {
+        let (x, z) = ((i % 16) as f32 * 3.0 - 22.5, (i / 16) as f32 * 3.0 - 22.5);
+        let mut target = json!({"range":2.0,"exit_margin":0.5,"priority":(i % 3) as i32});
+        if i % 3 == 0 {
+            target["view_angle"] = json!(120.0);
+        }
+        entities.push(json!({"id":format!("target/{i}"),"components":{"core.transform":{"position":[x,0,z]},"interact.target":target}}));
+    }
+    for i in 0..players {
+        let (x, z) = ((i % 8) as f32 * 5.0 - 20.0, (i / 8) as f32 * 5.0 - 20.0);
+        entities.push(json!({"id":format!("player/{i}"),"tags":["player"],"components":{"core.transform":{"position":[x,0,z]},
+            "core.motion":{"velocity":[0.6,0,0.3],"angular_velocity":[0,0.8,0]}}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("interact-{targets}x{players}"),"title":"Interaction bench",
+        "capabilities":{"core":1,"motion":1,"interact":1},"systems":["motion.integrate","interact.focus"],
+        "entities":entities,
+        "resources":{"input.bindings":{"buttons":{"interact":"KeyE"}}}
     }))?)
 }
 
@@ -235,6 +262,12 @@ fn main() -> Result<()> {
             .split_once('x')
             .context("--generated-paths PATHSxFOLLOWERS")?;
         let world = generated_paths(paths.parse()?, followers.parse()?)?;
+        (world.id.clone(), world)
+    } else if let Some(spec) = arg("--generated-interact") {
+        let (targets, players) = spec
+            .split_once('x')
+            .context("--generated-interact TARGETSxPLAYERS")?;
+        let world = generated_interact(targets.parse()?, players.parse()?)?;
         (world.id.clone(), world)
     } else if let Some(agents) = arg("--generated-nav") {
         let budget = arg("--nav-budget").map(|b| b.parse()).transpose()?;

@@ -1327,6 +1327,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("path.spline", "PATH", Color32::from_rgb(255, 176, 72)),
         ("path.follow", "FOLLOW", Color32::from_rgb(255, 214, 150)),
         ("nav.agent", "NAV", Color32::from_rgb(110, 200, 255)),
+        ("interact.target", "USE", Color32::from_rgb(255, 205, 90)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1350,6 +1351,7 @@ fn badge_meaning(text: &str) -> &'static str {
         "PATH" => "path.spline (route for path followers)",
         "FOLLOW" => "path.follow (moves along a path)",
         "NAV" => "nav.agent (walks to targets around obstacles)",
+        "USE" => "interact.target (talk / open with a button near it)",
         _ => "prefab instance",
     }
 }

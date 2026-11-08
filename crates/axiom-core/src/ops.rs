@@ -1064,6 +1064,163 @@ pub fn set_nav_target(
     Ok(edits)
 }
 
+/// Options of Object ▸ Make Interactable / ACL `interact SEL`; `None` keeps the defaults
+/// (event `interacted`, action `interact`, range 2 m, default prompt).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InteractOptions {
+    pub event: Option<String>,
+    pub prompt: Option<String>,
+    pub range: Option<f32>,
+    pub action: Option<String>,
+}
+
+/// Object ▸ Make Interactable: puts an `interact.target` on each entity (replacing an existing
+/// one) and makes it work in one revision: adds the `interact` capability and the
+/// `interact.focus` system, declares the event in `behavior.program` (text fields
+/// `interactor` and `target`; creating the program and `behavior.execute` when missing) and,
+/// when `input.bindings` has no such button, binds the action to `KeyE` (refused when KeyE
+/// is already taken: bind a key yourself first).
+pub fn make_interactable(
+    world: &World,
+    ids: &[String],
+    options: &InteractOptions,
+) -> Result<Vec<Edit>> {
+    use crate::interact::{InteractTarget, DEFAULT_EVENT};
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that should become interactable",
+        ));
+    }
+    let mut target = InteractTarget {
+        event: DEFAULT_EVENT.into(),
+        ..InteractTarget::default()
+    };
+    if let Some(event) = &options.event {
+        target.event = event.clone();
+    }
+    if let Some(prompt) = &options.prompt {
+        target.prompt = prompt.clone();
+    }
+    if let Some(range) = options.range {
+        target.range = range;
+    }
+    if let Some(action) = &options.action {
+        target.action = action.clone();
+    }
+    target.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            "/components/interact.target",
+            format!("{e:#}"),
+        )
+    })?;
+    // One /capabilities and one /systems edit (two enable_system calls would each start from
+    // the original lists and the second would drop the first's addition).
+    let (mut capabilities, mut systems) = (world.capabilities.clone(), world.systems.clone());
+    let mut needs = |capability: &str, system: &str| {
+        capabilities.entry(capability.into()).or_insert(1);
+        if !systems.iter().any(|s| s == system) {
+            systems.push(system.into());
+        }
+    };
+    needs("interact", "interact.focus");
+    if !target.event.is_empty() {
+        needs("behavior", "behavior.execute");
+    }
+    let mut edits = vec![];
+    if capabilities != world.capabilities {
+        edits.push(Edit::set("/capabilities", json!(capabilities)));
+    }
+    if systems != world.systems {
+        edits.push(Edit::set("/systems", json!(systems)));
+    }
+    if !target.event.is_empty() {
+        let fields = json!({"fields":{"interactor":"text","target":"text"}});
+        match world.resources.get("behavior.program") {
+            Some(program) => {
+                let declared = program
+                    .pointer(&format!("/events/{}", escape(&target.event)))
+                    .is_some();
+                if !declared {
+                    let mut program = program.clone();
+                    let events = program
+                        .as_object_mut()
+                        .map(|p| p.entry("events").or_insert_with(|| json!({})))
+                        .and_then(Value::as_object_mut)
+                        .ok_or_else(|| {
+                            Diagnostic::error(
+                                "invalid_value",
+                                "/resources/behavior.program/events",
+                                "behavior.program events must be an object",
+                            )
+                        })?;
+                    events.insert(target.event.clone(), fields);
+                    edits.push(Edit::Core(CoreEdit::SetResource {
+                        id: "behavior.program".into(),
+                        value: program,
+                    }));
+                }
+            }
+            None => edits.push(Edit::Core(CoreEdit::SetResource {
+                id: "behavior.program".into(),
+                value: json!({"events":{target.event.clone(): fields}}),
+            })),
+        }
+    }
+    if !target.action.is_empty() {
+        let raw = world.resources.get("input.bindings");
+        let bindings: InputBindings = raw
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| {
+                Diagnostic::error("invalid_value", "/resources/input.bindings", format!("{e}"))
+            })?
+            .unwrap_or_default();
+        if !bindings.buttons.contains_key(&target.action) {
+            let taken = bindings.buttons.values().any(|k| k == "KeyE")
+                || bindings
+                    .axes
+                    .values()
+                    .any(|a| a.positive == "KeyE" || a.negative == "KeyE");
+            if taken {
+                return Err(Diagnostic::error(
+                    "missing_binding",
+                    format!("/resources/input.bindings/buttons/{}", escape(&target.action)),
+                    format!(
+                        "input.bindings has no button {0} and KeyE is already bound; bind one first (set resources[id=input.bindings] buttons/{0} \"KeyF\") or pick an existing button with action=",
+                        target.action
+                    ),
+                ));
+            }
+            let mut value = raw.cloned().unwrap_or_else(|| json!({}));
+            let buttons = value
+                .as_object_mut()
+                .map(|b| b.entry("buttons").or_insert_with(|| json!({})))
+                .and_then(Value::as_object_mut)
+                .expect("input.bindings parsed as an object with a buttons map");
+            buttons.insert(target.action.clone(), json!("KeyE"));
+            edits.push(Edit::Core(CoreEdit::SetResource {
+                id: "input.bindings".into(),
+                value,
+            }));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: "interact.target".into(),
+                value: json!(target),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
 /// Where `move_entity` puts an entity in the authored order (= sibling order).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Order {

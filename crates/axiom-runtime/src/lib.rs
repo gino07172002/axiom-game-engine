@@ -16,6 +16,7 @@ pub mod fsm;
 pub mod gameplay;
 pub mod geometry;
 mod input;
+pub mod interact;
 pub mod jobs;
 pub mod lighting;
 pub mod measure;
@@ -55,6 +56,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     geometry::register(&mut r);
     fsm::register(&mut r);
     trigger::register(&mut r);
+    interact::register(&mut r);
     path_follow::register(&mut r);
     nav_agent::register(&mut r);
     nameplate::register(&mut r);

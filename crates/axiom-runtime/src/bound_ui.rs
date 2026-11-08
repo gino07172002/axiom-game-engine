@@ -64,6 +64,32 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
     Ok(())
 }
 pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Action> {
+    // Default interaction prompt when no ui.document widget binds `{kind: prompt}`.
+    if let Some(prompt) = &g.prompt {
+        let authored = g
+            .compiled
+            .widgets
+            .iter()
+            .any(|w| matches!(w, BoundWidget::Text(_, BoundText::Prompt, _)));
+        if !authored {
+            egui::Area::new(egui::Id::new("bound_prompt"))
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 110.0])
+                .interactable(false)
+                .show(ctx, |ui| {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(12, 16, 24, 205))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(g.prompt_text(prompt))
+                                    .size(18.0)
+                                    .color(Color32::WHITE),
+                            );
+                        });
+                });
+        }
+    }
     let Some(doc) = &g.compiled.ui else {
         return vec![];
     };

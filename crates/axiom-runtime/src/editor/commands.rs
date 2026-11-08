@@ -168,6 +168,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "",
     ),
     c("nav.clear_target", "Nav Target: Clear", "Object", ""),
+    c("object.interactable", "Make Interactable", "Object", ""),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -405,6 +406,7 @@ impl Editor {
             | "object.create_prefab"
             | "object.follow_path"
             | "object.nav_agent"
+            | "object.interactable"
                 if nothing =>
             {
                 Some("nothing selected")
@@ -448,6 +450,7 @@ impl Editor {
             | "nav.target_object"
             | "nav.target_point"
             | "nav.clear_target"
+            | "object.interactable"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -561,6 +564,7 @@ impl Editor {
                 );
             }
             "nav.clear_target" => actions.extend(self.set_nav_target(None)),
+            "object.interactable" => actions.extend(self.make_interactable()),
             "view.nav_grid" => self.prefs.nav_grid = !self.prefs.nav_grid,
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
@@ -936,6 +940,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "nav.target_object": "nav AGENTS target ENTITY",
                 "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
                 "nav.clear_target": "nav AGENTS target none",
+                "object.interactable": "interact SEL [event=] [prompt=] [range=] [action=]",
                 "inspector.remove_component": "remove SEL COMPONENT",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",

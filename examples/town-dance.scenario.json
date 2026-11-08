@@ -6,7 +6,7 @@
   {"tick":302,"actions":{"interact":0.0}}
  ],
  "commands":[
-  {"tick":290,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/variables/nearby","value":"lumi"}}},
+  {"tick":290,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/interact/focus/hero","value":"npc/lumi"}}},
   {"tick":320,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/node","value":"lumi"}}},
   {"tick":330,"operation":{"op":"command","command":{"kind":"choose","node":"lumi","choice":"dance"}}}
  ],

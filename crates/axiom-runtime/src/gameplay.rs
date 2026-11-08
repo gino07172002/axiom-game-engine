@@ -29,6 +29,15 @@ pub struct Trace {
     pub kind: String,
     pub id: String,
 }
+/// The focused interactable's prompt, published by `interact.focus` for the `prompt` text
+/// binding. Shared strings: publishing never copies text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Prompt {
+    /// Key label of the target's input button ("E"); empty when it has no button.
+    pub key: std::sync::Arc<str>,
+    /// Localisation key or literal text.
+    pub text: std::sync::Arc<str>,
+}
 #[derive(Clone)]
 pub struct Gameplay {
     trace_sequence: u64,
@@ -44,6 +53,8 @@ pub struct Gameplay {
     pub held: Vec<String>,
     pub trace: VecDeque<Trace>,
     pub fault: Option<Value>,
+    /// Derived each step by `interact.focus`; not part of saves.
+    pub prompt: Option<Prompt>,
 }
 struct Budget(usize);
 impl Budget {
@@ -69,6 +80,7 @@ impl Gameplay {
             held: vec![],
             trace: VecDeque::new(),
             fault: None,
+            prompt: None,
             compiled: std::sync::Arc::new(compiled),
         };
         if let Some(n) = g.compiled.start {
@@ -533,6 +545,21 @@ impl Gameplay {
                 .node
                 .map_or(String::new(), |n| self.text(&self.compiled.nodes[n].text)),
             BoundText::Ending => self.ending.clone().unwrap_or_default(),
+            BoundText::Prompt => self
+                .prompt
+                .as_ref()
+                .map_or(String::new(), |p| self.prompt_text(p)),
+        }
+    }
+    /// "[E] localized text", or the text with `{key}` replaced when it places the key itself.
+    pub fn prompt_text(&self, p: &Prompt) -> String {
+        let text = self.text(&p.text);
+        if p.key.is_empty() {
+            text
+        } else if text.contains("{key}") {
+            text.replace("{key}", &p.key)
+        } else {
+            format!("[{}] {text}", p.key)
         }
     }
     pub fn observation(&self) -> Value {

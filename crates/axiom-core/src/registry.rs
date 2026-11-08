@@ -92,7 +92,7 @@ impl Registry {
     pub fn core() -> Self {
         let mut r = Self::default();
         for id in [
-            "core", "render", "physics", "motion", "trigger", "path", "nav",
+            "core", "render", "physics", "motion", "trigger", "path", "nav", "interact",
         ] {
             r.capabilities.insert(id.into(), 1);
         }
@@ -163,6 +163,12 @@ impl Registry {
             crate::navigation::settings_schema(),
             |v| typed(v, crate::navigation::NavSettings::validate),
         );
+        r.component(
+            "interact.target",
+            "interact",
+            crate::interact::target_schema(),
+            |v| typed(v, crate::interact::InteractTarget::validate),
+        );
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());
@@ -209,6 +215,23 @@ impl Registry {
                 // After the movers (fsm 8, motion 10, rts 15, action/fps 20), before animation.
                 phase: 25,
                 reads: vec!["trigger.zone".into(), "core.transform".into()],
+                writes: vec!["runtime.events".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "interact.focus".into(),
+            SystemDescriptor {
+                id: "interact.focus".into(),
+                capability: "interact".into(),
+                // After behavior.execute (5), before fsm.step (8) and the movers: focus uses the
+                // positions the last frame showed (the timing of FSM near/far conditions).
+                phase: 7,
+                reads: vec![
+                    "interact.target".into(),
+                    "core.transform".into(),
+                    "input.bindings".into(),
+                ],
                 writes: vec!["runtime.events".into()],
                 after: vec![],
             },

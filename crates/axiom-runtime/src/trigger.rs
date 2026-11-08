@@ -148,7 +148,7 @@ pub(crate) fn world_matrix(state: &RuntimeState, slot: usize) -> Mat4 {
     m
 }
 
-fn pivot(state: &RuntimeState, slot: usize) -> Vec3 {
+pub(crate) fn pivot(state: &RuntimeState, slot: usize) -> Vec3 {
     let position = state.transforms[slot]
         .as_ref()
         .map_or(Vec3::ZERO, |t| Vec3::from_array(t.position));

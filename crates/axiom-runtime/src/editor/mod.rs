@@ -712,6 +712,17 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Object ▸ Make Interactable (`ACL: interact SEL`): default `interact.target` on the
+    /// selection, with its event declared and its button bound; edit fields in the Inspector.
+    pub(super) fn make_interactable(&mut self) -> Option<Action> {
+        let result = ops::make_interactable(
+            &self.world,
+            &self.selection(),
+            &ops::InteractOptions::default(),
+        );
+        self.op_write(result, None)
+    }
+
     /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
     pub(super) fn instantiate_prefab(&mut self, prefab: &str) -> Option<Action> {
         let result = ops::instantiate_prefab(&self.world, prefab, &self.placement());

@@ -866,6 +866,8 @@ const GIZMO_PATH: Color32 = Color32::from_rgb(255, 176, 72);
 const GIZMO_NAV: Color32 = Color32::from_rgb(110, 200, 255);
 const GIZMO_NAV_ROUTE: Color32 = Color32::from_rgb(170, 240, 120);
 const GIZMO_NAV_CELL: Color32 = Color32::from_rgb(255, 110, 110);
+const GIZMO_INTERACT: Color32 = Color32::from_rgb(255, 205, 90);
+const GIZMO_INTERACT_OFF: Color32 = Color32::from_rgb(125, 110, 70);
 /// Grid overlay: cells around the focus point (2 * radius + 1 per side), outlines drawn at most.
 const NAV_OVERLAY_RADIUS: i32 = 40;
 const NAV_OVERLAY_SHAPES: usize = 2400;
@@ -1357,6 +1359,37 @@ fn draw_component_gizmos(
                     from = to;
                 }
             }
+        }
+        if let Some(target) = &e.interact {
+            // Range circle around the pivot (where interactors must stand), plus a dim ring
+            // where an already focused target is released (range + exit_margin).
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if target.enabled {
+                GIZMO_INTERACT
+            } else {
+                GIZMO_INTERACT_OFF
+            };
+            let ground = position + Vec3::Y * 0.04;
+            pen.loop_through(
+                &arc(ground, Vec3::X, Vec3::Z, target.range, 0.0, TAU, 33)[..32],
+                color,
+            );
+            if target.exit_margin > 0.0 {
+                pen.loop_through(
+                    &arc(
+                        ground,
+                        Vec3::X,
+                        Vec3::Z,
+                        target.range + target.exit_margin,
+                        0.0,
+                        TAU,
+                        33,
+                    )[..32],
+                    color.gamma_multiply(0.45),
+                );
+            }
+            pen.label(ground + Vec3::X * target.range, "USE", color);
         }
     }
     pen.shapes
@@ -3083,6 +3116,38 @@ mod tests {
         editor.set_view_flag(&["plaza/fountain".into()], false);
         frame(&ctx, &mut editor, &runtime, vec![]);
         assert!(editor.scene_input.gizmo_shapes < gizmos);
+    }
+
+    #[test]
+    fn interactable_gizmo_draws_range_and_release_rings() {
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, fixture().0).unwrap();
+        let mut acl = |text: &str| {
+            store
+                .execute(Request::Acl {
+                    text: text.into(),
+                    preview: false,
+                    expected_rev: None,
+                    propose: false,
+                })
+                .unwrap();
+            store.current().unwrap().1
+        };
+        let plain = acl("create cube id=npc");
+        let ring = acl("interact npc range=3");
+        let rings = acl("set npc interact.target/exit_margin 1");
+        let shapes = |world: World| {
+            let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+            let mut editor = Editor::new(world, 1, None);
+            let ctx = egui::Context::default();
+            for _ in 0..3 {
+                frame(&ctx, &mut editor, &runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let (plain, ring, rings) = (shapes(plain), shapes(ring), shapes(rings));
+        assert!(ring > plain, "range ring: {plain} -> {ring}");
+        assert!(rings > ring, "release ring: {ring} -> {rings}");
     }
 
     /// editor-lab plus a path `road` (8 x 6 m rectangle at the origin) followed by `car`.
