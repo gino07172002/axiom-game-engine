@@ -478,3 +478,198 @@ fn vertex_hook_signature_and_blend_modes_are_validated_as_material_contracts() {
         .unwrap();
     }
 }
+
+fn camera(r: &WorldRuntime) -> (Vec3, Value) {
+    let slot = r.state.compiled.indices["tour/camera"];
+    (
+        Vec3::from_array(r.state.transforms[slot].as_ref().unwrap().position),
+        json!(
+            r.state.compiled.entities[slot]
+                .camera
+                .as_ref()
+                .unwrap()
+                .projection
+        ),
+    )
+}
+#[test]
+fn free_camera_orbits_zooms_and_pans_within_limits() {
+    let mut r = runtime();
+    call(&mut r, "showcase", "focus", json!({"station":"mat/01-pbr"}));
+    let target = Vec3::new(-25.0, 1.25, 0.0);
+    let (eye, _) = camera(&r);
+    assert!((eye.distance(target) - 7.8).abs() < 1e-3);
+    // Orbit a quarter turn: the eye moves from +Z to +X of the pedestal.
+    call(
+        &mut r,
+        "showcase",
+        "view",
+        json!({"orbit":std::f32::consts::FRAC_PI_2}),
+    );
+    let (eye, _) = camera(&r);
+    assert!(
+        eye.x > target.x + 7.0 && (eye.z - target.z).abs() < 0.1,
+        "{eye:?}"
+    );
+    // Zoom is multiplicative and clamped.
+    call(&mut r, "showcase", "view", json!({"zoom":0.5}));
+    assert!((camera(&r).0.distance(target) - 3.9).abs() < 1e-3);
+    call(&mut r, "showcase", "view", json!({"zoom":0.01}));
+    assert!((camera(&r).0.distance(target) - 2.5).abs() < 1e-3);
+    // Pan moves the look-at point sideways but stays near the exhibit.
+    call(
+        &mut r,
+        "showcase",
+        "view",
+        json!({"pan":[5.0, 0.0],"aspect":1.6}),
+    );
+    let after = camera(&r).0;
+    assert!(after.distance(target) > 2.6 && after.distance(target) < 2.5 + 6.0 * 3.0);
+    call(&mut r, "showcase", "reset_view", json!({}));
+    assert!((camera(&r).0.distance(target) - 7.8).abs() < 1e-3);
+    // Overview: pan and zoom the orthographic map; reset returns home.
+    call(&mut r, "showcase", "overview", json!({}));
+    let (home, projection) = camera(&r);
+    assert_eq!(projection["height"], json!(44.0));
+    call(
+        &mut r,
+        "showcase",
+        "view",
+        json!({"zoom":0.5,"pan":[0.2, 0.0],"aspect":1.6}),
+    );
+    let (moved, projection) = camera(&r);
+    assert_eq!(projection["height"], json!(22.0));
+    assert!(moved.x < home.x - 4.0, "{moved:?}");
+    for bad in [
+        json!({"zoom":0.0}),
+        json!({"orbit":"x"}),
+        json!({"pan":[1.0]}),
+    ] {
+        assert!(r
+            .command(&RuntimeCommand::Call {
+                capability: "showcase".into(),
+                action: "view".into(),
+                args: bad,
+            })
+            .is_err());
+    }
+    call(&mut r, "showcase", "reset_view", json!({}));
+    assert!(camera(&r).0.distance(home) < 1e-3);
+}
+#[test]
+fn mouse_drags_wheel_and_map_clicks_drive_the_camera_through_commands() {
+    let mut r = runtime();
+    let ctx = egui::Context::default();
+    let mut ui = UiState {
+        playing: true,
+        ..Default::default()
+    };
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 720.0));
+    let mut frame = |r: &mut WorldRuntime, events: Vec<egui::Event>| {
+        let mut actions = vec![];
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            |ctx| actions = r.draw_ui(ctx, &mut ui),
+        );
+        let mut names = vec![];
+        for a in actions {
+            if let Action::Gameplay(command) = a {
+                if let RuntimeCommand::Call { action, .. } = &command {
+                    names.push(action.clone());
+                }
+                r.command(&command).unwrap();
+            }
+        }
+        names
+    };
+    frame(&mut r, vec![]);
+    frame(&mut r, vec![]);
+    let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    // Overview: drag pans the map; nothing is entered by a drag release.
+    let start = egui::pos2(700.0, 300.0);
+    let (before, _) = camera(&r);
+    frame(
+        &mut r,
+        vec![egui::Event::PointerMoved(start), button(start, true)],
+    );
+    for k in 1..=6 {
+        frame(
+            &mut r,
+            vec![egui::Event::PointerMoved(
+                start + egui::vec2(k as f32 * 20.0, 0.0),
+            )],
+        );
+    }
+    let end = start + egui::vec2(120.0, 0.0);
+    frame(&mut r, vec![button(end, false)]);
+    let (after, _) = camera(&r);
+    assert!(
+        after.x < before.x - 1.0,
+        "drag right moves the map: {before:?} -> {after:?}"
+    );
+    assert!(r.observation().metrics["showcase"]["active"].is_null());
+    // Clicking a pedestal label enters that exhibit.
+    call(&mut r, "showcase", "reset_view", json!({}));
+    frame(&mut r, vec![]);
+    let slot = r.state.compiled.indices["tour/camera"];
+    let view = axiom_runtime::presentation::RenderView {
+        id: "tour/camera".into(),
+        eye: camera(&r).0,
+        forward: glam::Quat::from_array(r.state.transforms[slot].as_ref().unwrap().rotation)
+            * -Vec3::Z,
+        up: glam::Quat::from_array(r.state.transforms[slot].as_ref().unwrap().rotation) * Vec3::Y,
+        camera: r.state.compiled.entities[slot].camera.clone().unwrap(),
+        instances: vec![],
+    };
+    let label = view
+        .project(Vec3::new(-25.0, 0.25, 3.0), [0.0, 0.0, 1100.0, 720.0])
+        .unwrap();
+    let label = egui::pos2(label[0], label[1]);
+    frame(&mut r, vec![egui::Event::PointerMoved(label)]);
+    frame(&mut r, vec![button(label, true)]);
+    frame(&mut r, vec![button(label, false)]);
+    assert_eq!(r.observation().metrics["showcase"]["active"], "mat/01-pbr");
+    // Station view: wheel zooms in, a left drag orbits.
+    let center = egui::pos2(700.0, 330.0);
+    let target = Vec3::new(-25.0, 1.25, 0.0);
+    frame(&mut r, vec![egui::Event::PointerMoved(center)]);
+    let names = frame(
+        &mut r,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 120.0),
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    for _ in 0..30 {
+        frame(&mut r, vec![]);
+    }
+    assert!(names.contains(&"view".to_string()) || camera(&r).0.distance(target) < 7.7);
+    assert!(camera(&r).0.distance(target) < 7.7, "wheel should zoom in");
+    let (before, _) = camera(&r);
+    frame(&mut r, vec![button(center, true)]);
+    for k in 1..=5 {
+        frame(
+            &mut r,
+            vec![egui::Event::PointerMoved(
+                center + egui::vec2(k as f32 * 25.0, 0.0),
+            )],
+        );
+    }
+    frame(&mut r, vec![button(center + egui::vec2(125.0, 0.0), false)]);
+    let (after, _) = camera(&r);
+    assert!((after.distance(target) - before.distance(target)).abs() < 1e-3);
+    assert!(
+        after.distance(before) > 0.5,
+        "drag should orbit: {before:?} -> {after:?}"
+    );
+}

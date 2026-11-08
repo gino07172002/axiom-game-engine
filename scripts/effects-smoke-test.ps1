@@ -45,12 +45,15 @@ function Call-Effects([string]$Capability,[string]$Action,$ArgsValue=@{}) {
     Command-Effects @{kind='call';capability=$Capability;action=$Action;args=$ArgsValue}
 }
 
-$inventory=Get-Content content/effects-tour/inventory.json -Raw|ConvertFrom-Json
+$inventory=Get-Content content/effects-tour/inventory.json -Raw -Encoding utf8|ConvertFrom-Json
 if($inventory.stations.Count -ne 36){throw 'Official tour inventory must contain 36 actual stations'}
 $verified=Invoke-Effects @('--db',$db,'--pack','content/effects-tour','verify','--ticks','120')
 $revision=(Invoke-Effects @('--db',$db,'query')).rev
 function Offline-Effects($Request) {
-    $raw=($Request|ConvertTo-Json -Compress -Depth 30)|& $exe --db $db rpc
+    # A request file avoids Windows PowerShell 5.1 stdin piping into native programs.
+    $requestFile=Join-Path $dir 'rpc-request.json'
+    [IO.File]::WriteAllText($requestFile,($Request|ConvertTo-Json -Compress -Depth 30))
+    $raw=& $exe --db $db rpc $requestFile
     if($LASTEXITCODE -ne 0){throw 'Offline authoring command failed'}
     $response=$raw|ConvertFrom-Json
     if(-not $response.ok){throw ($response|ConvertTo-Json -Depth 20)}
@@ -72,6 +75,7 @@ if(-not $SkipCaptures) {
 $changed=Offline-Effects @{op='apply';expected_rev=$revision;edits=@(@{kind='set_field';target=@{kind='resource';id='showcase.tour'};field='/initial';value=$null})}
 $revision=$changed.rev
 $process=Start-Process -FilePath $exe -ArgumentList ('--db "{0}" play --start --port {1} --smoke-frames 900 --screenshot "{2}"' -f $db,$Port,"$dir/live-repaired.png") -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput "$dir/live.log" -RedirectStandardError "$dir/live-errors.log"
+$null=$process.Handle
 try {
     $ready=Wait-Effects {param($o)$o.gpu -and $o.showcase.stations -eq 36}
     $firstDelta=Send-Effects @{op='observe_delta';fields=@('/showcase','/shader','/activation','/rev')}
@@ -107,7 +111,7 @@ try {
     if(-not $delta.ok){throw 'Projected effects observation failed'}
     if(-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0){throw 'Effects native helper timed out or failed'}
 } finally {if(-not $process.HasExited){Stop-Process -Id $process.Id;[void]$process.WaitForExit(5000)}}
-$final=Get-Content "$dir/live-repaired.json" -Raw|ConvertFrom-Json
+$final=Get-Content "$dir/live-repaired.json" -Raw -Encoding utf8|ConvertFrom-Json
 if($final.activation -ne 'applied' -or $final.showcase.active -ne 'mat/03-metalness'){throw 'Final native screenshot is not the repaired material instance'}
 if((Get-FileHash -LiteralPath $exe).Hash -ne $hash){throw 'Executable changed during effects QA'}
 $report=@{ok=$true;exe_sha256=$hash;source_commit=$inventory.commit;inventory_count=$inventory.stations.Count;captures=$captures;overview="$dir/overview.png";verified=$verified;live=@{focused=$focused;applied=$applied;preview=$previewed;delta=$delta;budget_rejection=$rejected;gpu_stage_failure=$retained;repair=$restored;gpu_inspection=$inspected};completed=$final;final_screenshot="$dir/live-repaired.png"}
