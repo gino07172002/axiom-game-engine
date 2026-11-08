@@ -170,6 +170,9 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
   偏離:未拆分 `RuntimeSystem` trait 的類型專屬 hook(R5:hook 皆有預設實作,外掛不需實作;拆分屬重構,另案)。
 - **M8(2026-11-08)**:Inspector 元件改為 Form/JSON 雙模式。Form 依值的 JSON 形狀產生控制項(數值 DragValue 保留整數/浮點、bool、字串、≤4 數字陣列、巢狀物件可摺疊),提示取自 registry 描述與世界 RecordSchema;Apply 只寫出改變的葉節點(`set_field`),保留 prefab 繼承;未知元件 ID 立即警示。新增 History 面板(revision 列表、點選看前→後差異、Restore 追加還原 revision)與 Problems 面板(結構化診斷 code/path/message、點路徑選取並對焦實體、Verify 按鈕)。
   證據:editor 單元測試 14 項(新增表單只寫葉節點、診斷路徑解析、History/Problems 以真實 Store 資料渲染);clippy exit 0;workspace 217 passed;editor smoke `ok:true`;History 面板 GPU 截圖目視確認(暫時性截圖修改已還原)。
+- **M9(2026-11-08)**:多選(Ctrl 切換、Shift 加入;樹與視口皆可;次要選取以藍色外框顯示)、Delete 批次刪除、Ctrl+D 批次複製(ID 不衝突)、Ctrl+C/Ctrl+V(egui-winit 送 Copy/Paste 事件;複製 ID 清單到系統剪貼簿,貼上可接受外部 ID 清單)、Esc 清除選取、場景樹拖放改父層(含「拖到這裡成為根物件」區)、篩選結果顯示祖先麵包屑、Snap(0.25 m / 15° / 0.1,拖曳時按 Ctrl 反轉)與 Grid 常駐開關。
+  證據:editor 單元測試 16 項(新增多選/批次/剪貼簿/Esc、snap 量化);clippy exit 0;workspace 219 passed;editor smoke `ok:true`;工具列與樹截圖目視確認(`⤒` 字元缺字已改純文字)。
+  未做:local/world 座標切換(Move 仍為世界軸、Rotate/Scale 為本地軸);匯入骨架網格(glTF)的 picking——目前只命中 `render.mesh` 部件與無網格實體的樞紐標記;拖放改父層未做自動化 GUI 測試(egui dnd 需真實指標流程),僅手動路徑經由 `Reparent` 既有測試覆蓋。
 
 ## 修訂補記
 

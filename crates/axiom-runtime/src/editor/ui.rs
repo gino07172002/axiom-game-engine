@@ -44,6 +44,7 @@ impl Editor {
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
         if !text_focused {
+            let mut copied = None;
             ctx.input(|i| {
                 // Bare letter shortcuts only; Ctrl+R / Ctrl+W etc. belong to other commands.
                 let bare = !i.modifiers.any();
@@ -69,7 +70,48 @@ impl Editor {
                         actions.push(action);
                     }
                 }
+                let idle = !self.dirty() && self.drag.is_none();
+                if idle && bare && i.key_pressed(Key::Delete) {
+                    actions.extend(self.delete_selection());
+                }
+                if idle && i.modifiers.command && i.key_pressed(Key::D) {
+                    actions.extend(self.duplicate_ids(&self.selection()));
+                }
+                // egui-winit turns Ctrl+C / Ctrl+V into Copy / Paste events, not key presses.
+                for event in &i.events {
+                    match event {
+                        egui::Event::Copy if self.selected.is_some() => {
+                            self.clipboard = self.selection();
+                            copied = Some(self.clipboard.join("\n"));
+                        }
+                        egui::Event::Paste(text) if idle => {
+                            // Pasted text may be an ID list from another window or an agent.
+                            let ids: Vec<String> = text
+                                .lines()
+                                .map(str::trim)
+                                .filter(|id| self.world.entity(id).is_some())
+                                .map(str::to_owned)
+                                .collect();
+                            let ids = if ids.is_empty() {
+                                self.clipboard.clone()
+                            } else {
+                                ids
+                            };
+                            actions.extend(self.duplicate_ids(&ids));
+                        }
+                        _ => {}
+                    }
+                }
             });
+            if let Some(text) = copied {
+                ctx.copy_text(text);
+                self.notice(format!("Copied {} object ID(s)", self.clipboard.len()));
+            }
+            let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+            if escape && self.drag.is_none() && !self.dirty() {
+                self.extra.clear();
+                self.select(None);
+            }
         }
         egui::TopBottomPanel::top("editor_toolbar")
             .frame(panel(HEADER, 9))
@@ -176,6 +218,12 @@ impl Editor {
                         if ui.small_button("Frame").on_hover_text("F").clicked() {
                             self.frame_selection = true;
                         }
+                        ui.separator();
+                        ui.toggle_value(&mut self.snap, "Snap").on_hover_text(
+                            "0.25 m · 15° · 0.1 scale. Hold Ctrl while dragging to invert.",
+                        );
+                        ui.toggle_value(&mut self.grid, "Grid")
+                            .on_hover_text("Always draw the ground grid");
                     });
                 });
                 self.scene_view(ui, runtime, &mut actions);
@@ -355,7 +403,23 @@ impl Editor {
                 }
             }
         }
-        caption(ui, format!("{} OBJECTS", rows.len()));
+        ui.horizontal(|ui| {
+            caption(ui, format!("{} OBJECTS", rows.len()));
+            let extra = self.selection().len();
+            if extra > 1 {
+                caption(ui, format!("· {extra} selected"));
+            }
+        });
+        // Dropping a dragged row here makes it a root object.
+        let (_, root_drop) = ui.dnd_drop_zone::<String, ()>(egui::Frame::NONE, |ui| {
+            ui.label(
+                RichText::new("Drop a row here to make it a root")
+                    .small()
+                    .color(MUTED),
+            );
+        });
+        let mut reparent = root_drop.map(|id| ((*id).clone(), None));
+        let modifiers = ui.input(|i| i.modifiers);
         let mut picked = None;
         let mut toggle = None;
         let mut scroll = ScrollArea::vertical()
@@ -397,16 +461,46 @@ impl Editor {
                             MUTED
                         };
                         let label = entity.label.as_deref().unwrap_or(id);
-                        if ui
-                            .selectable_label(
-                                self.selected.as_deref() == Some(id),
-                                RichText::new(format!("{icon}  {}", truncate(label, 26)))
+                        // Filtered rows are flat; show the ancestor path so context isn't lost.
+                        let crumb = if filtered {
+                            let mut chain = vec![];
+                            let mut cursor = graph.parents.get(id).copied();
+                            while let Some(p) = cursor.filter(|_| chain.len() < 2) {
+                                chain.push(graph.objects[p].label.as_deref().unwrap_or(p));
+                                cursor = graph.parents.get(p).copied();
+                            }
+                            chain.reverse();
+                            chain
+                                .iter()
+                                .map(|c| format!("{} › ", truncate(c, 10)))
+                                .collect()
+                        } else {
+                            String::new()
+                        };
+                        let selected =
+                            self.selected.as_deref() == Some(id) || self.extra.contains(id);
+                        let row = ui.dnd_drag_source(
+                            egui::Id::new(("tree_row", id)),
+                            id.to_owned(),
+                            |ui| {
+                                ui.selectable_label(
+                                    selected,
+                                    RichText::new(format!(
+                                        "{icon}  {crumb}{}",
+                                        truncate(label, 26)
+                                    ))
                                     .color(color),
-                            )
-                            .on_hover_text(id)
-                            .clicked()
-                        {
+                                )
+                            },
+                        );
+                        let response = row.inner.on_hover_text(id);
+                        if response.clicked() {
                             picked = Some(id.to_owned());
+                        }
+                        if let Some(dragged) = row.response.dnd_release_payload::<String>() {
+                            if dragged.as_str() != id {
+                                reparent = Some(((*dragged).clone(), Some(id.to_owned())));
+                            }
                         }
                     });
                 });
@@ -418,7 +512,17 @@ impl Editor {
             }
         }
         if let Some(id) = picked {
-            self.try_select(Some(id));
+            self.click_select(Some(id), modifiers);
+        }
+        if let Some((entity, parent)) = reparent.filter(|_| !self.dirty()) {
+            actions.push(self.write(
+                vec![Edit::Core(CoreEdit::Reparent {
+                    entity,
+                    parent,
+                    keep_world: true,
+                })],
+                None,
+            ));
         }
     }
 

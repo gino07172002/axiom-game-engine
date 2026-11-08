@@ -270,6 +270,13 @@ pub(crate) struct Editor {
     history_diff: Option<(i64, Value)>,
     /// Recent structured diagnostics `{code, path, message}`, newest first.
     problems: Vec<Value>,
+    /// Additional selected objects (Ctrl/Shift click); `selected` stays the inspector target.
+    extra: BTreeSet<String>,
+    clipboard: Vec<String>,
+    /// Snap gizmo edits (0.25 m, 15°, 0.1 scale); holding Ctrl inverts while dragging.
+    snap: bool,
+    /// Always draw the ground grid (otherwise only in worlds without meshes).
+    grid: bool,
 }
 
 impl Editor {
@@ -304,6 +311,10 @@ impl Editor {
             needs_history: true,
             history_diff: None,
             problems: Vec::new(),
+            extra: BTreeSet::new(),
+            clipboard: Vec::new(),
+            snap: false,
+            grid: false,
         };
         if selected
             .as_ref()
@@ -326,6 +337,8 @@ impl Editor {
         self.rev = rev;
         self.world = world;
         self.needs_history = true;
+        let world = &self.world;
+        self.extra.retain(|id| world.entity(id).is_some());
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
         // Dropping the drag without resetting would strand an uncommittable stale draft.
         let interrupted = self.drag.take().is_some();
@@ -356,6 +369,78 @@ impl Editor {
         if local || !self.dirty() {
             self.reset_draft();
         }
+    }
+
+    /// Primary plus extra selections, primary first.
+    pub(crate) fn selection(&self) -> Vec<String> {
+        self.selected
+            .iter()
+            .cloned()
+            .chain(
+                self.extra
+                    .iter()
+                    .filter(|id| Some(*id) != self.selected.as_ref())
+                    .cloned(),
+            )
+            .collect()
+    }
+
+    /// Ctrl toggles, Shift adds, a plain click replaces the selection.
+    pub(crate) fn click_select(&mut self, id: Option<String>, modifiers: egui::Modifiers) {
+        match id {
+            Some(id) if (modifiers.command || modifiers.shift) && self.selected.is_some() => {
+                if self.selected.as_ref() == Some(&id) {
+                    return;
+                }
+                if modifiers.command && self.extra.contains(&id) {
+                    self.extra.remove(&id);
+                } else {
+                    self.extra.insert(id);
+                }
+            }
+            other => {
+                self.extra.clear();
+                self.try_select(other);
+            }
+        }
+    }
+
+    fn delete_selection(&self) -> Option<Action> {
+        let ids = self.selection();
+        (!ids.is_empty()).then(|| {
+            self.write(
+                ids.into_iter()
+                    .map(|id| Edit::Core(CoreEdit::DeleteEntity { id }))
+                    .collect(),
+                None,
+            )
+        })
+    }
+
+    fn duplicate_ids(&self, ids: &[String]) -> Option<Action> {
+        let mut taken = BTreeSet::new();
+        let mut edits = vec![];
+        let mut first = None;
+        for source in ids.iter().filter(|id| self.world.entity(id).is_some()) {
+            let base = format!("{}/copy", source.chars().take(24).collect::<String>());
+            let id = (1..)
+                .map(|n| {
+                    if n == 1 {
+                        base.clone()
+                    } else {
+                        format!("{base}/{n}")
+                    }
+                })
+                .find(|id| self.world.entity(id).is_none() && !taken.contains(id))
+                .unwrap();
+            taken.insert(id.clone());
+            first.get_or_insert(id.clone());
+            edits.push(Edit::Core(CoreEdit::DuplicateEntity {
+                source: source.clone(),
+                id,
+            }));
+        }
+        (!edits.is_empty()).then(|| self.write(edits, first))
     }
 
     pub fn set_history(&mut self, rows: &Value) {

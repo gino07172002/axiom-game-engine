@@ -111,27 +111,32 @@ pub(super) struct Drag {
     tool: Tool,
 }
 impl Drag {
-    fn transform(&self, cursor: Pos2) -> Transform {
+    /// Gizmo result; with `snap`, moves step 0.25 m, rotations 15°, scales 0.1.
+    fn transform(&self, cursor: Pos2, snap: bool) -> Transform {
         let mut next = self.initial.clone();
         let pixels = (cursor - self.origin).dot(self.screen_axis);
+        let step = |x: f32, s: f32| if snap { (x / s).round() * s } else { x };
         match self.tool {
             Tool::Move => {
                 let offset = self
                     .parent_inverse
-                    .transform_vector3(AXES[self.axis] * pixels * self.world_units);
+                    .transform_vector3(AXES[self.axis] * step(pixels * self.world_units, 0.25));
                 next.position = (Vec3::from_array(next.position) + offset)
                     .clamp(Vec3::splat(-100000.0), Vec3::splat(100000.0))
                     .to_array();
             }
             Tool::Rotate => {
                 next.rotation = (Quat::from_array(next.rotation)
-                    * Quat::from_axis_angle(AXES[self.axis], pixels * 0.012))
+                    * Quat::from_axis_angle(
+                        AXES[self.axis],
+                        step(pixels * 0.012, 15f32.to_radians()),
+                    ))
                 .normalize()
                 .to_array();
             }
             Tool::Scale => {
-                next.scale[self.axis] =
-                    (next.scale[self.axis] * (pixels * 0.014).exp()).clamp(0.0001, 10000.0)
+                next.scale[self.axis] = step(next.scale[self.axis] * (pixels * 0.014).exp(), 0.1)
+                    .clamp(if snap { 0.1 } else { 0.0001 }, 10000.0)
             }
             Tool::Select => {}
         }
@@ -284,7 +289,7 @@ fn pick(
     best
 }
 
-fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4) {
+fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4, color: Color32) {
     for i in 0..8 {
         let corner = |j: usize| {
             Vec3::new(
@@ -300,7 +305,7 @@ fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4) {
                     view,
                     matrix.transform_point3(corner(i)),
                     matrix.transform_point3(corner(i | axis)),
-                    Stroke::new(1.2_f32, Color32::from_rgb(252, 188, 111)),
+                    Stroke::new(1.2_f32, color),
                 );
             }
         }
@@ -437,11 +442,12 @@ impl Editor {
             matrix: self.orbit.matrix(rect),
             rect,
         };
-        if !state
-            .entities
-            .iter()
-            .enumerate()
-            .any(|(i, e)| visible(i) && e.mesh.is_some())
+        if self.grid
+            || !state
+                .entities
+                .iter()
+                .enumerate()
+                .any(|(i, e)| visible(i) && e.mesh.is_some())
         {
             for i in -8..=8 {
                 let p = i as f32;
@@ -543,7 +549,8 @@ impl Editor {
                 self.select(self.selected.clone());
             } else if let Some(draft) = &mut self.draft {
                 if let Some(cursor) = ui.input(|i| i.pointer.latest_pos()) {
-                    let t = drag.transform(cursor);
+                    let snap = self.snap != ui.input(|i| i.modifiers.command);
+                    let t = drag.transform(cursor, snap);
                     draft.transform_dirty = t != drag.initial;
                     draft.angles = degrees(&t);
                     draft.transform = Some(t);
@@ -566,7 +573,23 @@ impl Editor {
         } else if ready && response.clicked_by(PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 if hovered_axis.is_none() {
-                    self.try_select(pick(runtime, &matrices, &view, pos));
+                    let modifiers = ui.input(|i| i.modifiers);
+                    self.click_select(pick(runtime, &matrices, &view, pos), modifiers);
+                }
+            }
+        }
+        // Secondary selections: thinner, cooler outline.
+        for id in &self.extra {
+            if let Some(&i) = state.indices.get(id).filter(|&&i| visible(i)) {
+                if let Some(mesh) = &state.entities[i].mesh {
+                    for part in &mesh.parts {
+                        draw_box(
+                            &painter,
+                            &view,
+                            matrices[i] * part.transform.matrix(),
+                            Color32::from_rgb(140, 200, 255),
+                        );
+                    }
                 }
             }
         }
@@ -574,7 +597,12 @@ impl Editor {
             if visible(i) {
                 if let Some(mesh) = &state.entities[i].mesh {
                     for part in &mesh.parts {
-                        draw_box(&painter, &view, model * part.transform.matrix());
+                        draw_box(
+                            &painter,
+                            &view,
+                            model * part.transform.matrix(),
+                            Color32::from_rgb(252, 188, 111),
+                        );
                     }
                 }
                 if let Some(handles) = handles {
@@ -922,6 +950,94 @@ mod tests {
             after.prefabs["grunt"].components["core.health"]["value"],
             100
         );
+    }
+
+    #[test]
+    fn multi_select_batch_delete_duplicate_and_clipboard() {
+        let (world, runtime) = fixture();
+        let mut editor = Editor::new(world, 1, Some("stage/crate".into()));
+        let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+        editor.click_select(Some("stage/rack".into()), ctrl);
+        editor.click_select(Some("stage/beacon".into()), egui::Modifiers::SHIFT);
+        assert_eq!(
+            editor.selection(),
+            ["stage/crate", "stage/beacon", "stage/rack"]
+        );
+        editor.click_select(Some("stage/rack".into()), ctrl);
+        assert_eq!(editor.selection(), ["stage/crate", "stage/beacon"]);
+        let Some(Action::Write {
+            request: Request::Apply { edits, .. },
+            ..
+        }) = editor.delete_selection()
+        else {
+            panic!("delete must be one write");
+        };
+        assert_eq!(edits.len(), 2);
+        let Some(Action::Write {
+            request: Request::Apply { edits, .. },
+            select,
+        }) = editor.duplicate_ids(&editor.selection())
+        else {
+            panic!("duplicate must be one write");
+        };
+        let ids: Vec<_> = edits
+            .iter()
+            .map(|e| match e {
+                Edit::Core(CoreEdit::DuplicateEntity { id, .. }) => id.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, ["stage/crate/copy", "stage/beacon/copy"]);
+        assert_eq!(select.as_deref(), Some("stage/crate/copy"));
+        // Ctrl+C / Ctrl+V arrive as Copy / Paste events from egui-winit.
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut editor, &runtime, vec![egui::Event::Copy]);
+        assert_eq!(editor.clipboard, ["stage/crate", "stage/beacon"]);
+        let pasted = frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::Paste("stage/rack\nnot-an-entity\n".into())],
+        );
+        assert!(matches!(
+            pasted.as_slice(),
+            [Action::Write { request: Request::Apply { edits, .. }, .. }]
+                if matches!(&edits[0], Edit::Core(CoreEdit::DuplicateEntity { source, .. }) if source == "stage/rack")
+        ));
+        let key = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut editor, &runtime, vec![key]);
+        assert!(editor.selection().is_empty());
+    }
+
+    #[test]
+    fn snapping_quantizes_move_rotate_and_scale() {
+        let drag = |tool| Drag {
+            initial: Transform::default(),
+            origin: Pos2::ZERO,
+            screen_axis: vec2(1.0, 0.0),
+            parent_inverse: Mat4::IDENTITY,
+            axis: 0,
+            world_units: 0.013,
+            tool,
+        };
+        let cursor = pos2(31.0, 0.0);
+        let moved = drag(Tool::Move).transform(cursor, true).position[0];
+        assert!(
+            (moved / 0.25 - (moved / 0.25).round()).abs() < 1e-5,
+            "{moved}"
+        );
+        assert!((drag(Tool::Move).transform(cursor, false).position[0] - 0.403).abs() < 1e-4);
+        let r = Quat::from_array(drag(Tool::Rotate).transform(cursor, true).rotation);
+        let deg = r.to_axis_angle().1.to_degrees();
+        assert!((deg / 15.0 - (deg / 15.0).round()).abs() < 1e-3, "{deg}");
+        let s = drag(Tool::Scale).transform(cursor, true).scale[0];
+        assert!((s * 10.0 - (s * 10.0).round()).abs() < 1e-4, "{s}");
     }
 
     #[test]
