@@ -86,7 +86,11 @@ impl App {
         let (rev, world) = store.current()?;
         let editor = match &options.mode {
             RunMode::Play => None,
-            RunMode::Editor { selected } => Some(Editor::new(world.clone(), rev, selected.clone())),
+            RunMode::Editor { selected } => {
+                let mut editor = Editor::new(world.clone(), rev, selected.clone());
+                editor.set_component_hints(&registry.authoring);
+                Some(editor)
+            }
         };
         let mut runtime = WorldRuntime::new(world, rev, registry.clone())?;
         if let Some(slot) = &options.load_slot {
@@ -342,6 +346,33 @@ impl App {
                 }
                 Ok(())
             }
+            editor::Action::LoadDiff { rev } => {
+                let diff = self.store.execute(Request::Diff {
+                    from_rev: rev - 1,
+                    to_rev: rev,
+                    offset: 0,
+                    limit: Some(64),
+                })?;
+                self.editor.as_mut().unwrap().set_history_diff(rev, diff);
+                Ok(())
+            }
+            editor::Action::RestoreTo { rev } => {
+                let request = Request::Undo {
+                    rev,
+                    expected_rev: Some(editor.rev),
+                };
+                let result = self.store.execute(request.clone())?;
+                editor.record(request, &result);
+                self.reload_after(result["rev"].as_i64())
+            }
+            editor::Action::Verify => {
+                let result = self.store.execute(Request::Verify {})?;
+                self.editor.as_mut().unwrap().notice(format!(
+                    "Verify passed · revision {} · {} entities",
+                    result["rev"], result["entities"]
+                ));
+                Ok(())
+            }
             editor::Action::Restore { rev, redo } => {
                 let previous = editor.rev;
                 let request = Request::Undo {
@@ -491,12 +522,16 @@ impl App {
             .handle_platform_output(&window, output.platform_output.clone());
         for action in editor::coalesce(editor_actions) {
             if let Err(error) = self.editor_action(action) {
-                self.editor
-                    .as_mut()
-                    .unwrap()
-                    .set_error(format!("{error:#}"));
+                self.editor.as_mut().unwrap().problem(&error);
                 self.reload()?;
             }
+        }
+        if self.editor.as_ref().is_some_and(|e| e.needs_history) {
+            let rows = self.store.execute(Request::History { limit: Some(64) })?;
+            self.editor
+                .as_mut()
+                .unwrap()
+                .set_history(&rows["revisions"]);
         }
         if stop {
             self.editor_play(false)?;

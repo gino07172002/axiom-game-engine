@@ -624,6 +624,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::Dock;
     use axiom_core::{CoreEdit, Edit, Request, Store, World};
 
     fn fixture() -> (World, WorldRuntime) {
@@ -869,6 +870,116 @@ mod tests {
         assert_eq!(edits.len(), 2);
         assert_eq!(select.as_deref(), Some("b"));
         assert!(matches!(merged[1], Action::Play));
+    }
+
+    #[test]
+    fn form_edits_write_only_changed_leaves_and_keep_prefab_inheritance() {
+        let mut world = World::empty("forms");
+        world.prefabs.insert(
+            "grunt".into(),
+            axiom_core::Prefab {
+                components: [(
+                    "core.health".into(),
+                    serde_json::json!({"value":100,"max":100}),
+                )]
+                .into(),
+            },
+        );
+        let mut e = axiom_core::Entity::new("grunt/1");
+        e.prefab = Some("grunt".into());
+        world.entities.push(e);
+        let mut editor = Editor::new(world.clone(), 1, Some("grunt/1".into()));
+        let entity = editor.world.entity("grunt/1").unwrap().clone();
+        let draft = editor.draft.as_mut().unwrap();
+        draft.open_component(&world, &entity, "core.health");
+        assert!(!draft.json_mode, "objects open in form mode");
+        assert_eq!(
+            draft.form_base["max"], 100,
+            "form shows the inherited value"
+        );
+        draft.form.as_mut().unwrap()["value"] = serde_json::json!(40);
+        draft.form_dirty = true;
+        let edits = draft.edits().unwrap();
+        let [Edit::Core(CoreEdit::SetField { field, value, .. })] = edits.as_slice() else {
+            panic!("expected exactly one leaf edit, got {edits:?}");
+        };
+        assert_eq!(field, "/components/core.health/value");
+        assert_eq!(value, &serde_json::json!(40));
+        let mut store = Store::memory_with(crate::installed_registry().authoring, world).unwrap();
+        store
+            .execute(Request::Apply {
+                expected_rev: Some(1),
+                edits,
+            })
+            .unwrap();
+        let (_, after) = store.current().unwrap();
+        assert_eq!(
+            after.entity("grunt/1").unwrap().components["core.health"],
+            serde_json::json!({"value":40}),
+            "only the changed leaf becomes an override"
+        );
+        assert_eq!(
+            after.prefabs["grunt"].components["core.health"]["value"],
+            100
+        );
+    }
+
+    #[test]
+    fn diagnostic_paths_resolve_to_selectable_entities() {
+        let (world, _) = fixture();
+        use crate::editor::entity_in_path;
+        assert_eq!(
+            entity_in_path("/entities/@stage~1crate/label", &world).as_deref(),
+            Some("stage/crate")
+        );
+        assert_eq!(
+            entity_in_path("entities/stage/crate/components", &world).as_deref(),
+            Some("stage/crate")
+        );
+        assert_eq!(entity_in_path("/resources/x", &world), None);
+        assert_eq!(entity_in_path("/entities/@ghost/label", &world), None);
+    }
+
+    #[test]
+    fn history_and_problem_panels_render_with_real_store_data() {
+        let (world, runtime) = fixture();
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, world.clone()).unwrap();
+        let apply = Request::Apply {
+            expected_rev: Some(1),
+            edits: vec![Edit::Core(CoreEdit::SetField {
+                target: axiom_core::local::Target::Entity {
+                    id: "stage/crate".into(),
+                },
+                field: "/label".into(),
+                value: serde_json::json!("Renamed"),
+            })],
+        };
+        store.execute(apply.clone()).unwrap();
+        let conflict = store.execute(apply).unwrap_err();
+        let (rev, after) = store.current().unwrap();
+        let mut editor = Editor::new(after, rev, None);
+        editor
+            .set_history(&store.execute(Request::History { limit: Some(8) }).unwrap()["revisions"]);
+        assert_eq!(editor.history.len(), 2);
+        assert!(!editor.needs_history);
+        let diff = store
+            .execute(Request::Diff {
+                from_rev: 1,
+                to_rev: 2,
+                offset: 0,
+                limit: Some(64),
+            })
+            .unwrap();
+        editor.set_history_diff(2, diff);
+        editor.problem(&conflict);
+        assert_eq!(editor.problems[0]["code"], "revision_conflict");
+        let ctx = egui::Context::default();
+        for dock in [Dock::History, Dock::Problems] {
+            editor.dock = dock;
+            // Rendering must not panic and must not emit writes on its own.
+            assert!(frame(&ctx, &mut editor, &runtime, vec![]).is_empty());
+        }
     }
 
     #[test]

@@ -561,8 +561,14 @@ impl Editor {
                         egui::CollapsingHeader::new("Components")
                             .default_open(true)
                             .show(ui, |ui| {
-                                structural = component_editor(ui, &self.world, entity, draft)
-                                    .or(structural.take());
+                                structural = component_editor(
+                                    ui,
+                                    &self.world,
+                                    &self.component_hints,
+                                    entity,
+                                    draft,
+                                )
+                                .or(structural.take());
                             });
                         ui.separator();
                         ui.add_enabled_ui(!draft.dirty(), |ui| {
@@ -652,8 +658,15 @@ impl Editor {
     fn dock(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let mut resource = None;
         ui.horizontal(|ui| {
+            let problems = if self.problems.is_empty() {
+                "Problems".to_owned()
+            } else {
+                format!("Problems ({})", self.problems.len())
+            };
             for (dock, title) in [
                 (Dock::Changes, "Changes"),
+                (Dock::History, "History"),
+                (Dock::Problems, problems.as_str()),
                 (Dock::Assets, "Assets"),
                 (Dock::Agent, "AI / Protocol"),
             ] {
@@ -670,10 +683,77 @@ impl Editor {
             .on_hover_text(&self.status);
         });
         ui.separator();
+        let mut jump = None;
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match self.dock {
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
+            }
+            Dock::History => {
+                ui.columns(2, |cols| {
+                    cols[0].label(RichText::new("REVISIONS · newest first").small().color(MUTED));
+                    for row in &self.history {
+                        let rev = row["rev"].as_i64().unwrap_or(0);
+                        let current = rev == self.rev;
+                        let selected = self.history_diff.as_ref().is_some_and(|(r, _)| *r == rev);
+                        cols[0].horizontal(|ui| {
+                            let text = format!(
+                                "{}{rev:>4}  {:<14} {}",
+                                if current { "● " } else { "  " },
+                                truncate(row["reason"].as_str().unwrap_or(""), 14),
+                                row["created_at"].as_str().unwrap_or("").get(11..19).unwrap_or("")
+                            );
+                            if ui.selectable_label(selected, RichText::new(text).monospace()).clicked() && rev > 1 {
+                                actions.push(Action::LoadDiff { rev });
+                            }
+                            if !current && ui.add_enabled(!self.dirty(), egui::Button::new("Restore").small())
+                                .on_hover_text(format!("Append a revision restoring {rev}; history is kept"))
+                                .clicked()
+                            {
+                                actions.push(Action::RestoreTo { rev });
+                            }
+                        });
+                    }
+                    match &self.history_diff {
+                        None => { cols[1].label(RichText::new("Select a revision to see its before → after changes.").small().color(MUTED)); }
+                        Some((rev, diff)) => {
+                            cols[1].label(RichText::new(format!("{} → {rev} · {} change(s)", rev - 1, diff["total_changes"])).small().color(MUTED));
+                            for change in diff["changes"].as_array().into_iter().flatten() {
+                                let path = change["path"].as_str().unwrap_or("?");
+                                let short = |v: &Value| { let s = axiom_core::local::display_value(v).to_string(); if s.len() > 40 { format!("{}…", &s[..s.char_indices().nth(39).map_or(s.len(), |(i, _)| i)]) } else { s } };
+                                let line = match change["kind"].as_str() {
+                                    Some("added") => format!("+ {path} = {}", short(&change["after"])),
+                                    Some("removed") => format!("- {path}"),
+                                    _ => format!("~ {path}: {} → {}", short(&change["before"]), short(&change["after"])),
+                                };
+                                let label = cols[1].label(RichText::new(line).monospace().small());
+                                if let Some(id) = super::entity_in_path(path, &self.world) {
+                                    if label.on_hover_text("Click to select").clicked() { jump = Some(id); }
+                                }
+                            }
+                            if diff["next_offset"].is_number() { cols[1].label(RichText::new("… more changes; use `axiom acl -e \"diff A B\"`").small().color(MUTED)); }
+                        }
+                    }
+                });
+            }
+            Dock::Problems => {
+                ui.horizontal(|ui| {
+                    if ui.button("Verify world").clicked() { actions.push(Action::Verify); }
+                    if !self.problems.is_empty() && ui.button("Clear").clicked() { self.problems.clear(); }
+                });
+                if self.problems.is_empty() { caption(ui,"No problems. Failed edits and verification errors appear here with their paths."); }
+                for p in &self.problems {
+                    let path = p["path"].as_str().unwrap_or("");
+                    let target = super::entity_in_path(path, &self.world);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(p["code"].as_str().unwrap_or("error")).monospace().color(WARNING));
+                        let link = ui.add(egui::Label::new(RichText::new(path).monospace()).sense(egui::Sense::click()));
+                        if let Some(id) = &target {
+                            if link.on_hover_text(format!("Select {id}")).clicked() { jump = Some(id.clone()); }
+                        }
+                        ui.label(p["message"].as_str().unwrap_or(""));
+                    });
+                }
             }
             Dock::Assets => {
                 ui.horizontal(|ui| {
@@ -718,6 +798,10 @@ impl Editor {
         });
         if let Some(id) = resource {
             self.open_resource(&id);
+        }
+        if let Some(id) = jump {
+            self.try_select(Some(id));
+            self.frame_selection = true;
         }
     }
 
@@ -791,6 +875,7 @@ impl Editor {
 fn component_editor(
     ui: &mut Ui,
     world: &World,
+    hints: &std::collections::BTreeMap<String, Value>,
     entity: &Entity,
     draft: &mut Draft,
 ) -> Option<CoreEdit> {
@@ -800,19 +885,17 @@ fn component_editor(
         .keys()
         .chain(inherited.into_iter().flat_map(|p| p.components.keys()))
         .filter(|key| key.as_str() != "core.transform")
+        .cloned()
         .collect();
     let mut remove = None;
-    ui.add_enabled_ui(!draft.component_dirty, |ui| {
+    ui.add_enabled_ui(!draft.component_dirty && !draft.form_dirty, |ui| {
         ui.horizontal_wrapped(|ui| {
-            for key in keys {
-                if ui.small_button(key).clicked() {
-                    draft.component.clone_from(key);
-                    draft.component_input.clone_from(key);
-                    // Edit authored overrides directly to preserve live prefab inheritance.
-                    draft.json = serde_json::to_string_pretty(
-                        entity.components.get(key).unwrap_or(&json!({})),
-                    )
-                    .unwrap();
+            for key in &keys {
+                if ui
+                    .selectable_label(draft.component == *key, key.as_str())
+                    .clicked()
+                {
+                    draft.open_component(world, entity, key);
                 }
             }
         });
@@ -823,17 +906,66 @@ fn component_editor(
                     .desired_width(135.0),
             );
             if ui.small_button("Load").clicked() {
-                draft.component = draft.component_input.trim().to_owned();
-                draft.json = serde_json::to_string_pretty(
-                    entity
-                        .components
-                        .get(&draft.component)
-                        .unwrap_or(&json!({})),
-                )
-                .unwrap();
+                let id = draft.component_input.trim().to_owned();
+                draft.open_component(world, entity, &id);
             }
         });
     });
+    if !draft.component.is_empty() && draft.component != "core.transform" {
+        let known = hints.contains_key(&draft.component)
+            || world.component_schemas.contains_key(&draft.component);
+        if !known && !keys.contains(&draft.component) {
+            ui.label(
+                RichText::new(format!(
+                    "Unknown component '{}'. Check the ID (schema components lists them).",
+                    draft.component
+                ))
+                .color(WARNING),
+            );
+        }
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!draft.dirty(), |ui| {
+                if ui
+                    .selectable_label(!draft.json_mode, "Form")
+                    .on_hover_text("Edit the effective value; only changed fields are written")
+                    .clicked()
+                    && draft.form.is_some()
+                {
+                    draft.json_mode = false;
+                }
+                if ui
+                    .selectable_label(draft.json_mode, "JSON")
+                    .on_hover_text("Edit the authored override as raw JSON")
+                    .clicked()
+                {
+                    draft.json_mode = true;
+                }
+            });
+        });
+        if !draft.json_mode {
+            if let Some(form) = &mut draft.form {
+                let hint = super::form::hints_for(hints, world, &draft.component);
+                draft.form_dirty |= super::form::edit(ui, &draft.component, form, hint.as_ref());
+                if draft.form_dirty {
+                    let mut leaves = vec![];
+                    super::form::changes(&draft.form_base, form, "", &mut leaves);
+                    caption(
+                        ui,
+                        format!(
+                            "{} changed field(s): {}",
+                            leaves.len(),
+                            leaves
+                                .iter()
+                                .map(|(p, _)| p.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                }
+            }
+            return remove;
+        }
+    }
     if !draft.component.is_empty() && draft.component != "core.transform" {
         let own = entity.components.contains_key(&draft.component);
         let inherits = inherited.is_some_and(|p| p.components.contains_key(&draft.component));

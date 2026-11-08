@@ -1,3 +1,4 @@
+mod form;
 mod resource;
 mod ui;
 mod viewport;
@@ -18,6 +19,32 @@ pub(crate) enum Action {
         redo: bool,
     },
     Play,
+    /// Load the before/after diff of one revision against its predecessor.
+    LoadDiff {
+        rev: i64,
+    },
+    /// Append a revision restoring `rev` (timeline restore, independent of the undo stack).
+    RestoreTo {
+        rev: i64,
+    },
+    Verify,
+}
+
+/// Entity ID referenced by a diagnostic path, if any (`/entities/@a~1b/...` or
+/// `entities/a/b/components...`).
+pub(crate) fn entity_in_path(path: &str, world: &World) -> Option<String> {
+    let id = if let Some(rest) = path.strip_prefix("/entities/@") {
+        rest.split('/')
+            .next()?
+            .replace("~1", "/")
+            .replace("~0", "~")
+    } else {
+        path.strip_prefix("entities/")?
+            .split("/components")
+            .next()?
+            .to_owned()
+    };
+    world.entity(&id).map(|e| e.id.clone())
 }
 
 /// Every action drawn in one frame was built against the same revision. Adjacent applies
@@ -73,11 +100,55 @@ struct Draft {
     transform_dirty: bool,
     parent_dirty: bool,
     component_dirty: bool,
+    /// Effective (inherited + authored) value being edited in form mode, and its baseline.
+    form: Option<Value>,
+    form_base: Value,
+    form_dirty: bool,
+    json_mode: bool,
 }
 
 impl Draft {
     fn dirty(&self) -> bool {
-        self.label_dirty || self.transform_dirty || self.parent_dirty || self.component_dirty
+        self.label_dirty
+            || self.transform_dirty
+            || self.parent_dirty
+            || self.component_dirty
+            || self.form_dirty
+    }
+
+    /// Starts editing `component`: the form shows the effective value, the JSON box the
+    /// authored override only (so raw JSON edits never flatten prefab inheritance).
+    fn open_component(&mut self, world: &World, entity: &axiom_core::Entity, component: &str) {
+        self.component = component.to_owned();
+        self.component_input = component.to_owned();
+        self.json =
+            serde_json::to_string_pretty(entity.components.get(component).unwrap_or(&json!({})))
+                .unwrap();
+        let effective = crate::editor::ui::component_value(world, entity, component);
+        self.form_base = effective.clone().unwrap_or(Value::Null);
+        self.form = effective.filter(|v| v.is_object());
+        self.json_mode = self.form.is_none();
+        self.form_dirty = false;
+        self.component_dirty = false;
+    }
+
+    fn form_edits(&self) -> Vec<Edit> {
+        let Some(form) = self.form.as_ref().filter(|_| self.form_dirty) else {
+            return vec![];
+        };
+        let mut leaves = vec![];
+        form::changes(&self.form_base, form, "", &mut leaves);
+        let component = self.component.replace('~', "~0").replace('/', "~1");
+        leaves
+            .into_iter()
+            .map(|(pointer, value)| {
+                Edit::Core(CoreEdit::SetField {
+                    target: self.target(),
+                    field: format!("/components/{component}{pointer}"),
+                    value,
+                })
+            })
+            .collect()
     }
 
     fn target(&self) -> Target {
@@ -144,6 +215,7 @@ impl Draft {
                 keep_world: self.keep_world,
             }));
         }
+        edits.extend(self.form_edits());
         if self.component_dirty {
             let value: Value = serde_json::from_str(&self.json)?;
             edits.push(Edit::Core(CoreEdit::SetComponent {
@@ -159,6 +231,8 @@ impl Draft {
 #[derive(Clone, Copy, PartialEq)]
 enum Dock {
     Changes,
+    History,
+    Problems,
     Assets,
     Agent,
 }
@@ -188,6 +262,14 @@ pub(crate) struct Editor {
     frame_selection: bool,
     scroll_selection: bool,
     logo: Option<egui::TextureHandle>,
+    /// Registry component descriptors, used as form hints.
+    component_hints: std::collections::BTreeMap<String, Value>,
+    /// Newest-first revision rows `{rev, reason, created_at}`; refreshed on revision change.
+    history: Vec<Value>,
+    pub(crate) needs_history: bool,
+    history_diff: Option<(i64, Value)>,
+    /// Recent structured diagnostics `{code, path, message}`, newest first.
+    problems: Vec<Value>,
 }
 
 impl Editor {
@@ -217,6 +299,11 @@ impl Editor {
             frame_selection: false,
             scroll_selection: false,
             logo: None,
+            component_hints: Default::default(),
+            history: Vec::new(),
+            needs_history: true,
+            history_diff: None,
+            problems: Vec::new(),
         };
         if selected
             .as_ref()
@@ -238,6 +325,7 @@ impl Editor {
         }
         self.rev = rev;
         self.world = world;
+        self.needs_history = true;
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
         // Dropping the drag without resetting would strand an uncommittable stale draft.
         let interrupted = self.drag.take().is_some();
@@ -268,6 +356,33 @@ impl Editor {
         if local || !self.dirty() {
             self.reset_draft();
         }
+    }
+
+    pub fn set_history(&mut self, rows: &Value) {
+        self.history = rows.as_array().cloned().unwrap_or_default();
+        self.needs_history = false;
+    }
+
+    pub fn set_history_diff(&mut self, rev: i64, diff: Value) {
+        self.history_diff = Some((rev, diff));
+        self.dock = Dock::History;
+    }
+
+    /// Records a failed request as a structured problem and shows it in the status line.
+    pub fn problem(&mut self, error: &anyhow::Error) {
+        let response = axiom_core::error_response(error);
+        let d = response["diagnostics"][0].clone();
+        self.problems.insert(0, d);
+        self.problems.truncate(32);
+        self.set_error(format!("{error:#}"));
+    }
+
+    pub fn set_component_hints(&mut self, registry: &axiom_core::Registry) {
+        self.component_hints = registry
+            .components
+            .iter()
+            .map(|(id, d)| (id.clone(), d.schema.clone()))
+            .collect();
     }
 
     pub fn dirty(&self) -> bool {
@@ -320,6 +435,10 @@ impl Editor {
                 transform_dirty: false,
                 parent_dirty: false,
                 component_dirty: false,
+                form: None,
+                form_base: Value::Null,
+                form_dirty: false,
+                json_mode: false,
             }
         });
     }

@@ -168,6 +168,8 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M7(2026-11-08)**:`world::Plugin` trait、`RuntimeRegistry::with/try_with`(拒絕悄悄取代既有 system factory 或 action schema);CLI 拆成 library(`axiom::main_with(registry)`),`main.rs` 只剩一行。外部範例 `crates/axiom-cli/examples/custom_plugin`(`spin` 能力、`spin.rate` 元件、`spin.step` 系統,只用公開 API)+ `examples/spin-pack`。
   證據:`axiom-cli/tests/plugin.rs` 4 項(系統生效 60 tick=45°、無外掛的 registry 拒絕內容包、外掛 schema 套用於 ACL 編輯、取代既有系統被拒);clippy exit 0;workspace 212 passed;範例執行檔 GPU smoke `systems=spin.step`、ACL 查詢正常;原版 `axiom` 對 spin-pack 回 `missing_capability`。
   偏離:未拆分 `RuntimeSystem` trait 的類型專屬 hook(R5:hook 皆有預設實作,外掛不需實作;拆分屬重構,另案)。
+- **M8(2026-11-08)**:Inspector 元件改為 Form/JSON 雙模式。Form 依值的 JSON 形狀產生控制項(數值 DragValue 保留整數/浮點、bool、字串、≤4 數字陣列、巢狀物件可摺疊),提示取自 registry 描述與世界 RecordSchema;Apply 只寫出改變的葉節點(`set_field`),保留 prefab 繼承;未知元件 ID 立即警示。新增 History 面板(revision 列表、點選看前→後差異、Restore 追加還原 revision)與 Problems 面板(結構化診斷 code/path/message、點路徑選取並對焦實體、Verify 按鈕)。
+  證據:editor 單元測試 14 項(新增表單只寫葉節點、診斷路徑解析、History/Problems 以真實 Store 資料渲染);clippy exit 0;workspace 217 passed;editor smoke `ok:true`;History 面板 GPU 截圖目視確認(暫時性截圖修改已還原)。
 
 ## 修訂補記
 
