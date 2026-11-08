@@ -207,7 +207,12 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
 
 ## 執行紀錄
 
-(尚未開始)
+- **Spike S1–S4(2026-11-08)**,拋棄式程式碼放在 `.tools/spikes/`(git 忽略),不進正式程式碼庫。
+  - **S1 docking:可用。** crates.io 版本對照:`egui_dock 0.16.0` 是最後一個支援 egui ^0.31 的版本(MIT)。無頭測試以真實指標事件拖曳 Console 分頁,版面改變(分頁被拉成浮動 surface);`DockState` 序列化 2409 B,往返相等。
+  - **S2 節點圖:可用。** `egui-snarl 0.7.1`(egui ^0.31.0,MIT/Apache-2.0)。3 節點 2 連線可渲染;拖曳節點標題,節點正好移動 (120, 80),連線保留;序列化往返一致。**注意**:egui 0.31 的標籤預設可選取,在標題文字上拖曳會選取文字而不是拖曳節點,圖編輯區必須設 `selectable_labels = false`。
+  - **S3 Game 視圖 / 相機預覽:不需要離屏渲染。** renderer 已支援同一幀多個 view,各自畫到自己的 `viewport` 區域,再疊上 egui。編輯器的場景視口本身就是這樣做的(`Editor::render_frame` 推入 `editor.orbit`)。暫時加入子母畫面 view,實際截圖顯示 Follow camera 畫在場景視口右下角;Axiom Town、除錯版 300 幀交錯 3 次,中位數 10.1 s → 11.0 s(約 +9%,機器波動大,僅供量級參考)。→ 決策 5 改為「viewport 合成」:UI 在對應區域保持透明(Area 只畫邊框),不另建離屏貼圖。**資產縮圖**仍需真正的離屏渲染與讀回,移到 M5 內再做 spike,不阻擋 M4。spike 程式碼已還原。
+  - **S4 型別化 schema:可用。** 以 JSON-Schema 子集加上 `x-unit` / `x-widget` / `x-ref` / `x-discriminator` 描述 `render.camera`、`fsm.agent`、`ui.nameplate`。`content/` 內 41 個實例(16 / 19 / 6)全部符合,0 違規。生成的表單:投影方式用下拉選單加對應欄位、viewport 用 rect、radius / height 用滑桿並標示單位、machine 用資源選取器、color 用取色器。大小:typed schema 為 874 / 235 / 340 B,現有說明文字為 ~180 / ~40 / ~100 B,約 3.5 倍。→ 決策 4 定案:`discover` 預設與 `discover <component>` 維持精簡說明,typed schema 只在 `discover <component> --typed`(或 `{"typed":true}`)時投影;編輯器在程式內直接讀 registry,不經協定。另發現說明與實作已不同步:`fsm.agent` 的說明沒有列出已存在的 `radius`。typed schema 讓這類漂移可以用測試抓到(M3 加入「實例符合 schema」的測試)。
+  - **GATE 1 通過**;決策 2(egui_dock)、5(viewport 合成)、4(typed schema 依需投影)定案。長期風險:專案的 egui 0.31 落後最新版 0.36 五個大版本,dock 與節點圖套件都要跟著升級(已列在 pre-mortem #6)。
 
 ## 修訂補記
 
