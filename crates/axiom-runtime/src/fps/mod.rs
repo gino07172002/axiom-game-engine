@@ -13,6 +13,18 @@ use serde_json::Value;
 use std::{any::Any, collections::BTreeMap};
 pub fn register(registry: &mut RuntimeRegistry) {
     axiom_fps::register(&mut registry.authoring);
+    registry.authoring.action(
+        "fps.inspect",
+        "fps",
+        serde_json::json!({"id":"sentinel entity ID; returns state, health, distance to player, cooldown and each outgoing transition with its verdict"}),
+        |v| {
+            anyhow::ensure!(
+                v.get("id").and_then(Value::as_str).is_some(),
+                "fps.inspect needs id"
+            );
+            Ok(())
+        },
+    );
     registry.factories.insert("fps.simulate".into(), |state| {
         let sim = simulation::Simulation::from_compiled(&state.compiled, state.revision)?;
         let mut module = FpsSystem {
@@ -30,6 +42,59 @@ struct FpsSystem {
     visuals: Visuals,
 }
 impl FpsSystem {
+    /// Per-sentinel diagnosis: why is it (not) chasing or attacking right now?
+    fn inspect(&self, id: &str) -> Result<Value> {
+        use axiom_fps::{Condition, State};
+        let i = (0..self.sim.actors.positions.len())
+            .find(|&i| self.sim.compiled[i + 1].id == id)
+            .ok_or_else(|| {
+                axiom_core::Diagnostic::error(
+                    "not_found",
+                    "/args/id",
+                    format!("{id} is not a sentinel"),
+                )
+            })?;
+        let state = self.sim.actors.states[i];
+        let health = self.sim.actors.health[i];
+        let distance = (self.sim.position - self.sim.actors.positions[i]).length();
+        let behavior = &self.sim.world.behavior;
+        let transitions: Vec<Value> = if health <= 0.0 {
+            vec![]
+        } else {
+            behavior
+                .transitions
+                .iter()
+                .filter(|t| t.from == state)
+                .map(|t| {
+                    let (when, measured, pass) = match t.when {
+                        Condition::DistanceBelow(v) => {
+                            (format!("distance<{v}"), distance, distance < v)
+                        }
+                        Condition::DistanceAbove(v) => {
+                            (format!("distance>{v}"), distance, distance > v)
+                        }
+                        Condition::HealthBelow(v) => (format!("health<{v}"), health, health < v),
+                    };
+                    serde_json::json!({"to":t.to,"when":when,"measured":measured,"pass":pass})
+                })
+                .collect()
+        };
+        let note = match state {
+            State::Attack if distance >= 2.5 => {
+                Some("in attack state but beyond the 2.5 m strike range")
+            }
+            State::Attack if self.sim.actors.cooldowns[i] > 0.0 => Some("waiting for cooldown"),
+            _ if transitions.is_empty() && health > 0.0 => {
+                Some("no outgoing transitions from this state")
+            }
+            _ => None,
+        };
+        Ok(serde_json::json!({
+            "id":id,"state":state,"health":health,"distance_to_player":distance,
+            "cooldown":self.sim.actors.cooldowns[i],"position":self.sim.actors.positions[i].to_array(),
+            "transitions":transitions,"note":note
+        }))
+    }
     fn sync(&mut self, state: &mut RuntimeState) {
         state.set_position(&self.session.player, self.sim.position.to_array());
         state.set_health(&self.session.player, self.sim.health);
@@ -89,6 +154,25 @@ impl RuntimeSystem for FpsSystem {
             self.sync(next);
         }
         Ok(())
+    }
+    fn command(
+        &mut self,
+        _state: &mut RuntimeState,
+        capability: &str,
+        action: &str,
+        args: &Value,
+    ) -> Option<Result<Value>> {
+        if capability != "fps" {
+            return None;
+        }
+        Some(match action {
+            "inspect" => args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("fps.inspect needs id"))
+                .and_then(|id| self.inspect(id)),
+            other => Err(anyhow::anyhow!("unknown fps action {other}")),
+        })
     }
     fn pointer(&mut self, dx: f32, dy: f32) {
         self.sim.look(dx, dy);

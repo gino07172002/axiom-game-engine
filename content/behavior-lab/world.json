@@ -1,0 +1,37 @@
+{
+ "schema_version":2,"id":"behavior-lab","title":"Behavior Lab / Generic FSM",
+ "capabilities":{"core":1,"render":1,"motion":1,"fsm":1},"systems":["fsm.step","motion.integrate"],
+ "prefabs":{
+  "enemy.basic":{"components":{"core.transform":{},"core.health":{"value":100,"max":100},"fsm.agent":{"machine":"enemy.basic"},"render.mesh":{"parts":[{"color":[0.85,0.25,0.25]}]}}}
+ },
+ "entities":[
+  {"id":"player","tags":["player"],"components":{"core.transform":{"position":[-20,0.5,0]},"core.motion":{"velocity":[2,0,0]},"render.mesh":{"parts":[{"color":[0.2,0.6,0.95]}]}}},
+  {"id":"enemy/0","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[10,0.5,-1]}}},
+  {"id":"enemy/1","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[12,0.5,0]}}},
+  {"id":"enemy/2","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[14,0.5,1]}}},
+  {"id":"enemy/3","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[16,0.5,-1]}}},
+  {"id":"enemy/4","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[18,0.5,0]}}},
+  {"id":"enemy/5","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[20,0.5,1]}}},
+  {"id":"floor","components":{"core.transform":{"position":[0,-0.3,0],"scale":[60,0.5,16]},"render.mesh":{"parts":[{"color":[0.15,0.19,0.23],"grid":true}]}}},
+  {"id":"camera","components":{"core.transform":{"position":[0,22,24],"rotation":[-0.3826834,0,0,0.9238795]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.1,"far":200,"viewport":[0,0,1,1],"active":true}}}
+ ],
+ "resources":{
+  "render.settings":{"accent":[0.95,0.3,0.3],"shadow_extent":30},
+  "fsm.machines":{"machines":{"enemy.basic":{
+    "initial":"idle",
+    "states":{
+     "idle":{"action":{"kind":"stop"}},
+     "chase":{"action":{"kind":"move_toward","tag":"player","speed":2.5,"stop_within":1.5}},
+     "attack":{"action":{"kind":"stop"}},
+     "dead":{"action":{"kind":"stop"}}
+    },
+    "transitions":[
+     {"from":"*","to":"dead","when":{"kind":"health_below","value":1}},
+     {"from":"idle","to":"chase","when":{"kind":"near","tag":"player","within":15}},
+     {"from":"chase","to":"attack","when":{"kind":"near","tag":"player","within":2}},
+     {"from":"attack","to":"chase","when":{"kind":"far","tag":"player","beyond":3}},
+     {"from":"chase","to":"idle","when":{"kind":"far","tag":"player","beyond":25}}
+    ]
+  }}}
+ }
+}

@@ -155,6 +155,9 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M3(2026-11-08)**:`axiom-core/src/acl.rs` + `Request::Acl` + `axiom acl [-e|FILE|stdin] [--preview] [--expected-rev]` + `discover acl`。敘述:select/inspect/history/diff/undo(單獨)與 set/spawn/delete(可多行、同一 revision、以編譯時 rev 做 CAS)。`;` 只在引號/括號外分隔。lines/inspect/diff 顯示時把浮點數四捨五入到 6 位(`local::display_value`,不影響儲存)。
   證據:`tests/acl.rs` 4 項 + 單元 3 項 + `display_value` 1 項;clippy exit 0;workspace 197 passed。FPS 實測:`select … limit 4` 回應 264 B(舊 `query entities --limit 9` 3617 B);`set enemy* … where …>=100` → 8 筆、回應 538 B;經 `--connect` 對執行中的編輯器 `acl set` → `ok rev=2`,編輯器 1.58 s 內 authoring_rev=2。
   已知:PowerShell 5.1 傳給原生程式時會吃掉內嵌雙引號,需寫 `\"`;bash 不受影響。
+- **M4(2026-11-08)**:`axiom-runtime/src/fsm.rs`(能力 `fsm`、資源 `fsm.machines`、元件 `fsm.agent`、系統 `fsm.step` phase 8、動作 `fsm.inspect`/`fsm.summary`、observe metrics `fsm`、熱重載保留狀態;checkpoint 明確拒絕)。FPS 新增 `fps.inspect`(哨兵狀態、距離、冷卻、各轉移判定與 note)。CLI `axiom call CAP.ACTION [JSON] [--ticks N]`(有 `--connect` 走即時、否則無頭模擬)。新內容包 `content/behavior-lab`。
+  證據:`tests/fsm.rs` 6 項(含確定性、熱重載、驗證、checkpoint 拒絕、fps.inspect);clippy exit 0;workspace 203 passed;CLI 實測 tick 0 `near(player)<=15 measured=30.02 pass=false`,tick 1200 `chase`、`last idle→chase @904`;GPU 截圖目視確認(tick 1400:attack 2 / chase 3 / idle 1)。
+  偏離:ACL 是 authoring(Store)層,無法呼叫 runtime;runtime 診斷改由 `axiom call` 提供,ACL `inspect` 仍為 authoring 記錄。
 
 ## 修訂補記
 

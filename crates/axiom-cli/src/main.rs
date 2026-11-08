@@ -84,6 +84,16 @@ enum Command {
     Select {
         file: PathBuf,
     },
+    /// Call a registered runtime action, e.g. `call fsm.inspect '{"id":"enemy/3"}'`.
+    /// Live with --connect; otherwise headless after simulating --ticks fixed steps.
+    Call {
+        /// capability.action
+        action: String,
+        /// JSON object arguments (default {}).
+        args: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        ticks: u32,
+    },
     /// Run a terse ACL script (`discover acl` lists the grammar). Prints compact lines.
     Acl {
         /// Script file; omit to read stdin.
@@ -497,6 +507,41 @@ fn execute() -> Result<()> {
                 Request::Select {
                     query: serde_json::from_value(value)?,
                 }
+            }
+        }
+        Command::Call {
+            action,
+            args,
+            ticks,
+        } => {
+            let (capability, name) = action
+                .split_once('.')
+                .context("action must be capability.action, e.g. fsm.inspect")?;
+            let args: serde_json::Value = match args {
+                Some(raw) => serde_json::from_str(&raw).context("args must be a JSON object")?,
+                None => serde_json::json!({}),
+            };
+            let command = axiom_core::gameplay::RuntimeCommand::Call {
+                capability: capability.into(),
+                action: name.into(),
+                args,
+            };
+            if cli.connect.is_some() {
+                ensure!(ticks == 0, "--ticks only applies to headless calls");
+                Request::Command {
+                    command,
+                    expected_rev: None,
+                }
+            } else {
+                ensure!(ticks <= 1_000_000, "tick budget exceeds 1000000");
+                let (rev, w) = store.as_ref().unwrap().current()?;
+                let mut runtime = axiom_runtime::WorldRuntime::new(w, rev, registry)?;
+                for _ in 0..ticks {
+                    runtime.step(&axiom_runtime::ActionMap::default());
+                }
+                let result = runtime.command(&command)?;
+                print(&axiom_core::local::display_value(&result), cli.pretty)?;
+                return Ok(());
             }
         }
         Command::Acl {

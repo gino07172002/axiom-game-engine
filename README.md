@@ -105,6 +105,19 @@ Checkpoint 採嚴格內容相容檢查；v0.4 亦接受已知的 v0.3.0／v0.3.1
 
 `select` 回傳 `enemy/5 core.health/value=40` 這類行，結尾 `matched=N rev=R [next=CURSOR]`。編輯回傳 `ok rev=R changes=N` 及最多 12 筆前後值。JSON 協定也可用 `{"op":"acl","text":"..."}`,`select` 另支援 `id_glob`、`where`、`format:"lines"`,編輯另有 `set_where`。
 
+### 通用行為與診斷
+
+`fsm.machines` 資源定義狀態機(動作:stop／move_toward／move_away;條件:near／far／health_below／in_state_ticks／always),實體掛 `fsm.agent` 即生效，世界需啟用 `fsm` 能力與 `fsm.step` 系統。範例見 `content/behavior-lab`。「敵人為什麼不追？」用一個呼叫回答，回傳目前狀態、上次轉移，以及每條外出條件的實測值與判定:
+
+```powershell
+.\target\debug\axiom.exe --db data/lab.sqlite --pack content/behavior-lab call fsm.inspect '{"id":"enemy/0"}'
+#  … "state":"idle","transitions":[{"to":"chase","when":"near(player)<=15","measured":30.02,"pass":false}]
+.\target\debug\axiom.exe --db data/lab.sqlite call fsm.summary --ticks 2400      # 無頭模擬 2400 tick 後
+.\target\debug\axiom.exe --connect 127.0.0.1:4242 call fps.inspect '{"id":"enemy/0"}'   # 即時 FPS 哨兵
+```
+
+FSM 狀態目前不進 checkpoint,存檔會明確拒絕。
+
 其他 agent 也可使用 `discover` 按需探索、`select` 取得局部欄位及 `set_field` 依 ID 修改；完整 `query world` 保留給匯出與除錯。
 
 ```powershell

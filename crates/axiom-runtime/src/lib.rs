@@ -12,6 +12,7 @@ pub mod combat;
 mod editor;
 pub mod events;
 pub mod fps;
+pub mod fsm;
 pub mod gameplay;
 pub mod geometry;
 mod input;
@@ -45,6 +46,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     combat::register(&mut r);
     rhythm::register(&mut r);
     geometry::register(&mut r);
+    fsm::register(&mut r);
     vfx::register(&mut r);
     postfx::register(&mut r);
     showcase::register(&mut r);
