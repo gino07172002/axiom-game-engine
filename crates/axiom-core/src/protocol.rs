@@ -10,7 +10,7 @@ pub enum Request {
         query: crate::scene_edit::TreeQuery,
     },
     Select {
-        query: crate::local::Selection,
+        query: Box<crate::local::Selection>,
     },
     Discover {
         #[serde(default)]
@@ -143,6 +143,14 @@ pub enum CoreEdit {
         field: String,
         value: Value,
     },
+    /// Set one field on every object matched by a selector. Matching runs once against the
+    /// pre-edit world, then each target receives an ordinary `set_field` in the same batch.
+    /// `select.limit` (default 4096) caps the match count; zero matches is an error.
+    SetWhere {
+        select: Box<crate::local::Selection>,
+        field: String,
+        value: Value,
+    },
     PutObject {
         target: crate::local::Target,
         value: Value,
@@ -237,6 +245,39 @@ impl Edit {
                 field,
                 value,
             }) => target.edit(w, Some(&field), Some(value))?,
+            Self::Core(CoreEdit::SetWhere {
+                select,
+                field,
+                value,
+            }) => {
+                if select.cursor.is_some() || !select.fields.is_empty() {
+                    return Err(crate::Diagnostic::error(
+                        "invalid_selector",
+                        "/select",
+                        "set_where selectors take no cursor or fields",
+                    ));
+                }
+                let cap = select.limit.unwrap_or(4096);
+                ensure!((1..=4096).contains(&cap), "set_where limit must be 1..4096");
+                let targets = crate::local::matches(w, r, &select)?;
+                if targets.is_empty() {
+                    return Err(crate::Diagnostic::error(
+                        "no_match",
+                        "/select",
+                        "selector matched no objects",
+                    ));
+                }
+                if targets.len() > cap {
+                    return Err(crate::Diagnostic::error(
+                        "too_many_matches",
+                        "/select",
+                        format!("selector matched {} objects; limit is {cap}", targets.len()),
+                    ));
+                }
+                for (target, _) in targets {
+                    target.edit(w, Some(&field), Some(value.clone()))?;
+                }
+            }
             Self::Core(CoreEdit::PutObject { target, value }) => {
                 target.edit(w, None, Some(value))?
             }
@@ -345,6 +386,7 @@ impl Edit {
                     ![
                         "set",
                         "set_field",
+                        "set_where",
                         "put_object",
                         "remove_object",
                         "put_entity",

@@ -667,6 +667,13 @@ fn print(value: &serde_json::Value, pretty: bool) -> Result<()> {
         eprintln!("{text}");
         std::process::exit(1);
     }
+    // Lines-format results are already compact text meant for agents; don't re-wrap in JSON.
+    if !pretty && value.get("format").and_then(|v| v.as_str()) == Some("lines") {
+        if let Some(lines) = value.get("text").and_then(|v| v.as_str()) {
+            println!("{lines}");
+            return Ok(());
+        }
+    }
     println!("{text}");
     Ok(())
 }

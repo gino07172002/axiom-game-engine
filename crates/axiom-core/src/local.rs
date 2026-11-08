@@ -307,12 +307,108 @@ pub enum Collection {
     Widgets,
     Variables,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Op {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+impl Op {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+        }
+    }
+}
+/// One `where` clause. `field` is a JSON pointer into the selected record (entities expose
+/// compiled components, so prefab-inherited values are visible). A missing field never matches.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Predicate {
+    pub field: String,
+    pub op: Op,
+    pub value: Value,
+}
+impl Predicate {
+    pub fn test(&self, record: &Value) -> bool {
+        let Some(actual) = record.pointer(&pointer(&self.field)) else {
+            return false;
+        };
+        let ordering = match (actual, &self.value) {
+            (Value::Number(a), Value::Number(b)) => a
+                .as_f64()
+                .zip(b.as_f64())
+                .and_then(|(a, b)| a.partial_cmp(&b)),
+            (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+            (a, b) if a == b => Some(std::cmp::Ordering::Equal),
+            _ => None,
+        };
+        use std::cmp::Ordering::*;
+        match (self.op, ordering) {
+            (Op::Eq, o) => o == Some(Equal),
+            (Op::Ne, o) => o != Some(Equal),
+            (Op::Lt, Some(o)) => o == Less,
+            (Op::Le, Some(o)) => o != Greater,
+            (Op::Gt, Some(o)) => o == Greater,
+            (Op::Ge, Some(o)) => o != Less,
+            _ => false,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    /// Structured items (default, backwards compatible).
+    #[default]
+    Json,
+    /// One `id field=value ...` line per object plus a `matched=N rev=R` footer.
+    Lines,
+}
+/// `*` matches any run of characters, `?` exactly one.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     pub from: Collection,
     #[serde(default)]
     pub ids: Vec<String>,
+    /// Wildcard over object IDs, e.g. `enemy/*`.
+    #[serde(default)]
+    pub id_glob: Option<String>,
+    /// All clauses must hold (AND).
+    #[serde(default, rename = "where")]
+    pub filter: Vec<Predicate>,
+    #[serde(default)]
+    pub format: Format,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -333,6 +429,9 @@ impl Selection {
         Self {
             from,
             ids: vec![],
+            id_glob: None,
+            filter: vec![],
+            format: Format::Json,
             tags: vec![],
             components: vec![],
             parent: None,
@@ -343,19 +442,29 @@ impl Selection {
         }
     }
 }
-pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value> {
+fn validate_selection(q: &Selection) -> Result<()> {
     ensure!(
         q.ids.len() <= 128
             && q.tags.len() <= 32
             && q.components.len() <= 32
-            && q.fields.len() <= 32,
+            && q.fields.len() <= 32
+            && q.filter.len() <= 16,
         "selection budget exceeded"
     );
     for id in q.ids.iter().chain(&q.tags).chain(&q.components) {
         valid_id(id)?;
     }
-    for field in &q.fields {
+    for field in q.fields.iter().chain(q.filter.iter().map(|p| &p.field)) {
         ensure!(field.len() <= 512, "field path exceeds budget");
+    }
+    if let Some(glob) = &q.id_glob {
+        if glob.is_empty() || glob.len() > 128 || glob.chars().any(char::is_control) {
+            return Err(Diagnostic::error(
+                "invalid_glob",
+                "/query/id_glob",
+                "glob must be 1..128 printable characters",
+            ));
+        }
     }
     ensure!(
         (q.tags.is_empty() && q.components.is_empty()) || q.from == Collection::Entities,
@@ -365,30 +474,21 @@ pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value>
         q.from == Collection::Choices || q.parent.is_none(),
         "parent only applies to choices"
     );
-    let limit = q.limit.unwrap_or(16);
-    ensure!((1..=128).contains(&limit), "selection limit must be 1..128");
-    let max = q.max_bytes.unwrap_or(8192);
-    ensure!((256..=65536).contains(&max), "max_bytes must be 256..65536");
-    let signature = fingerprint(&(q.from, &q.ids, &q.tags, &q.components, &q.parent, &q.fields))?;
-    let prefix = format!("l1.{rev}.{signature}.");
-    let offset = if let Some(cursor) = &q.cursor {
-        cursor
-            .strip_prefix(&prefix)
-            .and_then(|s| s.parse::<usize>().ok())
-            .ok_or_else(|| {
-                Diagnostic::error(
-                    "stale_cursor",
-                    "/query/cursor",
-                    "revision or selection changed; restart selection",
-                )
-            })?
-    } else {
-        0
-    };
+    Ok(())
+}
+/// All objects matching the selector (ids, id_glob, tags, components, parent, where), sorted
+/// by stable path. Shared by projected reads and selector-based edits.
+pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Value)>> {
+    validate_selection(q)?;
     let doc = json!(w);
     let mut records = vec![];
     let mut add = |target: Target, data: Value| {
-        if q.ids.is_empty() || q.ids.iter().any(|id| id == target.id()) {
+        if (q.ids.is_empty() || q.ids.iter().any(|id| id == target.id()))
+            && q.id_glob
+                .as_deref()
+                .is_none_or(|g| glob_match(g, target.id()))
+            && q.filter.iter().all(|p| p.test(&data))
+        {
             records.push((target, data));
         }
     };
@@ -478,6 +578,40 @@ pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value>
         }
     }
     records.sort_by_key(|(t, _)| t.path());
+    Ok(records)
+}
+pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value> {
+    validate_selection(q)?;
+    let limit = q.limit.unwrap_or(16);
+    ensure!((1..=128).contains(&limit), "selection limit must be 1..128");
+    let max = q.max_bytes.unwrap_or(8192);
+    ensure!((256..=65536).contains(&max), "max_bytes must be 256..65536");
+    let signature = fingerprint(&(
+        q.from,
+        &q.ids,
+        &q.id_glob,
+        &q.filter,
+        &q.tags,
+        &q.components,
+        &q.parent,
+        &q.fields,
+    ))?;
+    let prefix = format!("l1.{rev}.{signature}.");
+    let offset = if let Some(cursor) = &q.cursor {
+        cursor
+            .strip_prefix(&prefix)
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or_else(|| {
+                Diagnostic::error(
+                    "stale_cursor",
+                    "/query/cursor",
+                    "revision or selection changed; restart selection",
+                )
+            })?
+    } else {
+        0
+    };
+    let records = matches(w, r, q)?;
     ensure!(offset <= records.len(), "cursor offset out of range");
     let total = records.len();
     let found = records.iter().map(|(t, _)| t.id()).collect::<BTreeSet<_>>();
@@ -520,12 +654,56 @@ pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value>
         }
         next += 1;
     }
-    let result = json!({"ok":true,"rev":rev,"total":total,"items":items,"missing_ids":missing,"next_cursor":if next<total{Some(format!("{prefix}{next}"))}else{None}});
+    let next_cursor = (next < total).then(|| format!("{prefix}{next}"));
+    let result = json!({"ok":true,"rev":rev,"total":total,"items":items,"missing_ids":missing,"next_cursor":next_cursor});
     ensure!(
         serde_json::to_vec(&result)?.len() <= max,
         "selection metadata exceeds max_bytes; request fewer IDs"
     );
+    if q.format == Format::Lines {
+        return Ok(
+            json!({"ok":true,"rev":rev,"format":"lines","next_cursor":next_cursor,"text":render_lines(&result, &q.fields)}),
+        );
+    }
     Ok(result)
+}
+/// Compact text projection: `id field=value ...` per object, then a footer.
+fn render_lines(result: &Value, fields: &[String]) -> String {
+    let mut out = String::new();
+    for item in result["items"].as_array().into_iter().flatten() {
+        let target = &item["target"];
+        let id = match (target["node"].as_str(), target["id"].as_str()) {
+            (Some(node), Some(id)) => format!("{node}/{id}"),
+            (_, Some(id)) => id.to_owned(),
+            _ => continue,
+        };
+        out.push_str(&id);
+        let data = &item["data"];
+        if fields.is_empty() {
+            if let Some(label) = data["label"].as_str() {
+                out.push_str(&format!(" label={}", json!(label)));
+            }
+        } else {
+            for field in fields {
+                match data.get(field) {
+                    Some(value) => out.push_str(&format!(" {field}={value}")),
+                    None => out.push_str(&format!(" {field}=?")),
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "matched={} rev={}",
+        result["total"], result["rev"]
+    ));
+    if let Some(cursor) = result["next_cursor"].as_str() {
+        out.push_str(&format!(" next={cursor}"));
+    }
+    if let Some(missing) = result["missing_ids"].as_array().filter(|m| !m.is_empty()) {
+        out.push_str(&format!(" missing={}", json!(missing)));
+    }
+    out
 }
 fn summary(target: &Target, v: &Value) -> Value {
     match target {

@@ -150,6 +150,8 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
   7. `scripts/editor-smoke-test.ps1`:PowerShell 5.1 `ExitCode` 為 `$null` 的誤判(先取 `$process.Handle`)。
   證據:clippy exit 0;workspace 184 passed / 0 failed;editor smoke `ok:true`(`artifacts/editor-20261108-134912-117`),截圖目視確認。
   未處理:篩選時樹攤平(屬設計,移到 M9 一併處理);`Copy scene query` 的 `"scene":null` 經查 `Option` 可接受 null,非 bug。
+- **M2(2026-11-08)**:`Selection` 新增 `id_glob`、`where`(eq/ne/lt/le/gt/ge,AND,作用於含 prefab 繼承的 compiled 值)、`format:"lines"`;抽出 `local::matches()`;新增 `CoreEdit::SetWhere`(交易內決定性展開、預設上限 4096、零匹配/超量回結構化診斷);CLI 對 lines 結果直接印文字;`discover local` schema 已更新。證據:`tests/selectors.rs` 5 項;clippy exit 0;workspace 189 passed;FPS 內容實測 `set_where enemy*` → 8 筆變更、1 個 revision、回應 1136 bytes。
+  偏離:`Request::Select.query` 與 `SetWhere.select` 改為 `Box<Selection>`(clippy large_enum_variant;JSON 線格式不變)。
 
 ## 修訂補記
 
