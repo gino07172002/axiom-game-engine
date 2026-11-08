@@ -69,8 +69,22 @@ impl Editor {
         egui::TopBottomPanel::top("editor_toolbar")
             .frame(panel(HEADER, 9))
             .show(ctx, |ui| {
+                if self.logo.is_none() {
+                    self.logo = crate::branding::egui_icon().map(|image| {
+                        ctx.load_texture("axiom-logo", image, egui::TextureOptions::LINEAR)
+                    });
+                }
+                let logo = self.logo.clone();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("◆  AXIOM").strong().size(17.0).color(ACCENT));
+                    if let Some(logo) = &logo {
+                        ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(24.0, 24.0)));
+                    }
+                    ui.label(
+                        RichText::new("AXIOM")
+                            .strong()
+                            .size(17.0)
+                            .color(egui::Color32::from_rgb(240, 72, 72)),
+                    );
                     ui.label(RichText::new("EDITOR").monospace().size(10.0).color(MUTED));
                     ui.separator();
                     ui.label(RichText::new(truncate(&self.world.title, 32)).strong())

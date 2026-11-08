@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/axiom-logo-white.png" alt="Axiom" width="360">
+</p>
+
 # Axiom Engine v0.4 — AI Authoring / RTS
 
 Rust 原生、AI-first、不使用 Bevy 的遊戲引擎。M1.5 提供穩定 ID 的局部操作、精確差異、增量觀察、安全重試與成本 benchmark；M2 加入 RTS 框選、群組命令、平面導航、採集與生產。相同執行檔可載入 FPS、ADV、RTS、空世界與雙相機內容包，交易式 authoring 與固定步進 runtime 持續分離。

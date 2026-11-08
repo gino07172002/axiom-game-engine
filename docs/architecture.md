@@ -1,3 +1,5 @@
+<img src="../assets/branding/axiom-icon-256.png" alt="Axiom" width="96" align="right">
+
 # Axiom v0.4：World IR v2 與執行邊界
 
 ## Authoring

@@ -635,6 +635,7 @@ impl ApplicationHandler for App {
                             if self.editor.is_some() { " Editor" } else { "" },
                             self.runtime.state.compiled.source.title
                         ))
+                        .with_window_icon(crate::branding::window_icon())
                         .with_inner_size(size)
                         .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 600.0))
                         .with_visible(self.options.smoke_frames.is_none()),

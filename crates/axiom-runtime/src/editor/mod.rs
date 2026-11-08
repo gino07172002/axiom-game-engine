@@ -150,6 +150,7 @@ pub(crate) struct Editor {
     redo: Vec<i64>,
     frame_selection: bool,
     scroll_selection: bool,
+    logo: Option<egui::TextureHandle>,
 }
 
 impl Editor {
@@ -178,6 +179,7 @@ impl Editor {
             redo: Vec::new(),
             frame_selection: false,
             scroll_selection: false,
+            logo: None,
         };
         if selected
             .as_ref()

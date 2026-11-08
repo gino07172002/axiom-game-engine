@@ -5,6 +5,7 @@ pub mod app;
 mod audio;
 pub mod benchmark;
 pub mod bound_ui;
+pub mod branding;
 pub mod bridge;
 pub mod checkpoint;
 pub mod combat;

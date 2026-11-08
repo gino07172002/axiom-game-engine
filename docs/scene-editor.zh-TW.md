@@ -1,3 +1,5 @@
+<img src="../assets/branding/axiom-icon-256.png" alt="Axiom" width="96" align="right">
+
 # Axiom 原生場景編輯器
 
 雙擊 `Edit Axiom.cmd`，或在專案根目錄執行以下指令。首次啟動會在 `data/editor.sqlite` 建立 Assembly Yard 範例。後續開啟同一個資料庫即可繼續編輯。
