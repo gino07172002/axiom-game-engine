@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-08 (evening) — Claude (Opus 5.5) — editor milestones M8–M12 done; plan complete
+
+**Done (pushed):** M8 `076e339` schema forms, History, Problems. M9 `44dfb38` multi-select, clipboard (egui Copy/Paste events), drag reparent, snap, grid. M10a `b667169` proposal queue (`propose`/`proposals`/`resolve_proposal`, ACL `--propose`, Proposals tab). M10b `c77714d` `editor_view` (select/focus/dock/capture), selection context, request bytes. M11 `feb1849` FSM overlay in Play preview, Scenarios tab, `view --play`. M12 `7a09af2` prefab + material inspectors, color pickers, Graphs tab. Workspace tests: 228 passed.
+
+**In progress (not committed by me):** a background agent is building the mascot (`scripts/blender-mascot.py`, `content/mascot/`, `docs/mascot.zh-TW.md`) from the owner's design sheets in `D:\newExport` with overlay verification. The outfit is deliberately fully covered (sheet lists a child-like 125–135 cm height). Review its overlay report before committing.
+
+**Known gaps (recorded in the plan):** local/world gizmo toggle; picking imported skinned meshes; GUI automation for drag-reparent; material inspector not screenshot-verified; FSM/RNG not in FPS Rapier checkpoints; VRAM unavailable on Vulkan (wgpu 24).
+
+**Gotchas added:** bridge `observe` answers from a snapshot thread, so it can succeed before the first frame; wait on side effects (e.g. capture file size stable). `git add -A` is unsafe while another agent writes files; stage explicit paths.
+
 ## 2026-11-08 (later) — Claude (Opus 5.5) — milestones M4–M7 + README
 
 **Done (pushed):** M4 `bc73b91` generic FSM (`fsm.rs`, `content/behavior-lab`, `fsm.inspect`, `fps.inspect`, `axiom call`). M5 `46e5dea` seeded RNG (`core.rng`, checkpoint `rng`), FSM `chance`, scenario `field`/`call` assertions, `state_hash`. README rewritten for open source (`40de979`; old one is `docs/user-guide.zh-TW.md`). M6 `2d4fa4b` `verify --measure`, gpu/process memory; spike S1 → no binary cache. M7 `f9302ca` `Plugin`, `RuntimeRegistry::with/try_with`, CLI is now a lib (`axiom::main_with`), example `crates/axiom-cli/examples/custom_plugin` + `examples/spin-pack`.
