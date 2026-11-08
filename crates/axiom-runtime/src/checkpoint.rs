@@ -23,6 +23,9 @@ pub struct Checkpoint {
     pub tick: u64,
     pub entities: BTreeMap<String, EntityState>,
     pub gameplay: Option<Progress>,
+    /// Random stream position. Absent in pre-0.4.1 saves, which restore the content seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rng: Option<u64>,
 }
 fn column_value(column: &Column, row: usize, state: &crate::world::RuntimeState) -> Option<Value> {
     match column {
@@ -79,6 +82,7 @@ impl WorldRuntime {
             tick: self.state.tick,
             entities,
             gameplay: self.state.gameplay.as_ref().map(|g| g.progress()),
+            rng: Some(self.state.rng),
         })
     }
     pub fn restore_checkpoint(&mut self, c: &Checkpoint) -> Result<()> {
@@ -136,6 +140,9 @@ impl WorldRuntime {
         }
         next.state.columns = storage.columns;
         next.state.tick = c.tick;
+        if let Some(rng) = c.rng {
+            next.state.rng = rng;
+        }
         ensure!(
             next.state.gameplay.is_some() == c.gameplay.is_some(),
             "checkpoint gameplay state mismatch"

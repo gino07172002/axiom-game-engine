@@ -1,0 +1,7 @@
+{"ticks":1200,"assertions":[
+ {"kind":"call","action":"fsm.inspect","args":{"id":"enemy/0"},"pointer":"/state","op":"eq","value":"chase"},
+ {"kind":"call","action":"fsm.inspect","args":{"id":"enemy/5"},"pointer":"/state","op":"eq","value":"idle"},
+ {"kind":"field","entity":"enemy/0","field":"/position/0","op":"lt","value":9.0},
+ {"kind":"field","entity":"player","field":"/position/0","op":"ge","value":-0.1},
+ {"kind":"field","entity":"player","field":"/position/0","op":"le","value":0.1}
+]}

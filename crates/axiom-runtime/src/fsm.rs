@@ -49,6 +49,10 @@ pub enum Cond {
     InStateTicks {
         ticks: u32,
     },
+    /// Passes with probability `per_tick` each step, drawn from the seeded world stream.
+    Chance {
+        per_tick: f32,
+    },
     Always,
 }
 impl Cond {
@@ -58,6 +62,7 @@ impl Cond {
             Self::Far { tag, beyond } => format!("far({tag})>{beyond}"),
             Self::HealthBelow { value } => format!("health<{value}"),
             Self::InStateTicks { ticks } => format!("ticks_in_state>={ticks}"),
+            Self::Chance { per_tick } => format!("chance({per_tick}/tick)"),
             Self::Always => "always".into(),
         }
     }
@@ -158,6 +163,10 @@ impl Machines {
                     Cond::InStateTicks { ticks } => {
                         ensure!(*ticks <= 1_000_000, "machine {id}: ticks <= 1000000")
                     }
+                    Cond::Chance { per_tick } => ensure!(
+                        finite(*per_tick, 0.0, 1.0),
+                        "machine {id}: chance per_tick 0..1"
+                    ),
                     Cond::Always => {}
                 }
             }
@@ -305,6 +314,8 @@ impl FsmSystem {
                 let t = self.agents.ticks[agent];
                 (Some(t as f32), t >= *ticks)
             }
+            // Inspection must not consume randomness; report the probability instead.
+            Cond::Chance { per_tick } => (Some(*per_tick), false),
             Cond::Always => (None, true),
         }
     }
@@ -363,10 +374,17 @@ impl RuntimeSystem for FsmSystem {
             }
             let m = &self.machines[self.agents.machine[a]];
             let current = self.agents.state[a];
-            let next = m.outgoing[current]
-                .iter()
-                .find(|(cond, _)| self.evaluate(state, a, cond).1)
-                .map(|(_, to)| *to);
+            let mut next = None;
+            for (cond, to) in &m.outgoing[current] {
+                let pass = match cond {
+                    Cond::Chance { per_tick } => state.random_f32() < *per_tick,
+                    other => self.evaluate(state, a, other).1,
+                };
+                if pass {
+                    next = Some(*to);
+                    break;
+                }
+            }
             if let Some(to) = next.filter(|to| *to != current) {
                 self.agents.last[a] = Some(Last {
                     from: current,
@@ -460,7 +478,7 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.resource(
         "fsm.machines",
         "fsm",
-        json!({"machines":"id -> {initial, states:{name:{action:{kind:stop|move_toward{tag,speed,stop_within?}|move_away{tag,speed}}}}, transitions:[{from:state|*, to, when:{kind:near{tag,within}|far{tag,beyond}|health_below{value}|in_state_ticks{ticks}|always}}]}; first passing transition per tick wins"}),
+        json!({"machines":"id -> {initial, states:{name:{action:{kind:stop|move_toward{tag,speed,stop_within?}|move_away{tag,speed}}}}, transitions:[{from:state|*, to, when:{kind:near{tag,within}|far{tag,beyond}|health_below{value}|in_state_ticks{ticks}|chance{per_tick}|always}}]}; first passing transition per tick wins"}),
         |v| serde_json::from_value::<Machines>(v.clone())?.validate(),
     );
     r.authoring.component(

@@ -65,6 +65,39 @@ pub enum Assertion {
         min: f64,
         max: f64,
     },
+    /// Compare one live entity field. The record is
+    /// `{"position":[x,y,z],"health":v,"enabled":b,"components":{...}}`; `field` is a JSON
+    /// pointer into it (or a bare key such as `health`).
+    Field {
+        entity: String,
+        field: String,
+        op: axiom_core::local::Op,
+        value: Value,
+    },
+    /// Compare part of a side-effect-free runtime query (`*.inspect` / `*.summary`).
+    Call {
+        action: String,
+        #[serde(default)]
+        args: Value,
+        pointer: String,
+        op: axiom_core::local::Op,
+        value: Value,
+    },
+}
+/// Order-stable hash of simulated state (tick, RNG, transforms, health, runtime metrics),
+/// excluding wall-clock and GPU fields. Equal hashes across processes mean identical runs.
+pub fn state_hash(runtime: &WorldRuntime) -> Result<String> {
+    let mut metrics = runtime.observation().metrics;
+    for volatile in ["fps", "frame_ms_cpu", "gpu"] {
+        metrics.remove(volatile);
+    }
+    axiom_core::local::fingerprint(&(
+        runtime.state.tick,
+        runtime.state.rng,
+        &runtime.state.transforms,
+        &runtime.state.health,
+        &metrics,
+    ))
 }
 pub fn run(world: World, rev: i64, registry: RuntimeRegistry, scenario: Scenario) -> Result<Value> {
     run_with_saves(world, rev, registry, scenario, None)
@@ -159,7 +192,7 @@ pub fn run_with_saves(
                     )?;
                 }
                 ScenarioOperation::Assert { assertion } => {
-                    intermediate.push(check(&runtime, assertion)?);
+                    intermediate.push(check(&mut runtime, assertion)?);
                 }
             }
         }
@@ -175,15 +208,89 @@ pub fn run_with_saves(
         runtime.assert_valid()?;
     }
     let observation = json!(runtime.observation());
+    let hash = state_hash(&runtime)?;
     let mut results = vec![];
     for a in &scenario.assertions {
-        results.push(check(&runtime, a)?);
+        results.push(check(&mut runtime, a)?);
     }
     Ok(
-        json!({"ok":true,"ticks":scenario.ticks,"assertions":results,"intermediate_assertions":intermediate,"checkpoints":saves.keys().collect::<Vec<_>>(),"observation":observation}),
+        json!({"ok":true,"ticks":scenario.ticks,"state_hash":hash,"assertions":results,"intermediate_assertions":intermediate,"checkpoints":saves.keys().collect::<Vec<_>>(),"observation":observation}),
     )
 }
-fn check(runtime: &WorldRuntime, a: &Assertion) -> Result<Value> {
+fn compare(label: &str, actual: &Value, op: axiom_core::local::Op, value: &Value) -> Result<()> {
+    let probe = axiom_core::local::Predicate {
+        field: "/v".into(),
+        op,
+        value: value.clone(),
+    };
+    ensure!(
+        probe.test(&json!({ "v": actual })),
+        "assertion failed for {label}: actual {actual}, expected {} {value}",
+        op.symbol()
+    );
+    Ok(())
+}
+fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
+    if let Assertion::Field {
+        entity,
+        field,
+        op,
+        value,
+    } = a
+    {
+        let i = *runtime
+            .state
+            .compiled
+            .indices
+            .get(entity)
+            .with_context(|| format!("assertion entity {entity} missing"))?;
+        let record = json!({
+            "position":runtime.state.transforms[i].as_ref().map(|t|t.position),
+            "health":runtime.state.health[i].as_ref().map(|h|h.value),
+            "enabled":runtime.state.compiled.enabled[i],
+            "components":runtime.state.compiled.entities[i].components,
+        });
+        let pointer = axiom_core::local::pointer(field);
+        let actual = record
+            .pointer(&pointer)
+            .cloned()
+            .with_context(|| format!("field {pointer} missing on {entity}"))?;
+        compare(&format!("{entity}{pointer}"), &actual, *op, value)?;
+        return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
+    }
+    if let Assertion::Call {
+        action,
+        args,
+        pointer,
+        op,
+        value,
+    } = a
+    {
+        let (capability, name) = action
+            .split_once('.')
+            .context("call assertion action must be capability.action")?;
+        ensure!(
+            name == "inspect" || name == "summary",
+            "call assertions only run side-effect-free inspect/summary actions"
+        );
+        let args = if args.is_null() {
+            json!({})
+        } else {
+            args.clone()
+        };
+        let out = runtime.command(&axiom_core::gameplay::RuntimeCommand::Call {
+            capability: capability.into(),
+            action: name.into(),
+            args,
+        })?;
+        let actual = out["result"]
+            .pointer(pointer)
+            .cloned()
+            .with_context(|| format!("{action} result has no {pointer}"))?;
+        compare(&format!("{action}{pointer}"), &actual, *op, value)?;
+        return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
+    }
+    let runtime = &*runtime;
     match a {
         Assertion::Position { axis, min, max, .. } => ensure!(
             *axis < 3 && min.is_finite() && max.is_finite() && min <= max,
@@ -262,6 +369,7 @@ fn check(runtime: &WorldRuntime, a: &Assertion) -> Result<Value> {
             );
             json!(value)
         }
+        Assertion::Field { .. } | Assertion::Call { .. } => unreachable!("handled above"),
     };
     Ok(json!({"assertion":a,"actual":actual,"passed":true}))
 }

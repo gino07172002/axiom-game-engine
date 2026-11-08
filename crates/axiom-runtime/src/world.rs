@@ -58,8 +58,28 @@ pub struct RuntimeState {
     pub contexts: Option<crate::input::Contexts>,
     pub combat: Option<crate::combat::Combat>,
     pub tick: u64,
+    /// SplitMix64 state. Seeded from the `core.rng` resource; checkpointed with the tick.
+    pub rng: u64,
+}
+pub const DEFAULT_SEED: u64 = 0x5EED_A110_C0DE_0001;
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RngSettings {
+    pub seed: u64,
 }
 impl RuntimeState {
+    /// Deterministic per-world random stream. Systems must draw only inside fixed steps.
+    pub fn random_u64(&mut self) -> u64 {
+        self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// Uniform in [0, 1).
+    pub fn random_f32(&mut self) -> f32 {
+        (self.random_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
     pub fn spawn(
         &mut self,
         template: &CompiledEntity,
@@ -136,7 +156,12 @@ impl RuntimeState {
     }
     fn new(compiled: CompiledWorld, registry: Registry) -> Self {
         let events = crate::events::Events::new(&compiled.source);
+        let rng = compiled
+            .source
+            .resource::<RngSettings>("core.rng")
+            .map_or(DEFAULT_SEED, |r| r.seed);
         Self {
+            rng,
             registry,
             gameplay: None,
             revision: 0,
@@ -348,8 +373,18 @@ pub struct RuntimeRegistry {
 }
 impl RuntimeRegistry {
     pub fn core() -> Self {
+        let mut authoring = Registry::core();
+        authoring.resource(
+            "core.rng",
+            "core",
+            serde_json::json!({"seed":"u64; seeds the deterministic runtime random stream (SplitMix64)"}),
+            |v| {
+                serde_json::from_value::<RngSettings>(v.clone())?;
+                Ok(())
+            },
+        );
         Self {
-            authoring: Registry::core(),
+            authoring,
             factories: BTreeMap::from([
                 (
                     "behavior.execute".into(),
@@ -595,6 +630,12 @@ impl WorldRuntime {
             next.runtime_epoch = self.runtime_epoch
                 + u64::from(next.state.compiled.source.id != self.state.compiled.source.id);
             next.state.tick = self.state.tick;
+            // Content edits continue the random stream; editing the seed restarts it.
+            if next.state.compiled.source.resources.get("core.rng")
+                == self.state.compiled.source.resources.get("core.rng")
+            {
+                next.state.rng = self.state.rng;
+            }
             if let Some(g) = &mut next.state.gameplay {
                 for event in &mut g.pending {
                     event.due = event

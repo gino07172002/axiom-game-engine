@@ -158,6 +158,9 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M4(2026-11-08)**:`axiom-runtime/src/fsm.rs`(能力 `fsm`、資源 `fsm.machines`、元件 `fsm.agent`、系統 `fsm.step` phase 8、動作 `fsm.inspect`/`fsm.summary`、observe metrics `fsm`、熱重載保留狀態;checkpoint 明確拒絕)。FPS 新增 `fps.inspect`(哨兵狀態、距離、冷卻、各轉移判定與 note)。CLI `axiom call CAP.ACTION [JSON] [--ticks N]`(有 `--connect` 走即時、否則無頭模擬)。新內容包 `content/behavior-lab`。
   證據:`tests/fsm.rs` 6 項(含確定性、熱重載、驗證、checkpoint 拒絕、fps.inspect);clippy exit 0;workspace 203 passed;CLI 實測 tick 0 `near(player)<=15 measured=30.02 pass=false`,tick 1200 `chase`、`last idle→chase @904`;GPU 截圖目視確認(tick 1400:attack 2 / chase 3 / idle 1)。
   偏離:ACL 是 authoring(Store)層,無法呼叫 runtime;runtime 診斷改由 `axiom call` 提供,ACL `inspect` 仍為 authoring 記錄。
+- **M5(2026-11-08)**:`RuntimeState.rng`(SplitMix64,`core.rng {seed}` 資源,預設固定 seed,熱重載在 seed 未變時延續,checkpoint 新增可選 `rng` 欄位、舊存檔相容);FSM `chance{per_tick}` 條件消耗該串流(inspect 不消耗);scenario 新斷言 `field`(即時 position/health/enabled/components)與 `call`(僅 `*.inspect`/`*.summary`);scenario 結果新增 `state_hash`(tick、rng、transforms、health、非計時 metrics)。範例 `examples/behavior-chase.scenario.json`。
+  證據:`tests/determinism.rs` 4 項;clippy exit 0;workspace 207 passed;兩個獨立程序跑同一 scenario,hash 皆為 `3d81c13dc3f25543`,5/5 斷言通過;`m1-smoke-test.ps1` PASS(含 checkpoint 存讀)。
+  未做:Rapier `enhanced-determinism`(R6:僅同機器同程式,跨平台 bit-exact 列為 non-goal);FPS 的 Rapier 狀態仍不支援 checkpoint(既有行為)。
 
 ## 修訂補記
 
