@@ -435,6 +435,10 @@ impl RuntimeSystem for ActionSystem {
         state: &RuntimeState,
         ui_state: &mut UiState,
     ) -> Option<Vec<Action>> {
+        if !self.sim.session.hud {
+            // Fall back to the generic bar plus the content's bound ui.document.
+            return None;
+        }
         let mut actions = ui::draw_generic(ctx, state, ui_state);
         egui::Area::new("action_status".into())
             .anchor(egui::Align2::LEFT_TOP, [22.0, 48.0])

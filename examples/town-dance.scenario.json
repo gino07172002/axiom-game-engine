@@ -1,0 +1,20 @@
+{"ticks":420,
+ "inputs":[
+  {"tick":0,"actions":{"move_z":1.0,"move_x":0.45}},
+  {"tick":250,"actions":{"move_z":0.0,"move_x":0.0}},
+  {"tick":300,"actions":{"interact":1.0}},
+  {"tick":302,"actions":{"interact":0.0}}
+ ],
+ "commands":[
+  {"tick":290,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/variables/nearby","value":"lumi"}}},
+  {"tick":320,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/node","value":"lumi"}}},
+  {"tick":330,"operation":{"op":"command","command":{"kind":"choose","node":"lumi","choice":"dance"}}}
+ ],
+ "assertions":[
+  {"kind":"equals","pointer":"/animation/players/hero/clip","value":"dance"},
+  {"kind":"equals","pointer":"/animation/players/npc~1lumi/clip","value":"dance"},
+  {"kind":"equals","pointer":"/gameplay/variables/affection","value":10},
+  {"kind":"equals","pointer":"/gameplay/node","value":"lumi_dancing"},
+  {"kind":"call","action":"fsm.summary","pointer":"/fault","op":"eq","value":null},
+  {"kind":"equals","pointer":"/bindings/fault","value":null}
+ ]}

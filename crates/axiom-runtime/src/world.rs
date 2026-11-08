@@ -410,6 +410,12 @@ impl RuntimeRegistry {
     pub fn core() -> Self {
         let mut authoring = Registry::core();
         authoring.resource(
+            "runtime.bindings",
+            "core",
+            serde_json::json!({"events":"[{event: behavior.program event ID, calls: [up to 8 {kind:call, capability, action, args}]}]; calls run when the event fires (rules, choices, UI, input)"}),
+            |v| serde_json::from_value::<EventBindings>(v.clone())?.validate(),
+        );
+        authoring.resource(
             "core.rng",
             "core",
             serde_json::json!({"seed":"u64; seeds the deterministic runtime random stream (SplitMix64)"}),
@@ -460,6 +466,53 @@ pub struct Observation {
     #[serde(flatten)]
     pub metrics: BTreeMap<String, Value>,
 }
+/// `runtime.bindings`: native actions run when a gameplay event fires. This lets narrative
+/// choices, rules and input-mapped events drive registered capabilities (animation.play,
+/// fsm/rts/vfx actions…) without code. Only `call` commands are allowed, so bindings cannot
+/// re-emit gameplay events and loop.
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventBindings {
+    #[serde(default)]
+    pub events: Vec<EventBinding>,
+}
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventBinding {
+    pub event: String,
+    pub calls: Vec<axiom_core::gameplay::RuntimeCommand>,
+}
+impl EventBindings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.events.len() <= 128,
+            "runtime.bindings: at most 128 event bindings"
+        );
+        for b in &self.events {
+            valid_id(&b.event)?;
+            ensure!(
+                (1..=8).contains(&b.calls.len()),
+                "runtime.bindings {}: 1..8 calls",
+                b.event
+            );
+            for c in &b.calls {
+                ensure!(
+                    matches!(c, axiom_core::gameplay::RuntimeCommand::Call { .. }),
+                    "runtime.bindings {}: only call commands are allowed (no emit/choose loops)",
+                    b.event
+                );
+            }
+        }
+        Ok(())
+    }
+}
+fn world_has_bindings(state: &RuntimeState) -> bool {
+    state
+        .compiled
+        .source
+        .resources
+        .contains_key("runtime.bindings")
+}
 pub struct WorldRuntime {
     pub runtime_session: String,
     pub runtime_epoch: u64,
@@ -473,8 +526,49 @@ pub struct WorldRuntime {
     pub bindings: InputBindings,
     settings: RenderSettings,
     shaders: std::sync::Arc<crate::shader::Prepared>,
+    event_bindings: EventBindings,
+    /// Last gameplay trace sequence already scanned for bindings.
+    bound_seq: u64,
+    binding_fault: Option<String>,
+    binding_calls: u64,
 }
 impl WorldRuntime {
+    /// Run `runtime.bindings` calls for gameplay events that fired since the last scan.
+    fn dispatch_bindings(&mut self) {
+        if self.event_bindings.events.is_empty() {
+            return;
+        }
+        let Some(g) = &self.state.gameplay else {
+            return;
+        };
+        let fired: Vec<String> = g
+            .trace
+            .iter()
+            .filter(|t| t.seq > self.bound_seq && t.kind == "event")
+            .map(|t| t.id.clone())
+            .collect();
+        if let Some(last) = g.trace.back() {
+            self.bound_seq = self.bound_seq.max(last.seq);
+        }
+        for event in fired {
+            let calls: Vec<_> = self
+                .event_bindings
+                .events
+                .iter()
+                .filter(|b| b.event == event)
+                .flat_map(|b| b.calls.clone())
+                .collect();
+            for call in calls {
+                match self.command(&call) {
+                    Ok(_) => self.binding_calls += 1,
+                    Err(e) => {
+                        self.binding_fault
+                            .get_or_insert_with(|| format!("{event}: {e:#}"));
+                    }
+                }
+            }
+        }
+    }
     pub fn system<T: Any>(&self) -> Option<&T> {
         self.systems
             .iter()
@@ -550,6 +644,8 @@ impl WorldRuntime {
             .context("world has no gameplay command capability")?
             .command(command, self.state.tick)?;
         self.state.sync_scenes();
+        // Choices, UI emits and loopback events may fire bound native actions immediately.
+        self.dispatch_bindings();
         Ok(
             serde_json::json!({"ok":true,"rev":self.rev,"tick":self.state.tick,"gameplay":self.state.gameplay.as_ref().unwrap().observation()}),
         )
@@ -619,6 +715,17 @@ impl WorldRuntime {
         if let Some(combat) = &state.combat {
             combat.scene.validate()?;
         }
+        let event_bindings: EventBindings = if world_has_bindings(&state) {
+            state.compiled.source.resource("runtime.bindings")?
+        } else {
+            EventBindings::default()
+        };
+        event_bindings.validate()?;
+        let bound_seq = state
+            .gameplay
+            .as_ref()
+            .and_then(|g| g.trace.back())
+            .map_or(0, |t| t.seq);
         Ok(Self {
             runtime_session: format!(
                 "{:x}-{:x}-{:x}",
@@ -639,10 +746,14 @@ impl WorldRuntime {
             activation_error: None,
             authored_visibility,
             registry,
+            bound_seq,
             systems,
             bindings,
             settings,
             shaders,
+            event_bindings,
+            binding_fault: None,
+            binding_calls: 0,
         })
     }
     /// Prepare a complete replacement and migrate state before changing the active runtime.
@@ -843,6 +954,7 @@ impl WorldRuntime {
         for (_, system) in &mut self.systems {
             system.finish_step(&mut self.state);
         }
+        self.dispatch_bindings();
     }
     pub fn pointer(&mut self, dx: f32, dy: f32) {
         for (id, system) in &mut self.systems {
@@ -1059,6 +1171,12 @@ impl WorldRuntime {
         }
         if let Some(g) = &self.state.gameplay {
             metrics.insert("gameplay".into(), g.observation());
+        }
+        if !self.event_bindings.events.is_empty() {
+            metrics.insert(
+                "bindings".into(),
+                serde_json::json!({"events":self.event_bindings.events.len(),"calls":self.binding_calls,"fault":self.binding_fault}),
+            );
         }
         if !self.shaders.materials.is_empty() {
             metrics.insert("shader".into(), serde_json::json!({"programs": self.shaders.programs.len(), "materials": self.shaders.materials.len()}));

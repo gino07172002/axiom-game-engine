@@ -135,13 +135,7 @@ impl Simulation {
             .iter()
             .position(|a| a.id == session.hero)
             .context("hero missing")?;
-        ensure!(
-            actors
-                .iter()
-                .any(|a| a.def.faction != actors[hero].def.faction)
-                || compiled.source.resources.contains_key("combat.session"),
-            "action scenario requires an opponent"
-        );
+        // Opponents are optional: social and exploration scenes use the same controller.
         for i in 0..actors.len() {
             for b in &actors[i + 1..] {
                 ensure!(
@@ -175,10 +169,13 @@ impl Simulation {
                 .filter(|b| b.faction != self.actors[self.hero].def.faction)
                 .all(|b| !b.alive());
         }
-        self.actors
+        // A scene without opponents is never "won".
+        let mut opponents = self
+            .actors
             .iter()
             .filter(|a| a.def.faction != self.actors[self.hero].def.faction)
-            .all(|a| a.health <= 0.0)
+            .peekable();
+        opponents.peek().is_some() && opponents.all(|a| a.health <= 0.0)
     }
     pub fn defeated(&self) -> bool {
         self.actors[self.hero].health <= 0.0

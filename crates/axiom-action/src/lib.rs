@@ -216,6 +216,13 @@ pub struct Session {
     pub camera_yaw: f32,
     pub enemy_notice_range: f32,
     pub hit_sound: String,
+    /// Draw the built-in combat HUD (health, stamina, lock-on, clear banner). Social or
+    /// exploration content turns it off and relies on its own `ui.document`.
+    #[serde(default = "combat_hud")]
+    pub hud: bool,
+}
+fn combat_hud() -> bool {
+    true
 }
 impl Session {
     pub fn validate(&self) -> Result<()> {

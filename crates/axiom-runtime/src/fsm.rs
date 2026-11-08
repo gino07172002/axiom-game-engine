@@ -35,6 +35,15 @@ pub enum ActionDef {
         damage: f32,
         interval_ticks: u32,
     },
+    /// Stroll to seeded random points within `radius` meters of the spawn position.
+    Wander {
+        radius: f32,
+        speed: f32,
+    },
+    /// Turn to face the nearest `tag` entity without moving.
+    Face {
+        tag: String,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -83,6 +92,15 @@ pub struct StateDef {
     /// declares a text field `agent`, it receives the agent's entity ID.
     #[serde(default)]
     pub emit: Option<String>,
+    /// Animation clip played on the agent's `animation.player` when entering.
+    #[serde(default)]
+    pub clip: Option<String>,
+    /// Loop the entry clip (default true); false plays it once and holds the last frame.
+    #[serde(default = "loop_clip")]
+    pub clip_loop: bool,
+}
+fn loop_clip() -> bool {
+    true
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -164,9 +182,23 @@ impl Machines {
                             "machine {id}.{name}: range 0..1000, damage 0..100000, interval_ticks 1..1000000"
                         );
                     }
+                    // Validated below.
+                    ActionDef::Wander { .. } | ActionDef::Face { .. } => {}
+                }
+                if let ActionDef::Wander { radius, speed } = &s.action {
+                    ensure!(
+                        finite(*radius, 0.1, 1000.0) && finite(*speed, 0.0, 100.0),
+                        "machine {id}.{name}: wander radius 0.1..1000, speed 0..100"
+                    );
+                }
+                if let ActionDef::Face { tag } = &s.action {
+                    valid_id(tag)?;
                 }
                 if let Some(event) = &s.emit {
                     valid_id(event)?;
+                }
+                if let Some(clip) = &s.clip {
+                    valid_id(clip)?;
                 }
             }
             for t in &m.transitions {
@@ -208,6 +240,8 @@ struct Compiled {
     states: Vec<(String, ActionDef)>,
     /// Event emitted on entering each state (parallel to `states`).
     emits: Vec<Option<String>>,
+    /// Looping clip played on entering each state (parallel to `states`).
+    clips: Vec<Option<(String, bool)>>,
     initial: usize,
     /// Per source state: ordered (condition, target) list; `*` transitions are appended in order.
     outgoing: Vec<Vec<(Cond, usize)>>,
@@ -237,6 +271,11 @@ impl Compiled {
             id: id.into(),
             initial: index(&m.initial),
             emits: m.states.values().map(|s| s.emit.clone()).collect(),
+            clips: m
+                .states
+                .values()
+                .map(|s| s.clip.clone().map(|c| (c, s.clip_loop)))
+                .collect(),
             states,
             outgoing,
         }
@@ -259,6 +298,11 @@ struct Agents {
     ticks: Vec<u32>,
     last: Vec<Option<Last>>,
     cooldown: Vec<u32>,
+    /// Spawn position (wander anchor) and current wander goal.
+    home: Vec<Vec3>,
+    goal: Vec<Option<Vec3>>,
+    /// Whether the entry clip of the current state has been cued.
+    clip_cued: Vec<bool>,
 }
 
 pub struct FsmSystem {
@@ -339,6 +383,11 @@ impl FsmSystem {
             agents.ticks.push(0);
             agents.last.push(None);
             agents.cooldown.push(0);
+            agents.home.push(Vec3::from_array(
+                state.transforms[slot].as_ref().unwrap().position,
+            ));
+            agents.goal.push(None);
+            agents.clip_cued.push(false);
         }
         // Every emitted event must exist in behavior.program and need at most an `agent` field.
         let mut events = BTreeMap::new();
@@ -533,6 +582,8 @@ impl RuntimeSystem for FsmSystem {
                 });
                 self.agents.state[a] = to;
                 self.agents.ticks[a] = 0;
+                self.agents.goal[a] = None;
+                self.agents.clip_cued[a] = false;
                 entered = self.machines[mi].emits[to].clone();
             } else {
                 self.agents.ticks[a] = self.agents.ticks[a].saturating_add(1);
@@ -559,7 +610,51 @@ impl RuntimeSystem for FsmSystem {
                 let id = self.agents.ids[a].clone();
                 self.emit(state, &event, &id);
             }
+            // Entry clip (also for the initial state on the first step) via animation cues.
+            if !self.agents.clip_cued[a] {
+                self.agents.clip_cued[a] = true;
+                if let Some((clip, looping)) = &self.machines[mi].clips[s] {
+                    let id = &self.agents.ids[a];
+                    let known = state
+                        .animation_cues
+                        .catalog
+                        .get(id)
+                        .is_some_and(|c| c.contains_key(clip));
+                    if known {
+                        state.animation_cues.pending.retain(|p| &p.entity != id);
+                        state
+                            .animation_cues
+                            .pending
+                            .push(axiom_animation::authoring::PlayArgs {
+                                entity: id.clone(),
+                                clip: clip.clone(),
+                                fade_seconds: 0.2,
+                                looping: *looping,
+                                speed: 1.0,
+                            });
+                    } else {
+                        self.fault.get_or_insert_with(|| {
+                            format!("{id}: clip {clip} not found on its animation.player")
+                        });
+                    }
+                }
+            }
+            if let ActionDef::Wander { radius, .. } = &self.machines[mi].states[s].1 {
+                let here = state.transforms[slot]
+                    .as_ref()
+                    .map_or(Vec3::ZERO, |t| Vec3::from_array(t.position));
+                let reached = self.agents.goal[a]
+                    .is_none_or(|g| Vec3::new(g.x - here.x, 0.0, g.z - here.z).length() < 0.2);
+                if reached {
+                    let angle = state.random_f32() * std::f32::consts::TAU;
+                    let r = radius * state.random_f32().sqrt();
+                    let home = self.agents.home[a];
+                    self.agents.goal[a] =
+                        Some(home + Vec3::new(angle.cos() * r, 0.0, angle.sin() * r));
+                }
+            }
             let action = &self.machines[mi].states[s].1;
+            let mut facing = None;
             let step = match action {
                 ActionDef::Stop => None,
                 ActionDef::MoveToward {
@@ -572,10 +667,33 @@ impl RuntimeSystem for FsmSystem {
                 ActionDef::MoveAway { tag, speed } => nearest(state, slot, tag)
                     .filter(|(d, _)| *d > 1e-4)
                     .map(|(d, dir)| -dir / d * *speed * FIXED_DT),
-                ActionDef::Attack { .. } => None,
+                ActionDef::Attack { tag, .. } => {
+                    facing = nearest(state, slot, tag).map(|(_, dir)| dir);
+                    None
+                }
+                ActionDef::Face { tag } => {
+                    facing = nearest(state, slot, tag).map(|(_, dir)| dir);
+                    None
+                }
+                ActionDef::Wander { speed, .. } => {
+                    let here = state.transforms[slot]
+                        .as_ref()
+                        .map_or(Vec3::ZERO, |t| Vec3::from_array(t.position));
+                    self.agents.goal[a].and_then(|g| {
+                        let d = Vec3::new(g.x - here.x, 0.0, g.z - here.z);
+                        let len = d.length();
+                        (len > 1e-4).then(|| d / len * speed.min(len / FIXED_DT) * FIXED_DT)
+                    })
+                }
             };
-            if let (Some(delta), Some(t)) = (step, state.transforms[slot].as_mut()) {
-                t.position = (Vec3::from_array(t.position) + delta).to_array();
+            if let Some(t) = state.transforms[slot].as_mut() {
+                if let Some(delta) = step {
+                    t.position = (Vec3::from_array(t.position) + delta).to_array();
+                }
+                // Agents face where they move (or their target); models look along +Z.
+                if let Some(dir) = facing.or(step).filter(|d| d.length_squared() > 1e-8) {
+                    t.rotation = glam::Quat::from_rotation_y(dir.x.atan2(dir.z)).to_array();
+                }
             }
         }
     }

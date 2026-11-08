@@ -5,7 +5,8 @@ Usage: blender --background --python scripts/blender-mascot.py -- <outdir>
 The skeleton, bone names and clip names follow scripts/blender-duet.py so the
 runtime animation contract is unchanged: root, hip, chest, head, upper.L/R,
 fore.L/R, thigh.L/R, shin.L/R, foot.L/R and the clips idle, sway, turn, reach,
-finale. Everything is procedural: flat material colours (glTF baseColorFactor,
+finale. Town clips (walk, run, wave, bow, sit, dance, cheer, think, pose, hop, talk)
+are appended from TOWN_CLIPS; see docs/mascot.zh-TW.md. Everything is procedural: flat material colours (glTF baseColorFactor,
 emissive on red marks) and an inverted-hull outline; no textures.
 
 Proportions were fitted against the owner's turnaround sheets by orthographic
@@ -552,13 +553,53 @@ def build(variant):
     return rig, obj
 
 
+def duet_angles(name, w, i, mirror=1):
+    """Pose table shared with scripts/blender-duet.py (degrees about armature X/Y/Z)."""
+    angles = {
+        "hip": (0, mirror * 15 * w, mirror * 17 * w),
+        "chest": (10 * w, -mirror * 12 * w, -mirror * 20 * w),
+        "head": (-7 * w, mirror * 13 * w, mirror * 16 * w),
+        "upper.L": (-24 * w, -53 * w, -18 * w),
+        "upper.R": (-28 * w, 62 * w, 18 * w),
+        "fore.L": (-36 * w, 12 * w, 0),
+        "fore.R": (-32 * w, -7 * w, 0),
+        "thigh.L": (-15 * w, -4 * w, 0),
+        "shin.L": (23 * w, 0, 0),
+        "thigh.R": (8 * w, 6 * w, 0),
+    }
+    if name == "turn":
+        angles["root"] = (0, 0, 90 * i * mirror)
+    if name == "reach":
+        angles["upper.L"] = (-66 * w, -35 * w * mirror, 0)
+    if name == "finale":
+        angles["upper.L"] = (-25 * w, -115 * w, -30 * w)
+        angles["upper.R"] = (-28 * w, 110 * w, 28 * w)
+    return angles
+
+
+def key_pose(rig, frame, angles, lift=0.0):
+    """Key every bone's rotation (X, then Y, then Z about the bone's rest-space armature axes)
+    plus the hip's location; `lift` raises/lowers the hip along armature +Z in metres."""
+    for pose in rig.pose.bones:
+        pose.rotation_mode = "QUATERNION"
+        q = Quaternion()
+        basis = pose.bone.matrix_local.to_quaternion().inverted()
+        for axis, angle in zip(((1, 0, 0), (0, 1, 0), (0, 0, 1)), angles.get(pose.name, (0, 0, 0))):
+            q = q @ Quaternion(basis @ Vector(axis), math.radians(angle))
+        pose.rotation_quaternion = q
+        pose.keyframe_insert("rotation_quaternion", frame=frame, group=pose.name)
+        if pose.name == "hip":
+            pose.location = basis @ Vector((0, 0, lift))
+            pose.keyframe_insert("location", frame=frame, group=pose.name)
+
+
 def add_clips(rig):
-    """Same five clips and pose tables as scripts/blender-duet.py (mirror = 1)."""
+    """The five duet clips (same pose tables as scripts/blender-duet.py, mirror = 1)
+    followed by the town clips from TOWN_CLIPS."""
     scene = bpy.context.scene
-    scene.render.fps = 30
+    scene.render.fps = FPS
     scene.frame_start, scene.frame_end = 1, 25
     rig.animation_data_create()
-    mirror = 1
     clips = {
         "idle": (.14, .23, .14, .04, .14),
         "sway": (0, .65, .45, -.30, 0),
@@ -566,46 +607,263 @@ def add_clips(rig):
         "reach": (0, .55, .90, .70, 0),
         "finale": (0, .50, .88, 1.0, 1.0),
     }
+
+    def finish(name, action):
+        track = rig.animation_data.nla_tracks.new()
+        track.name = name
+        track.strips.new(name, int(action.frame_range[0]), action)
+        track.mute = True
+
     for name, weights in clips.items():
         action = bpy.data.actions.new(name)
         rig.animation_data.action = action
         for i, w in enumerate(weights):
-            frame = 1 + 6 * i
-            angles = {
-                "hip": (0, mirror * 15 * w, mirror * 17 * w),
-                "chest": (10 * w, -mirror * 12 * w, -mirror * 20 * w),
-                "head": (-7 * w, mirror * 13 * w, mirror * 16 * w),
-                "upper.L": (-24 * w, -53 * w, -18 * w),
-                "upper.R": (-28 * w, 62 * w, 18 * w),
-                "fore.L": (-36 * w, 12 * w, 0),
-                "fore.R": (-32 * w, -7 * w, 0),
-                "thigh.L": (-15 * w, -4 * w, 0),
-                "shin.L": (23 * w, 0, 0),
-                "thigh.R": (8 * w, 6 * w, 0),
-            }
-            if name == "turn":
-                angles["root"] = (0, 0, 90 * i * mirror)
-            if name == "reach":
-                angles["upper.L"] = (-66 * w, -35 * w * mirror, 0)
-            if name == "finale":
-                angles["upper.L"] = (-25 * w, -115 * w, -30 * w)
-                angles["upper.R"] = (-28 * w, 110 * w, 28 * w)
-            for pose in rig.pose.bones:
-                pose.rotation_mode = "QUATERNION"
-                q = Quaternion()
-                basis = pose.bone.matrix_local.to_quaternion().inverted()
-                for axis, angle in zip(((1, 0, 0), (0, 1, 0), (0, 0, 1)), angles.get(pose.name, (0, 0, 0))):
-                    q = q @ Quaternion(basis @ Vector(axis), math.radians(angle))
-                pose.rotation_quaternion = q
-                pose.keyframe_insert("rotation_quaternion", frame=frame, group=pose.name)
-        track = rig.animation_data.nla_tracks.new()
-        track.name = name
-        track.strips.new(name, 1, action)
-        track.mute = True
+            key_pose(rig, 1 + 6 * i, duet_angles(name, w, i))
+        finish(name, action)
+    # Town clips: sampled every frame from frame 0 (t = 0) to the clip length inclusive.
+    # Loops repeat their first pose on the last frame; one-shots start and end at REST.
+    for name, (seconds, fn) in TOWN_CLIPS.items():
+        action = bpy.data.actions.new(name)
+        rig.animation_data.action = action
+        frames = round(seconds * FPS)
+        for f in range(frames + 1):
+            angles, lift = fn(f / FPS)
+            key_pose(rig, f, angles, lift)
+        finish(name, action)
     rig.animation_data.action = None
     for pose in rig.pose.bones:
         pose.rotation_quaternion = Quaternion()
+        pose.location = Vector()
     scene.frame_set(1)
+
+
+# ---------------------------------------------------------------------------
+# Town clips (everyday / emote motion for the third-person town demo).
+# Angles are degrees about armature axes, applied X then Y then Z in the parent's
+# rest frame: X+ tips an upward bone forward and swings a hanging limb backward;
+# Y+ leans an upward bone toward the character's left (+X) and swings a hanging
+# limb toward the character's right; Z+ turns toward the character's left.
+# Hip translation is vertical only (sit, hop, dance, cheer); nothing moves the root.
+# ---------------------------------------------------------------------------
+FPS = 30
+REST = duet_angles("idle", .14, 0)  # first idle key: the blend target for one-shots
+
+
+def smooth(x):
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def envelope(t, a, b, c, d):
+    """0 before a, eases to 1 by b, holds until c, eases back to 0 by d."""
+    if t <= b:
+        return smooth((t - a) / (b - a))
+    return 1 - smooth((t - c) / (d - c))
+
+
+def mix(base, target, k):
+    out = {}
+    for bone in set(base) | set(target):
+        a, b = base.get(bone, (0, 0, 0)), target.get(bone, (0, 0, 0))
+        out[bone] = tuple(x + (y - x) * k for x, y in zip(a, b))
+    return out
+
+
+def one_shot(base_target, k):
+    """Blend from REST toward REST overridden by the target bones."""
+    target = dict(REST)
+    target.update(base_target)
+    return mix(REST, target, k)
+
+
+def clip_walk(t, period=1.0):
+    p = TAU * t / period
+    s, c = math.sin(p), math.cos(p)
+    a = {}
+    for side, sg in (("L", 1), ("R", -1)):
+        thigh = -24 * s * sg - 3
+        shin = 6 + 40 * max(0.0, c * sg) ** 1.5
+        a["thigh." + side] = (thigh, 0, 0)
+        a["shin." + side] = (shin, 0, 0)
+        a["foot." + side] = (-.55 * (thigh + shin), 0, 0)
+        a["upper." + side] = (20 * s * sg - 4, -6 * sg, 0)
+        a["fore." + side] = (-22, 0, 0)
+    a["hip"] = (0, 0, -6 * s)
+    a["chest"] = (4, 0, 8 * s)
+    a["head"] = (-3, 0, -2 * s)
+    return a, 0.0
+
+
+def clip_run(t, period=.6):
+    p = TAU * t / period
+    s, c = math.sin(p), math.cos(p)
+    a = {}
+    for side, sg in (("L", 1), ("R", -1)):
+        thigh = -40 * s * sg - 14
+        shin = 26 + 66 * max(0.0, c * sg) ** 1.2
+        a["thigh." + side] = (thigh, 0, 0)
+        a["shin." + side] = (shin, 0, 0)
+        a["foot." + side] = (-.9 * (thigh + shin), 0, 0)
+        a["upper." + side] = (40 * s * sg - 6, -10 * sg, 0)
+        a["fore." + side] = (-78, 0, 0)
+    a["hip"] = (5, 0, -8 * s)
+    a["chest"] = (12, 0, 12 * s)
+    a["head"] = (-12, 0, -4 * s)
+    return a, 0.0
+
+
+def clip_wave(t):
+    k = envelope(t, 0, .32, 1.28, 1.6)
+    osc = math.sin(TAU * 3 * (t - .32) / .96) if .32 <= t <= 1.28 else 0.0
+    return one_shot({
+        "upper.R": (-20, 92, 0),
+        "fore.R": (0, 80 + 22 * osc, 0),
+        "chest": (0, -3, 4),
+        "head": (0, -7, 5),
+    }, k), 0.0
+
+
+def clip_bow(t):
+    k = envelope(t, 0, .45, .85, 1.4)
+    return one_shot({
+        "hip": (18, 0, 0),
+        "chest": (12, 0, 0),
+        "head": (6, 0, 0),
+        "thigh.L": (-18, 0, 0),
+        "thigh.R": (-18, 0, 0),
+        "shin.L": (0, 0, 0),
+        "upper.L": (-36, 10, 0),
+        "upper.R": (-36, -10, 0),
+        "fore.L": (-14, 0, 0),
+        "fore.R": (-14, 0, 0),
+    }, k), 0.0
+
+
+SIT_DROP = .32  # hip lowered for a ~0.32 m bench seat; thighs ~level, shins upright
+SIT_THIGH, SIT_SHIN, SIT_UPPER, SIT_FORE = -105, 105, -50, -25
+
+
+def clip_sit(t, period=3.0):
+    b = math.sin(TAU * t / period)
+    a = {"chest": (12 + 1.5 * b, 0, 0), "head": (-8 - 1.2 * b, 0, 0)}
+    for side, sg in (("L", 1), ("R", -1)):
+        a["thigh." + side] = (SIT_THIGH, 4 * sg, 0)
+        a["shin." + side] = (SIT_SHIN, -4 * sg, 0)
+        a["foot." + side] = (-(SIT_THIGH + SIT_SHIN), 0, 0)
+        a["upper." + side] = (SIT_UPPER + .8 * b, 12 * sg, 0)
+        a["fore." + side] = (SIT_FORE, 0, 0)
+    return a, -SIT_DROP
+
+
+def clip_dance(t, period=2.0):
+    beat = 4 * t / period
+    sway = math.sin(math.pi * beat)  # side to side over two beats
+    frac = beat % 1
+    step = math.sin(math.pi * frac) ** 2
+    a = {
+        "hip": (0, 5 * sway, 6 * sway),
+        "chest": (2, 6 * sway, 6 * sway),
+        "head": (0, -5 * sway, 0),
+    }
+    touch = "L" if int(beat) % 2 == 0 else "R"
+    for side, sg in (("L", 1), ("R", -1)):
+        lift = step if side == touch else 0.0
+        a["thigh." + side] = (-26 * lift, -5 * sway, 0)
+        a["shin." + side] = (48 * lift, 0, 0)
+        a["foot." + side] = (-14 * lift, 0, 0)
+        a["upper." + side] = (-30, -sg * 42 - 24 * sway, 0)
+        a["fore." + side] = (-72, 0, 0)
+    hop = .03 * max(0.0, math.sin(TAU * frac)) ** 2
+    return a, hop
+
+
+def clip_cheer(t):
+    k = envelope(t, 0, .25, .85, 1.2)
+    j = math.sin(math.pi * (t - .3) / .4) if .3 <= t <= .7 else 0.0
+    target = {
+        "upper.L": (-14, -142, 0),
+        "upper.R": (-14, 142, 0),
+        "fore.L": (-8, 6, 0),
+        "fore.R": (-8, -6, 0),
+        "chest": (-6, 0, 0),
+        "head": (-10, 0, 0),
+    }
+    a = one_shot(target, k)
+    for side in ("L", "R"):
+        a["thigh." + side] = tuple(x + y for x, y in zip(a.get("thigh." + side, (0, 0, 0)), (-16 * j, 0, 0)))
+        a["shin." + side] = tuple(x + y for x, y in zip(a.get("shin." + side, (0, 0, 0)), (32 * j, 0, 0)))
+        a["foot." + side] = (-12 * j, 0, 0)
+    return a, .08 * j
+
+
+def clip_hop(t):
+    j = math.sin(math.pi * (t - .1) / .4) if .1 <= t <= .5 else 0.0
+    k = envelope(t, 0, .2, .4, .6)
+    a = one_shot({"upper.L": (0, -22, 0), "upper.R": (0, 22, 0), "head": (-5, 0, 0)}, k)
+    for side in ("L", "R"):
+        a["thigh." + side] = tuple(x + y for x, y in zip(a.get("thigh." + side, (0, 0, 0)), (-14 * j, 0, 0)))
+        a["shin." + side] = tuple(x + y for x, y in zip(a.get("shin." + side, (0, 0, 0)), (30 * j, 0, 0)))
+        a["foot." + side] = (-14 * j, 0, 0)
+    return a, .09 * j
+
+
+def clip_think(t, period=3.0):
+    b = math.sin(TAU * t / period)
+    return {
+        "upper.R": (-30, -6, 0),
+        "fore.R": (-148, -24, 0),
+        "upper.L": (-24, 6, 0),
+        "fore.L": (-80, 42, 0),
+        "chest": (3, 0, 0),
+        "head": (6, -9 + 3 * b, -4 + 2 * b),
+        "hip": (0, 2, 0),
+    }, 0.0
+
+
+def clip_pose(t, period=2.0):
+    b = math.sin(TAU * t / period)
+    return {
+        "upper.L": (-28, -36, 0),
+        "fore.L": (-134, 30, 0),
+        "upper.R": (6, 34, 0),
+        "fore.R": (-30, -60, 0),
+        "chest": (2 + 1.5 * b, -4, 6),
+        "head": (-3, 9 + 2 * b, 4),
+        "hip": (0, 3, 0),
+        "thigh.R": (-6, 3, 0),
+        "shin.R": (10, 0, 0),
+    }, 0.0
+
+
+def clip_talk(t, period=2.5):
+    ph = t / period
+
+    def bump(a, b):
+        return math.sin(math.pi * (ph - a) / (b - a)) ** 2 if a <= ph <= b else 0.0
+    gr, gl = bump(.08, .46), bump(.54, .92)
+    return {
+        "upper.R": (-10 - 8 * gr, 10 + 10 * gr, 0),
+        "fore.R": (-62 - 18 * gr, 0, 18 * gr),
+        "upper.L": (-10 - 8 * gl, -10 - 10 * gl, 0),
+        "fore.L": (-58 - 18 * gl, 0, -18 * gl),
+        "chest": (2, 0, 4 * math.sin(TAU * ph)),
+        "head": (4 * math.sin(TAU * 2 * ph), 3 * math.sin(TAU * ph), 0),
+    }, 0.0
+
+
+TOWN_CLIPS = {
+    "walk": (1.0, clip_walk),
+    "run": (.6, clip_run),
+    "wave": (1.6, clip_wave),
+    "bow": (1.4, clip_bow),
+    "sit": (3.0, clip_sit),
+    "dance": (2.0, clip_dance),
+    "cheer": (1.2, clip_cheer),
+    "think": (3.0, clip_think),
+    "pose": (2.0, clip_pose),
+    "hop": (.6, clip_hop),
+    "talk": (2.5, clip_talk),
+}
 
 
 def export(rig, obj, path):
@@ -614,7 +872,8 @@ def export(rig, obj, path):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = rig
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True,
-        export_animations=True, export_frame_range=True, export_force_sampling=True,
+        # Each action exports its own key range (duet clips: frames 1-25; town clips: 0-N).
+        export_animations=True, export_frame_range=False, export_force_sampling=True,
         export_animation_mode="ACTIONS", export_anim_single_armature=True, export_skins=True)
 
 
