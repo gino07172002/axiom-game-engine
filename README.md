@@ -206,6 +206,8 @@ cargo test --workspace
 .\scripts\m1-smoke-test.ps1        # GPU screenshots, checkpoints, live bridge, ADV endings, FPS regression
 ```
 
+`benchmarks/ai-tasks.json` compares three ways of doing the same five authoring tasks. Each run reads, previews, applies and verifies, and must pass the same field and scenario checks. In scripted replay, ACL moved 9.5 KB in total, compared with 18.8 KB for selective JSON and 136.6 KB for the legacy whole-world JSON path. These are bytes, not tokens, and the plans were scripted rather than chosen by an agent; see [`docs/benchmark-ai-tasks.md`](docs/benchmark-ai-tasks.md).
+
 Smoke scripts write reports and screenshots to `artifacts/` and use isolated databases. `scripts/m2-stress-test.ps1` measures headless RTS simulation at 64/128/256 units using a release build. CPU measurements are kept separate from GPU screenshot checks, and the project makes no token, FPS or memory claims without a recorded measurement.
 
 ## Documentation

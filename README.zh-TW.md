@@ -194,6 +194,8 @@ cargo test --workspace
 .\scripts\m1-smoke-test.ps1        # GPU 截圖、checkpoint、即時 bridge、ADV 結局、FPS 回歸
 ```
 
+`benchmarks/ai-tasks.json` 用三種方式完成同樣 5 個編輯任務。每次都走讀取、預覽、套用、驗證四步，而且要通過相同的欄位與 scenario 檢查。腳本化重播的結果:ACL 共傳輸 9.5 KB,選擇性 JSON 是 18.8 KB,舊的整包 JSON 是 136.6 KB。這些是位元組，不是 token,而且步驟是預先寫好的，不是 agent 自己決定的，詳見 [`docs/benchmark-ai-tasks.md`](docs/benchmark-ai-tasks.md)。
+
 Smoke 腳本使用隔離的資料庫，報告和截圖輸出到 `artifacts/`。`scripts/m2-stress-test.ps1` 用 release 版量測 64／128／256 單位的無頭 RTS 模擬。CPU 量測和 GPU 截圖驗證分開記錄;沒有實際量測紀錄，就不宣稱 token、FPS 或記憶體效益。
 
 ## 文件

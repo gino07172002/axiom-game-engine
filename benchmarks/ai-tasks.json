@@ -1,0 +1,198 @@
+{
+ "id":"ai-tasks-v1",
+ "tasks":[
+  {
+   "id":"fps-health","instruction":"Set enemy/0 current and maximum health to 200. Read first, preview, apply atomically, verify.","pack":"content/fps",
+   "checks":[{"kind":"field","target":{"kind":"entity","id":"enemy/0"},"field":"/components/core.health","value":{"value":200,"max":200}}],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"world"},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"entities","ids":["enemy/0"],"fields":["id","/components/core.health"]}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":200,"max":200}}]},
+     {"op":"verify"}
+    ],
+    "acl":[
+     {"op":"acl","text":"select enemy/0 fields core.health"},
+     {"op":"acl","preview":true,"text":"set enemy/0 core.health {\"value\":200,\"max\":200}"},
+     {"op":"acl","text":"set enemy/0 core.health {\"value\":200,\"max\":200}"},
+     {"op":"verify"}
+    ]
+   }
+  },
+  {
+   "id":"adv-door","instruction":"Make workshop/open visible only when has_key is true AND clues >= 1. Keep all three endings reachable.","pack":"content/adv",
+   "checks":[
+    {"kind":"field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}},
+    {"kind":"scenario","file":"examples/adv-rescue.scenario.json"},
+    {"kind":"scenario","file":"examples/adv-departure.scenario.json"},
+    {"kind":"scenario","file":"examples/adv-stranded.scenario.json"}
+   ],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"resources"},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set","path":"/resources/narrative.graph/nodes/1/choices/1/when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set","path":"/resources/narrative.graph/nodes/1/choices/1/when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"choices","parent":"workshop","ids":["open"],"fields":["id","when","next"]}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"choice","node":"workshop","id":"open"},"field":"when","value":{"kind":"all","conditions":[{"kind":"eq","left":{"kind":"variable","id":"has_key"},"right":{"kind":"literal","value":true}},{"kind":"ge","left":{"kind":"variable","id":"clues"},"right":{"kind":"literal","value":1}}]}}]},
+     {"op":"verify"}
+    ],
+    "acl":[
+     {"op":"acl","text":"select choices[parent=workshop,id=open] fields when,next"},
+     {"op":"acl","preview":true,"text":"set choices[parent=workshop,id=open] when {\"kind\":\"all\",\"conditions\":[{\"kind\":\"eq\",\"left\":{\"kind\":\"variable\",\"id\":\"has_key\"},\"right\":{\"kind\":\"literal\",\"value\":true}},{\"kind\":\"ge\",\"left\":{\"kind\":\"variable\",\"id\":\"clues\"},\"right\":{\"kind\":\"literal\",\"value\":1}}]}"},
+     {"op":"acl","text":"set choices[parent=workshop,id=open] when {\"kind\":\"all\",\"conditions\":[{\"kind\":\"eq\",\"left\":{\"kind\":\"variable\",\"id\":\"has_key\"},\"right\":{\"kind\":\"literal\",\"value\":true}},{\"kind\":\"ge\",\"left\":{\"kind\":\"variable\",\"id\":\"clues\"},\"right\":{\"kind\":\"literal\",\"value\":1}}]}"},
+     {"op":"verify"}
+    ]
+   }
+  },
+  {
+   "id":"spawn-ten","instruction":"Spawn 10 enemies from the enemy.basic prefab as extra/0..extra/9 in a row starting at (0,0.5,5), 1.5 m apart, tagged enemy.","pack":"content/behavior-lab",
+   "checks":[
+    {"kind":"field","target":{"kind":"entity","id":"extra/9"},"field":"/prefab","value":"enemy.basic"},
+    {"kind":"field","target":{"kind":"entity","id":"extra/9"},"field":"/components/core.transform/position","value":[13.5,0.5,5.0]}
+   ],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"world"},
+     {"op":"preview","expected_rev":1,"edits":[
+      {"kind":"put_entity","entity":{"id":"extra/0","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[0.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/1","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[1.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/2","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[3.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/3","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[4.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/4","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[6.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/5","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[7.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/6","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[9.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/7","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[10.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/8","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[12.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/9","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[13.5,0.5,5.0]}}}}
+     ]},
+     {"op":"apply","expected_rev":1,"edits":[
+      {"kind":"put_entity","entity":{"id":"extra/0","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[0.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/1","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[1.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/2","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[3.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/3","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[4.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/4","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[6.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/5","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[7.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/6","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[9.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/7","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[10.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/8","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[12.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/9","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[13.5,0.5,5.0]}}}}
+     ]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"prefabs","ids":["enemy.basic"]}},
+     {"op":"preview","expected_rev":1,"edits":[
+      {"kind":"put_entity","entity":{"id":"extra/0","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[0.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/1","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[1.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/2","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[3.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/3","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[4.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/4","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[6.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/5","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[7.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/6","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[9.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/7","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[10.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/8","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[12.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/9","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[13.5,0.5,5.0]}}}}
+     ]},
+     {"op":"apply","expected_rev":1,"edits":[
+      {"kind":"put_entity","entity":{"id":"extra/0","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[0.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/1","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[1.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/2","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[3.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/3","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[4.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/4","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[6.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/5","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[7.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/6","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[9.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/7","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[10.5,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/8","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[12.0,0.5,5.0]}}}},
+      {"kind":"put_entity","entity":{"id":"extra/9","prefab":"enemy.basic","tags":["enemy"],"components":{"core.transform":{"position":[13.5,0.5,5.0]}}}}
+     ]},
+     {"op":"verify"}
+    ],
+    "acl":[
+     {"op":"acl","text":"select prefabs[id=enemy.basic]"},
+     {"op":"acl","preview":true,"text":"spawn enemy.basic count=10 id=extra/{i} at=0,0.5,5 step=1.5,0,0 tag=enemy"},
+     {"op":"acl","text":"spawn enemy.basic count=10 id=extra/{i} at=0,0.5,5 step=1.5,0,0 tag=enemy"},
+     {"op":"verify"}
+    ]
+   }
+  },
+  {
+   "id":"batch-hp","instruction":"Set the current health of every grunt (enemy/*) to 30 in one revision; the hero must still win.","pack":"content/skirmish",
+   "checks":[
+    {"kind":"field","target":{"kind":"entity","id":"enemy/0"},"field":"/components/core.health/value","value":30},
+    {"kind":"field","target":{"kind":"entity","id":"enemy/5"},"field":"/components/core.health/value","value":30},
+    {"kind":"scenario","file":"examples/skirmish-victory.scenario.json"}
+   ],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"world"},
+     {"op":"preview","expected_rev":1,"edits":[
+      {"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/1","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/2","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/3","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/4","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/5","component":"core.health","value":{"value":30,"max":60}}
+     ]},
+     {"op":"apply","expected_rev":1,"edits":[
+      {"kind":"set_component","entity":"enemy/0","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/1","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/2","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/3","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/4","component":"core.health","value":{"value":30,"max":60}},
+      {"kind":"set_component","entity":"enemy/5","component":"core.health","value":{"value":30,"max":60}}
+     ]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"entities","tags":["enemy"],"fields":["/components/core.health"],"limit":16}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_where","select":{"from":"entities","tags":["enemy"]},"field":"/components/core.health/value","value":30}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_where","select":{"from":"entities","tags":["enemy"]},"field":"/components/core.health/value","value":30}]},
+     {"op":"verify"}
+    ],
+    "acl":[
+     {"op":"acl","text":"select entities[tag=enemy] fields core.health/value limit 16"},
+     {"op":"acl","preview":true,"text":"set entities[tag=enemy] core.health/value 30"},
+     {"op":"acl","text":"set entities[tag=enemy] core.health/value 30"},
+     {"op":"verify"}
+    ]
+   }
+  },
+  {
+   "id":"tune-defeat","instruction":"Make grunts hit for 40 damage so the hero loses the skirmish.","pack":"content/skirmish",
+   "checks":[
+    {"kind":"field","target":{"kind":"resource","id":"fsm.machines"},"field":"/machines/grunt/states/attack/action/damage","value":40},
+    {"kind":"scenario","file":"examples/skirmish-defeat.scenario.json"}
+   ],
+   "plans":{
+    "legacy":[
+     {"op":"query","scope":"resources"},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set","path":"/resources/fsm.machines/machines/grunt/states/attack/action/damage","value":40}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set","path":"/resources/fsm.machines/machines/grunt/states/attack/action/damage","value":40}]},
+     {"op":"verify"}
+    ],
+    "local":[
+     {"op":"select","query":{"from":"resources","ids":["fsm.machines"],"fields":["/machines/grunt/states/attack/action"]}},
+     {"op":"preview","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"resource","id":"fsm.machines"},"field":"/machines/grunt/states/attack/action/damage","value":40}]},
+     {"op":"apply","expected_rev":1,"edits":[{"kind":"set_field","target":{"kind":"resource","id":"fsm.machines"},"field":"/machines/grunt/states/attack/action/damage","value":40}]},
+     {"op":"verify"}
+    ],
+    "acl":[
+     {"op":"acl","text":"select resources[id=fsm.machines] fields machines/grunt/states/attack/action"},
+     {"op":"acl","preview":true,"text":"set resources[id=fsm.machines] machines/grunt/states/attack/action/damage 40"},
+     {"op":"acl","text":"set resources[id=fsm.machines] machines/grunt/states/attack/action/damage 40"},
+     {"op":"verify"}
+    ]
+   }
+  }
+ ]
+}

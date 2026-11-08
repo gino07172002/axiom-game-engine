@@ -196,3 +196,4 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M15 資料驅動戰鬥**:FSM 新增 `attack{tag,range,damage,interval_ticks}` 動作與狀態 `emit`(進入狀態時發送 `behavior.program` 事件,若事件宣告文字欄位 `agent` 則帶入實體 ID;建立時驗證事件存在且需 `behavior.execute`);目標搜尋略過 health ≤ 0 的實體;summary 新增 hits/emitted/fault,inspect 新增 cooldown。新內容包 `content/skirmish`(1 英雄 vs 6 敵,擊殺計數規則 → `victory`,英雄倒下 → `defeat`)與 `examples/skirmish-victory.scenario.json`。
   證據:`tests/fsm.rs` 新增 3 項(勝利結局經事件與規則達成、只改 grunt 傷害數值即導致 `defeat`、未宣告事件與非法 interval 在執行前被拒);clippy exit 0;workspace 231 passed;CLI scenario 3/3 通過;GPU 截圖目視確認。
   未做:死亡視覺(屍體仍以原外觀留在場上)、投射物/遠程攻擊、群體 AI 協調。
+- **M16 成本對照**:`benchmarks/ai-tasks.json`(5 任務 × legacy/local/acl,同為讀取→預覽→套用→驗證四步,同一組欄位與 scenario 驗收)。結果:15/15 成功;總傳輸 legacy 136,563 B、local 18,796 B、ACL 9,485 B(ACL 為 legacy 的 6.9%、local 的 50.5%)。詳見 `docs/benchmark-ai-tasks.md`。限制:位元組非 token;步驟為腳本重播,未含 agent 自行探索與重試(可用 `--agent-executable` 接 agent 量測)。

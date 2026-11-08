@@ -1,0 +1,3 @@
+{"ticks":3000,"assertions":[
+ {"kind":"equals","pointer":"/gameplay/ending","value":"defeat"}
+]}
