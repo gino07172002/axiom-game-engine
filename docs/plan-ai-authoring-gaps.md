@@ -186,3 +186,6 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
   除錯紀錄:啟動前已存在的提案原本要等第一次 0.25 s 輪詢才載入 → 改為 signature 未知時立即載入。另確認 `observe` 由 bridge 執行緒快照回應,成功不代表已繪製第一幀(測試腳本需以檔案穩定判斷截圖完成)。
 - **M11(2026-11-08)**:Play-in-editor 行為疊層(`FsmSystem::labels` + `RenderView::project` 支援相機 viewport 與正交/透視;只顯示狀態名以免擁擠;可勾選關閉)。編輯器 Scenarios 分頁(列出 `examples/*.scenario.json`,Run 以目前 revision 無頭執行,顯示 PASS/FAIL、每條斷言實際值、ticks 與 state_hash)。`editor_view` 新增 `play: true|false`(AI 可遠端開始/停止預覽),CLI `view --play`。
   證據:`tests/fsm.rs` 新增疊層投影測試(6 個 agent 皆在畫面內、相機後方不投影);Scenarios 分頁以真實 scenario 成功/失敗結果渲染測試;clippy exit 0;workspace 226 passed。即時實測:對執行中的編輯器 `view --play true` → tick 934 時 `{"chase":1,"idle":5}`,截圖目視確認標籤位於對應方塊上方且與狀態一致。
+- **M12(2026-11-08)**:Assets 分頁新增 prefab「edit」(Prefab 檢視器以 M8 表單編輯 prefab 預設值,只寫改變的葉節點;顯示繼承實例數)與 MATERIALS 清單(Material 檢視器:依 shader 宣告的 min/max 產生參數滑桿、tint 取色器、alpha_cutoff;寫入 `render.shaders` 的對應子樹)。表單對名稱含 color/tint/accent、值為 3–4 個 0..1 數字的欄位改用取色器(涵蓋 `render.mesh` 部件顏色)。新增 Graphs 分頁(唯讀):fsm 狀態機(初始狀態、動作、轉移條件)、narrative.graph(節點、說話者、選項→下一節點、結局)、behavior.program 規則列表。
+  證據:編輯器單元測試 21 項(新增材質/prefab 草稿經 Store 寫入驗證、Graphs 以 behavior-lab 與 adv 內容渲染、取色器判定);clippy exit 0;workspace 228 passed;editor smoke `ok:true`;Graphs 分頁 GPU 截圖目視確認。
+  未做:可視化節點圖編輯(non-goal);材質檢視器僅單元測試與編譯驗證,未截圖(需手動開啟)。

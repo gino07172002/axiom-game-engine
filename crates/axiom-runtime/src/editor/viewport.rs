@@ -1125,6 +1125,91 @@ mod tests {
         assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
     }
 
+    fn pack(name: &str) -> World {
+        axiom_core::ContentPackage::load(
+            format!("{}/../../content/{name}", env!("CARGO_MANIFEST_DIR")),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world
+    }
+
+    #[test]
+    fn material_and_prefab_drafts_write_through_the_transaction_protocol() {
+        let world = pack("shader-lab");
+        let material = world.resources["render.shaders"]["materials"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let mut editor = Editor::new(world.clone(), 1, None);
+        editor.open_material(&material);
+        let draft = editor.material.as_mut().unwrap();
+        assert!(!draft.dirty(), "opening a material must not create edits");
+        draft.value["tint"] = serde_json::json!([0.5, 0.25, 1.0, 1.0]);
+        assert!(editor.dirty());
+        let edits = editor.material.as_ref().unwrap().edits();
+        assert_eq!(edits.len(), 1);
+        let mut store = Store::memory_with(crate::installed_registry().authoring, world).unwrap();
+        store
+            .execute(Request::Apply {
+                expected_rev: Some(1),
+                edits,
+            })
+            .unwrap();
+        let (_, after) = store.current().unwrap();
+        assert_eq!(
+            after.resources["render.shaders"]["materials"][&material]["tint"],
+            serde_json::json!([0.5, 0.25, 1.0, 1.0])
+        );
+
+        let lab = pack("behavior-lab");
+        let mut editor = Editor::new(lab.clone(), 1, None);
+        editor.open_prefab("enemy.basic");
+        let draft = editor.prefab.as_mut().unwrap();
+        draft.component = "core.health".into();
+        draft.base = lab.prefabs["enemy.basic"].components["core.health"].clone();
+        draft.value = Some(draft.base.clone());
+        draft.value.as_mut().unwrap()["max"] = serde_json::json!(150);
+        let edits = editor.prefab.as_ref().unwrap().edits();
+        let mut store = Store::memory_with(crate::installed_registry().authoring, lab).unwrap();
+        store
+            .execute(Request::Apply {
+                expected_rev: Some(1),
+                edits,
+            })
+            .unwrap();
+        let (_, after) = store.current().unwrap();
+        assert_eq!(
+            after.prefabs["enemy.basic"].components["core.health"]["max"],
+            150
+        );
+    }
+
+    #[test]
+    fn graphs_tab_renders_fsm_and_narrative_content() {
+        let (_, runtime) = fixture();
+        for name in ["behavior-lab", "adv"] {
+            let mut editor = Editor::new(pack(name), 1, None);
+            editor.dock = Dock::Graphs;
+            assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
+        }
+        assert!(super::super::form::is_color(
+            "color",
+            &serde_json::json!([0.2, 0.4, 0.6])
+        ));
+        assert!(!super::super::form::is_color(
+            "position",
+            &serde_json::json!([0.2, 0.4, 0.6])
+        ));
+        assert!(!super::super::form::is_color(
+            "color",
+            &serde_json::json!([2.0, 0.4, 0.6])
+        ));
+    }
+
     #[test]
     fn diagnostic_paths_resolve_to_selectable_entities() {
         let (world, _) = fixture();

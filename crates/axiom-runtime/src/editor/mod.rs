@@ -1,3 +1,4 @@
+mod assets;
 mod form;
 mod resource;
 mod ui;
@@ -244,6 +245,7 @@ enum Dock {
     History,
     Problems,
     Scenarios,
+    Graphs,
     Assets,
     Agent,
 }
@@ -299,6 +301,8 @@ pub(crate) struct Editor {
     /// Scenario files offered in the Scenarios tab, and the last run per file.
     scenarios: Vec<String>,
     scenario_results: std::collections::BTreeMap<String, Value>,
+    material: Option<assets::MaterialDraft>,
+    prefab: Option<assets::PrefabDraft>,
 }
 
 impl Editor {
@@ -344,6 +348,8 @@ impl Editor {
             overlay: true,
             scenarios: Vec::new(),
             scenario_results: Default::default(),
+            material: None,
+            prefab: None,
         };
         if selected
             .as_ref()
@@ -499,6 +505,7 @@ impl Editor {
                 "history" => Dock::History,
                 "problems" => Dock::Problems,
                 "scenarios" => Dock::Scenarios,
+                "graphs" => Dock::Graphs,
                 "assets" => Dock::Assets,
                 "agent" => Dock::Agent,
                 other => anyhow::bail!(
@@ -618,10 +625,16 @@ impl Editor {
     pub fn dirty(&self) -> bool {
         self.draft.as_ref().is_some_and(Draft::dirty)
             || self.resource.as_ref().is_some_and(|draft| draft.dirty)
+            || self.material.as_ref().is_some_and(|d| d.dirty())
+            || self.prefab.as_ref().is_some_and(|d| d.dirty())
     }
 
     pub fn reset_draft(&mut self) {
-        if let Some(resource) = &self.resource {
+        if let Some(id) = self.material.as_ref().map(|d| d.id.clone()) {
+            self.open_material(&id);
+        } else if let Some(id) = self.prefab.as_ref().map(|d| d.id.clone()) {
+            self.open_prefab(&id);
+        } else if let Some(resource) = &self.resource {
             let id = resource.id.clone();
             let field = resource.field.clone();
             self.open_resource(&id);
@@ -636,6 +649,8 @@ impl Editor {
 
     pub fn select(&mut self, id: Option<String>) {
         self.resource = None;
+        self.material = None;
+        self.prefab = None;
         let entity = id.as_deref().and_then(|id| self.world.entity(id));
         self.selected = entity.map(|e| e.id.clone());
         self.drag = None;

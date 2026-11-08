@@ -532,6 +532,14 @@ impl Editor {
             self.resource_inspector(ui, actions);
             return;
         }
+        if self.material.is_some() {
+            self.material_inspector(ui, actions);
+            return;
+        }
+        if self.prefab.is_some() {
+            self.prefab_inspector(ui, actions);
+            return;
+        }
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -778,6 +786,7 @@ impl Editor {
                 (Dock::History, "History"),
                 (Dock::Problems, problems.as_str()),
                 (Dock::Scenarios, "Scenarios"),
+                (Dock::Graphs, "Graphs"),
                 (Dock::Assets, "Assets"),
                 (Dock::Agent, "AI / Protocol"),
             ] {
@@ -795,6 +804,8 @@ impl Editor {
         });
         ui.separator();
         let mut jump = None;
+        let mut open_prefab = None;
+        let mut open_material = None;
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match self.dock {
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
@@ -896,6 +907,7 @@ impl Editor {
                     }
                 });
             }
+            Dock::Graphs => self.graphs(ui),
             Dock::Scenarios => {
                 if self.scenarios.is_empty() {
                     caption(ui, "No examples/*.scenario.json found in the working directory.");
@@ -964,6 +976,18 @@ impl Editor {
                         if ui.add_enabled(!self.dirty(),egui::Button::new(format!("◇  {id}"))).on_hover_text("Instantiate prefab").clicked() {
                             actions.push(self.create_object("instance",Some(id)));
                         }
+                        if ui.add_enabled(!self.dirty(),egui::Button::new("edit").small()).on_hover_text("Edit the prefab defaults all instances inherit").clicked() {
+                            open_prefab = Some(id.clone());
+                        }
+                    }
+                });
+                let materials: Vec<String> = self.world.resources.get("render.shaders").and_then(|r| r["materials"].as_object()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
+                if !materials.is_empty() { caption(ui,"MATERIALS"); }
+                ui.horizontal_wrapped(|ui| {
+                    for id in &materials {
+                        if ui.add_enabled(!self.dirty(),egui::Button::new(format!("● {id}"))).on_hover_text("Edit material parameters").clicked() {
+                            open_material = Some(id.clone());
+                        }
                     }
                 });
                 caption(ui,"RESOURCES");
@@ -1011,6 +1035,12 @@ impl Editor {
         if let Some(id) = jump {
             self.try_select(Some(id));
             self.frame_selection = true;
+        }
+        if let Some(id) = open_prefab {
+            self.open_prefab(&id);
+        }
+        if let Some(id) = open_material {
+            self.open_material(&id);
         }
     }
 

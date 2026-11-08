@@ -80,7 +80,11 @@ fn field(ui: &mut Ui, value: &mut Value, hints: Option<&Value>, depth: usize) ->
                         if let Some(tip) = &tip {
                             label.on_hover_text(tip);
                         }
-                        changed |= leaf(ui, child);
+                        changed |= if is_color(&key, child) {
+                            color(ui, child)
+                        } else {
+                            leaf(ui, child)
+                        };
                     });
                     if let Some(tip) = tip.filter(|t| t.len() <= 48) {
                         ui.label(RichText::new(tip).small().weak());
@@ -98,6 +102,41 @@ fn field(ui: &mut Ui, value: &mut Value, hints: Option<&Value>, depth: usize) ->
         }
         other => changed |= leaf(ui, other),
     }
+    changed
+}
+
+/// `color`/`tint`-named fields holding 3–4 numbers in 0..=1 get a color picker.
+pub(super) fn is_color(key: &str, v: &Value) -> bool {
+    let key = key.to_ascii_lowercase();
+    (key.contains("color") || key.contains("tint") || key == "accent")
+        && v.as_array().is_some_and(|a| {
+            (3..=4).contains(&a.len())
+                && a.iter()
+                    .all(|x| x.as_f64().is_some_and(|x| (0.0..=1.0).contains(&x)))
+        })
+}
+
+/// Color picker that writes back numbers rounded to 4 decimals (stable diffs).
+pub(super) fn color(ui: &mut Ui, v: &mut Value) -> bool {
+    let Some(a) = v.as_array() else { return false };
+    let c: Vec<f32> = a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect();
+    let round = |x: f32| ((x as f64) * 10000.0).round() / 10000.0;
+    let changed = if c.len() == 4 {
+        let mut rgba = [c[0], c[1], c[2], c[3]];
+        let changed = ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed();
+        if changed {
+            *v = serde_json::json!(rgba.map(round));
+        }
+        changed
+    } else {
+        let mut rgb = [c[0], c[1], c[2]];
+        let changed = ui.color_edit_button_rgb(&mut rgb).changed();
+        if changed {
+            *v = serde_json::json!(rgb.map(round));
+        }
+        changed
+    };
+    ui.label(RichText::new(v.to_string()).small().weak());
     changed
 }
 
