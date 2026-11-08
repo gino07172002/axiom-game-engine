@@ -74,7 +74,7 @@ entity('tour/camera',{'core.transform':transform([0,47,35]),'render.camera':{pro
 const origins=new Map();
 for(const item of inventory.stations) {
  const index=(item.category==='materials'?0:24)+item.number-1;const origin=[(index%6-2.5)*10,0,-Math.floor(index/6)*10];origins.set(item.id,origin);
- stations[item.id]={title:`${item.category==='materials'?'M':'P'}${String(item.number).padStart(2,'0')} · ${item.title}`,source_title:item.source_title,category:item.category,origin,implementation:'原生等效展示',description:'',controls:[],emitter:null};
+ stations[item.id]={title:`${item.category==='materials'?'M':'P'}${String(item.number).padStart(2,'0')} · ${item.title}`,source_title:item.source_title,category:item.category,origin,implementation:'原生等效展示',description:'',controls:[],emitter:null,postfx:[]};
  cube(`${item.id}/plinth`,[origin[0],-0.04,origin[2]],[7.4,0.35,5.8],[1,1,1],'plinth');cube(`${item.id}/line`,[origin[0],0.15,origin[2]+2.9],[7.3,0.045,0.045],[1,1,1],'line');
 }
 function at(id,x=0,y=1.2,z=0){const p=origins.get(id);return [p[0]+x,p[1]+y,p[2]+z];}
@@ -127,6 +127,7 @@ function emitter(id,options={}){const data={backend:'cpu',renderer:'sprite',coun
  id=pids[10];emitter(id,{field:'texture',count:180,velocity:[0,0,0],acceleration:[0,0,0],spread:0,lifetime:3,size:0.045,end_size:0.06,color:[0.04,0.9,0.65,1],end_color:[0.1,0.7,1,0.6],texture_mask:['0000011111100000','0000111111110000','0001110000111000','0011100000011100','0111000000001110','0111111111111110','1111111111111111','1110000000000111','1110000000000111','1110000000000111']});stations[id].implementation='CPU bitmap mask sampling';stations[id].description='從內容包中的二值影像採樣發射位置，粒子組成字形。此版本支援 CPU mask 取樣，未宣稱 GPU 任意貼圖採樣。';
  id=pids[11];emitter(id,{field:'smoke',count:64,velocity:[0,0.3,0],acceleration:[0,0,0],spread:2.8,lifetime:3,size:0.35,end_size:0.65,color:[0.2,0.4,0.55,0.08],end_color:[0.2,0.4,0.55,0]});volumes.push({id:'fog-box',kind:'fog',center:at(id,0,1.4,0),half_size:[2.8,1.4,1.8],strength:0.85,color:[0.15,0.38,0.52,0.8]});cube(`${id}/occluder`,at(id,0,0.9,0),[0.6,1.8,0.6],[1,0.6,0.15]);stations[id].implementation='Depth-bounded volume raymarch';stations[id].description='以 12 步射線步進積分程序密度，依不透明場景深度終止，呈現霧內模型與遮擋；不是全場景體積光系統。';ctrl(id,'霧密度','postfx.settings','/volumes/3/strength',0,2,0.85);
 }
+for(const [id,volume] of [[mids[19],'material-post'],[mids[20],'impact-decal'],[pids[7],'heat-plume'],[pids[11],'fog-box']])stations[id].postfx=[volume];
 for(const item of inventory.stations){const s=stations[item.id];item.implementation=s.implementation;item.description=s.description;item.axiom_entities=w.entities.filter(e=>e.id.startsWith(item.id+'/')).map(e=>e.id);item.axiom_emitter=s.emitter;}
 write('inventory.json',inventory);write('world.json',w);
 const assets={};for(const name of fs.readdirSync(out).filter(n=>n.endsWith('.wgsl')||n.endsWith('.glb')||n==='inventory.json'))assets[name]=sha(fs.readFileSync(path.join(out,name)));

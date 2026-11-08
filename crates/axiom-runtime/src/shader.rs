@@ -445,4 +445,5 @@ pub(crate) fn fragment(template: &str, hook: &str, wrapper: &str) -> String {
         template.replace("let world=d.model*vec4<f32>(position,1.);", "let world=d.model*vec4<f32>(vertex_offset(position,normal,uv,g.eye_time.w,material_surface.params),1.);")
     };
     let abi = ABI.replace("return vec3<f32>(0.0);", "return axiom_lighting(p,n);");
-    f
+    format!("{template}\n{abi}\n{hook}\n{vertex}\n{wrapper}")
+}

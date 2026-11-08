@@ -1,5 +1,6 @@
 //! Data-authored exhibition navigation; independent of effect implementations.
 use crate::{
+    presentation::RenderFrame,
     ui::{Action, UiState},
     world::*,
 };
@@ -34,6 +35,8 @@ pub struct Station {
     #[serde(default)]
     pub controls: Vec<Control>,
     pub emitter: Option<String>,
+    #[serde(default)]
+    pub postfx: Option<BTreeSet<String>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +60,12 @@ impl Tour {
         );
         for (id, s) in &self.stations {
             valid_id(id)?;
+            if let Some(volumes) = &s.postfx {
+                ensure!(volumes.len() <= 8, "showcase post effect budget exceeded");
+                for id in volumes {
+                    valid_id(id)?;
+                }
+            }
             ensure!(
                 s.title.len() <= 256
                     && s.description.len() <= 2048
@@ -160,6 +169,16 @@ fn call(action: &str, args: Value) -> Action {
     })
 }
 impl RuntimeSystem for Showcase {
+    fn extract(&self, _state: &RuntimeState, frame: &mut RenderFrame) {
+        if let Some(volumes) = self
+            .active
+            .as_ref()
+            .and_then(|id| self.tour.stations.get(id))
+            .and_then(|s| s.postfx.as_ref())
+        {
+            frame.postfx.retain(|v| volumes.contains(&v.id));
+        }
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -488,6 +507,28 @@ pub fn register(r: &mut RuntimeRegistry) {
         let tour: Tour = state.compiled.source.resource("showcase.tour")?;
         tour.validate()?;
         for station in tour.stations.values() {
+            if let Some(volumes) = &station.postfx {
+                for id in volumes {
+                    ensure!(
+                        state
+                            .compiled
+                            .source
+                            .systems
+                            .iter()
+                            .any(|s| s == "postfx.prepare")
+                            && state
+                                .compiled
+                                .source
+                                .resources
+                                .get("postfx.settings")
+                                .and_then(|v| v["volumes"].as_array())
+                                .is_some_and(|v| v
+                                    .iter()
+                                    .any(|v| v["id"].as_str() == Some(id.as_str()))),
+                        "showcase post effect volume missing: {id}"
+                    );
+                }
+            }
             for control in &station.controls {
                 ensure!(
                     state

@@ -7191,7 +7191,8 @@
               "default": 0.2
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/02-color": {
           "title": "M02 · 材質色彩",
@@ -7205,7 +7206,8 @@
           "implementation": "原生等效展示",
           "description": "程序木紋與純色材質對照，使用相同表面介面。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/03-metalness": {
           "title": "M03 · 金屬度",
@@ -7228,7 +7230,8 @@
               "default": 1
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/04-roughness": {
           "title": "M04 · 粗糙度",
@@ -7251,7 +7254,8 @@
               "default": 0.1
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/05-specular": {
           "title": "M05 · 鏡面反射",
@@ -7274,7 +7278,8 @@
               "default": 1
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/06-emissive": {
           "title": "M06 · 自發光",
@@ -7297,7 +7302,8 @@
               "default": 2
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/07-animated": {
           "title": "M07 · 動態材質",
@@ -7320,7 +7326,8 @@
               "default": 1
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/08-transparent": {
           "title": "M08 · 透明材質",
@@ -7334,7 +7341,8 @@
           "implementation": "透明 + 程序環境反射",
           "description": "透明混合與 Fresnel 反射外殼；反射為程序環境，不是即時場景反射或折射。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/09-opacity": {
           "title": "M09 · 不透明度",
@@ -7348,7 +7356,8 @@
           "implementation": "原生等效展示",
           "description": "Alpha 0.1 / 0.4 / 0.6，背景模型顯示實際透明混合。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/10-alpha": {
           "title": "M10 · Alpha 遮罩",
@@ -7371,7 +7380,8 @@
               "default": 0.28
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/11-vertex": {
           "title": "M11 · 頂點位移",
@@ -7394,7 +7404,8 @@
               "default": 0.28
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/12-normal": {
           "title": "M12 · 法線映射",
@@ -7417,7 +7428,8 @@
               "default": 0.06
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/13-parallax": {
           "title": "M13 · 視差遮蔽",
@@ -7440,7 +7452,8 @@
               "default": 0.12
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/14-displacement": {
           "title": "M14 · 表面置換",
@@ -7463,7 +7476,8 @@
               "default": 0.42
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/15-tessellation": {
           "title": "M15 · 曲面細分",
@@ -7477,7 +7491,8 @@
           "implementation": "CPU 均勻細分對照",
           "description": "以真實三角形展示 6 / 12 / 24 / 48 段細分。對應 Flax 的細分主題；沒有宣稱 GPU adaptive、Phong 或 PN triangle 實作。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/16-two-sided": {
           "title": "M16 · 雙面與線框",
@@ -7491,7 +7506,8 @@
           "implementation": "原生等效展示",
           "description": "自動環繞觀察單面／雙面剔除；線框使用三角形重心座標，不依賴硬體線框功能。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/17-instances": {
           "title": "M17 · 材質實例",
@@ -7514,7 +7530,8 @@
               "default": 0.45
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/18-layered": {
           "title": "M18 · 分層材質",
@@ -7537,7 +7554,8 @@
               "default": 0.5
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/19-forward": {
           "title": "M19 · Forward 材質診斷",
@@ -7551,7 +7569,8 @@
           "implementation": "Forward 材質屬性視覺化",
           "description": "AO 與 roughness 的材質輸入診斷；Axiom 目前沒有 Flax deferred G-buffer，這不是場景 G-buffer 採樣。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/20-postfx": {
           "title": "M20 · 後處理材質",
@@ -7574,7 +7593,10 @@
               "default": 1.2
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": [
+            "material-post"
+          ]
         },
         "mat/21-decals": {
           "title": "M21 · 投影貼花",
@@ -7597,7 +7619,10 @@
               "default": 0.9
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": [
+            "impact-decal"
+          ]
         },
         "mat/22-subsurface": {
           "title": "M22 · 次表面透射",
@@ -7620,7 +7645,8 @@
               "default": 0.8
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/23-blend": {
           "title": "M23 · 混合模式",
@@ -7634,7 +7660,8 @@
           "implementation": "原生等效展示",
           "description": "真正的 opaque、alpha、additive 與 multiply GPU blend state，依序疊在相同背景色上。",
           "controls": [],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "mat/24-cel": {
           "title": "M24 · 卡通渲染",
@@ -7657,7 +7684,8 @@
               "default": 3
             }
           ],
-          "emitter": null
+          "emitter": null,
+          "postfx": []
         },
         "fx/01-cpu": {
           "title": "P01 · CPU 粒子",
@@ -7680,7 +7708,8 @@
               "default": 2.8
             }
           ],
-          "emitter": "fx/01-cpu"
+          "emitter": "fx/01-cpu",
+          "postfx": []
         },
         "fx/02-gpu": {
           "title": "P02 · GPU 粒子",
@@ -7703,7 +7732,8 @@
               "default": 2.8
             }
           ],
-          "emitter": "fx/02-gpu"
+          "emitter": "fx/02-gpu",
+          "postfx": []
         },
         "fx/03-lights": {
           "title": "P03 · 粒子光源",
@@ -7717,7 +7747,8 @@
           "implementation": "原生等效展示",
           "description": "16 個移動點光源，實際加入場景的逐像素光照，同時繪製可見光點。",
           "controls": [],
-          "emitter": "fx/03-lights"
+          "emitter": "fx/03-lights",
+          "postfx": []
         },
         "fx/04-model": {
           "title": "P04 · 模型粒子",
@@ -7731,7 +7762,8 @@
           "implementation": "原生等效展示",
           "description": "真正的 3D 立方體模型粒子，具有立體面與旋轉；使用 Axiom 原生幾何而非 Flax 的酪梨資產。",
           "controls": [],
-          "emitter": "fx/04-model"
+          "emitter": "fx/04-model",
+          "postfx": []
         },
         "fx/05-ribbon": {
           "title": "P05 · 帶狀拖尾",
@@ -7745,7 +7777,8 @@
           "implementation": "原生等效展示",
           "description": "保存最近 96 個固定步進位置，生成面向相機的連續三角形帶狀拖尾；不是散點連線。",
           "controls": [],
-          "emitter": "fx/05-ribbon"
+          "emitter": "fx/05-ribbon",
+          "postfx": []
         },
         "fx/06-attached": {
           "title": "P06 · 骨骼掛點拖尾",
@@ -7759,7 +7792,8 @@
           "implementation": "原生等效展示",
           "description": "兩條拖尾附在實際動畫骨架的 fore.R / fore.L，跟隨最終骨骼世界矩陣；可用於劍光與武器軌跡。",
           "controls": [],
-          "emitter": "fx/06-attached"
+          "emitter": "fx/06-attached",
+          "postfx": []
         },
         "fx/07-smoke": {
           "title": "P07 · 煙霧",
@@ -7773,7 +7807,8 @@
           "implementation": "原生等效展示",
           "description": "帶旋轉、膨脹、色彩與 Alpha 漸變的 soft sprite 煙霧；讀取場景深度淡化交界。",
           "controls": [],
-          "emitter": "fx/07-smoke"
+          "emitter": "fx/07-smoke",
+          "postfx": []
         },
         "fx/08-heat": {
           "title": "P08 · 熱扭曲",
@@ -7796,7 +7831,10 @@
               "default": 1.1
             }
           ],
-          "emitter": "fx/08-heat"
+          "emitter": "fx/08-heat",
+          "postfx": [
+            "heat-plume"
+          ]
         },
         "fx/09-snow": {
           "title": "P09 · 飄雪",
@@ -7810,7 +7848,8 @@
           "implementation": "原生等效展示",
           "description": "GPU compute 評估的循環飄雪，使用同一份種子契約、生命週期及深度淡化。",
           "controls": [],
-          "emitter": "fx/09-snow"
+          "emitter": "fx/09-snow",
+          "postfx": []
         },
         "fx/10-collision": {
           "title": "P10 · 粒子碰撞",
@@ -7833,7 +7872,8 @@
               "default": 0.72
             }
           ],
-          "emitter": "fx/10-collision"
+          "emitter": "fx/10-collision",
+          "postfx": []
         },
         "fx/11-sampling": {
           "title": "P11 · 貼圖採樣",
@@ -7847,7 +7887,8 @@
           "implementation": "CPU bitmap mask sampling",
           "description": "從內容包中的二值影像採樣發射位置，粒子組成字形。此版本支援 CPU mask 取樣，未宣稱 GPU 任意貼圖採樣。",
           "controls": [],
-          "emitter": "fx/11-sampling"
+          "emitter": "fx/11-sampling",
+          "postfx": []
         },
         "fx/12-fog": {
           "title": "P12 · 體積霧",
@@ -7870,7 +7911,10 @@
               "default": 0.85
             }
           ],
-          "emitter": "fx/12-fog"
+          "emitter": "fx/12-fog",
+          "postfx": [
+            "fog-box"
+          ]
         }
       }
     },

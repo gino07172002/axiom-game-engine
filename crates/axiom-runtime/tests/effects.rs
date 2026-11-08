@@ -99,7 +99,15 @@ fn all_stations_focus_with_valid_frames_and_shared_reusable_render_components() 
                 .count(),
             2
         );
-        assert!(frame.postfx.iter().any(|v| v.kind == "decal"));
+        if id == "mat/21-decals" {
+            assert!(frame.postfx.iter().any(|v| v.kind == "decal"));
+        }
+        if id == "fx/02-gpu" {
+            assert!(
+                frame.postfx.is_empty(),
+                "GPU reference view must not inherit neighboring heat distortion"
+            );
+        }
     }
     call(&mut r, "showcase", "overview", json!({}));
     assert!(r.observation().metrics["showcase"]["active"].is_null());
