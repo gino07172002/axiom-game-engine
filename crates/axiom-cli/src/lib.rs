@@ -121,6 +121,9 @@ enum Command {
         /// Writes artifacts/captures/<NAME>.png (relative to the editor's working directory).
         #[arg(long)]
         capture: Option<String>,
+        /// Start (true) or stop (false) the Play-in-editor preview.
+        #[arg(long)]
+        play: Option<bool>,
     },
     /// List queued edit proposals (newest first).
     Proposals {
@@ -587,6 +590,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             focus,
             dock,
             capture,
+            play,
         } => {
             ensure!(
                 cli.connect.is_some(),
@@ -597,6 +601,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 focus,
                 dock,
                 capture,
+                play,
             }
         }
         Command::Proposals { status, limit } => Request::Proposals { status, limit },

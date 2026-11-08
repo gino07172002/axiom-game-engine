@@ -350,6 +350,22 @@ impl FsmSystem {
         }))
     }
 
+    /// Overlay labels for debug views: (world position slightly above the agent, text).
+    pub fn labels(&self, state: &RuntimeState) -> Vec<([f32; 3], String)> {
+        (0..self.agents.ids.len())
+            .filter(|&a| state.compiled.enabled[self.agents.slots[a]])
+            .filter_map(|a| {
+                let slot = self.agents.slots[a];
+                let p = state.transforms[slot].as_ref()?.position;
+                let m = &self.machines[self.agents.machine[a]];
+                Some((
+                    [p[0], p[1] + 1.2, p[2]],
+                    m.states[self.agents.state[a]].0.clone(),
+                ))
+            })
+            .collect()
+    }
+
     fn summary(&self) -> Value {
         let mut counts = BTreeMap::<String, usize>::new();
         for a in 0..self.agents.ids.len() {

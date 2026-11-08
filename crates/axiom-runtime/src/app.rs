@@ -91,6 +91,18 @@ impl App {
             RunMode::Editor { selected } => {
                 let mut editor = Editor::new(world.clone(), rev, selected.clone());
                 editor.set_component_hints(&registry.authoring);
+                // Offer the repository's scenario files (bounded) in the Scenarios tab.
+                let mut files: Vec<String> = std::fs::read_dir("examples")
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.to_string_lossy().ends_with(".scenario.json"))
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .collect();
+                files.sort();
+                files.truncate(64);
+                editor.set_scenarios(files);
                 Some(editor)
             }
         };
@@ -202,8 +214,16 @@ impl App {
             focus,
             dock,
             capture,
+            play,
         } = request
         {
+            if let Some(play) = play {
+                anyhow::ensure!(
+                    self.editor.is_some(),
+                    "editor_view requires a running editor"
+                );
+                self.editor_play(play)?;
+            }
             let editor = self.editor.as_mut().ok_or_else(|| {
                 anyhow::anyhow!("editor_view requires a running editor (axiom editor)")
             })?;
@@ -427,6 +447,21 @@ impl App {
                     Ok(())
                 }
             }
+            editor::Action::RunScenario { path } => {
+                let outcome = (|| -> Result<serde_json::Value> {
+                    let raw = std::fs::read_to_string(&path)?;
+                    anyhow::ensure!(raw.len() <= 1_048_576, "scenario exceeds 1 MiB");
+                    let scenario = serde_json::from_str(&raw)?;
+                    let (rev, world) = self.store.current()?;
+                    crate::scenario::run(world, rev, self.runtime.registry_clone(), scenario)
+                })();
+                let result = outcome.unwrap_or_else(|e| axiom_core::error_response(&e));
+                self.editor
+                    .as_mut()
+                    .unwrap()
+                    .set_scenario_result(&path, result);
+                Ok(())
+            }
             editor::Action::Verify => {
                 let result = self.store.execute(Request::Verify {})?;
                 self.editor.as_mut().unwrap().notice(format!(
@@ -584,6 +619,30 @@ impl App {
         let mut actions = vec![];
         let mut editor_actions = vec![];
         let mut stop = false;
+        // Play-in-editor debug overlay: live FSM state above each agent, projected through
+        // the first game view of this frame.
+        let overlay: Vec<([f32; 2], String)> =
+            if !editing && self.editor.as_ref().is_some_and(|e| e.overlay) {
+                let screen = self.ctx.screen_rect();
+                let bounds = [screen.min.x, screen.min.y, screen.width(), screen.height()];
+                let views = self.runtime.render_frame().views;
+                match (
+                    self.runtime.system::<crate::fsm::FsmSystem>(),
+                    views.iter().find(|v| v.camera.active),
+                ) {
+                    (Some(fsm), Some(view)) => fsm
+                        .labels(&self.runtime.state)
+                        .into_iter()
+                        .filter_map(|(p, text)| {
+                            view.project(glam::Vec3::from_array(p), bounds)
+                                .map(|s| (s, text))
+                        })
+                        .collect(),
+                    _ => vec![],
+                }
+            } else {
+                vec![]
+            };
         let output = ctx.run(raw, |ctx| {
             if editing {
                 editor_actions = self.editor.as_mut().unwrap().draw(ctx, &self.runtime);
@@ -595,7 +654,31 @@ impl App {
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
                             stop = ui.button("■ Stop Preview  F8").clicked();
+                            if let Some(editor) = self.editor.as_mut() {
+                                ui.checkbox(&mut editor.overlay, "Behavior overlay");
+                            }
                         });
+                    let painter = ctx.layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("behavior_overlay"),
+                    ));
+                    for ([x, y], text) in &overlay {
+                        let galley = painter.layout_no_wrap(
+                            text.clone(),
+                            egui::FontId::monospace(12.0),
+                            egui::Color32::WHITE,
+                        );
+                        let rect = egui::Rect::from_center_size(
+                            egui::pos2(*x, *y),
+                            galley.size() + egui::vec2(8.0, 4.0),
+                        );
+                        painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(170));
+                        painter.galley(
+                            rect.min + egui::vec2(4.0, 2.0),
+                            galley,
+                            egui::Color32::WHITE,
+                        );
+                    }
                 }
             }
         });

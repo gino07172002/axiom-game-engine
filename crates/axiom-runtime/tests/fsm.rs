@@ -58,6 +58,34 @@ fn idle_enemy_explains_why_it_is_not_chasing_then_chases_when_in_range() {
 }
 
 #[test]
+fn overlay_labels_follow_agents_and_project_into_the_game_view() {
+    let mut r = WorldRuntime::new(lab(), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 1200);
+    let fsm = r.system::<axiom_runtime::fsm::FsmSystem>().unwrap();
+    let labels = fsm.labels(&r.state);
+    assert_eq!(labels.len(), 6);
+    assert!(labels.iter().any(|(_, s)| s == "chase"));
+    let frame = r.render_frame();
+    let view = frame.views.iter().find(|v| v.camera.active).unwrap();
+    let on_screen = labels
+        .iter()
+        .filter_map(|(p, _)| view.project(glam::Vec3::from_array(*p), [0.0, 0.0, 1280.0, 720.0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        on_screen.len(),
+        6,
+        "every agent is in front of the lab camera"
+    );
+    assert!(on_screen
+        .iter()
+        .all(|[x, y]| (0.0..=1280.0).contains(x) && (0.0..=720.0).contains(y)));
+    // A point behind the camera never projects.
+    assert!(view
+        .project(view.eye - view.forward * 5.0, [0.0, 0.0, 1280.0, 720.0])
+        .is_none());
+}
+
+#[test]
 fn identical_runs_are_deterministic() {
     let snapshot = || {
         let mut r = WorldRuntime::new(lab(), 1, axiom_runtime::installed_registry()).unwrap();

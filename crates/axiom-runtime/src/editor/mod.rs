@@ -33,6 +33,10 @@ pub(crate) enum Action {
         approve: bool,
         rebase: bool,
     },
+    /// Run a scenario file headless against the current revision.
+    RunScenario {
+        path: String,
+    },
 }
 
 /// Entity ID referenced by a diagnostic path, if any (`/entities/@a~1b/...` or
@@ -239,6 +243,7 @@ enum Dock {
     Proposals,
     History,
     Problems,
+    Scenarios,
     Assets,
     Agent,
 }
@@ -289,6 +294,11 @@ pub(crate) struct Editor {
     proposal_focus: Option<i64>,
     /// (request bytes, response bytes) of the last authoring request. Bytes, not tokens.
     last_bytes: Option<(usize, usize)>,
+    /// Play-preview overlay of live behavior state above agents.
+    pub(crate) overlay: bool,
+    /// Scenario files offered in the Scenarios tab, and the last run per file.
+    scenarios: Vec<String>,
+    scenario_results: std::collections::BTreeMap<String, Value>,
 }
 
 impl Editor {
@@ -331,6 +341,9 @@ impl Editor {
             proposal_signature: None,
             proposal_focus: None,
             last_bytes: None,
+            overlay: true,
+            scenarios: Vec::new(),
+            scenario_results: Default::default(),
         };
         if selected
             .as_ref()
@@ -485,6 +498,7 @@ impl Editor {
                 "proposals" => Dock::Proposals,
                 "history" => Dock::History,
                 "problems" => Dock::Problems,
+                "scenarios" => Dock::Scenarios,
                 "assets" => Dock::Assets,
                 "agent" => Dock::Agent,
                 other => anyhow::bail!(
@@ -539,6 +553,21 @@ impl Editor {
         }
         out.push_str("# edit with: axiom acl -e \"set ID component/field VALUE\" (add --propose for review)\n");
         out
+    }
+
+    pub fn set_scenarios(&mut self, files: Vec<String>) {
+        self.scenarios = files;
+    }
+
+    pub fn set_scenario_result(&mut self, path: &str, result: Value) {
+        let passed = result["ok"] == true;
+        self.scenario_results.insert(path.to_owned(), result);
+        self.dock = Dock::Scenarios;
+        if passed {
+            self.notice(format!("Scenario passed · {path}"));
+        } else {
+            self.set_error(format!("Scenario failed · {path}"));
+        }
     }
 
     pub fn set_proposals(&mut self, signature: (i64, i64), rows: &Value) {

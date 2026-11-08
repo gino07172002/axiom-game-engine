@@ -777,6 +777,7 @@ impl Editor {
                 (Dock::Proposals, proposals.as_str()),
                 (Dock::History, "History"),
                 (Dock::Problems, problems.as_str()),
+                (Dock::Scenarios, "Scenarios"),
                 (Dock::Assets, "Assets"),
                 (Dock::Agent, "AI / Protocol"),
             ] {
@@ -894,6 +895,45 @@ impl Editor {
                         }
                     }
                 });
+            }
+            Dock::Scenarios => {
+                if self.scenarios.is_empty() {
+                    caption(ui, "No examples/*.scenario.json found in the working directory.");
+                }
+                for path in &self.scenarios {
+                    let result = self.scenario_results.get(path);
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!self.dirty(), egui::Button::new("Run").small())
+                            .on_hover_text("Headless, deterministic run against the current revision")
+                            .clicked()
+                        {
+                            actions.push(Action::RunScenario { path: path.clone() });
+                        }
+                        let (badge, color) = match result.map(|r| r["ok"] == true) {
+                            Some(true) => ("PASS", Color32::from_rgb(120, 220, 140)),
+                            Some(false) => ("FAIL", WARNING),
+                            None => ("    ", MUTED),
+                        };
+                        ui.label(RichText::new(badge).monospace().strong().color(color));
+                        ui.label(RichText::new(path).monospace());
+                        if let Some(hash) = result.and_then(|r| r["state_hash"].as_str()) {
+                            ui.label(RichText::new(format!("ticks {} · hash {hash}", result.unwrap()["ticks"])).small().color(MUTED));
+                        }
+                    });
+                    if let Some(r) = result {
+                        ui.indent(path, |ui| {
+                            if r["ok"] == true {
+                                for a in r["assertions"].as_array().into_iter().flatten() {
+                                    let kind = a["assertion"]["kind"].as_str().unwrap_or("?");
+                                    let target = ["entity", "action", "name", "pointer", "id"].iter().find_map(|k| a["assertion"][*k].as_str()).unwrap_or("");
+                                    ui.label(RichText::new(format!("✓ {kind} {target} = {}", axiom_core::local::display_value(&a["actual"]))).small().monospace());
+                                }
+                            } else {
+                                ui.label(RichText::new(r["error"].as_str().unwrap_or("failed")).small().color(WARNING));
+                            }
+                        });
+                    }
+                }
             }
             Dock::Problems => {
                 ui.horizontal(|ui| {

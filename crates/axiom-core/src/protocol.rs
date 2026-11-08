@@ -121,6 +121,9 @@ pub enum Request {
         dock: Option<String>,
         #[serde(default)]
         capture: Option<String>,
+        /// Start (true) or stop (false) the Play-in-editor preview.
+        #[serde(default)]
+        play: Option<bool>,
     },
     Undo {
         rev: i64,

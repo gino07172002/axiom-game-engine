@@ -1103,6 +1103,29 @@ mod tests {
     }
 
     #[test]
+    fn scenarios_tab_shows_real_pass_and_fail_results() {
+        let (world, runtime) = fixture();
+        let mut editor = Editor::new(world.clone(), 1, None);
+        editor.set_scenarios(vec!["a.scenario.json".into(), "b.scenario.json".into()]);
+        let pass: crate::scenario::Scenario = serde_json::from_value(serde_json::json!({
+            "ticks": 10, "assertions": [{"kind":"finite"}]
+        }))
+        .unwrap();
+        let ok = crate::scenario::run(world.clone(), 1, crate::installed_registry(), pass).unwrap();
+        editor.set_scenario_result("a.scenario.json", ok);
+        assert!(!editor.error && editor.status.contains("passed"));
+        let fail: crate::scenario::Scenario = serde_json::from_value(serde_json::json!({
+            "ticks": 10, "assertions": [{"kind":"field","entity":"stage/crate","field":"health","op":"gt","value":1}]
+        }))
+        .unwrap();
+        let err = crate::scenario::run(world, 1, crate::installed_registry(), fail).unwrap_err();
+        editor.set_scenario_result("b.scenario.json", axiom_core::error_response(&err));
+        assert!(editor.error && editor.status.contains("failed"));
+        assert!(matches!(editor.dock, Dock::Scenarios));
+        assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
+    }
+
+    #[test]
     fn diagnostic_paths_resolve_to_selectable_entities() {
         let (world, _) = fixture();
         use crate::editor::entity_in_path;

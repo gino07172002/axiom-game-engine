@@ -30,6 +30,43 @@ pub struct RenderView {
     pub camera: Camera,
     pub instances: Vec<Instance>,
 }
+impl RenderView {
+    /// World → screen for this view inside `screen` (respects the camera viewport).
+    /// Returns None behind the camera or outside the view's viewport.
+    pub fn project(&self, point: Vec3, screen: [f32; 4]) -> Option<[f32; 2]> {
+        let [sx, sy, sw, sh] = screen;
+        let [x, y, w, h] = self.camera.viewport;
+        let (vx, vy, vw, vh) = (sx + x * sw, sy + y * sh, w * sw, h * sh);
+        let aspect = vw / vh.max(1.0);
+        let projection = match self.camera.projection {
+            axiom_core::Projection::Perspective { fov_degrees } => Mat4::perspective_rh(
+                fov_degrees.to_radians(),
+                aspect,
+                self.camera.near,
+                self.camera.far,
+            ),
+            axiom_core::Projection::Orthographic { height } => Mat4::orthographic_rh(
+                -height * aspect * 0.5,
+                height * aspect * 0.5,
+                -height * 0.5,
+                height * 0.5,
+                self.camera.near,
+                self.camera.far,
+            ),
+        };
+        let clip = projection
+            * Mat4::look_at_rh(self.eye, self.eye + self.forward, self.up)
+            * point.extend(1.0);
+        if clip.w <= 0.0 || !clip.is_finite() {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        if ndc.x.abs() > 1.0 || ndc.y.abs() > 1.0 {
+            return None;
+        }
+        Some([vx + (ndc.x + 1.0) * vw * 0.5, vy + (1.0 - ndc.y) * vh * 0.5])
+    }
+}
 pub struct RenderFrame {
     pub tick: u64,
     pub settings: RenderSettings,
