@@ -25,9 +25,12 @@ jobs:
         shell: pwsh
         run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" >> $env:GITHUB_PATH
 
-      - name: Install toolchain from rust-toolchain.toml
+      - name: Install the pinned toolchain (rust-toolchain.toml)
         shell: pwsh
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt,clippy
+          rustc --version
+          gcc --version
 
       - uses: Swatinem/rust-cache@v2
 
