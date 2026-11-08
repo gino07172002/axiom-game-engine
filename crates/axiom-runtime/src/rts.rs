@@ -25,30 +25,79 @@ pub struct RtsSystem {
 }
 const PLAYER_BAR: egui::Color32 = egui::Color32::from_rgb(86, 226, 128);
 const ENEMY_BAR: egui::Color32 = egui::Color32::from_rgb(240, 86, 64);
+/// Compiles a world with one appended template entity per prefab and returns the
+/// compiled templates, in `prefabs` order.
+fn compile_with_templates(state: &RuntimeState, prefabs: &[String]) -> Result<Vec<CompiledEntity>> {
+    let mut world = state.compiled.source.clone();
+    let ids: Vec<String> = prefabs.iter().map(|p| format!("__template/{p}")).collect();
+    for (id, prefab) in ids.iter().zip(prefabs) {
+        ensure!(
+            !world.entities.iter().any(|e| &e.id == id),
+            "reserved runtime template ID collision"
+        );
+        let mut entity = Entity::new(id);
+        entity.prefab = Some(prefab.clone());
+        world.entities.push(entity);
+    }
+    // The source package and prefab contracts were validated before this derived compilation.
+    let mut types = state.registry.clone();
+    types.world_validators.clear();
+    let compiled = world.compile(&types)?;
+    Ok(ids
+        .iter()
+        .map(|id| compiled.entities[compiled.indices[id]].clone())
+        .collect())
+}
+/// One template compiled alone (original behavior and error reporting).
+fn compile_template(state: &RuntimeState, prefab: &str) -> Result<CompiledEntity> {
+    Ok(compile_with_templates(state, &[prefab.to_owned()])?.remove(0))
+}
+/// All recipe templates from one compilation; `None` when that fails or there is nothing
+/// to share, so the caller compiles templates one by one with the original errors.
+fn compile_templates(
+    state: &RuntimeState,
+    sim: &Simulation,
+) -> Result<Option<Vec<(String, CompiledEntity)>>> {
+    let mut prefabs: Vec<String> = vec![];
+    for recipe in sim.session.recipes.values() {
+        if !prefabs.contains(&recipe.prefab) {
+            prefabs.push(recipe.prefab.clone());
+        }
+    }
+    if prefabs.len() < 2 {
+        return Ok(None);
+    }
+    Ok(compile_with_templates(state, &prefabs)
+        .ok()
+        .map(|templates| prefabs.into_iter().zip(templates).collect()))
+}
+
 pub fn register(registry: &mut RuntimeRegistry) {
     axiom_rts::register(&mut registry.authoring);
     registry.factories.insert("rts.simulate".into(), |state| {
         let sim = Simulation::new(&state.compiled)?;
         let mut templates = BTreeMap::new();
         let mut definitions = BTreeMap::new();
+        // One derived compilation resolves every template; compiling each template alone
+        // (the fallback, which also reports the original per-template errors) produced the
+        // same entities at one full-world compile per prefab.
+        if let Some(batch) = compile_templates(state, &sim)? {
+            for (prefab, template) in batch {
+                definitions.insert(
+                    prefab.clone(),
+                    (
+                        serde_json::from_value(template.components["rts.unit"].clone())?,
+                        template.health.as_ref().unwrap().value,
+                    ),
+                );
+                templates.insert(prefab, template);
+            }
+        }
         for recipe in sim.session.recipes.values() {
             if templates.contains_key(&recipe.prefab) {
                 continue;
             }
-            let mut world = state.compiled.source.clone();
-            let id = format!("__template/{}", recipe.prefab);
-            ensure!(
-                !world.entities.iter().any(|e| e.id == id),
-                "reserved runtime template ID collision"
-            );
-            let mut entity = Entity::new(&id);
-            entity.prefab = Some(recipe.prefab.clone());
-            world.entities.push(entity);
-            // The source package and prefab contracts were validated before this derived compilation.
-            let mut types = state.registry.clone();
-            types.world_validators.clear();
-            let compiled = world.compile(&types)?;
-            let template = compiled.entities[compiled.indices[&id]].clone();
+            let template = compile_template(state, &recipe.prefab)?;
             definitions.insert(
                 recipe.prefab.clone(),
                 (
@@ -552,13 +601,19 @@ impl RuntimeSystem for RtsSystem {
         self.sim.step(&self.definitions);
         let produced = std::mem::take(&mut self.sim.spawned);
         if !produced.is_empty() {
-            let mut prepared = state.clone();
-            let result = produced
-                .iter()
-                .try_for_each(|id| self.spawn(&mut prepared, id));
+            // `RuntimeState::spawn` validates everything before it mutates, so one spawn is
+            // already atomic; only a batch needs a scratch copy for all-or-nothing.
+            let result = if let [id] = produced.as_slice() {
+                self.spawn(state, id)
+            } else {
+                let mut prepared = state.clone();
+                produced
+                    .iter()
+                    .try_for_each(|id| self.spawn(&mut prepared, id))
+                    .map(|()| *state = prepared)
+            };
             match result {
                 Ok(()) => {
-                    *state = prepared;
                     for id in &produced {
                         state.events.publish(
                             "rts.simulate",
@@ -1001,5 +1056,38 @@ impl RuntimeSystem for RtsSystem {
             "rts".into(),
             json!({"summary":self.sim.summary(),"selected":self.sim.selected_ids(),"resources":self.sim.resources.iter().map(|r|json!({"id":r.id,"remaining":r.remaining})).collect::<Vec<_>>(),"buildings":self.sim.buildings.iter().map(|b|json!({"id":b.id,"health":b.health,"queue":b.queue.iter().map(|j|json!({"recipe":j.recipe,"remaining_ticks":j.remaining})).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )])
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    #[test]
+    fn batched_templates_equal_templates_compiled_one_by_one() {
+        let registry = crate::installed_registry();
+        for pack in ["rts", "rts-bench"] {
+            let world = axiom_core::ContentPackage::load(
+                format!("{}/../../content/{pack}", env!("CARGO_MANIFEST_DIR")),
+                &registry.authoring,
+            )
+            .unwrap()
+            .world;
+            let runtime = WorldRuntime::new(world, 1, registry.clone()).unwrap();
+            let state = &runtime.state;
+            let sim = &runtime.system::<RtsSystem>().unwrap().sim;
+            let batch = compile_templates(state, sim)
+                .unwrap()
+                .expect("several prefabs");
+            assert!(batch.len() >= 2, "{pack}");
+            for (prefab, template) in batch {
+                let alone = compile_template(state, &prefab).unwrap();
+                assert_eq!(
+                    format!("{template:?}"),
+                    format!("{alone:?}"),
+                    "{pack} {prefab}"
+                );
+            }
+        }
     }
 }

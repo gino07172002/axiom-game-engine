@@ -1088,10 +1088,25 @@ impl Editor {
                 if self.scenarios.is_empty() {
                     caption(ui, "No examples/*.scenario.json found in the working directory.");
                 }
+                if let Some(job) = &self.scenario_job {
+                    let (done, total) = job.progress();
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(if total == 0 { 0.0 } else { done as f32 / total as f32 })
+                                .desired_width(220.0)
+                                .text(format!("{done} / {total} ticks · {:.1} s", job.elapsed().as_secs_f32())),
+                        );
+                        ui.label(RichText::new(&job.label).monospace().small());
+                        if ui.button("Cancel").on_hover_text("Stop the scenario at its next tick").clicked() {
+                            actions.push(Action::CancelScenario);
+                        }
+                    });
+                }
+                let running = self.scenario_job.is_some();
                 for path in &self.scenarios {
                     let result = self.scenario_results.get(path);
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!self.dirty(), egui::Button::new("Run").small())
+                        if ui.add_enabled(!self.dirty() && !running, egui::Button::new("Run").small())
                             .on_hover_text("Headless, deterministic run against the current revision")
                             .clicked()
                         {

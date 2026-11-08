@@ -97,7 +97,9 @@ pub struct SceneLight {
 pub struct MeshFrame {
     pub id: String,
     pub asset: std::sync::Arc<axiom_animation::Asset>,
-    pub vertices: Vec<axiom_animation::SkinnedVertex>,
+    /// Shared so static meshes reuse one buffer across frames; the renderer skips the
+    /// upload when the same buffer is presented again.
+    pub vertices: std::sync::Arc<Vec<axiom_animation::SkinnedVertex>>,
     pub model: Mat4,
     pub material: Option<String>,
 }

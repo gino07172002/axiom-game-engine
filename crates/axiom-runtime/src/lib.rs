@@ -16,6 +16,7 @@ pub mod fsm;
 pub mod gameplay;
 pub mod geometry;
 mod input;
+pub mod jobs;
 pub mod lighting;
 pub mod measure;
 mod mesh_render;

@@ -32,7 +32,7 @@ impl Bridge {
         observation: Arc<RwLock<Observation>>,
         registry: axiom_core::Registry,
     ) -> Result<Self> {
-        Self::start_with_runtime(db, port, observation, registry, None)
+        Self::start_with_runtime(db, port, observation, registry, None, None)
     }
     pub fn start_with_runtime(
         db: PathBuf,
@@ -40,11 +40,16 @@ impl Bridge {
         observation: Arc<RwLock<Observation>>,
         registry: axiom_core::Registry,
         commands: Option<std::sync::mpsc::SyncSender<RuntimeRequest>>,
+        latest: Option<axiom_core::LatestRevision>,
     ) -> Result<Self> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
         let mut store = Store::open_with(db, registry, axiom_core::World::empty("world"))?;
+        if let Some(latest) = latest {
+            // Revisions committed here reach the host app without a second JSON decode.
+            store.share_latest_cache(latest);
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let handle = std::thread::spawn(move || {

@@ -1,5 +1,13 @@
 # WORKLOG
 
+## 2026-11-09 (later) — Claude (Opus 5.5) — perf baseline + editor stall fixes, not committed
+
+**Done (uncommitted):** benchmark harness (`examples/perf_bench.rs` with counting allocator, `scripts/perf-bench.ps1`, `perf-summary.ps1`, `perf-live-edit.ps1`), baseline + results in `docs/perf-baseline.zh-TW.md`. Fixes: editor scenarios are background jobs (`jobs.rs`: cancel, progress, watchdog, timed join; Scenarios tab + status bar + `observe editor.jobs`); revision activation builds the next runtime on a worker and adopts it on the main thread (`WorldRuntime::adopt`, `RuntimeSystem: Send`), store decoded-revision cache shared with the bridge, editor `Arc<World>`, change-list diff and old runtime/world freed off-thread; animation asset / procedural geometry caches; RTS templates compiled in one pass; single production spawn without state clone; event delivery without consumers skips the state clone; static mesh vertices shared and not re-uploaded; shader pipelines cached by WGSL content with a 512-pipeline budget (`observe shader_gpu`); per-frame slow-frame profiler (`observe frame`).
+
+**Next:** editor-local commits still block the main thread (SQLite fsync ~110 ms + double compile + JSON round trip; 4096 world ~330 ms) — needs async editor writes or a durability decision by the owner. Swapchain acquire (`get_current_texture`) blocks 200–475 ms per frame on this MX150/Optimus machine in every build (see `observe frame.last_slow`); try present mode / frame latency / backend.
+
+**Gotchas added:** release `-j4` incremental rebuild of axiom-runtime ≈ 4–6 min (the first release build of the example after a profile change rebuilt all deps, 22 min). `observe` flattens metrics (use `$o.reload`, not `$o.metrics.reload`). `fps` in observe is smoothed with a 0.1 s cap and hides 250 ms frames; use `frame.frames`/`slow_frames`. No Python here; probes are temporary Rust examples (delete after use).
+
 ## 2026-11-09 — Claude (Opus 5.5) — lighting system (plan-engine-components item 1), not committed
 
 **Done (uncommitted, for review):** `render.light` component (directional / point / spot / approximate area; strict validation; budgets 4 directional + 32 local) and `render.environment` resource (ambient color | gradient trilight, optional exp² fog) in `axiom-core/src/light.rs`; GPU packing `axiom-runtime/src/lighting.rs` + shared WGSL prelude `lighting.wgsl` (Globals 1184 → 2992 B, stride 3072). Defaults are pixel-identical (before/after diff on axiom-town, fps, shader-lab, action, effects-tour: ≤2 px differ by 1/255). Presets `light.*`, ACL `create light KIND`, editor commands `object.light_*`, "+ Object" entries, gizmos, `LIGHT` badge, parity tests. `content/light-lab` + `Play Light Lab.cmd`. Docs `docs/lighting.zh-TW.md`.

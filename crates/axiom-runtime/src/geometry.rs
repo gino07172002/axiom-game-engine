@@ -185,7 +185,8 @@ impl Geometry {
     }
 }
 struct GeometrySystem {
-    meshes: Vec<(usize, Arc<Asset>)>,
+    /// Slot, asset and its undeformed vertices (built once; presented every frame).
+    meshes: Vec<(usize, Arc<Asset>, Arc<Vec<SkinnedVertex>>)>,
 }
 impl RuntimeSystem for GeometrySystem {
     fn as_any(&self) -> &dyn Any {
@@ -197,22 +198,14 @@ impl RuntimeSystem for GeometrySystem {
     fn step(&mut self, _state: &mut RuntimeState, _input: &ActionMap) {}
     fn extract(&self, state: &RuntimeState, frame: &mut RenderFrame) {
         let matrices = state.matrices();
-        for (slot, asset) in &self.meshes {
+        for (slot, asset, vertices) in &self.meshes {
             if !state.compiled.enabled[*slot] {
                 continue;
             }
             frame.meshes.push(MeshFrame {
                 id: state.compiled.entities[*slot].id.clone(),
                 asset: asset.clone(),
-                vertices: asset
-                    .vertices
-                    .iter()
-                    .map(|v| SkinnedVertex {
-                        position: v.position,
-                        normal: v.normal,
-                        uv: v.uv,
-                    })
-                    .collect(),
+                vertices: vertices.clone(),
                 model: matrices[*slot],
                 material: state.compiled.entities[*slot]
                     .material
@@ -222,6 +215,33 @@ impl RuntimeSystem for GeometrySystem {
         }
     }
 }
+/// Built procedural assets shared across runtime rebuilds, keyed by their full parameter
+/// text (the build is a pure function of it). Bounded; unused entries are evicted first.
+const GEOMETRY_CACHE_ENTRIES: usize = 128;
+static GEOMETRY_CACHE: std::sync::Mutex<std::collections::BTreeMap<String, Arc<Asset>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+fn cached_build(geometry: &Geometry) -> Result<Arc<Asset>> {
+    geometry.validate()?;
+    let key = serde_json::to_string(geometry)?;
+    if let Some(asset) = GEOMETRY_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(&key).cloned())
+    {
+        return Ok(asset);
+    }
+    let asset = Arc::new(geometry.build()?);
+    if let Ok(mut cache) = GEOMETRY_CACHE.lock() {
+        if cache.len() >= GEOMETRY_CACHE_ENTRIES {
+            cache.retain(|_, a| Arc::strong_count(a) > 1);
+        }
+        if cache.len() < GEOMETRY_CACHE_ENTRIES {
+            cache.insert(key, asset.clone());
+        }
+    }
+    Ok(asset)
+}
+
 pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.component("render.geometry","render",json!({"shape":"sphere|plane|torus","segments":"3..64","rings":"2..48","barycentric_uv":"bool; real triangle edges for wire shading","flat":"bool"}),|v|serde_json::from_value::<Geometry>(v.clone())?.validate());
     r.authoring.systems.insert(
@@ -246,13 +266,24 @@ pub fn register(r: &mut RuntimeRegistry) {
                         && !e.components.contains_key("animation.player"),
                     "procedural geometry requires one transform and exclusive mesh ownership"
                 );
-                let asset = serde_json::from_value::<Geometry>(v.clone())?.build()?;
+                let asset = cached_build(&serde_json::from_value::<Geometry>(v.clone())?)?;
                 total += asset.vertices.len();
                 ensure!(
                     total <= 500_000,
                     "procedural scene geometry budget exceeded"
                 );
-                meshes.push((i, Arc::new(asset)));
+                let vertices = Arc::new(
+                    asset
+                        .vertices
+                        .iter()
+                        .map(|v| SkinnedVertex {
+                            position: v.position,
+                            normal: v.normal,
+                            uv: v.uv,
+                        })
+                        .collect(),
+                );
+                meshes.push((i, asset, vertices));
             }
         }
         Ok(Box::new(GeometrySystem { meshes }))

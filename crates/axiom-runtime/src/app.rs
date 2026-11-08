@@ -5,7 +5,7 @@ use crate::{
     ui::{self, Action, UiState},
     world::{ActionMap, Observation, RuntimeRegistry, WorldRuntime, FIXED_DT},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axiom_core::{parse_request, Request, Store, World};
 use std::{
     collections::HashSet,
@@ -20,6 +20,25 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
+
+/// Watchdog for an editor scenario job (1,000,000 debug-build ticks take about 13 min).
+pub const SCENARIO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Drops a replaced runtime on a short-lived thread: freeing thousands of entities is
+/// measurable main-thread work and nothing observes it.
+fn retire<T: Send + 'static>(value: T) {
+    if std::thread::Builder::new()
+        .name("axiom-retire".into())
+        .spawn(move || drop(value))
+        .is_err()
+    {
+        // Thread creation failed; the runtime was dropped with the closure on this thread.
+    }
+}
 
 pub struct RunOptions {
     pub mode: RunMode,
@@ -67,6 +86,94 @@ struct App {
     audio: crate::audio::Output,
     /// File ▸ Exit requested from the editor.
     quit: bool,
+    /// Main-thread phases of the last revision reload; reported as `metrics.reload`.
+    last_reload: Option<ReloadTimings>,
+    /// Reloads whose main-thread total exceeded the 16 ms operation budget.
+    slow_reloads: u64,
+    reloads: u64,
+    /// Watchdog deadline for editor scenario jobs.
+    scenario_timeout: std::time::Duration,
+    /// Build the next revision's runtime on a worker thread while the last good runtime
+    /// keeps running (windowed app and measurements); headless tests stay synchronous.
+    background_activation: bool,
+    activation: Option<Activation>,
+    /// Editor Changes-list diff for an external revision, computed off the main thread.
+    changes_job: Option<(i64, crate::jobs::Job<serde_json::Value>)>,
+    /// Frames over the 16 ms budget and the phases of the last one (`observe` -> `frame`).
+    slow_frames: u64,
+    last_slow_frame: Option<serde_json::Value>,
+}
+
+/// Wall-clock phases of one main-loop frame; only frames over budget are kept.
+struct FramePhases {
+    started: Instant,
+    last: Instant,
+    phases: [(&'static str, f64); 8],
+    count: usize,
+}
+impl FramePhases {
+    fn start(now: Instant) -> Self {
+        Self {
+            started: now,
+            last: now,
+            phases: [("", 0.0); 8],
+            count: 0,
+        }
+    }
+    fn mark(&mut self, name: &'static str) {
+        let now = Instant::now();
+        if self.count < self.phases.len() {
+            self.phases[self.count] = (name, (now - self.last).as_secs_f64() * 1000.0);
+            self.count += 1;
+        }
+        self.last = now;
+    }
+    /// The phase breakdown when the frame exceeded the 16 ms budget.
+    fn finish(self) -> Option<serde_json::Value> {
+        let total = ms(self.started);
+        (total > 16.0).then(|| {
+            let mut phases = serde_json::Map::new();
+            for (name, value) in &self.phases[..self.count] {
+                phases.insert((*name).into(), serde_json::json!(value));
+            }
+            serde_json::json!({"total_ms":total,"phases_ms":phases})
+        })
+    }
+}
+
+/// A runtime for `rev` being built off the main thread.
+struct Activation {
+    rev: i64,
+    job: crate::jobs::Job<Result<WorldRuntime>>,
+    timings: ReloadTimings,
+}
+
+/// Watchdog for one background runtime build.
+const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Main-thread wall-clock phases of applying one new authoring revision (milliseconds).
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct ReloadTimings {
+    pub rev: i64,
+    /// `Store::current`: SQLite row read + JSON decode + IR decode.
+    pub read_ms: f64,
+    /// Copy of the world handed to the editor.
+    pub editor_clone_ms: f64,
+    /// `Editor::update` (diff summary, draft reset).
+    pub editor_update_ms: f64,
+    /// Runtime activation phases; absent when Play preview pins its revision.
+    pub reconcile: Option<crate::world::ReconcileTimings>,
+    pub activation_failed: bool,
+    /// The runtime was built on a worker thread (`build_ms` there, not on this thread).
+    pub background: bool,
+    /// Worker wall clock of the background build.
+    pub build_ms: f64,
+    /// Main thread when the revision was noticed: read, editor update, job start.
+    pub request_ms: f64,
+    /// Main thread when the built runtime was adopted: transfer, GPU prepare, swap.
+    pub adopt_ms: f64,
+    /// Main-thread total (`request_ms + adopt_ms` for background activations).
+    pub total_ms: f64,
 }
 
 pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Result<()> {
@@ -83,6 +190,102 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
         return Err(error);
     }
     Ok(())
+}
+
+/// One measured edit → live sample (milliseconds, main-thread wall clock).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct EditLiveSample {
+    /// From submitting the editor write until the active runtime runs the new revision.
+    pub edit_to_live_ms: f64,
+    /// `Store::execute(apply)`: validation, diff, SQLite commit.
+    pub commit_ms: f64,
+    pub reload: ReloadTimings,
+}
+
+/// Headless edit → live measurement through the editor's real write path
+/// (`editor::Action::Write` → `Store::execute` → `App::reload_after`). No window or GPU,
+/// so `reload.reconcile.prepare_ms` excludes pipeline creation; the GPU path reports the
+/// same phases live in `observe` → `metrics.reload`.
+pub fn measure_edit_live(
+    world: World,
+    registry: RuntimeRegistry,
+    db: PathBuf,
+    editor: bool,
+    background: bool,
+    batches: Vec<Vec<axiom_core::Edit>>,
+) -> Result<Vec<EditLiveSample>> {
+    for path in [
+        db.clone(),
+        db.with_extension("sqlite-wal"),
+        db.with_extension("sqlite-shm"),
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+    let store = Store::open_with(&db, registry.authoring.clone(), world)?;
+    let mut app = App::new(
+        RunOptions {
+            mode: if editor {
+                RunMode::Editor { selected: None }
+            } else {
+                RunMode::Play
+            },
+            load_slot: None,
+            replace_world: false,
+            db,
+            port: 0,
+            smoke_frames: None,
+            screenshot: None,
+            start_play: false,
+        },
+        registry,
+        store,
+    )?;
+    let mut samples = Vec::with_capacity(batches.len());
+    app.background_activation = background;
+    for edits in batches {
+        let started = Instant::now();
+        let expected = app.store.revision()?;
+        let request = Request::Apply {
+            expected_rev: Some(expected),
+            edits,
+        };
+        let commit = if editor {
+            app.editor_action(editor::Action::Write {
+                request,
+                select: None,
+            })?;
+            None
+        } else {
+            let phase = Instant::now();
+            app.store.execute(request)?;
+            let commit = ms(phase);
+            app.reload()?;
+            Some(commit)
+        };
+        let submitted_ms = ms(started);
+        // A background build completes on a later frame; wait for it like a frame loop would.
+        app.finish_activation()?;
+        let edit_to_live_ms = ms(started);
+        let reload = app.last_reload.context("edit did not reload the runtime")?;
+        anyhow::ensure!(
+            app.runtime.rev == expected + 1 && app.runtime.activation_error.is_none(),
+            "runtime did not go live at revision {}",
+            expected + 1
+        );
+        samples.push(EditLiveSample {
+            edit_to_live_ms,
+            commit_ms: commit.unwrap_or(
+                submitted_ms
+                    - if reload.background {
+                        reload.request_ms
+                    } else {
+                        reload.total_ms
+                    },
+            ),
+            reload,
+        });
+    }
+    Ok(samples)
 }
 
 impl App {
@@ -138,6 +341,7 @@ impl App {
                 observation.clone(),
                 registry.authoring.clone(),
                 Some(sender),
+                Some(store.latest_cache()),
             )?)
         } else {
             None
@@ -180,6 +384,15 @@ impl App {
             error: None,
             fps_smooth: 60.0,
             quit: false,
+            last_reload: None,
+            slow_reloads: 0,
+            reloads: 0,
+            scenario_timeout: SCENARIO_TIMEOUT,
+            background_activation: false,
+            activation: None,
+            changes_job: None,
+            slow_frames: 0,
+            last_slow_frame: None,
             audio: crate::audio::Output::new(),
         })
     }
@@ -196,6 +409,24 @@ impl App {
             observation
                 .metrics
                 .insert("editor".into(), editor.observation());
+        }
+        if let Some(reload) = self.reload_metrics() {
+            observation.metrics.insert("reload".into(), reload);
+        }
+        if self.slow_frames > 0 {
+            observation.metrics.insert(
+                "frame".into(),
+                serde_json::json!({"frames":self.frames,"slow_frames":self.slow_frames,"budget_ms":16.0,"last_slow":self.last_slow_frame}),
+            );
+        }
+        if let Some(renderer) = &self.renderer {
+            let stats = renderer.shader_stats();
+            if stats.active_programs > 0 {
+                observation.metrics.insert(
+                    "shader_gpu".into(),
+                    serde_json::json!({"last":stats,"budget_pipelines":crate::shader_gpu::MAX_PIPELINE_VARIANTS}),
+                );
+            }
         }
         observation
     }
@@ -368,35 +599,236 @@ impl App {
         {
             return Ok(());
         }
-        let (rev, world) = self.store.current()?;
+        let started = Instant::now();
+        let (rev, world) = self.store.current_shared()?;
+        let mut timings = ReloadTimings {
+            rev,
+            read_ms: ms(started),
+            ..Default::default()
+        };
         if let Some(editor) = &mut self.editor {
-            editor.update(rev, world.clone(), local_revision == Some(rev));
+            let phase = Instant::now();
+            let copy = world.clone();
+            timings.editor_clone_ms = ms(phase);
+            let phase = Instant::now();
+            let local = local_revision == Some(rev);
+            if self.background_activation {
+                // The Changes-list diff and freeing the replaced world run off this thread.
+                if let Some((previous, diff)) = editor.update_deferred(rev, copy, local) {
+                    if diff {
+                        let next = world.clone();
+                        let job = crate::jobs::Job::spawn(
+                            "changes",
+                            format!("revision {rev}"),
+                            ACTIVATION_TIMEOUT,
+                            move |_| axiom_core::diff::summary(&previous, &next),
+                        )?;
+                        if let Some((_, stale)) = self.changes_job.replace((rev, job)) {
+                            stale.detach();
+                        }
+                    } else {
+                        retire(previous);
+                    }
+                }
+            } else {
+                editor.update(rev, copy, local);
+            }
+            timings.editor_update_ms = ms(phase);
             if editor.previewing {
                 // Play uses a pinned authoring revision and discards its simulation on exit.
+                timings.total_ms = ms(started);
+                self.record_reload(timings);
                 return Ok(());
             }
         }
         if rev != self.runtime.requested_rev {
+            if self.background_activation {
+                // The last good runtime keeps running and rendering; the replacement is
+                // built on a worker and adopted by `poll_activation` on a later frame.
+                self.runtime.requested_rev = rev;
+                timings.background = true;
+                if self.activation.is_none() {
+                    self.start_activation(world, rev, timings, started)?;
+                }
+                // Otherwise the in-flight build is superseded when it finishes.
+                return Ok(());
+            }
             let renderer = &mut self.renderer;
-            if let Err(error) = self.runtime.reconcile_checked(world, rev, |next| {
+            let result = self.runtime.reconcile_checked(&*world, rev, |next| {
                 if let Some(renderer) = renderer {
                     renderer.prepare_shaders(next.shaders())?;
                 }
                 Ok(())
-            }) {
-                self.ui.output.push(format!("ACTIVATION FAILED: {error:#}"));
-                if let Some(editor) = &mut self.editor {
-                    editor.set_error(format!(
-                        "Revision {rev} committed; activation failed · {error:#}"
-                    ));
-                }
+            });
+            if let Err(error) = result {
+                timings.activation_failed = true;
+                timings.total_ms = ms(started);
+                self.record_reload(timings);
+                self.activation_failed(rev, &error);
                 return Ok(());
             }
+            timings.reconcile = self.runtime.reconcile_timings;
             self.ui
                 .output
                 .push(format!("OK  runtime synchronized  rev={rev}"));
         }
+        timings.total_ms = ms(started);
+        self.record_reload(timings);
         Ok(())
+    }
+
+    fn activation_failed(&mut self, rev: i64, error: &anyhow::Error) {
+        self.ui.output.push(format!("ACTIVATION FAILED: {error:#}"));
+        if let Some(editor) = &mut self.editor {
+            editor.set_error(format!(
+                "Revision {rev} committed; activation failed · {error:#}"
+            ));
+        }
+    }
+
+    fn start_activation(
+        &mut self,
+        world: Arc<World>,
+        rev: i64,
+        mut timings: ReloadTimings,
+        started: Instant,
+    ) -> Result<()> {
+        let registry = self.runtime.registry_clone();
+        let job = crate::jobs::Job::spawn(
+            "activation",
+            format!("revision {rev}"),
+            ACTIVATION_TIMEOUT,
+            move |_| WorldRuntime::new(&*world, rev, registry),
+        )?;
+        timings.request_ms = ms(started);
+        self.activation = Some(Activation { rev, job, timings });
+        Ok(())
+    }
+
+    /// Non-blocking; once per frame. Adopts a finished background build on this thread
+    /// (state transfer, GPU preparation, swap) or restarts it for a newer revision.
+    fn poll_activation(&mut self) -> Result<()> {
+        self.poll_activation_within(std::time::Duration::ZERO)
+    }
+
+    /// `poll_activation` that may wait up to `wait` (the unused part of this frame's 16 ms
+    /// budget) so small revisions still go live in the frame that noticed them.
+    fn poll_activation_within(&mut self, wait: std::time::Duration) -> Result<()> {
+        let Some(activation) = &mut self.activation else {
+            return Ok(());
+        };
+        let Some(outcome) = activation.job.poll_within(wait) else {
+            return Ok(());
+        };
+        let Activation {
+            rev,
+            mut timings,
+            job,
+        } = self.activation.take().unwrap();
+        timings.build_ms = job.elapsed().as_secs_f64() * 1000.0;
+        drop(job);
+        let built = match outcome {
+            crate::jobs::Outcome::Done { value, .. } => value,
+            crate::jobs::Outcome::Abandoned { stop } => Err(anyhow::anyhow!(
+                "runtime build for revision {rev} {}",
+                stop.name()
+            )),
+        };
+        let previewing = self.editor.as_ref().is_some_and(|e| e.previewing);
+        if previewing || rev != self.runtime.requested_rev {
+            // Superseded by a newer revision (or Play preview pinned one); never adopt it.
+            if let Ok(stale) = built {
+                retire(stale);
+            }
+            if !previewing && self.runtime.requested_rev != self.runtime.rev {
+                let started = Instant::now();
+                let (rev, world) = self.store.current_shared()?;
+                let timings = ReloadTimings {
+                    rev,
+                    read_ms: ms(started),
+                    background: true,
+                    ..Default::default()
+                };
+                self.runtime.requested_rev = rev;
+                self.start_activation(world, rev, timings, started)?;
+            }
+            return Ok(());
+        }
+        let started = Instant::now();
+        let renderer = &mut self.renderer;
+        let adopted = self.runtime.adopt(
+            built,
+            |next| {
+                if let Some(renderer) = renderer {
+                    renderer.prepare_shaders(next.shaders())?;
+                }
+                Ok(())
+            },
+            started,
+        );
+        timings.adopt_ms = ms(started);
+        timings.total_ms = timings.request_ms + timings.adopt_ms;
+        match adopted {
+            Ok(old) => {
+                timings.reconcile = self.runtime.reconcile_timings;
+                // Freeing a large runtime is real work; it is not needed on this thread.
+                retire(old);
+                self.ui
+                    .output
+                    .push(format!("OK  runtime synchronized  rev={rev}"));
+            }
+            Err(error) => {
+                timings.activation_failed = true;
+                self.activation_failed(rev, &error);
+            }
+        }
+        self.record_reload(timings);
+        Ok(())
+    }
+
+    fn poll_changes(&mut self) {
+        let Some((rev, job)) = &mut self.changes_job else {
+            return;
+        };
+        let rev = *rev;
+        let Some(outcome) = job.poll() else {
+            return;
+        };
+        self.changes_job = None;
+        if let (crate::jobs::Outcome::Done { value, .. }, Some(editor)) =
+            (outcome, &mut self.editor)
+        {
+            editor.set_changes_for(rev, &value);
+        }
+    }
+
+    /// Completes a pending activation before a runtime request so protocol semantics
+    /// (commands see the newest committed revision) do not depend on frame timing.
+    fn finish_activation(&mut self) -> Result<()> {
+        while self.activation.is_some() {
+            self.poll_activation()?;
+            if self.activation.is_some() {
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        }
+        Ok(())
+    }
+
+    fn record_reload(&mut self, timings: ReloadTimings) {
+        self.reloads += 1;
+        if timings.total_ms > 16.0 {
+            self.slow_reloads += 1;
+        }
+        self.last_reload = Some(timings);
+    }
+
+    fn reload_metrics(&self) -> Option<serde_json::Value> {
+        if self.last_reload.is_none() && self.activation.is_none() {
+            return None;
+        }
+        Some(
+            serde_json::json!({"last":self.last_reload,"pending":self.activation.as_ref().map(|a| a.job.observation()),"reloads":self.reloads,"slow_reloads":self.slow_reloads,"budget_ms":16.0,"scope":"main-thread wall clock of applying a new authoring revision"}),
+        )
     }
 
     fn editor_action(&mut self, action: editor::Action) -> Result<()> {
@@ -471,18 +903,47 @@ impl App {
                 }
             }
             editor::Action::RunScenario { path } => {
-                let outcome = (|| -> Result<serde_json::Value> {
+                anyhow::ensure!(
+                    editor.scenario_job.is_none(),
+                    "a scenario is already running; cancel it first"
+                );
+                // Reading, parsing and the revision snapshot are bounded (1 MiB); the
+                // simulation (up to 1,000,000 ticks) runs on a worker thread.
+                let prepared = (|| -> Result<(crate::scenario::Scenario, i64, World)> {
                     let raw = std::fs::read_to_string(&path)?;
                     anyhow::ensure!(raw.len() <= 1_048_576, "scenario exceeds 1 MiB");
                     let scenario = serde_json::from_str(&raw)?;
                     let (rev, world) = self.store.current()?;
-                    crate::scenario::run(world, rev, self.runtime.registry_clone(), scenario)
+                    Ok((scenario, rev, world))
                 })();
-                let result = outcome.unwrap_or_else(|e| axiom_core::error_response(&e));
-                self.editor
-                    .as_mut()
-                    .unwrap()
-                    .set_scenario_result(&path, result);
+                let editor = self.editor.as_mut().unwrap();
+                match prepared {
+                    Ok((scenario, rev, world)) => {
+                        let registry = self.runtime.registry_clone();
+                        let job = crate::jobs::Job::spawn(
+                            "scenario",
+                            path,
+                            self.scenario_timeout,
+                            move |progress| {
+                                crate::scenario::run_observed(
+                                    world,
+                                    rev,
+                                    registry,
+                                    scenario,
+                                    None,
+                                    Some(progress),
+                                )
+                                .unwrap_or_else(|e| axiom_core::error_response(&e))
+                            },
+                        )?;
+                        editor.start_scenario(job);
+                    }
+                    Err(e) => editor.set_scenario_result(&path, axiom_core::error_response(&e)),
+                }
+                Ok(())
+            }
+            editor::Action::CancelScenario => {
+                editor.cancel_scenario();
                 Ok(())
             }
             editor::Action::Verify => {
@@ -518,6 +979,10 @@ impl App {
     fn editor_play(&mut self, play: bool) -> Result<()> {
         if self.editor.as_ref().unwrap().previewing == play {
             return Ok(());
+        }
+        if let Some(pending) = self.activation.take() {
+            // Preview and stop build their runtimes from the current revision themselves.
+            pending.job.detach();
         }
         let (rev, world) = self.store.current()?;
         self.editor
@@ -568,8 +1033,16 @@ impl App {
             if std::time::Instant::now() >= command.deadline {
                 continue;
             }
+            let editor_view = matches!(command.request, Request::EditorView { .. });
             let result = self
                 .reload()
+                .and_then(|_| {
+                    if editor_view {
+                        Ok(())
+                    } else {
+                        self.finish_activation()
+                    }
+                })
                 .and_then(|_| self.runtime_request(command.request));
             let response = result.unwrap_or_else(|e| axiom_core::error_response(&e));
             let _ = command.reply.send(response);
@@ -585,6 +1058,7 @@ impl App {
             .editor
             .as_ref()
             .is_some_and(|e| e.proposal_signature.is_none());
+        let mut phases = FramePhases::start(now);
         let poll = self.poll_elapsed >= 0.25;
         if poll {
             self.poll_elapsed = 0.0;
@@ -605,6 +1079,7 @@ impl App {
                 }
             }
         }
+        phases.mark("poll_reload_proposals");
         if self.ui.playing
             && !self.ui.console
             && (self.focused || self.options.smoke_frames.is_some())
@@ -635,6 +1110,13 @@ impl App {
         } else {
             self.accumulator = 0.0;
         }
+        if let Some(editor) = &mut self.editor {
+            // Background jobs deliver results here; never waited for on this thread.
+            editor.poll_jobs();
+        }
+        self.poll_activation()?;
+        self.poll_changes();
+        phases.mark("simulate");
         let window = self.window.as_ref().unwrap().clone();
         let raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let ctx = self.ctx.clone();
@@ -719,6 +1201,7 @@ impl App {
                 }
             }
         });
+        phases.mark("jobs_overlay_ui");
         self.egui_state
             .as_mut()
             .unwrap()
@@ -814,6 +1297,13 @@ impl App {
             &self.runtime.runtime_session,
             self.ui.playing && !self.editing() && !self.ui.console,
         );
+        if self.activation.is_some() {
+            // Spend what is left of this frame's budget (minus a margin for extraction and
+            // submission) waiting for a background build, so small revisions go live in the
+            // frame that noticed them, as the old synchronous path did.
+            let left = std::time::Duration::from_millis(12).saturating_sub(now.elapsed());
+            self.poll_activation_within(left)?;
+        }
         self.frames += 1;
         let final_frame = self.options.smoke_frames.is_some_and(|n| self.frames >= n);
         let pending = self.pending_capture.take();
@@ -822,6 +1312,7 @@ impl App {
         } else {
             pending.as_deref()
         };
+        phases.mark("actions_history_audio");
         let frame = if editing {
             self.editor
                 .as_ref()
@@ -830,6 +1321,7 @@ impl App {
         } else {
             self.runtime.render_frame()
         };
+        phases.mark("extract");
         let rendered =
             self.renderer
                 .as_mut()
@@ -843,12 +1335,22 @@ impl App {
             }
             return Ok(());
         }
+        phases.mark("render_present");
+        // A background build usually completes while this frame waits for the swapchain;
+        // adopting here instead of next frame saves one frame of edit -> live latency.
+        self.poll_activation()?;
+        self.poll_changes();
         let mut obs = self.observation();
         obs.fps = self.fps_smooth;
         obs.frame_ms_cpu = now.elapsed().as_secs_f32() * 1000.0;
         obs.gpu = self.ui.gpu.clone();
         if let Ok(mut value) = self.observation.write() {
             *value = obs.clone();
+        }
+        phases.mark("observation");
+        if let Some(slow) = phases.finish() {
+            self.slow_frames += 1;
+            self.last_slow_frame = Some(slow);
         }
         if final_frame {
             if let Some(path) = &self.options.screenshot {
@@ -901,6 +1403,8 @@ impl ApplicationHandler for App {
             );
             let mut renderer = pollster::block_on(Renderer::new(window.clone()))?;
             renderer.prepare_shaders(self.runtime.shaders())?;
+            // Interactive window: revisions activate in the background from now on.
+            self.background_activation = true;
             self.ui.gpu = renderer.gpu.clone();
             self.egui_state = Some(egui_winit::State::new(
                 self.ctx.clone(),
@@ -1109,5 +1613,276 @@ mod tests {
         assert_eq!(app.runtime.state.tick, 0);
         assert_eq!(app.runtime.state.transforms[slot], initial);
         assert_eq!(app.store.revision().unwrap(), 2);
+    }
+
+    fn editor_app() -> App {
+        let world =
+            serde_json::from_str(include_str!("../../../content/two-cameras/world.json")).unwrap();
+        let registry = crate::installed_registry();
+        let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
+        App::new(
+            RunOptions {
+                mode: RunMode::Editor { selected: None },
+                load_slot: None,
+                replace_world: false,
+                db: PathBuf::new(),
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: false,
+            },
+            registry,
+            store,
+        )
+        .unwrap()
+    }
+
+    fn scenario_file(name: &str, ticks: u32) -> String {
+        let dir = std::env::temp_dir().join(format!("axiom-scenario-jobs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            json!({"ticks":ticks,"assertions":[{"kind":"finite"}]}).to_string(),
+        )
+        .unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Draws one editor frame the way `App::frame` does (poll jobs, then draw).
+    fn draw(app: &mut App, ctx: &egui::Context) -> std::time::Duration {
+        let started = Instant::now();
+        let editor = app.editor.as_mut().unwrap();
+        editor.poll_jobs();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                let _ = editor.draw(ctx, &app.runtime);
+            },
+        );
+        started.elapsed()
+    }
+
+    fn wait_result(app: &mut App, ctx: &egui::Context, path: &str) -> serde_json::Value {
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            draw(app, ctx);
+            let editor = app.editor.as_ref().unwrap();
+            if editor.scenario_job.is_none() {
+                return editor.scenario_results[path].clone();
+            }
+            assert!(Instant::now() < deadline, "scenario result never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn editor_scenario_runs_in_background_with_progress_cancel_and_result() {
+        let mut app = editor_app();
+        let ctx = egui::Context::default();
+        let long = scenario_file("long.scenario.json", 1_000_000);
+        let started = Instant::now();
+        app.editor_action(editor::Action::RunScenario { path: long.clone() })
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "starting a scenario must not run it on the main thread"
+        );
+        // The UI keeps drawing while the worker advances.
+        let mut frames = 0;
+        let mut last = 0;
+        let mut slowest = std::time::Duration::ZERO;
+        while frames < 5 || last == 0 {
+            slowest = slowest.max(draw(&mut app, &ctx));
+            frames += 1;
+            last = app
+                .editor
+                .as_ref()
+                .unwrap()
+                .scenario_job
+                .as_ref()
+                .unwrap()
+                .progress()
+                .0;
+            assert!(frames < 100_000, "scenario never progressed");
+        }
+        println!("{frames} editor frames drawn while the scenario ran; slowest {slowest:?}");
+        assert!(slowest < std::time::Duration::from_millis(250));
+        let observed = app.observation().metrics["editor"]["jobs"].clone();
+        assert_eq!(observed[0]["kind"], "scenario");
+        assert_eq!(observed[0]["total"], 1_000_000);
+        assert!(observed[0]["done"].as_u64().unwrap() < 1_000_000);
+        // Only one scenario job at a time.
+        assert!(app
+            .editor_action(editor::Action::RunScenario { path: long.clone() })
+            .is_err());
+        app.editor_action(editor::Action::CancelScenario).unwrap();
+        let result = wait_result(&mut app, &ctx, &long);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["stopped"], "cancelled");
+        assert_eq!(result["diagnostics"][0]["code"], "scenario_cancelled");
+        let editor = app.editor.as_ref().unwrap();
+        assert!(editor.error && editor.status.contains("cancelled"));
+        assert_eq!(app.observation().metrics["editor"]["jobs"], json!([]));
+        assert_eq!(
+            app.observation().metrics["editor"]["last_job"]["state"],
+            "cancelled"
+        );
+        // A short scenario delivers its PASS result to the tab.
+        let short = scenario_file("short.scenario.json", 30);
+        app.editor_action(editor::Action::RunScenario {
+            path: short.clone(),
+        })
+        .unwrap();
+        let result = wait_result(&mut app, &ctx, &short);
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["ticks"], 30);
+        assert!(result["state_hash"].is_string());
+        assert!(app.editor.as_ref().unwrap().status.contains("passed"));
+    }
+
+    #[test]
+    fn editor_scenario_watchdog_stops_a_long_run() {
+        let mut app = editor_app();
+        app.scenario_timeout = std::time::Duration::from_millis(30);
+        let ctx = egui::Context::default();
+        let long = scenario_file("watchdog.scenario.json", 1_000_000);
+        app.editor_action(editor::Action::RunScenario { path: long.clone() })
+            .unwrap();
+        let result = wait_result(&mut app, &ctx, &long);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["stopped"], "timed_out");
+        // Same input and revision through the synchronous CLI path is unaffected.
+        let scenario =
+            serde_json::from_value(json!({"ticks":30,"assertions":[{"kind":"finite"}]})).unwrap();
+        let (rev, world) = app.store.current().unwrap();
+        let cli = crate::scenario::run(world, rev, app.runtime.registry_clone(), scenario).unwrap();
+        let short = scenario_file("same.scenario.json", 30);
+        app.editor_action(editor::Action::RunScenario {
+            path: short.clone(),
+        })
+        .unwrap();
+        let background = wait_result(&mut app, &ctx, &short);
+        assert_eq!(background["state_hash"], cli["state_hash"]);
+    }
+
+    #[test]
+    fn background_activation_keeps_the_last_runtime_until_the_build_is_adopted() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        for _ in 0..10 {
+            app.runtime.step(&ActionMap::default());
+        }
+        let slot = app.runtime.state.compiled.indices["box"];
+        let spun = app.runtime.state.transforms[slot].clone();
+        let session = app.runtime.runtime_session.clone();
+        let generation = app.runtime.state.ids[slot];
+        let rev = app.store.revision().unwrap();
+        app.editor_action(editor::Action::Write {
+            request: Request::Apply {
+                expected_rev: Some(rev),
+                edits: vec![Edit::set("title", json!("Background activation"))],
+            },
+            select: None,
+        })
+        .unwrap();
+        // The editor follows the commit at once; the runtime keeps the last good revision.
+        assert_eq!(app.editor.as_ref().unwrap().rev, rev + 1);
+        assert_eq!(app.runtime.rev, rev);
+        assert_eq!(app.runtime.requested_rev, rev + 1);
+        assert!(app.observation().metrics["reload"]["pending"]["kind"] == "activation");
+        app.runtime.step(&ActionMap::default());
+        let tick = app.runtime.state.tick;
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+        assert_eq!(
+            app.runtime.state.compiled.source.title,
+            "Background activation"
+        );
+        // Same carry-over as a synchronous reconcile: session, tick, ids, transforms.
+        assert_eq!(app.runtime.runtime_session, session);
+        assert_eq!(app.runtime.state.tick, tick);
+        assert_eq!(app.runtime.state.ids[slot], generation);
+        assert_ne!(
+            app.runtime.state.transforms[slot], spun,
+            "kept simulating meanwhile"
+        );
+        let last = app.last_reload.unwrap();
+        assert!(last.background && !last.activation_failed && last.rev == rev + 1);
+        assert!(app.observation().metrics["reload"]["pending"].is_null());
+
+        // A failed build keeps the last renderable runtime and reports the error.
+        app.runtime.requested_rev = rev + 7;
+        app.activation = Some(Activation {
+            rev: rev + 7,
+            job: crate::jobs::Job::spawn("activation", "failing", ACTIVATION_TIMEOUT, |_| {
+                Err(anyhow::anyhow!("factory exploded"))
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+        assert_eq!(app.observation().activation, "activation_failed");
+        assert!(app.last_reload.unwrap().activation_failed);
+        assert!(app
+            .editor
+            .as_ref()
+            .unwrap()
+            .status
+            .contains("activation failed"));
+    }
+
+    #[test]
+    fn external_revision_change_list_is_computed_off_the_main_thread() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        let rev = app.store.revision().unwrap();
+        app.store
+            .apply(
+                Some(rev),
+                vec![Edit::set("title", json!("External writer"))],
+            )
+            .unwrap();
+        app.reload().unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().rev, rev + 1);
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        while app.changes_job.is_some() {
+            app.poll_changes();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let changes = &app.editor.as_ref().unwrap().changes;
+        assert!(changes.iter().any(|c| c.contains("/title")), "{changes:?}");
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+    }
+
+    #[test]
+    fn superseded_background_build_is_restarted_for_the_newest_revision() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        let base = app.store.revision().unwrap();
+        for (i, title) in ["first", "second", "third"].into_iter().enumerate() {
+            app.editor_action(editor::Action::Write {
+                request: Request::Apply {
+                    expected_rev: Some(base + i as i64),
+                    edits: vec![Edit::set("title", json!(title))],
+                },
+                select: None,
+            })
+            .unwrap();
+        }
+        app.finish_activation().unwrap();
+        // Adoption follows the newest committed revision, never an intermediate one.
+        assert_eq!(app.runtime.rev, base + 3);
+        assert_eq!(app.runtime.state.compiled.source.title, "third");
+        assert!(app.activation.is_none());
     }
 }

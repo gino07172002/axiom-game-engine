@@ -109,6 +109,18 @@ pub fn run_with_saves(
     scenario: Scenario,
     save_root: Option<&std::path::Path>,
 ) -> Result<Value> {
+    run_observed(world, rev, registry, scenario, save_root, None)
+}
+/// `run_with_saves` that reports tick progress and stops between ticks when `progress`
+/// is cancelled (editor background job). The simulation itself is identical.
+pub fn run_observed(
+    world: World,
+    rev: i64,
+    registry: RuntimeRegistry,
+    scenario: Scenario,
+    save_root: Option<&std::path::Path>,
+    progress: Option<&crate::jobs::Progress>,
+) -> Result<Value> {
     ensure!(
         scenario.ticks <= 1_000_000
             && scenario.inputs.len() <= 4096
@@ -167,8 +179,21 @@ pub fn run_with_saves(
     let mut next = 0;
     let mut commands = scenario.commands.iter().peekable();
     let mut saves = BTreeMap::new();
+    if let Some(p) = progress {
+        p.set_total(u64::from(scenario.ticks));
+    }
     let mut intermediate = vec![];
     for tick in 0..scenario.ticks {
+        if let Some(p) = progress {
+            if p.cancelled() {
+                return Err(axiom_core::Diagnostic::error(
+                    "scenario_cancelled",
+                    "/ticks",
+                    format!("scenario stopped at tick {tick} of {}", scenario.ticks),
+                ));
+            }
+            p.set_done(u64::from(tick));
+        }
         while commands.peek().is_some_and(|c| c.tick == tick) {
             let command = commands.next().unwrap();
             match &command.operation {
@@ -206,6 +231,9 @@ pub fn run_with_saves(
         }
         runtime.step(&input);
         runtime.assert_valid()?;
+    }
+    if let Some(p) = progress {
+        p.set_done(u64::from(scenario.ticks));
     }
     let observation = json!(runtime.observation());
     let hash = state_hash(&runtime)?;

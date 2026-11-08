@@ -40,10 +40,12 @@ pub(crate) enum Action {
         approve: bool,
         rebase: bool,
     },
-    /// Run a scenario file headless against the current revision.
+    /// Run a scenario file headless against the current revision (background job).
     RunScenario {
         path: String,
     },
+    /// Ask the running scenario job to stop at its next tick.
+    CancelScenario,
     /// Close the editor window (File ▸ Exit).
     Quit,
 }
@@ -259,7 +261,8 @@ enum Dock {
 }
 
 pub(crate) struct Editor {
-    pub world: World,
+    /// Shared with the store cache and the runtime build; never copied per revision.
+    pub world: std::sync::Arc<World>,
     pub rev: i64,
     pub previewing: bool,
     selected: Option<String>,
@@ -274,9 +277,9 @@ pub(crate) struct Editor {
     collapsed: BTreeSet<String>,
     new_scene: String,
     dock: Dock,
-    status: String,
-    error: bool,
-    changes: Vec<String>,
+    pub(crate) status: String,
+    pub(crate) error: bool,
+    pub(crate) changes: Vec<String>,
     last_request: Option<Request>,
     undo: Vec<i64>,
     redo: Vec<i64>,
@@ -316,7 +319,11 @@ pub(crate) struct Editor {
     pub(crate) overlay: bool,
     /// Scenario files offered in the Scenarios tab, and the last run per file.
     scenarios: Vec<String>,
-    scenario_results: std::collections::BTreeMap<String, Value>,
+    pub(crate) scenario_results: std::collections::BTreeMap<String, Value>,
+    /// The scenario running on a worker thread (at most one).
+    pub(crate) scenario_job: Option<crate::jobs::Job<Value>>,
+    /// Summary of the last finished background job (observation).
+    last_job: Option<Value>,
     material: Option<assets::MaterialDraft>,
     prefab: Option<assets::PrefabDraft>,
     /// Inline hierarchy rename in progress (F2 / context menu).
@@ -335,9 +342,13 @@ pub(crate) struct Rename {
 }
 
 impl Editor {
-    pub fn new(world: World, rev: i64, selected: Option<String>) -> Self {
+    pub fn new(
+        world: impl Into<std::sync::Arc<World>>,
+        rev: i64,
+        selected: Option<String>,
+    ) -> Self {
         let mut editor = Self {
-            world,
+            world: world.into(),
             rev,
             previewing: false,
             selected: None,
@@ -384,6 +395,8 @@ impl Editor {
             overlay: true,
             scenarios: Vec::new(),
             scenario_results: Default::default(),
+            scenario_job: None,
+            last_job: None,
             material: None,
             prefab: None,
             renaming: None,
@@ -401,15 +414,29 @@ impl Editor {
         editor
     }
 
-    pub fn update(&mut self, rev: i64, world: World, local: bool) {
+    pub fn update(&mut self, rev: i64, world: impl Into<std::sync::Arc<World>>, local: bool) {
+        if let Some((previous, true)) = self.update_deferred(rev, world, local) {
+            let diff = axiom_core::diff::summary(&previous, &self.world);
+            self.record_changes(&diff);
+        }
+    }
+
+    /// `update` without the change-list diff. Returns the replaced world (so the host can
+    /// free it off the main thread) and whether the Changes list needs
+    /// `diff::summary(previous, self.world)`, delivered later with `set_changes_for`.
+    pub(crate) fn update_deferred(
+        &mut self,
+        rev: i64,
+        world: impl Into<std::sync::Arc<World>>,
+        local: bool,
+    ) -> Option<(std::sync::Arc<World>, bool)> {
+        let world = world.into();
         if self.rev == rev {
-            return;
+            return None;
         }
-        if !local || self.changes.is_empty() {
-            self.record_changes(&axiom_core::diff::summary(&self.world, &world));
-        }
+        let diff = !local || self.changes.is_empty();
         self.rev = rev;
-        self.world = world;
+        let previous = std::mem::replace(&mut self.world, world);
         self.needs_history = true;
         let world = &self.world;
         self.extra.retain(|id| world.entity(id).is_some());
@@ -449,6 +476,14 @@ impl Editor {
         }
         if local || !self.dirty() {
             self.reset_draft();
+        }
+        Some((previous, diff))
+    }
+
+    /// Change list computed off the main thread for revision `rev`; ignored if stale.
+    pub(crate) fn set_changes_for(&mut self, rev: i64, diff: &Value) {
+        if self.rev == rev {
+            self.record_changes(diff);
         }
     }
 
@@ -913,6 +948,75 @@ impl Editor {
         }
     }
 
+    /// Hands a running scenario job to the editor (progress, cancel, result delivery).
+    pub(crate) fn start_scenario(&mut self, job: crate::jobs::Job<Value>) {
+        self.notice(format!("Running scenario in background · {}", job.label));
+        self.dock = Dock::Scenarios;
+        self.scenario_job = Some(job);
+    }
+
+    pub(crate) fn cancel_scenario(&mut self) {
+        if let Some(job) = &mut self.scenario_job {
+            job.cancel();
+            let label = job.label.clone();
+            self.notice(format!("Cancelling scenario · {label}"));
+        }
+    }
+
+    /// Non-blocking; called once per frame by the host. Delivers a finished result.
+    pub(crate) fn poll_jobs(&mut self) {
+        use crate::jobs::Outcome;
+        let Some(job) = &mut self.scenario_job else {
+            return;
+        };
+        let Some(outcome) = job.poll() else {
+            return;
+        };
+        let (done, total) = job.progress();
+        let path = job.label.clone();
+        let elapsed_ms = job.elapsed().as_millis() as u64;
+        self.scenario_job = None;
+        let (mut result, state) = match outcome {
+            Outcome::Done { value, stop } => {
+                let state = match (stop, value["ok"] == true) {
+                    (_, true) => "finished",
+                    (Some(stop), false) => stop.name(),
+                    (None, false) => "finished",
+                };
+                (value, state)
+            }
+            Outcome::Abandoned { stop } => (
+                json!({"ok":false,"error":format!("scenario worker did not stop within {} s after {}; detached", crate::jobs::STOP_GRACE.as_secs(), stop.name())}),
+                "abandoned",
+            ),
+        };
+        if state != "finished" {
+            result["stopped"] = json!(state);
+        }
+        result["elapsed_ms"] = json!(elapsed_ms);
+        self.last_job = Some(
+            json!({"kind":"scenario","label":path,"state":state,"done":done,"total":total,"elapsed_ms":elapsed_ms}),
+        );
+        self.set_scenario_result(&path, result);
+        let seconds = elapsed_ms as f64 / 1000.0;
+        if state == "finished" {
+            self.status = format!("{} · {seconds:.1} s", self.status);
+        } else {
+            self.set_error(format!(
+                "Scenario {state} at tick {done}/{total} · {path} · {seconds:.1} s"
+            ));
+        }
+    }
+
+    /// Running background jobs for the status bar and `observe`.
+    pub(crate) fn jobs_observation(&self) -> Value {
+        json!(self
+            .scenario_job
+            .iter()
+            .map(|job| job.observation())
+            .collect::<Vec<_>>())
+    }
+
     pub fn set_proposals(&mut self, signature: (i64, i64), rows: &Value) {
         let previous = self.proposals.len();
         self.proposals = rows.as_array().cloned().unwrap_or_default();
@@ -1109,7 +1213,9 @@ impl Editor {
             "pending_proposals":self.proposals.len(),
             "hidden":self.prefs.hidden.get(&self.world.id),
             "locked":self.prefs.locked.get(&self.world.id),
-            "selection":self.selection()
+            "selection":self.selection(),
+            "jobs":self.jobs_observation(),
+            "last_job":self.last_job
         })
     }
 
@@ -1128,10 +1234,13 @@ impl Editor {
         runtime: &mut WorldRuntime,
         screen: egui::Rect,
     ) -> crate::presentation::RenderFrame {
-        let draft = self
-            .draft
-            .as_ref()
-            .filter(|d| d.transform_dirty && d.rev == runtime.rev);
+        // While the runtime for the editor's newest revision is still being built in the
+        // background, show the selected object where that revision put it (no snap-back
+        // after a gizmo commit).
+        let pending = runtime.rev != self.rev && runtime.requested_rev == self.rev;
+        let draft = self.draft.as_ref().filter(|d| {
+            (d.transform_dirty && d.rev == runtime.rev) || (pending && d.rev == self.rev)
+        });
         // The override only lives during extraction, so all descendants and native mesh
         // extractors see the draft, while the simulation retains the committed transform.
         let original = draft.and_then(|d| {

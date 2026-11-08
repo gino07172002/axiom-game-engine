@@ -5,6 +5,21 @@ use bytemuck::{Pod, Zeroable};
 use std::{collections::BTreeMap, sync::Arc};
 
 const STRIDE: u32 = 256;
+/// Each program is built for cube and mesh layouts x 4 blend modes x 2 cull modes.
+pub const PIPELINES_PER_PROGRAM: usize = 16;
+/// Explicit bound on live render pipelines owned by the material cache.
+pub const MAX_PIPELINE_VARIANTS: usize = 512;
+
+/// Result of the last `prepare` (observable through `observe` -> `shader_gpu`).
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct PrepareStats {
+    pub compiled_programs: usize,
+    pub active_programs: usize,
+    pub cached_programs: usize,
+    pub pipelines: usize,
+    pub prepare_ms: f64,
+    pub total_compiled: u64,
+}
 const MATERIAL_WGSL: &str = include_str!("surface_material.wgsl");
 
 #[repr(C)]
@@ -42,7 +57,6 @@ impl GpuMaterial {
 }
 
 struct Program {
-    hook: String,
     cube: Vec<wgpu::RenderPipeline>,
     mesh: Vec<wgpu::RenderPipeline>,
 }
@@ -55,6 +69,11 @@ pub struct ShaderGpu {
     pub bind: wgpu::BindGroup,
     active: Option<Arc<Prepared>>,
     programs: BTreeMap<String, Arc<Program>>,
+    /// Compiled programs keyed by WGSL hook text (content), shared by ids with the same
+    /// source and retained across revisions; value is (program, last use clock).
+    cache: BTreeMap<String, (Arc<Program>, u64)>,
+    clock: u64,
+    pub stats: PrepareStats,
     pub materials: BTreeMap<String, GpuMaterial>,
 }
 impl ShaderGpu {
@@ -111,6 +130,9 @@ impl ShaderGpu {
             bind,
             active: None,
             programs: BTreeMap::new(),
+            cache: BTreeMap::new(),
+            clock: 0,
+            stats: PrepareStats::default(),
             materials: BTreeMap::new(),
         }
     }
@@ -128,13 +150,55 @@ impl ShaderGpu {
         {
             return Ok(());
         }
+        let started = std::time::Instant::now();
+        let distinct = book
+            .programs
+            .values()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if distinct * PIPELINES_PER_PROGRAM > MAX_PIPELINE_VARIANTS {
+            return Err(axiom_core::Diagnostic::error(
+                "shader_variant_budget",
+                "/resources/render.shaders/shaders",
+                format!(
+                    "{distinct} programs need {} pipelines; budget is {MAX_PIPELINE_VARIANTS}",
+                    distinct * PIPELINES_PER_PROGRAM
+                ),
+            ));
+        }
+        self.clock += 1;
+        let mut compiled = 0;
         let mut programs = BTreeMap::new();
         for (id, hook) in &book.programs {
-            let program = match self.programs.get(id).filter(|p| &p.hook == hook) {
-                Some(p) => p.clone(),
-                None => Arc::new(self.compile(device, id, hook)?),
+            let program = match self.cache.get_mut(hook) {
+                Some((p, used)) => {
+                    *used = self.clock;
+                    p.clone()
+                }
+                None => {
+                    let p = Arc::new(self.compile(device, id, hook)?);
+                    compiled += 1;
+                    self.cache.insert(hook.clone(), (p.clone(), self.clock));
+                    p
+                }
             };
             programs.insert(id.clone(), program);
+        }
+        // Retain unused programs (undo/redo, re-added materials) within the variant budget,
+        // least recently used first out.
+        while self.cache.len() * PIPELINES_PER_PROGRAM > MAX_PIPELINE_VARIANTS {
+            let oldest = self
+                .cache
+                .iter()
+                .filter(|(_, (_, used))| *used != self.clock)
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(hook, _)| hook.clone());
+            match oldest {
+                Some(hook) => {
+                    self.cache.remove(&hook);
+                }
+                None => break,
+            }
         }
         let mut upload = vec![0_u8; book.materials.len() * STRIDE as usize];
         let mut materials = BTreeMap::new();
@@ -169,6 +233,14 @@ impl ShaderGpu {
         self.programs = programs;
         self.materials = materials;
         self.active = Some(book.clone());
+        self.stats = PrepareStats {
+            compiled_programs: compiled,
+            active_programs: self.programs.len(),
+            cached_programs: self.cache.len(),
+            pipelines: self.cache.len() * PIPELINES_PER_PROGRAM,
+            prepare_ms: started.elapsed().as_secs_f64() * 1000.0,
+            total_compiled: self.stats.total_compiled + compiled as u64,
+        };
         Ok(())
     }
 
@@ -192,11 +264,7 @@ impl ShaderGpu {
                 compact,
             ));
         }
-        Ok(Program {
-            hook: hook.into(),
-            cube,
-            mesh,
-        })
+        Ok(Program { cube, mesh })
     }
 
     fn variants(

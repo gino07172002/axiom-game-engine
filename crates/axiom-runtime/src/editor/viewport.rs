@@ -2338,7 +2338,7 @@ mod tests {
         assert!(hidden < drawn, "{hidden} < {drawn}");
         // Play renders from the runtime directly and still shows it; content is untouched.
         assert!(runtime.render_frame().instances.len() >= drawn);
-        assert_eq!(editor.world, world);
+        assert_eq!(*editor.world, world);
         // Hiding a parent hides its children too.
         editor.set_view_flag(&["stage/rack".into()], false);
         assert!(editor.view_flagged(false).contains("stage/rack/cargo"));

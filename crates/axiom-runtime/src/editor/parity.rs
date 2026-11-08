@@ -422,7 +422,7 @@ fn view_commands_never_write() {
     ] {
         assert!(editor.run_command(cmd).unwrap().is_empty(), "{cmd}");
     }
-    assert_eq!(editor.world, lab());
+    assert_eq!(*editor.world, lab());
 }
 
 #[test]
@@ -436,7 +436,7 @@ fn view_only_hierarchy_commands_never_write() {
     ] {
         assert!(editor.run_command(cmd).unwrap().is_empty(), "{cmd}");
     }
-    assert_eq!(editor.world, lab());
+    assert_eq!(*editor.world, lab());
     assert!(editor.extra.contains("stage/rack/cargo"), "select children");
     let hidden = editor.view_flagged(false);
     assert!(hidden.contains("stage/rack") && hidden.contains("stage/rack/cargo"));

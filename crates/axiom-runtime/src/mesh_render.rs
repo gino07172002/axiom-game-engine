@@ -38,6 +38,8 @@ struct Material {
 }
 struct Mesh {
     vertices: wgpu::Buffer,
+    /// Vertex data last written to `vertices`; an identical shared buffer is not re-uploaded.
+    uploaded: Option<std::sync::Arc<Vec<axiom_animation::SkinnedVertex>>>,
     indices: wgpu::Buffer,
     materials: Vec<Material>,
 }
@@ -276,20 +278,28 @@ impl MeshRenderer {
                     .collect();
                 Mesh {
                     vertices,
+                    uploaded: None,
                     indices,
                     materials,
                 }
             });
-            let vertices = frame
-                .vertices
-                .iter()
-                .map(|v| Vertex {
-                    position: v.position.to_array(),
-                    normal: v.normal.to_array(),
-                    uv: v.uv.to_array(),
-                })
-                .collect::<Vec<_>>();
-            queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
+            if !mesh
+                .uploaded
+                .as_ref()
+                .is_some_and(|last| std::sync::Arc::ptr_eq(last, &frame.vertices))
+            {
+                let vertices = frame
+                    .vertices
+                    .iter()
+                    .map(|v| Vertex {
+                        position: v.position.to_array(),
+                        normal: v.normal.to_array(),
+                        uv: v.uv.to_array(),
+                    })
+                    .collect::<Vec<_>>();
+                queue.write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
+                mesh.uploaded = Some(frame.vertices.clone());
+            }
             let first = draw_index;
             let normal = frame.model.inverse().transpose();
             ensure!(normal.is_finite(), "singular mesh model transform");

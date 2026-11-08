@@ -211,6 +211,75 @@ impl Controller {
 pub struct AnimationSystem {
     players: BTreeMap<String, Controller>,
 }
+
+/// Imported assets shared across runtime rebuilds (derived data cached outside revisions).
+/// The key hashes the asset path, import options, the asset file bytes and the size and
+/// modification time of every file under the asset's directory (the only files an importer
+/// may read), so any input change misses. Bounded; unused entries are evicted first.
+const ASSET_CACHE_ENTRIES: usize = 16;
+const ASSET_CACHE_DIRECTORY_FILES: usize = 512;
+static ASSET_CACHE: std::sync::Mutex<BTreeMap<u64, Arc<Asset>>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn asset_signature(source: &axiom_animation::authoring::Source) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let path = &source.path;
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > 134_217_728 {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    serde_json::to_string(&source.options)
+        .ok()?
+        .hash(&mut hasher);
+    std::fs::read(path).ok()?.hash(&mut hasher);
+    let root = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = vec![];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            let meta = entry.metadata().ok()?;
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push((entry.path(), meta.len(), meta.modified().ok()));
+            }
+            if files.len() + pending.len() > ASSET_CACHE_DIRECTORY_FILES {
+                return None;
+            }
+        }
+    }
+    files.sort();
+    files.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn load_asset(source: &axiom_animation::authoring::Source) -> Result<Arc<Asset>> {
+    let Some(key) = asset_signature(source) else {
+        return Ok(Arc::new(axiom_animation::import::load(
+            &source.path,
+            &source.options,
+        )?));
+    };
+    if let Some(asset) = ASSET_CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return Ok(asset);
+    }
+    let asset = Arc::new(axiom_animation::import::load(
+        &source.path,
+        &source.options,
+    )?);
+    if let Ok(mut cache) = ASSET_CACHE.lock() {
+        if cache.len() >= ASSET_CACHE_ENTRIES {
+            cache.retain(|_, a| Arc::strong_count(a) > 1);
+        }
+        if cache.len() < ASSET_CACHE_ENTRIES {
+            cache.insert(key, asset.clone());
+        }
+    }
+    Ok(asset)
+}
 pub fn register(registry: &mut RuntimeRegistry) {
     axiom_animation::authoring::register(&mut registry.authoring);
     registry
@@ -223,13 +292,7 @@ pub fn register(registry: &mut RuntimeRegistry) {
                     "/resources/animation.library/assets/{}",
                     axiom_core::local::escape(id)
                 );
-                assets.insert(
-                    id.clone(),
-                    Arc::new(at(
-                        &path,
-                        axiom_animation::import::load(&source.path, &source.options),
-                    )?),
-                );
+                assets.insert(id.clone(), at(&path, load_asset(source))?);
             }
             ensure!(
                 assets.values().map(|a| a.vertices.len()).sum::<usize>() <= 1_000_000,
@@ -468,7 +531,7 @@ impl RuntimeSystem for AnimationSystem {
                 frame.meshes.push(MeshFrame {
                     id: id.clone(),
                     asset: p.asset.clone(),
-                    vertices,
+                    vertices: Arc::new(vertices),
                     model,
                     material: state.compiled.entities[slot]
                         .material

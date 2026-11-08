@@ -250,7 +250,7 @@ fn hidden_and_locked_flags_persist_per_world_in_prefs_only() {
         h.key(Key::L, Modifiers::NONE).is_empty(),
         "L writes nothing"
     );
-    assert_eq!(h.editor.world, lab());
+    assert_eq!(*h.editor.world, lab());
     // Clicking the eye of another row toggles that row only.
     let eye = h.rect("eye:stage/beacon").center();
     assert!(h.click(eye, PointerButton::Primary).is_empty());

@@ -768,6 +768,16 @@ impl Editor {
                     ui.separator();
                 };
                 item(ui, format!("{:.0} FPS", self.fps));
+                if let Some(job) = &self.scenario_job {
+                    let (done, total) = job.progress();
+                    item(
+                        ui,
+                        format!(
+                            "scenario {done}/{total} ticks · {:.1} s",
+                            job.elapsed().as_secs_f32()
+                        ),
+                    );
+                }
                 item(
                     ui,
                     match self.bridge {
@@ -1079,7 +1089,7 @@ mod tests {
         again.run_command("view.bookmark.recall.2").unwrap();
         assert!(again.orbit == saved);
         // Another world does not see this world's bookmarks.
-        again.world.id = "other".into();
+        std::sync::Arc::make_mut(&mut again.world).id = "other".into();
         assert!(again.run_command("view.bookmark.recall.2").is_err());
         let _ = std::fs::remove_dir_all(dir);
         // End drops the selection to the ground (one write).

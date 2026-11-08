@@ -375,6 +375,11 @@ impl Renderer {
         self.shaders.prepare(&self.device, &self.queue, book)
     }
 
+    /// Pipeline cache counters of the last material preparation.
+    pub fn shader_stats(&self) -> crate::shader_gpu::PrepareStats {
+        self.shaders.stats
+    }
+
     pub fn render(
         &mut self,
         snapshot: &RenderFrame,

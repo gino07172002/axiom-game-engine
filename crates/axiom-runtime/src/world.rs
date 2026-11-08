@@ -251,7 +251,8 @@ impl RuntimeState {
         }
     }
 }
-pub trait RuntimeSystem: Any {
+/// `Send` so a replacement runtime can be built on a worker thread and swapped in.
+pub trait RuntimeSystem: Any + Send {
     fn validate(&self, _state: &RuntimeState) -> Result<()> {
         Ok(())
     }
@@ -513,7 +514,37 @@ fn world_has_bindings(state: &RuntimeState) -> bool {
         .resources
         .contains_key("runtime.bindings")
 }
+/// Wall-clock phases of building one runtime (`WorldRuntime::new`), in milliseconds.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct BuildTimings {
+    /// IR compile (`World::compile`).
+    pub compile_ms: f64,
+    /// CPU shader library validation (`shader::Prepared::from_world`); no GPU work.
+    pub shader_library_ms: f64,
+    /// Native system factories, combat/binding setup.
+    pub systems_ms: f64,
+    pub total_ms: f64,
+}
+/// Wall-clock phases of the last revision activation (`reconcile_checked`), in milliseconds.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct ReconcileTimings {
+    pub build: BuildTimings,
+    /// Carry-over of ids, transforms, columns and native system state from the old runtime.
+    pub transfer_ms: f64,
+    /// Caller-supplied preparation (GPU shader/pipeline preparation in the app).
+    pub prepare_ms: f64,
+    pub total_ms: f64,
+}
+fn ms(since: std::time::Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
 pub struct WorldRuntime {
+    /// Phases of the `new` call that built this runtime.
+    pub build_timings: BuildTimings,
+    /// Phases of the activation that produced this runtime, if it came from `reconcile`.
+    pub reconcile_timings: Option<ReconcileTimings>,
+    /// Per-system factory time (ms) of the `new` call that built this runtime.
+    pub system_build_ms: Vec<(String, f64)>,
     pub runtime_session: String,
     pub runtime_epoch: u64,
     pub state: RuntimeState,
@@ -671,10 +702,20 @@ impl WorldRuntime {
     pub fn registry_clone(&self) -> RuntimeRegistry {
         self.registry.clone()
     }
-    pub fn new(world: World, rev: i64, registry: RuntimeRegistry) -> Result<Self> {
+    pub fn new(
+        world: impl std::borrow::Borrow<World>,
+        rev: i64,
+        registry: RuntimeRegistry,
+    ) -> Result<Self> {
+        let world: &World = world.borrow();
+        let started = std::time::Instant::now();
         let compiled = world.compile(&registry.authoring)?;
+        let compile_ms = ms(started);
         let authored_visibility = compiled.enabled.clone();
-        let shaders = std::sync::Arc::new(crate::shader::Prepared::from_world(&world)?);
+        let phase = std::time::Instant::now();
+        let shaders = std::sync::Arc::new(crate::shader::Prepared::from_world(world)?);
+        let shader_library_ms = ms(phase);
+        let phase = std::time::Instant::now();
         let settings = if world.resources.contains_key("render.settings") {
             world.resource("render.settings")?
         } else {
@@ -691,16 +732,20 @@ impl WorldRuntime {
             InputBindings::default()
         };
         let mut state = RuntimeState::new(compiled, registry.authoring.clone());
-        state.contexts = crate::input::Contexts::new(&world)?;
-        state.combat = crate::combat::Combat::new(&world)?;
+        state.contexts = crate::input::Contexts::new(world)?;
+        state.combat = crate::combat::Combat::new(world)?;
         state.revision = rev;
+        let mut system_build_ms = vec![];
         let mut systems = vec![];
         for d in state.compiled.schedule.clone() {
             let factory = registry
                 .factories
                 .get(&d.id)
                 .with_context(|| format!("runtime implementation missing for {}", d.id))?;
-            systems.push((d.id, factory(&mut state)?));
+            let started = std::time::Instant::now();
+            let system = factory(&mut state)?;
+            system_build_ms.push((d.id.clone(), ms(started)));
+            systems.push((d.id, system));
         }
         crate::bound_ui::prepare_assets(state.gameplay.as_mut())?;
         if let Some(combat) = &mut state.combat {
@@ -732,7 +777,16 @@ impl WorldRuntime {
             .as_ref()
             .and_then(|g| g.trace.back())
             .map_or(0, |t| t.seq);
+        let build_timings = BuildTimings {
+            compile_ms,
+            shader_library_ms,
+            systems_ms: ms(phase),
+            total_ms: ms(started),
+        };
         Ok(Self {
+            build_timings,
+            system_build_ms,
+            reconcile_timings: None,
             runtime_session: format!(
                 "{:x}-{:x}-{:x}",
                 std::process::id(),
@@ -764,7 +818,7 @@ impl WorldRuntime {
         })
     }
     /// Prepare a complete replacement and migrate state before changing the active runtime.
-    pub fn reconcile(&mut self, world: World, rev: i64) -> Result<()> {
+    pub fn reconcile(&mut self, world: impl std::borrow::Borrow<World>, rev: i64) -> Result<()> {
         self.reconcile_checked(world, rev, |_| Ok(()))
     }
     pub(crate) fn shaders(&self) -> &std::sync::Arc<crate::shader::Prepared> {
@@ -772,13 +826,27 @@ impl WorldRuntime {
     }
     pub(crate) fn reconcile_checked(
         &mut self,
-        world: World,
+        world: impl std::borrow::Borrow<World>,
         rev: i64,
         prepare: impl FnOnce(&Self) -> Result<()>,
     ) -> Result<()> {
+        let started = std::time::Instant::now();
         self.requested_rev = rev;
+        let next = Self::new(world, rev, self.registry.clone());
+        self.adopt(next, prepare, started).map(drop)
+    }
+    /// Migrates state from this runtime into a replacement built for a new revision (here
+    /// or on a worker thread), runs `prepare` and swaps it in, returning the replaced
+    /// runtime. On error this runtime stays active and records the activation error.
+    pub(crate) fn adopt(
+        &mut self,
+        next: Result<Self>,
+        prepare: impl FnOnce(&Self) -> Result<()>,
+        started: std::time::Instant,
+    ) -> Result<Self> {
         let prepared = (|| -> Result<Self> {
-            let mut next = Self::new(world, rev, self.registry.clone())?;
+            let mut next = next?;
+            let transfer = std::time::Instant::now();
             next.runtime_session = self.runtime_session.clone();
             next.runtime_epoch = self.runtime_epoch
                 + u64::from(next.state.compiled.source.id != self.state.compiled.source.id);
@@ -898,14 +966,19 @@ impl WorldRuntime {
                 combat.scene.validate()?;
             }
             next.state.validate()?;
+            let transfer_ms = ms(transfer);
+            let phase = std::time::Instant::now();
             prepare(&next)?;
+            next.reconcile_timings = Some(ReconcileTimings {
+                build: next.build_timings,
+                transfer_ms,
+                prepare_ms: ms(phase),
+                total_ms: ms(started),
+            });
             Ok(next)
         })();
         match prepared {
-            Ok(next) => {
-                *self = next;
-                Ok(())
-            }
+            Ok(next) => Ok(std::mem::replace(self, next)),
             Err(e) => {
                 self.activation_error = Some(error_response(&e));
                 Err(e)
@@ -943,6 +1016,19 @@ impl WorldRuntime {
         crate::combat::resolve(&mut self.state);
         for (_, system) in &mut self.systems {
             system.combat_commit(&mut self.state);
+        }
+        let routed = |state: &RuntimeState, systems: &[(String, Box<dyn RuntimeSystem>)]| {
+            systems
+                .iter()
+                .any(|(id, _)| !state.events.for_consumer(id).is_empty())
+        };
+        if self.state.events.fault.is_none()
+            && !self.state.events.pending.is_empty()
+            && !routed(&self.state, &self.systems)
+        {
+            // No system consumes any pending event (receive_events with no events is a
+            // no-op), so delivery cannot fail and needs no transactional copy.
+            self.state.events.acknowledge();
         }
         if self.state.events.fault.is_none() && !self.state.events.pending.is_empty() {
             let mut prepared = self.state.clone();

@@ -3,9 +3,15 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
+/// Shared decoded copy of the newest known revision.
+pub type LatestRevision = std::sync::Arc<std::sync::Mutex<Option<(i64, std::sync::Arc<World>)>>>;
 pub struct Store {
     connection: Connection,
     pub registry: Registry,
+    /// Decoded copy of the newest revision read or committed. Revisions are append-only,
+    /// so a cached revision never goes stale; a newer row (from any connection) is
+    /// detected by `MAX(rev)`. Connections to the same database in one process may share it.
+    latest: LatestRevision,
 }
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -62,7 +68,22 @@ impl Store {
         Ok(Self {
             connection,
             registry,
+            latest: Default::default(),
         })
+    }
+    /// Newest revision as a shared world. After a commit through this store, or a
+    /// repeated read, this costs one `MAX(rev)` query instead of a read and JSON decode.
+    pub fn current_shared(&self) -> Result<(i64, std::sync::Arc<World>)> {
+        let rev = self.revision()?;
+        if let Some((cached, world)) = self.latest.lock().unwrap().as_ref() {
+            if *cached == rev {
+                return Ok((rev, world.clone()));
+            }
+        }
+        let (rev, world) = self.current()?;
+        let world = std::sync::Arc::new(world);
+        self.remember(rev, world.clone());
+        Ok((rev, world))
     }
     pub fn current(&self) -> Result<(i64, World)> {
         let (rev, raw): (i64, String) = self.connection.query_row(
@@ -73,6 +94,22 @@ impl Store {
         Ok((rev, self.registry.decode(serde_json::from_str(&raw)?)?))
     }
     /// Cheap change signal for polling UIs: (pending count, newest proposal ID).
+    fn remember(&self, rev: i64, world: std::sync::Arc<World>) {
+        let mut latest = self.latest.lock().unwrap();
+        if latest.as_ref().is_none_or(|(cached, _)| *cached <= rev) {
+            *latest = Some((rev, world));
+        }
+    }
+    /// The decoded-revision cache, to share with another connection to the same database
+    /// in this process (e.g. the bridge thread), so a revision committed by one is read by
+    /// the other without decoding it again.
+    pub fn latest_cache(&self) -> LatestRevision {
+        self.latest.clone()
+    }
+    /// Use `cache` from a connection to the same database file.
+    pub fn share_latest_cache(&mut self, cache: LatestRevision) {
+        self.latest = cache;
+    }
     pub fn proposal_signature(&self) -> Result<(i64, i64)> {
         Ok(self.connection.query_row(
             "SELECT COUNT(*) FILTER (WHERE status='pending'),COALESCE(MAX(id),0) FROM proposals",
@@ -92,9 +129,20 @@ impl Store {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = Self::edit_in(&tx, &self.registry, expected_rev, edits, commit)?;
+        let mut committed = None;
+        let result = Self::edit_in(
+            &tx,
+            &self.registry,
+            expected_rev,
+            edits,
+            commit,
+            &mut committed,
+        )?;
         if commit {
             tx.commit()?;
+            if let (Some(world), Some(rev)) = (committed, result["rev"].as_i64()) {
+                self.remember(rev, std::sync::Arc::new(world));
+            }
         }
         Ok(result)
     }
@@ -104,6 +152,7 @@ impl Store {
         expected_rev: Option<i64>,
         edits: Vec<Edit>,
         commit: bool,
+        committed: &mut Option<World>,
     ) -> Result<Value> {
         ensure!(
             !edits.is_empty() && edits.len() <= 256,
@@ -174,6 +223,7 @@ impl Store {
             [serde_json::to_string(&next)?],
         )?;
         let rev = tx.last_insert_rowid();
+        *committed = Some(next);
         Ok(
             json!({"ok":true,"rev":rev,"changed":true,"entities_delta":compiled.len() as i64-before.len() as i64,"diff":diff,"activation":"authoring_committed"}),
         )
@@ -293,7 +343,8 @@ impl Store {
                     base
                 };
                 let edits: Vec<Edit> = serde_json::from_str(&edits)?;
-                let mut result = Self::edit_in(&tx, &self.registry, Some(expected), edits, true)?;
+                let mut result =
+                    Self::edit_in(&tx, &self.registry, Some(expected), edits, true, &mut None)?;
                 tx.execute(
                     "UPDATE proposals SET status='approved',resolved_rev=?2 WHERE id=?1",
                     params![id, result["rev"].as_i64()],
@@ -474,7 +525,7 @@ impl Store {
             Request::Apply {
                 expected_rev,
                 edits,
-            } => Self::edit_in(&tx, &self.registry, expected_rev, edits, true)?,
+            } => Self::edit_in(&tx, &self.registry, expected_rev, edits, true, &mut None)?,
             Request::Undo { rev, expected_rev } => {
                 Self::undo_in(&tx, &self.registry, rev, expected_rev)?
             }
