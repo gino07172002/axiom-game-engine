@@ -2,6 +2,7 @@
 //!
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --pack content/rts`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated 4096`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-triggers 256x1024`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -85,6 +86,29 @@ fn generated(count: usize) -> Result<World> {
     }))?)
 }
 
+/// `zones` sphere trigger zones (radius 1, 4 m grid) and `movers` tagged movers drifting
+/// through them (2 m grid, 0.5 m/s): the brute-force overlap test at `zones x movers`.
+fn generated_triggers(zones: usize, movers: usize) -> Result<World> {
+    let mut entities = vec![];
+    for i in 0..zones {
+        let (x, z) = ((i % 16) as f32 * 4.0 - 30.0, (i / 16) as f32 * 4.0 - 30.0);
+        entities.push(
+            json!({"id":format!("zone/{i}"),"components":{"core.transform":{"position":[x,0,z]},
+            "trigger.zone":{"shape":"sphere","radius":1.0,"filter":{"tags":["player"]}}}}),
+        );
+    }
+    for i in 0..movers {
+        let (x, z) = ((i % 32) as f32 * 2.0 - 31.0, (i / 32) as f32 * 2.0 - 31.0);
+        entities.push(json!({"id":format!("mover/{i}"),"tags":["player"],"components":{"core.transform":{"position":[x,0,z]},
+            "core.motion":{"velocity":[0.5,0,0.25]}}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("triggers-{zones}x{movers}"),"title":"Trigger bench",
+        "capabilities":{"core":1,"motion":1,"trigger":1},"systems":["motion.integrate","trigger.detect"],
+        "entities":entities
+    }))?)
+}
+
 /// A one-field edit on an entity that owns its transform position (non-camera preferred).
 fn edit_target(world: &World) -> Result<(String, Vec<f64>)> {
     let pick = |skip_camera: bool| {
@@ -118,6 +142,12 @@ fn main() -> Result<()> {
     let (name, world) = if let Some(n) = arg("--generated") {
         let n: usize = n.parse()?;
         (format!("generated-{n}"), generated(n)?)
+    } else if let Some(spec) = arg("--generated-triggers") {
+        let (zones, movers) = spec
+            .split_once('x')
+            .context("--generated-triggers ZONESxMOVERS")?;
+        let world = generated_triggers(zones.parse()?, movers.parse()?)?;
+        (world.id.clone(), world)
     } else {
         let pack = arg("--pack").context("--pack DIR or --generated N")?;
         let world = axiom_core::ContentPackage::load(&pack, &registry.authoring)?.world;

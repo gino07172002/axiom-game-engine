@@ -280,6 +280,12 @@ fn bad_input_reports_structured_errors() {
         ("create light", "acl_syntax"),
         ("create light laser", "unknown_preset"),
         ("create light point id=bad!id", "invalid_id"),
+        ("create trigger", "acl_syntax"),
+        ("create trigger cone", "unknown_preset"),
+        ("remove stage/crate", "acl_syntax"),
+        ("remove nope/* render.mesh", "no_match"),
+        ("remove stage/crate render.mesh", "not_found"),
+        ("remove stage/floor render.camera", "not_found"),
         ("create cube id=stage/rack", "id_taken"),
         ("create cube scene=nope", "not_found"),
         ("create cube parent=nope", "not_found"),
@@ -408,4 +414,104 @@ fn light_budget_is_enforced_at_commit() {
         "{error}"
     );
     acl(&mut s, "create light directional\ncreate light directional").unwrap();
+}
+
+#[test]
+fn trigger_presets_create_valid_zones_with_capability_and_system() {
+    use axiom_core::trigger::{TriggerShape, TriggerZone};
+    let mut s = store();
+    acl(
+        &mut s,
+        "create trigger box at=1,0,2\ncreate trigger sphere\ncreate trigger.box",
+    )
+    .unwrap();
+    let world = s.current().unwrap().1;
+    let zone = |id: &str| -> TriggerZone {
+        serde_json::from_value(world.entity(id).unwrap().components["trigger.zone"].clone())
+            .unwrap()
+    };
+    assert_eq!(zone("trigger.box").shape, TriggerShape::Box);
+    assert_eq!(zone("trigger.box").half_extents, Some([1.0; 3]));
+    assert_eq!(zone("trigger.sphere").radius, Some(1.5));
+    assert_eq!(zone("trigger.box/2").filter.tags, ["player"]);
+    assert_eq!(
+        world.entity("trigger.box").unwrap().components["core.transform"]["position"],
+        serde_json::json!([1.0, 0.0, 2.0])
+    );
+    assert_eq!(world.capabilities.get("trigger"), Some(&1));
+    assert_eq!(
+        world
+            .systems
+            .iter()
+            .filter(|s| *s == "trigger.detect")
+            .count(),
+        1,
+        "the system is added once"
+    );
+    // ACL statements compile to the shared op.
+    let start = lab();
+    let expected = ops::create_object(&start, "trigger.sphere", &ops::Placement::default())
+        .unwrap()
+        .edits;
+    let mut fresh = store();
+    assert_eq!(
+        acl_mode(&mut fresh, "create trigger sphere", true, false).unwrap()["text"],
+        acl_mode(&mut fresh, "create trigger.sphere", true, false).unwrap()["text"]
+    );
+    assert_eq!(apply(expected), {
+        acl(&mut fresh, "create trigger sphere").unwrap();
+        fresh.current().unwrap().1
+    });
+    // Invalid field values are rejected by the transaction with the reason; nothing changes.
+    let rev = s.current().unwrap().0;
+    let error = acl(&mut s, "set trigger.sphere trigger.zone/radius -2").unwrap_err();
+    assert!(
+        error["error"].as_str().unwrap().contains("sphere radius"),
+        "{error}"
+    );
+    let error = acl(
+        &mut s,
+        "set trigger.box trigger.zone/on_enter missing_event",
+    )
+    .unwrap_err();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not declare"),
+        "{error}"
+    );
+    assert_eq!(code(error), "invalid_trigger");
+    assert_eq!(s.current().unwrap().0, rev);
+    // Valid edits apply.
+    acl(&mut s, "set trigger.box trigger.zone/exit_margin 0.25").unwrap();
+}
+
+#[test]
+fn remove_verb_matches_the_op_and_reports_inherited_components() {
+    let start = lab();
+    let ids = vec!["stage/floor".to_owned(), "stage/beacon".to_owned()];
+    let edits = ops::remove_component(&start, &ids, "render.mesh").unwrap();
+    let mut s = store();
+    acl(
+        &mut s,
+        "remove entities[id=stage/floor,id=stage/beacon] render.mesh",
+    )
+    .unwrap();
+    let world = s.current().unwrap().1;
+    assert_eq!(world, apply(edits));
+    assert!(!world
+        .entity("stage/floor")
+        .unwrap()
+        .components
+        .contains_key("render.mesh"));
+    // A prefab-inherited component is explained, not silently skipped.
+    let error = acl(&mut s, "remove stage/crate render.mesh").unwrap_err();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("inherits render.mesh"),
+        "{error}"
+    );
 }

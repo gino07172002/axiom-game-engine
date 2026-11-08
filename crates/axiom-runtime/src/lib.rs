@@ -33,6 +33,7 @@ pub mod scenario;
 pub mod shader;
 mod shader_gpu;
 pub mod showcase;
+pub mod trigger;
 pub mod ui;
 pub mod vfx;
 pub mod vfx_gpu;
@@ -51,6 +52,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     rhythm::register(&mut r);
     geometry::register(&mut r);
     fsm::register(&mut r);
+    trigger::register(&mut r);
     nameplate::register(&mut r);
     vfx::register(&mut r);
     postfx::register(&mut r);

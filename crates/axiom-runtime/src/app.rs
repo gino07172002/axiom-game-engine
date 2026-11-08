@@ -1128,15 +1128,26 @@ impl App {
         let mut step = false;
         // Play-in-editor debug overlay: live FSM state above each agent, projected through
         // the first game view of this frame.
+        // Trigger zones are outlined too, pink while something is inside.
+        let mut zone_lines: Vec<([f32; 2], [f32; 2], bool)> = vec![];
         let overlay: Vec<([f32; 2], String)> =
             if !editing && self.editor.as_ref().is_some_and(|e| e.overlay) {
                 let screen = self.ctx.screen_rect();
                 let bounds = [screen.min.x, screen.min.y, screen.width(), screen.height()];
                 let views = self.runtime.render_frame().views;
-                match (
-                    self.runtime.system::<crate::fsm::FsmSystem>(),
-                    views.iter().find(|v| v.camera.active),
-                ) {
+                let view = views.iter().find(|v| v.camera.active);
+                if let (Some(triggers), Some(view)) =
+                    (self.runtime.system::<crate::trigger::TriggerSystem>(), view)
+                {
+                    zone_lines = triggers
+                        .wireframes(&self.runtime.state)
+                        .into_iter()
+                        .filter_map(|(a, b, occupied)| {
+                            Some((view.project(a, bounds)?, view.project(b, bounds)?, occupied))
+                        })
+                        .collect();
+                }
+                match (self.runtime.system::<crate::fsm::FsmSystem>(), view) {
                     (Some(fsm), Some(view)) => fsm
                         .labels(&self.runtime.state)
                         .into_iter()
@@ -1181,6 +1192,17 @@ impl App {
                         egui::Order::Foreground,
                         egui::Id::new("behavior_overlay"),
                     ));
+                    for ([ax, ay], [bx, by], occupied) in &zone_lines {
+                        let color = if *occupied {
+                            egui::Color32::from_rgb(255, 92, 140)
+                        } else {
+                            egui::Color32::from_rgb(120, 230, 210)
+                        };
+                        painter.line_segment(
+                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                            egui::Stroke::new(if *occupied { 2.0_f32 } else { 1.0 }, color),
+                        );
+                    }
                     for ([x, y], text) in &overlay {
                         let galley = painter.layout_no_wrap(
                             text.clone(),

@@ -112,6 +112,80 @@ fn light_presets_match_acl() {
 }
 
 #[test]
+fn trigger_presets_and_field_edits_match_acl() {
+    for shape in ["box", "sphere"] {
+        // Object menu / palette command.
+        assert_parity(
+            lab(),
+            |e| vec![e.run_command(&format!("object.trigger_{shape}")).unwrap()],
+            &format!("create trigger {shape}"),
+        );
+        // Hierarchy "+ Object" menu.
+        assert_parity(
+            lab(),
+            |e| {
+                vec![e
+                    .create_object(&format!("trigger.{shape}"))
+                    .into_iter()
+                    .collect()]
+            },
+            &format!("create trigger.{shape}"),
+        );
+    }
+    // Empty world: the trigger capability and the trigger.detect system are added.
+    let blank = World::empty("blank");
+    assert_parity(
+        blank.clone(),
+        |e| vec![e.run_command("object.trigger_sphere").unwrap()],
+        "create trigger sphere",
+    );
+    let made = headless(&blank, "create trigger sphere");
+    assert_eq!(made.capabilities.get("trigger"), Some(&1));
+    assert!(!made.capabilities.contains_key("render"));
+    assert!(made.systems.iter().any(|s| s == "trigger.detect"));
+    // Inspector form edit of the created zone (only changed leaves, as set_field) equals
+    // the ACL `set` of the same fields.
+    let start = headless(&lab(), "create trigger box id=gate");
+    assert_parity(
+        start,
+        |e| {
+            e.select(Some("gate".into()));
+            let entity = e.world.entity("gate").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "trigger.zone");
+            let form = draft.form.as_mut().unwrap();
+            form["half_extents"] = serde_json::json!([2.0, 1.0, 0.5]);
+            form["once"] = serde_json::json!(true);
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            // Only changed leaves: half_extents/0, half_extents/2 and once.
+            assert_eq!(edits.len(), 3);
+            vec![vec![e.write(edits, None)]]
+        },
+        "set gate trigger.zone/half_extents [2.0,1.0,0.5]\nset gate trigger.zone/once true",
+    );
+}
+
+#[test]
+fn remove_component_matches_acl() {
+    let start = headless(&lab(), "create trigger box id=gate");
+    assert_parity(
+        start.clone(),
+        |e| {
+            vec![e
+                .remove_component("gate", "trigger.zone")
+                .into_iter()
+                .collect()]
+        },
+        "remove gate trigger.zone",
+    );
+    // A component the entity does not author is a problem, not a write.
+    let mut e = Editor::new(start, 1, None);
+    assert!(e.remove_component("gate", "render.mesh").is_none());
+}
+
+#[test]
 fn repeated_creates_and_scene_filter_match_acl() {
     // Two commits in the editor vs. two statements in one ACL revision: same IDs.
     let mut editor = Editor::new(lab(), 1, None);

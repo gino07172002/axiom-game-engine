@@ -2,8 +2,8 @@
   "schema_version": 2,
   "id": "axiom-town",
   "title": "Axiom Town / Social Plaza",
-  "capabilities": {"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1},
-  "systems": ["animation.evaluate","audio.events","action.simulate","fsm.step","behavior.execute","ui.nameplates"],
+  "capabilities": {"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1,"trigger":1},
+  "systems": ["animation.evaluate","audio.events","action.simulate","fsm.step","trigger.detect","behavior.execute","ui.nameplates"],
   "prefabs": {
     
     "lamp": {"components": {"core.transform": {}, "nav.blocker": {"half":[0.12,0.12]}, "render.mesh": {"parts": [
@@ -59,9 +59,11 @@
       "animation.player":{"asset":"axiom-long","clip":"sit"},
       "ui.nameplate":{"text":"Pix  [Lv 67]  AFK","height":1.25,"color":[0.75,0.85,1]}
     }},
-    {"id":"spot/bench-east","label":"East bench (sit here)","components":{"core.transform":{"position":[6,0,4]},"fsm.agent":{"machine":"bench_spot"}}},
-    {"id":"spot/hairclip","label":"Lost hair clip","components":{"fsm.agent":{"machine":"clip_spot"},
-      "core.transform":{"position":[-2.3,0,-1.9]},
+    {"id":"spot/bench-east","label":"East bench (sit here)","components":{"core.transform":{"position":[6,0,3.85]},
+      "trigger.zone":{"shape":"sphere","radius":1.6,"exit_margin":0.6,"filter":{"tags":["player"]},"on_enter":"near_bench","on_exit":"left_bench"}}},
+    {"id":"spot/hairclip","label":"Lost hair clip","components":{
+      "trigger.zone":{"shape":"sphere","radius":1.6,"exit_margin":0.6,"filter":{"tags":["player"]},"on_enter":"near_clip","on_exit":"left_clip"},
+      "core.transform":{"position":[-2.5,0,-1.9]},
       "render.mesh":{"parts":[{"transform":{"position":[0,0.06,0],"scale":[0.18,0.06,0.08]},"color":[1,0.23,0.28],"emission":1.4}]}
     }},
     {"id":"camera","label":"Follow camera","components":{
@@ -166,22 +168,6 @@
         "damage":0,"range":0,"arc_degrees":0,"travel_speed":1.2,"events":[{"tick":0,"sound":"pop"}]}
     }},
     "fsm.machines": {"machines":{
-      "bench_spot": {"initial":"away","states":{
-          "away":{"action":{"kind":"stop"},"emit":"left_bench"},
-          "near":{"action":{"kind":"stop"},"emit":"near_bench"}
-        },
-        "transitions":[
-          {"from":"away","to":"near","when":{"kind":"near","tag":"player","within":1.6}},
-          {"from":"near","to":"away","when":{"kind":"far","tag":"player","beyond":2.2}}
-        ]},
-      "clip_spot": {"initial":"away","states":{
-          "away":{"action":{"kind":"stop"},"emit":"left_clip"},
-          "near":{"action":{"kind":"stop"},"emit":"near_clip"}
-        },
-        "transitions":[
-          {"from":"away","to":"near","when":{"kind":"near","tag":"player","within":1.6}},
-          {"from":"near","to":"away","when":{"kind":"far","tag":"player","beyond":2.2}}
-        ]},
       "lumi": {"initial":"idle","states":{
           "idle":{"action":{"kind":"stop"},"clip":"idle"},
           "stroll":{"action":{"kind":"wander","radius":3,"speed":0.9},"clip":"walk"},

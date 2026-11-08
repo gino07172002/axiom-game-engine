@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is
-/// shorthand for `create light.point`.
-pub const PRESETS: [&str; 7] = [
+/// shorthand for `create light.point` (and `create trigger box` for `create trigger.box`).
+pub const PRESETS: [&str; 9] = [
     "empty",
     "cube",
     "camera",
@@ -21,6 +21,8 @@ pub const PRESETS: [&str; 7] = [
     "light.point",
     "light.spot",
     "light.area",
+    "trigger.box",
+    "trigger.sphere",
 ];
 
 /// An edit batch that creates objects, and the created IDs (first = the one to select).
@@ -220,23 +222,37 @@ pub fn preset_light(preset: &str) -> Option<RenderLight> {
     Some(light)
 }
 
+/// The `trigger.zone` a trigger preset creates (`None` for other presets): a 1 m box or a
+/// 1.5 m sphere that players (tag `player`) trigger, with no events until some are named.
+pub fn preset_trigger(preset: &str) -> Option<crate::trigger::TriggerZone> {
+    let mut zone = match preset {
+        "trigger.box" => crate::trigger::TriggerZone::boxed([1.0; 3]),
+        "trigger.sphere" => crate::trigger::TriggerZone::sphere(1.5),
+        _ => return None,
+    };
+    zone.filter.tags = vec!["player".into()];
+    Some(zone)
+}
+
 /// Creates an object from an editor preset: `empty`, `cube` (one default mesh part),
 /// `camera` (perspective; active only when no other camera is active) or a light
 /// (`light.directional|point|spot|area`: a `render.light` aimed along local -Z; the
 /// directional one matches the engine's default sun, the others point straight down).
-/// Every preset but `empty` adds the `render` capability when the world lacks it.
+/// Trigger presets (`trigger.box|sphere`) add a `trigger.zone` and, when missing, the
+/// `trigger` capability and the `trigger.detect` system. Every other preset but `empty` adds
+/// the `render` capability when the world lacks it.
 pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<Created> {
     if !PRESETS.contains(&preset) {
-        let hint = if preset == "light" {
-            "; lights need a kind: light point|spot|area|directional"
-        } else {
-            ""
+        let hint = match preset {
+            "light" => "; lights need a kind: light point|spot|area|directional",
+            "trigger" => "; triggers need a shape: trigger box|sphere",
+            _ => "",
         };
         return Err(Diagnostic::error(
             "unknown_preset",
             "/preset",
             format!(
-                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area){hint}"
+                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area, trigger.box|sphere){hint}"
             ),
         ));
     }
@@ -289,11 +305,25 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
     if let Some(light) = preset_light(preset) {
         entity.set("render.light", light)?;
     }
+    let trigger = preset_trigger(preset);
+    let capability = match (preset, &trigger) {
+        ("empty", _) => None,
+        (_, Some(_)) => Some("trigger"),
+        _ => Some("render"),
+    };
+    if let Some(zone) = trigger {
+        entity.set("trigger.zone", zone)?;
+    }
     let mut edits = vec![];
-    if preset != "empty" && !world.capabilities.contains_key("render") {
+    if let Some(capability) = capability.filter(|c| !world.capabilities.contains_key(*c)) {
         let mut capabilities = world.capabilities.clone();
-        capabilities.insert("render".into(), 1);
+        capabilities.insert(capability.into(), 1);
         edits.push(Edit::set("/capabilities", json!(capabilities)));
+    }
+    if capability == Some("trigger") && !world.systems.iter().any(|s| s == "trigger.detect") {
+        let mut systems = world.systems.clone();
+        systems.push("trigger.detect".into());
+        edits.push(Edit::set("/systems", json!(systems)));
     }
     edits.extend(place_entity(entity, place));
     Ok(Created {
@@ -681,6 +711,36 @@ pub fn rename(world: &World, id: &str, label: &str) -> Result<Vec<Edit>> {
             json!(label)
         },
     })])
+}
+
+/// Removes a component authored on each entity (Inspector ▸ Remove component). A component
+/// the entity only inherits from its prefab cannot be removed here (edit the prefab).
+pub fn remove_component(world: &World, ids: &[String], component: &str) -> Result<Vec<Edit>> {
+    let mut edits = vec![];
+    for id in ids {
+        require_entity(world, id)?;
+        let entity = world.entity(id).unwrap();
+        if !entity.components.contains_key(component) {
+            let inherited = entity
+                .prefab
+                .as_ref()
+                .and_then(|p| world.prefabs.get(p))
+                .is_some_and(|p| p.components.contains_key(component));
+            return Err(not_found(
+                format!("{}/components/{}", entity_path(id), escape(component)),
+                if inherited {
+                    format!("'{id}' inherits {component} from its prefab; edit or override the prefab instead")
+                } else {
+                    format!("'{id}' has no component {component}")
+                },
+            ));
+        }
+        edits.push(Edit::Core(CoreEdit::RemoveComponent {
+            entity: id.clone(),
+            component: component.to_owned(),
+        }));
+    }
+    Ok(edits)
 }
 
 /// Where `move_entity` puts an entity in the authored order (= sibling order).

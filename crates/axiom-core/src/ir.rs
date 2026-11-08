@@ -190,6 +190,7 @@ impl World {
             let material = decode::<MaterialBinding>(&c, "render.material")?;
             let camera = decode::<Camera>(&c, "render.camera")?;
             let light = decode::<crate::light::RenderLight>(&c, "render.light")?;
+            let trigger = decode::<crate::trigger::TriggerZone>(&c, "trigger.zone")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -197,6 +198,7 @@ impl World {
                 (mesh.is_none()
                     && camera.is_none()
                     && light.is_none()
+                    && trigger.is_none()
                     && collider.is_none()
                     && motion.is_none())
                     || transform.is_some(),
@@ -222,6 +224,7 @@ impl World {
                 material,
                 camera,
                 light,
+                trigger,
                 collider,
                 health,
                 motion,
@@ -233,6 +236,11 @@ impl World {
                 .filter_map(|e: &CompiledEntity| e.light.as_ref().map(|l| l.kind)),
         )
         .map_err(|err| Diagnostic::error("light_budget", "/entities", format!("{err:#}")))?;
+        let zones: Vec<(&str, &crate::trigger::TriggerZone)> = entities
+            .iter()
+            .filter_map(|e| Some((e.id.as_str(), e.trigger.as_ref()?)))
+            .collect();
+        crate::trigger::validate_world(self, &zones)?;
         ensure!(
             instances <= MAX_INSTANCES,
             "render instance budget exceeded"
@@ -821,6 +829,7 @@ pub struct CompiledEntity {
     pub material: Option<MaterialBinding>,
     pub camera: Option<Camera>,
     pub light: Option<crate::light::RenderLight>,
+    pub trigger: Option<crate::trigger::TriggerZone>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,

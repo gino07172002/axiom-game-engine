@@ -87,7 +87,7 @@ pub struct Registry {
 impl Registry {
     pub fn core() -> Self {
         let mut r = Self::default();
-        for id in ["core", "render", "physics", "motion"] {
+        for id in ["core", "render", "physics", "motion", "trigger"] {
             r.capabilities.insert(id.into(), 1);
         }
         fn typed<T: serde::de::DeserializeOwned>(v: &Value, f: fn(&T) -> Result<()>) -> Result<()> {
@@ -137,6 +137,12 @@ impl Registry {
             |v| typed(v, crate::light::RenderEnvironment::validate),
         );
         r.component(
+            "trigger.zone",
+            "trigger",
+            crate::trigger::trigger_schema(),
+            |v| typed(v, crate::trigger::TriggerZone::validate),
+        );
+        r.component(
             "physics.collider",
             "physics",
             json!({"shape":"box + half_extents[3] | capsule + half_height, radius"}),
@@ -168,6 +174,18 @@ impl Registry {
                 phase: 10,
                 reads: vec!["core.motion".into()],
                 writes: vec!["core.transform".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "trigger.detect".into(),
+            SystemDescriptor {
+                id: "trigger.detect".into(),
+                capability: "trigger".into(),
+                // After the movers (fsm 8, motion 10, rts 15, action/fps 20), before animation.
+                phase: 25,
+                reads: vec!["trigger.zone".into(), "core.transform".into()],
+                writes: vec!["runtime.events".into()],
                 after: vec![],
             },
         );

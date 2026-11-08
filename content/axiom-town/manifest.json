@@ -1,1 +1,1 @@
-{"id":"axiom.town","version":1,"world":"world.json","capabilities":{"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1}}
+{"id":"axiom.town","version":1,"world":"world.json","capabilities":{"core":1,"render":1,"animation":1,"audio":1,"action":1,"fsm":1,"behavior":1,"narrative":1,"ui":1,"trigger":1}}

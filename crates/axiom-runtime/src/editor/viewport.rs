@@ -839,6 +839,54 @@ const GIZMO_COLLIDER: Color32 = Color32::from_rgb(110, 232, 150);
 const GIZMO_AGENT: Color32 = Color32::from_rgb(232, 140, 255);
 const GIZMO_LIGHT: Color32 = Color32::from_rgb(255, 222, 120);
 const GIZMO_LIGHT_OFF: Color32 = Color32::from_rgb(130, 120, 90);
+const GIZMO_TRIGGER: Color32 = Color32::from_rgb(120, 230, 210);
+const GIZMO_TRIGGER_OFF: Color32 = Color32::from_rgb(80, 120, 115);
+
+/// `trigger.zone` wireframe: a box along the entity's world axes (scale ignored, like the
+/// runtime) or three sphere circles; `exit_margin` adds a dim ring / rectangle at mid height.
+fn draw_trigger_gizmo(
+    pen: &mut Pen,
+    zone: &axiom_core::trigger::TriggerZone,
+    position: Vec3,
+    [x, y, z]: [Vec3; 3],
+    color: Color32,
+) {
+    use std::f32::consts::TAU;
+    let margin = zone.exit_margin;
+    if let Some(r) = zone.radius {
+        for (a, b) in [(Vec3::X, Vec3::Z), (Vec3::X, Vec3::Y), (Vec3::Y, Vec3::Z)] {
+            pen.loop_through(&arc(position, a, b, r, 0.0, TAU, 33)[..32], color);
+        }
+        if margin > 0.0 {
+            pen.loop_through(
+                &arc(position, Vec3::X, Vec3::Z, r + margin, 0.0, TAU, 33)[..32],
+                color.gamma_multiply(0.45),
+            );
+        }
+    }
+    if let Some([hx, hy, hz]) = zone.half_extents {
+        let corner = |j: usize| {
+            let s = |bit: usize| if j & bit == 0 { -1.0 } else { 1.0 };
+            position + x * (s(1) * hx) + y * (s(2) * hy) + z * (s(4) * hz)
+        };
+        for j in 0..8 {
+            for bit in [1, 2, 4] {
+                if j & bit == 0 {
+                    pen.line(corner(j), corner(j | bit), color);
+                }
+            }
+        }
+        if margin > 0.0 {
+            let (mx, mz) = (hx + margin, hz + margin);
+            pen.loop_through(
+                &[(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                    .map(|(sx, sz)| position + x * (sx * mx) + z * (sz * mz)),
+                color.gamma_multiply(0.45),
+            );
+        }
+    }
+    pen.label(position, "TRIG", color);
+}
 
 /// `render.light` gizmo: directional = arrow along the light, point = range circles,
 /// spot = outer/inner cone, area = rect/disk outline + normal. Returns nothing; counts via `pen`.
@@ -925,7 +973,8 @@ fn draw_light_gizmo(
 }
 
 /// Editor-only component gizmos: camera frusta (active camera highlighted), `render.light`
-/// shapes (see `draw_light_gizmo`), `nav.blocker`
+/// shapes (see `draw_light_gizmo`), `trigger.zone` wireframes (occupancy is drawn by the Play
+/// preview overlay), `nav.blocker`
 /// rectangles (XZ at the authored position + offset, like the runtime), `physics.collider`
 /// boxes/capsules and `fsm.agent` body radii. Returns the number of shapes drawn.
 fn draw_component_gizmos(
@@ -1012,6 +1061,16 @@ fn draw_component_gizmos(
                 GIZMO_LIGHT_OFF
             };
             draw_light_gizmo(&mut pen, light, position, [x, y, z], color);
+        }
+        if let Some(zone) = &e.trigger {
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if zone.enabled {
+                GIZMO_TRIGGER
+            } else {
+                GIZMO_TRIGGER_OFF
+            };
+            draw_trigger_gizmo(&mut pen, zone, position, [x, y, z], color);
         }
         if let Some(blocker) = e
             .components
@@ -2673,6 +2732,33 @@ mod tests {
         editor.set_view_flag(&["plaza/fountain".into()], false);
         frame(&ctx, &mut editor, &runtime, vec![]);
         assert!(editor.scene_input.gizmo_shapes < gizmos);
+    }
+
+    #[test]
+    fn trigger_gizmos_follow_hidden_and_toggle() {
+        let world = pack("axiom-town");
+        let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        let mut editor = Editor::new(world, 1, None);
+        let ctx = egui::Context::default();
+        let shapes = |editor: &mut Editor, runtime: &WorldRuntime| {
+            for _ in 0..3 {
+                frame(&ctx, editor, runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let all = shapes(&mut editor, &runtime);
+        // Hiding each sphere zone removes its 3 x 32 circle segments + 32 margin segments.
+        editor.set_view_flag(&["spot/bench-east".into()], false);
+        let one = shapes(&mut editor, &runtime);
+        assert!(all - one >= 128, "{all} -> {one}");
+        editor.set_view_flag(&["spot/hairclip".into()], false);
+        let none = shapes(&mut editor, &runtime);
+        assert!(one - none >= 128, "{one} -> {none}");
+        // Toggling both again shows them.
+        editor.set_view_flag(&["spot/bench-east".into(), "spot/hairclip".into()], false);
+        assert_eq!(shapes(&mut editor, &runtime), all);
+        editor.run_command("view.gizmos").unwrap();
+        assert_eq!(shapes(&mut editor, &runtime), 0);
     }
 
     #[test]

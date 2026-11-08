@@ -19,9 +19,11 @@ EDIT (any number, atomic):
   set SEL F VALUE [where F OP V [and ...]]
   spawn PREFAB [count=N] [id=enemy/{i}] [from=0] [at=x,y,z] [step=x,y,z] [tag=a,b] [label=TEXT]
   delete SEL
+  remove SEL COMPONENT            remove an authored component (not one inherited from a prefab)
  editor operations (same code as the editor UI; P = [id=ID] [at=x,y,z] [parent=ID] [scene=ID]):
   create empty|cube|camera P      new object; default id = preset name, then NAME/2, NAME/3..
   create light directional|point|spot|area P   render.light aimed along local -Z (id light.KIND)
+  create trigger box|sphere P      trigger.zone for tag player, no events yet (id trigger.SHAPE)
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -256,6 +258,7 @@ enum Statement {
     Set(Box<Selection>, String, Value),
     Spawn(Vec<(String, String)>, String),
     Delete(Box<Selection>),
+    Remove(Box<Selection>, String),
     Create(String, Box<crate::ops::Placement>),
     Instantiate(String, Box<crate::ops::Placement>),
     Duplicate(Box<Selection>),
@@ -409,6 +412,19 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "delete" => {
             ensure!(tokens.len() == 2, "delete takes one selector");
             Statement::Delete(Box::new(selector(arg(1)?)?))
+        }
+        "remove" => {
+            ensure!(tokens.len() == 3, "use: remove SEL COMPONENT");
+            Statement::Remove(Box::new(selector(arg(1)?)?), arg(2)?.clone())
+        }
+        "create" if tokens.get(1).is_some_and(|t| t == "trigger") => {
+            let shape = tokens
+                .get(2)
+                .with_context(|| "create trigger needs a shape: box|sphere".to_owned())?;
+            Statement::Create(
+                format!("trigger.{shape}"),
+                Box::new(placement(&tokens[3..])?),
+            )
         }
         "create" if tokens.get(1).is_some_and(|t| t == "light") => {
             let kind = tokens.get(2).with_context(|| {
@@ -722,6 +738,8 @@ pub fn run(
                 }
                 entity_ids(w, r, &select, line).and_then(|ids| crate::ops::delete(w, &ids))
             }
+            Statement::Remove(select, component) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::remove_component(w, &ids, &component)),
             Statement::Create(preset, place) => {
                 crate::ops::create_object(w, &preset, &place).map(|c| c.edits)
             }

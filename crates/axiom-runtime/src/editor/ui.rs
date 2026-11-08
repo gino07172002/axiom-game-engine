@@ -301,6 +301,8 @@ impl Editor {
                             ("light.point", "Point light"),
                             ("light.spot", "Spot light"),
                             ("light.area", "Area light (approximate)"),
+                            ("trigger.box", "Box trigger"),
+                            ("trigger.sphere", "Sphere trigger"),
                         ] {
                             if ui.button(label).clicked() {
                                 actions.extend(self.create_object(preset));
@@ -940,8 +942,12 @@ impl Editor {
             self.select(self.selected.clone());
             self.notice("Reloaded the committed object");
         }
-        if let Some(edit) = structural {
-            actions.push(self.write(vec![Edit::Core(edit)], None));
+        match structural {
+            Some(CoreEdit::RemoveComponent { entity, component }) => {
+                actions.extend(self.remove_component(&entity, &component));
+            }
+            Some(edit) => actions.push(self.write(vec![Edit::Core(edit)], None)),
+            None => {}
         }
         if duplicate {
             actions.extend(self.duplicate_ids(std::slice::from_ref(&id)));
@@ -1268,6 +1274,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("render.geometry", "GEO", Color32::from_rgb(140, 210, 120)),
         ("animation.player", "SKIN", Color32::from_rgb(200, 150, 255)),
         ("fsm.agent", "FSM", Color32::from_rgb(255, 170, 100)),
+        ("trigger.zone", "TRIG", Color32::from_rgb(120, 230, 210)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1287,6 +1294,7 @@ fn badge_meaning(text: &str) -> &'static str {
         "GEO" => "render.geometry (procedural)",
         "SKIN" => "animation.player (glTF skinned model)",
         "FSM" => "fsm.agent (state machine behaviour)",
+        "TRIG" => "trigger.zone (enter/exit events)",
         _ => "prefab instance",
     }
 }

@@ -568,6 +568,12 @@ impl Editor {
         self.created(result)
     }
 
+    /// Inspector ▸ Remove component (`ACL: remove ID COMPONENT`).
+    pub(super) fn remove_component(&mut self, id: &str, component: &str) -> Option<Action> {
+        let result = ops::remove_component(&self.world, &[id.to_owned()], component);
+        self.op_write(result, None)
+    }
+
     /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
     pub(super) fn instantiate_prefab(&mut self, prefab: &str) -> Option<Action> {
         let result = ops::instantiate_prefab(&self.world, prefab, &self.placement());

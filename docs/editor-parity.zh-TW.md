@@ -17,6 +17,7 @@
 | `object.empty` / `object.cube` / `object.camera`(+ Object 選單、Ctrl+Shift+N) | `create empty\|cube\|camera [id=] [at=x,y,z] [parent=] [scene=]` | ✅ `create_presets_match_acl`、`repeated_creates_and_scene_filter_match_acl` |
 | 篩選某個場景時新增物件,物件自動加入該場景 | `create … scene=ID` | ✅ 同上 |
 | `object.light_directional` / `object.light_point` / `object.light_spot` / `object.light_area`(Object 選單、指令面板)、Hierarchy「+ Object」▸ Directional / Point / Spot / Area light | `create light directional\|point\|spot\|area P`(也可寫 `create light.KIND P`;只寫 `create light` 會回 `acl_syntax`,要求種類)。建立 `render.light`,沿本地 -Z 照射,見 `docs/lighting.zh-TW.md` | ✅ `light_presets_match_acl`(兩種編輯器入口 × 四種燈、空世界補 render capability、場景篩選);`light_presets_create_valid_lights_aimed_along_minus_z` |
+| `object.trigger_box` / `object.trigger_sphere`(Object 選單、指令面板)、Hierarchy「+ Object」▸ Box trigger / Sphere trigger | `create trigger box\|sphere P`(也可寫 `create trigger.box`;只寫 `create trigger` 回 `acl_syntax`)。建立 `trigger.zone`(filter tag `player`、沒有事件),世界缺少時補 `trigger` capability 與 `trigger.detect` 系統,見 `docs/triggers.zh-TW.md` | ✅ `trigger_presets_and_field_edits_match_acl`(兩種編輯器入口 × 兩種形狀、空世界補 capability / 系統、Inspector 表單改欄位 = ACL `set`) |
 | Assets ▸ 點 prefab 實例化 | `instantiate PREFAB [id=] [at=] [parent=] [scene=]` | ✅ `instantiate_prefab_matches_acl` |
 | 大量生成(帶 tag、label、step 間距) | `spawn PREFAB count=N …`(只有 ACL 有;編輯器只能一次一個) | — |
 | `edit.duplicate`(Ctrl+D)、Inspector 的 Duplicate | `duplicate SEL`(ID 依序為 `SRC/copy`、`/copy/2`;`entities[id=a,id=b]` 照書寫順序處理;每個複本緊接在來源**之後**,也就是同層的下一列) | ✅ `duplicate_and_paste_match_acl`(含順序檢查) |
@@ -38,7 +39,7 @@
 | Inspector:label、transform、元件表單、JSON | `set ID label "…"`、`set ID core.transform/position [x,y,z]`、`set ID comp/field V` | 欄位層級的 `set_field`,兩邊是同一種 edit |
 | 視窗內 gizmo 移動/旋轉/縮放 | `set ID core.transform/position\|rotation\|scale V` | 同上 |
 | 新增元件(元件挑選器 / Stage component) | `set ID comp.name {…}` | 同上 |
-| 移除元件 | `axiom apply FILE`,內容是 `{"kind":"remove_component",…}` | ⚠️ **ACL 沒有這個動詞**,只能用協定 JSON |
+| Inspector ▸ Remove component | `remove SEL COMPONENT`(只移除物件自己編寫的元件;從 prefab 繼承的回 `not_found` 並說明要改 prefab) | ✅ `remove_component_matches_acl`;`remove_verb_matches_the_op_and_reports_inherited_components` |
 | Prefab inspector | `set prefabs[id=P] comp/field V` | 欄位層級 `set_field` |
 | Material inspector | `set resources[id=render.shaders] materials/ID/param V` | 同上 |
 | Resource inspector | `set resources[id=R] field V` | 同上 |
@@ -58,12 +59,13 @@
 | `view.perspective` / `view.top` / `view.front` / `view.right` / `view.bottom` / `view.back` / `view.left`(Alt+1..7、場景工具列 View 選單、右下角座標軸點 X / Y / Z,再點一次切到反面,點模式文字回 Perspective) | 只影響編輯器相機:正交軸向視圖,picking / gizmo 拖曳 / 框選都用同一個投影矩陣。在軸向視圖中按右鍵旋轉會回到 Perspective。`editor_view` 觀察結果的 `view` 欄位回報目前模式 |
 | 飛行相機:按住右鍵 + WASD(Q / E 下降 / 上升),Shift 3 倍速;按住右鍵時滾輪調整飛行速度(畫面下方短暫顯示) | 只是相機;速度存在 `*.editor-prefs.json` 的 `fly_speed`。按住右鍵期間單鍵快捷鍵(W = Move 等)暫停。沒按移動鍵的右鍵拖曳仍是環繞 |
 | 框選:左鍵在空白處(或非 gizmo 握把處)拖曳畫框,放開時選取「投影中心點落在框內」的物件(網格 / 骨架網格用包圍盒中心,其餘用 pivot);Shift 加選、Ctrl 反選(主選取保留)、空框清除選取 | 只是選取;隱藏 / 鎖定物件不會被框到。無頭用 `select` |
-| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
+| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM)、`trigger.zone` 線框(box 依軸向、sphere 三個圓,`exit_margin` 加暗色外框;停用暗綠、選取白;區內狀態不在這裡畫,見下方 Play 預覽的 Behavior overlay) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
 | `view.bookmark.save.N`(Ctrl+F6..F9)/ `view.bookmark.recall.N`(F6..F9),N = 1..4;場景工具列 View 選單也有 | 只是相機;依 world ID 存在偏好檔 `bookmarks`。空的槽位不可用(指令回報原因) |
-| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、prefab 實例) |
+| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `TRIG` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、`trigger.zone`、prefab 實例) |
 | `edit.copy`、`file.copy_context`、`help.copy_discovery` | 用 `inspect ID` / `discover` |
 | `file.verify` | `axiom verify` |
 | `play.start`(Play 預覽,不寫入 revision) | `axiom play` / `axiom scenario FILE` |
+| Play 預覽的「Behavior overlay」:FSM 狀態標籤 + `trigger.zone` 線框(青綠 = 空、粉紅加粗 = 有實體在區內) | 只是畫面;無頭用 `observe` 的 `trigger` 或 `call trigger.inspect` |
 | History 的 diff 檢視 | `diff REV REV` |
 | Scenarios 分頁 | `axiom scenario FILE` |
 | Problems、Graphs、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |
@@ -80,3 +82,4 @@
 - `ground SEL` / Drop to Ground 的規則:最低點 = 物件與其子孫所有 `render.mesh` 部件的世界包圍盒底部(沒有部件就用 pivot);支撐面 = 其他物件的 `render.mesh` 部件頂面,XZ 範圍要重疊、而且不高於最低點(容差 1 mm),取最高者,沒有就用 y=0。被選取的物件和其子孫不當支撐面(同一批不會疊起來);匯入的 glTF / 骨架模型與 `render.geometry` 沒有編寫時可算的包圍盒,不當支撐面,也不用來算最低點。只改本地 `core.transform/position`(世界位移經 parent 反矩陣換算);祖先也在選取中的物件只跟著祖先移動。已經著地就不寫 revision(ACL 回 `unchanged`,編輯器顯示 Already on the ground)。
 - 編輯器隱藏旗標現在也作用在附著於該物件的 VFX(`vfx.library` emitter 的 `attachment`:粒子批次、緞帶、VFX 光源)。程序化幾何(`render.geometry`)與骨架網格本來就跳過停用的 slot,現在有測試涵蓋。沒有 `attachment` 的 VFX 是世界座標,無法用物件隱藏。
 - 編輯器隱藏旗標也作用在 `render.light`:隱藏的燈光(含隱藏物件底下的子燈光)在場景視口不照明、不畫 gizmo;Play 照常。
+- Inspector 的 Remove component 改走 `ops::remove_component`(和 ACL `remove` 同一份程式)。以前直接送出 `remove_component` edit;結果相同,但現在對「物件沒有自己編寫這個元件」會回報原因而不是送出一定失敗的交易(按鈕本來就只對自己編寫的元件啟用)。

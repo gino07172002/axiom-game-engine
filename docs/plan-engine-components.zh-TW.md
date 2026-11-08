@@ -10,7 +10,7 @@
 ## 執行順序
 
 1. **燈光系統**(使用者指定,參考 Blender / Unity):`render.light` 的 `directional` / `point` / `spot`(內外錐角) / `area`(矩形、圓盤;第一版以代表點近似,並如實標示),以及 `render.environment`(單色,或天空 / 地平線 / 地面三段漸層的環境光)。太陽改由元件提供,未設定時沿用現有預設。陰影:平行光沿用;聚光燈與點光源的陰影先量測成本再決定。**狀態:已完成第一版**,見 [lighting.zh-TW.md](lighting.zh-TW.md)(spot / point / area 陰影未支援,會明確拒絕)。
-2. **觸發區**:進入 / 離開事件,接 `behavior.program` 與 `runtime.bindings`(取代城鎮「FSM + near」的權宜做法)。
+2. **觸發區**:進入 / 離開事件,接 `behavior.program` 與 `runtime.bindings`(取代城鎮「FSM + near」的權宜做法)。**狀態:已完成第一版**,見 [triggers.zh-TW.md](triggers.zh-TW.md)(`trigger.zone` box / sphere、tag / 元件篩選、once、遲滯;城鎮已改用觸發區;存檔不支援,會明確失敗)。
 3. **路徑與路徑跟隨**:可循環、速度、朝向切線(車輛、行人)。
 4. **導航代理**:繞過 `nav.blocker` 與建築的尋路(通用版,不綁 RTS)。
 5. **互動元件**:範圍、提示文字、按鍵,觸發事件(對話、開門)。

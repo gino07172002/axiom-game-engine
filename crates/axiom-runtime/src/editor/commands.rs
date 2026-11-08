@@ -136,6 +136,13 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.light_point", "Create Point Light", "Object", ""),
     c("object.light_spot", "Create Spot Light", "Object", ""),
     c("object.light_area", "Create Area Light", "Object", ""),
+    c("object.trigger_box", "Create Box Trigger", "Object", ""),
+    c(
+        "object.trigger_sphere",
+        "Create Sphere Trigger",
+        "Object",
+        "",
+    ),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -386,6 +393,8 @@ impl Editor {
             | "object.light_point"
             | "object.light_spot"
             | "object.light_area"
+            | "object.trigger_box"
+            | "object.trigger_sphere"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -483,6 +492,8 @@ impl Editor {
             "object.light_point" => actions.extend(self.create_object("light.point")),
             "object.light_spot" => actions.extend(self.create_object("light.spot")),
             "object.light_area" => actions.extend(self.create_object("light.area")),
+            "object.trigger_box" => actions.extend(self.create_object("trigger.box")),
+            "object.trigger_sphere" => actions.extend(self.create_object("trigger.sphere")),
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
@@ -845,6 +856,8 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.cube": "create cube",
                 "object.camera": "create camera",
                 "object.light_point": "create light point (also directional, spot, area)",
+                "object.trigger_box": "create trigger box (also sphere)",
+                "inspector.remove_component": "remove SEL COMPONENT",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",
                 "edit.delete": "delete SEL",
