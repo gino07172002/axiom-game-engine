@@ -69,6 +69,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("view.grid", "Toggle Grid", "View", ""),
     c("view.palette", "Command Palette…", "View", "Ctrl+Shift+P"),
     c("view.gizmos", "Toggle Component Gizmos", "View", ""),
+    c(
+        "view.nav_grid",
+        "Toggle Navigation Grid Overlay",
+        "View",
+        "",
+    ),
     c("view.perspective", "Perspective View", "View", "Alt+1"),
     c("view.top", "Top View (Ortho)", "View", "Alt+2"),
     c("view.front", "Front View (Ortho)", "View", "Alt+3"),
@@ -147,6 +153,21 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.follow_path", "Follow Path", "Object", ""),
     c("path.add_point", "Add Path Point", "Object", ""),
     c("path.remove_point", "Remove Path Point", "Object", ""),
+    c("object.obstacle", "Create Obstacle", "Object", ""),
+    c("object.nav_agent", "Add Nav Agent", "Object", ""),
+    c(
+        "nav.target_object",
+        "Nav Target: Selected Object",
+        "Object",
+        "",
+    ),
+    c(
+        "nav.target_point",
+        "Nav Target: Click Ground…",
+        "Object",
+        "",
+    ),
+    c("nav.clear_target", "Nav Target: Clear", "Object", ""),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -262,6 +283,8 @@ pub(crate) struct Prefs {
     pub fly_speed: f32,
     /// Draw component gizmos (camera frusta, nav.blocker, colliders, FSM agents).
     pub gizmos: bool,
+    /// Scene view: outline the navigation grid cells the selected agent cannot enter.
+    pub nav_grid: bool,
     /// Per world ID: saved scene-view cameras by slot ("1".."4").
     pub bookmarks: BTreeMap<String, BTreeMap<String, Bookmark>>,
 }
@@ -280,6 +303,7 @@ impl Default for Prefs {
             locked: BTreeMap::new(),
             fly_speed: 6.0,
             gizmos: true,
+            nav_grid: false,
             bookmarks: BTreeMap::new(),
         }
     }
@@ -380,6 +404,7 @@ impl Editor {
             | "object.child_camera"
             | "object.create_prefab"
             | "object.follow_path"
+            | "object.nav_agent"
                 if nothing =>
             {
                 Some("nothing selected")
@@ -392,6 +417,11 @@ impl Editor {
                     .is_none() =>
             {
                 Some("select a path")
+            }
+            "nav.target_object" | "nav.target_point" | "nav.clear_target"
+                if self.selected_agents().is_empty() =>
+            {
+                Some("select a nav agent")
             }
             "play.start" if self.previewing => Some("already playing"),
             "edit.undo"
@@ -413,6 +443,11 @@ impl Editor {
             | "object.follow_path"
             | "path.add_point"
             | "path.remove_point"
+            | "object.obstacle"
+            | "object.nav_agent"
+            | "nav.target_object"
+            | "nav.target_point"
+            | "nav.clear_target"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -516,6 +551,17 @@ impl Editor {
             "object.follow_path" => actions.extend(self.follow_selection()),
             "path.add_point" => actions.extend(self.add_path_point()),
             "path.remove_point" => actions.extend(self.remove_path_point()),
+            "object.obstacle" => actions.extend(self.create_object("obstacle")),
+            "object.nav_agent" => actions.extend(self.add_nav_agents()),
+            "nav.target_object" => actions.extend(self.nav_target_selection()),
+            "nav.target_point" => {
+                self.scene_input.nav_pick = true;
+                self.notice(
+                    "Click the ground in the scene view to set the nav target (Esc cancels)",
+                );
+            }
+            "nav.clear_target" => actions.extend(self.set_nav_target(None)),
+            "view.nav_grid" => self.prefs.nav_grid = !self.prefs.nav_grid,
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
@@ -591,6 +637,7 @@ impl Editor {
                             "view.grid" => Some(self.prefs.grid),
                             "view.space" => Some(self.prefs.local_space),
                             "view.gizmos" => Some(self.prefs.gizmos),
+                            "view.nav_grid" => Some(self.prefs.nav_grid),
                             id if ViewMode::from_command(id).is_some() => {
                                 Some(ViewMode::from_command(id) == Some(self.orbit.mode))
                             }
@@ -884,6 +931,11 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "path.add_point": "path ID add [x,y,z] | path ID insert I [x,y,z]",
                 "path.remove_point": "path ID remove I",
                 "path.point_drag": "path ID move I x,y,z",
+                "object.obstacle": "create obstacle",
+                "object.nav_agent": "nav SEL agent [speed=] [radius=]",
+                "nav.target_object": "nav AGENTS target ENTITY",
+                "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
+                "nav.clear_target": "nav AGENTS target none",
                 "inspector.remove_component": "remove SEL COMPONENT",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",
@@ -893,7 +945,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.create_prefab": "prefab create [PID] from ID",
                 "hierarchy.reorder": "move ID before OTHER|after OTHER|end",
                 "object.drop_to_ground": "ground SEL",
-                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.bookmark.save|recall.N, RMB+WASD fly, box select (editor view state, never content)",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.bookmark.save|recall.N, RMB+WASD fly, box select (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",

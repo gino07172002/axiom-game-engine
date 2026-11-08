@@ -660,3 +660,143 @@ fn path_verbs_match_the_ops_and_report_structured_errors() {
     let conflict = acl(&mut e, "set car core.motion {\"velocity\":[1,0,0]}").unwrap_err();
     assert_eq!(code(conflict.clone()), "path_conflict", "{conflict}");
 }
+
+#[test]
+fn nav_verbs_match_the_ops_and_report_structured_errors() {
+    use axiom_core::navigation::{NavAgent, NavTarget};
+    let mut s = store();
+    acl(
+        &mut s,
+        "create cube id=bob\ncreate cube id=ann\ncreate empty id=door at=4,0,2",
+    )
+    .unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        t.current().unwrap().1
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    // nav SEL agent: the shared op; capability and system are added once.
+    let options = ops::NavOptions {
+        speed: Some(2.5),
+        radius: Some(0.4),
+    };
+    let ids = ["bob".to_owned(), "ann".to_owned()];
+    let expected = ops::add_nav_agent(&start, &ids, &options).unwrap();
+    let agents = after(
+        &start,
+        "nav entities[id=bob,id=ann] agent speed=2.5 radius=0.4",
+    );
+    assert_eq!(agents, applied(&start, expected));
+    assert_eq!(agents.capabilities.get("nav"), Some(&1));
+    assert_eq!(
+        agents.systems.iter().filter(|s| *s == "nav.steer").count(),
+        1
+    );
+    let agent = |world: &World, id: &str| -> NavAgent {
+        serde_json::from_value(world.entity(id).unwrap().components["nav.agent"].clone()).unwrap()
+    };
+    assert_eq!(
+        (agent(&agents, "bob").speed, agent(&agents, "bob").radius),
+        (2.5, 0.4)
+    );
+    // nav SEL target: point, entity, none.
+    for (text, target) in [
+        (
+            "nav bob target 3,0,-2",
+            Some(NavTarget::Point([3.0, 0.0, -2.0])),
+        ),
+        (
+            "nav bob target [3,0,-2]",
+            Some(NavTarget::Point([3.0, 0.0, -2.0])),
+        ),
+        (
+            "nav entities[id=bob,id=ann] target door",
+            Some(NavTarget::Entity("door".into())),
+        ),
+        ("nav bob target none", None),
+    ] {
+        let ids: Vec<String> = if text.contains("ann") {
+            vec!["bob".into(), "ann".into()]
+        } else {
+            vec!["bob".into()]
+        };
+        let expected = ops::set_nav_target(&agents, &ids, target.as_ref()).unwrap();
+        let got = after(&agents, text);
+        assert_eq!(got, applied(&agents, expected), "{text}");
+        assert_eq!(agent(&got, "bob").target, target, "{text}");
+    }
+    // create obstacle: a cube with a matching nav.blocker.
+    let made = after(&start, "create obstacle at=2,0.5,0");
+    let blocker = &made.entity("obstacle").unwrap().components["nav.blocker"];
+    assert_eq!(blocker["half"], serde_json::json!([0.5, 0.5]));
+    assert!(made
+        .entity("obstacle")
+        .unwrap()
+        .components
+        .contains_key("render.mesh"));
+    // Structured errors.
+    let mut e = Store::memory_with(Registry::core(), agents.clone()).unwrap();
+    assert_eq!(
+        code(acl(&mut e, "nav door target bob").unwrap_err()),
+        "not_a_nav_agent"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob target ghost").unwrap_err()),
+        "not_found"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob target bob").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob target 1,2").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob agent speed=99").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob agent speed=fast").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(acl(&mut e, "nav bob agent fly=1").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(code(acl(&mut e, "nav bob walk").unwrap_err()), "acl_syntax");
+    assert_eq!(
+        code(acl(&mut e, "nav nobody agent").unwrap_err()),
+        "no_match"
+    );
+    // A point target with follow_target on is refused (follow_target is for entities).
+    acl(
+        &mut e,
+        "nav bob target door\nset bob nav.agent/follow_target true",
+    )
+    .unwrap();
+    assert_eq!(
+        code(acl(&mut e, "nav bob target 1,0,1").unwrap_err()),
+        "invalid_value"
+    );
+    // A second mover on an agent is refused at commit with nav_conflict.
+    let mut capabilities = agents.capabilities.clone();
+    capabilities.insert("motion".into(), 1);
+    e.execute(Request::Apply {
+        expected_rev: None,
+        edits: vec![Edit::set("/capabilities", serde_json::json!(capabilities))],
+    })
+    .unwrap();
+    let conflict = acl(&mut e, "set ann core.motion {\"velocity\":[1,0,0]}").unwrap_err();
+    assert_eq!(code(conflict.clone()), "nav_conflict", "{conflict}");
+}

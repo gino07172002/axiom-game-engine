@@ -84,13 +84,16 @@ pub struct Registry {
     pub edit_handlers: Vec<EditHandler>,
     pub summaries: Vec<SummaryProvider>,
     /// Component -> the system that writes the transform of entities carrying it. An entity
-    /// may have at most one mover; `path.follow` next to one of these is an authoring error.
+    /// may have at most one mover; `path.follow` or `nav.agent` next to one of these is an
+    /// authoring error.
     pub movers: BTreeMap<String, String>,
 }
 impl Registry {
     pub fn core() -> Self {
         let mut r = Self::default();
-        for id in ["core", "render", "physics", "motion", "trigger", "path"] {
+        for id in [
+            "core", "render", "physics", "motion", "trigger", "path", "nav",
+        ] {
             r.capabilities.insert(id.into(), 1);
         }
         fn typed<T: serde::de::DeserializeOwned>(v: &Value, f: fn(&T) -> Result<()>) -> Result<()> {
@@ -151,8 +154,18 @@ impl Registry {
         r.component("path.follow", "path", crate::path::follow_schema(), |v| {
             typed(v, crate::path::PathFollow::validate)
         });
+        r.component("nav.agent", "nav", crate::navigation::agent_schema(), |v| {
+            typed(v, crate::navigation::NavAgent::validate)
+        });
+        r.resource(
+            "nav.grid",
+            "nav",
+            crate::navigation::settings_schema(),
+            |v| typed(v, crate::navigation::NavSettings::validate),
+        );
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
+        r.movers.insert("nav.agent".into(), "nav.steer".into());
         r.component(
             "physics.collider",
             "physics",
@@ -211,6 +224,23 @@ impl Registry {
                 reads: vec![
                     "path.spline".into(),
                     "path.follow".into(),
+                    "core.transform".into(),
+                ],
+                writes: vec!["core.transform".into(), "runtime.events".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "nav.steer".into(),
+            SystemDescriptor {
+                id: "nav.steer".into(),
+                capability: "nav".into(),
+                // After path.move (12) so entity targets that follow paths are current;
+                // before rts (15) and trigger.detect (25) so zones see the agents' new positions.
+                phase: 13,
+                reads: vec![
+                    "nav.agent".into(),
+                    "nav.blocker".into(),
                     "core.transform".into(),
                 ],
                 writes: vec!["core.transform".into(), "runtime.events".into()],

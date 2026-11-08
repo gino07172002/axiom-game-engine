@@ -4,6 +4,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated 4096`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-triggers 256x1024`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-paths 64x1024`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-nav 256 [--nav-budget 4096]`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -147,6 +148,49 @@ fn generated_paths(paths: usize, followers: usize) -> Result<World> {
     }))?)
 }
 
+/// `agents` navigation agents on a 64 x 64 m town (8 x 8 blocks of 4 x 4 m `nav.blocker`,
+/// 4 m streets; grid 256 x 256 cells of 0.25 m) chasing `agents` markers that circle two
+/// street loops at 2 m/s. Agents walk at 1.4 m/s with `follow_target`, so they never catch
+/// up and re-plan every time their marker moves a meter: the pathfinding queue stays full
+/// and every step spends its whole search budget.
+fn generated_nav(agents: usize, budget: Option<u32>) -> Result<World> {
+    let mut entities = vec![];
+    for j in 0..8 {
+        for i in 0..8 {
+            let (x, z) = (-28.0 + 8.0 * i as f32, -28.0 + 8.0 * j as f32);
+            entities.push(json!({"id":format!("block/{i}/{j}"),"components":{"core.transform":{"position":[x,0,z]},"nav.blocker":{"half":[2.0,2.0]}}}));
+        }
+    }
+    for (k, (lo, hi)) in [(-24.0, 24.0), (-8.0, 8.0)].into_iter().enumerate() {
+        entities.push(
+            json!({"id":format!("loop/{k}"),"components":{"core.transform":{},
+            "path.spline":{"points":[[lo,0,lo],[hi,0,lo],[hi,0,hi],[lo,0,hi]],"closed":true}}}),
+        );
+    }
+    for k in 0..agents {
+        entities.push(json!({"id":format!("marker/{k}"),"components":{"core.transform":{},
+            "path.follow":{"path":format!("loop/{}", k % 2),"speed":2.0,"start_fraction":(k / 2) as f32 / agents.div_ceil(2) as f32,"orient":false}}}));
+    }
+    let per_street = agents.div_ceil(7).max(1);
+    for k in 0..agents {
+        let x = -24.0 + 8.0 * (k % 7) as f32;
+        let z = -30.0 + 60.0 * (k / 7) as f32 / per_street as f32;
+        let target = (k * 7919 + 13) % agents;
+        entities.push(json!({"id":format!("agent/{k}"),"components":{"core.transform":{"position":[x,0,z]},
+            "nav.agent":{"speed":1.4,"radius":0.3,"target":{"entity":format!("marker/{target}")},"follow_target":true}}}));
+    }
+    let mut grid = json!({"bounds":{"min":[-32,-32],"max":[31.99,31.99]}});
+    if let Some(budget) = budget {
+        grid["expansions_per_step"] = json!(budget);
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("nav-{agents}"),"title":"Navigation bench",
+        "capabilities":{"core":1,"path":1,"nav":1},"systems":["path.move","nav.steer"],
+        "entities":entities,
+        "resources":{"nav.grid":grid}
+    }))?)
+}
+
 /// A one-field edit on an entity that owns its transform position (non-camera preferred).
 fn edit_target(world: &World) -> Result<(String, Vec<f64>)> {
     let pick = |skip_camera: bool| {
@@ -191,6 +235,10 @@ fn main() -> Result<()> {
             .split_once('x')
             .context("--generated-paths PATHSxFOLLOWERS")?;
         let world = generated_paths(paths.parse()?, followers.parse()?)?;
+        (world.id.clone(), world)
+    } else if let Some(agents) = arg("--generated-nav") {
+        let budget = arg("--nav-budget").map(|b| b.parse()).transpose()?;
+        let world = generated_nav(agents.parse()?, budget)?;
         (world.id.clone(), world)
     } else {
         let pack = arg("--pack").context("--pack DIR or --generated N")?;
@@ -241,6 +289,18 @@ fn main() -> Result<()> {
         step_bytes.push((b2 - b) as f64);
     }
     runtime.assert_valid()?;
+    // Navigation: final counters, and one cold editor path preview (main-thread cost).
+    let preview = runtime
+        .system::<axiom_runtime::nav_agent::NavSystem>()
+        .and_then(|s| {
+            let slot = *runtime.state.compiled.indices.get("agent/0")?;
+            let t = Instant::now();
+            let path = s.preview_path(&runtime.state, slot);
+            Some(json!({"ms":ms(t),"waypoints":path.map(|p| p.len())}))
+        });
+    let nav = runtime.observation().metrics.get("nav").map(|n| {
+        json!({"grid":n["grid"],"budget":n["budget"],"moving":n["moving"],"pending":n["pending"],"failed":n["failed"],"arrived":n["arrived"],"preview":preview})
+    });
 
     // Render-frame extraction, the renderer's per-frame instance copy, observation building.
     let (mut frame_ms, mut frame_allocs, mut frame_bytes) = (vec![], vec![], vec![]);
@@ -358,6 +418,7 @@ fn main() -> Result<()> {
             "adopt_ms":pick(&|s| s.reload.adopt_ms),
             "build_ms":pick(&|s| s.reload.build_ms),
         },
+        "nav":nav,
         "process_memory_after_runtime":memory_runtime,
         "process_memory_end":axiom_runtime::measure::process_memory(),
     });

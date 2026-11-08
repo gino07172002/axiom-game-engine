@@ -320,6 +320,9 @@ pub(super) struct SceneInput {
     pub point_drag: Option<PointDrag>,
     /// Screen positions of the selected path's point handles drawn last frame (tests).
     pub point_handles: Vec<Pos2>,
+    /// Object ▸ Nav Target: Click Ground is armed: the next primary click in the scene view
+    /// sets the selected agents' target point (Esc cancels).
+    pub nav_pick: bool,
 }
 
 /// Dragging one path control point on the horizontal plane through it (world Y kept).
@@ -860,6 +863,12 @@ const GIZMO_LIGHT_OFF: Color32 = Color32::from_rgb(130, 120, 90);
 const GIZMO_TRIGGER: Color32 = Color32::from_rgb(120, 230, 210);
 const GIZMO_TRIGGER_OFF: Color32 = Color32::from_rgb(80, 120, 115);
 const GIZMO_PATH: Color32 = Color32::from_rgb(255, 176, 72);
+const GIZMO_NAV: Color32 = Color32::from_rgb(110, 200, 255);
+const GIZMO_NAV_ROUTE: Color32 = Color32::from_rgb(170, 240, 120);
+const GIZMO_NAV_CELL: Color32 = Color32::from_rgb(255, 110, 110);
+/// Grid overlay: cells around the focus point (2 * radius + 1 per side), outlines drawn at most.
+const NAV_OVERLAY_RADIUS: i32 = 40;
+const NAV_OVERLAY_SHAPES: usize = 2400;
 /// Line pieces drawn per path; denser polylines (Catmull-Rom) are drawn with a stride.
 const PATH_GIZMO_PIECES: usize = 512;
 
@@ -1023,6 +1032,69 @@ fn draw_light_gizmo(
             pen.label(position, "AREA", color);
         }
     }
+}
+
+/// Navigation grid overlay: outlines the cells around `focus` that the agent on `slot` (or a
+/// default 0.3 m agent) cannot enter. Bounded to `NAV_OVERLAY_SHAPES` outlines.
+fn draw_nav_grid(
+    painter: &egui::Painter,
+    view: &ProjectionView,
+    runtime: &WorldRuntime,
+    focus: Vec3,
+    slot: Option<usize>,
+) -> usize {
+    let Some(system) = runtime.system::<crate::nav_agent::NavSystem>() else {
+        return 0;
+    };
+    let Some(grid) = system.grid() else {
+        return 0;
+    };
+    let threshold = slot
+        .and_then(|s| system.threshold(s))
+        .unwrap_or_else(|| grid.threshold(0.3));
+    let spec = grid.spec;
+    let Some(center) = spec.cell_of(glam::Vec2::new(focus.x, focus.z)).or_else(|| {
+        // Outside the grid: start from its nearest edge cell.
+        let c = ((glam::Vec2::new(focus.x, focus.z) - glam::Vec2::from(spec.origin)) / spec.cell)
+            .floor();
+        Some([
+            (c.x as i32).clamp(0, spec.width as i32 - 1),
+            (c.y as i32).clamp(0, spec.height as i32 - 1),
+        ])
+    }) else {
+        return 0;
+    };
+    let mut pen = Pen {
+        painter,
+        view,
+        shapes: 0,
+    };
+    let half = spec.cell * 0.45;
+    let y = focus.y + 0.02;
+    for dz in -NAV_OVERLAY_RADIUS..=NAV_OVERLAY_RADIUS {
+        for dx in -NAV_OVERLAY_RADIUS..=NAV_OVERLAY_RADIUS {
+            let c = [center[0] + dx, center[1] + dz];
+            let Some(index) = spec.index(c) else { continue };
+            if grid.walkable(index, threshold) {
+                continue;
+            }
+            if pen.shapes >= NAV_OVERLAY_SHAPES {
+                return pen.shapes;
+            }
+            let p = spec.center(c);
+            let (a, b) = (
+                Vec3::new(p.x - half, y, p.y - half),
+                Vec3::new(p.x + half, y, p.y + half),
+            );
+            pen.line(a, b, GIZMO_NAV_CELL.gamma_multiply(0.7));
+            pen.line(
+                Vec3::new(a.x, y, b.z),
+                Vec3::new(b.x, y, a.z),
+                GIZMO_NAV_CELL.gamma_multiply(0.7),
+            );
+        }
+    }
+    pen.shapes
 }
 
 /// Editor-only component gizmos: camera frusta (active camera highlighted), `render.light`
@@ -1242,6 +1314,49 @@ fn draw_component_gizmos(
                 color,
             );
             pen.label(position + Vec3::Y * 0.02, "FSM", color);
+        }
+        if let Some(agent) = &e.nav_agent {
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else {
+                GIZMO_NAV
+            };
+            let ground = position + Vec3::Y * 0.03;
+            pen.loop_through(
+                &arc(ground, Vec3::X, Vec3::Z, agent.radius, 0.0, TAU, 25)[..24],
+                color,
+            );
+            pen.label(ground, "NAV", color);
+            // Line to the authored target, with a cross where it ends.
+            let target = match &agent.target {
+                Some(axiom_core::navigation::NavTarget::Point(p)) => {
+                    Some(Vec3::new(p[0], ground.y, p[2]))
+                }
+                Some(axiom_core::navigation::NavTarget::Entity(id)) => state
+                    .indices
+                    .get(id)
+                    .map(|&t| matrices[t].transform_point3(Vec3::ZERO))
+                    .map(|p| Vec3::new(p.x, ground.y, p.z)),
+                None => None,
+            };
+            if let Some(goal) = target {
+                pen.line(ground, goal, color.gamma_multiply(0.6));
+                pen.line(goal - Vec3::X * 0.2, goal + Vec3::X * 0.2, color);
+                pen.line(goal - Vec3::Z * 0.2, goal + Vec3::Z * 0.2, color);
+            }
+            // The selected agent previews the path it would walk (bounded, cached search).
+            let route = (selected == Some(i))
+                .then(|| runtime.system::<crate::nav_agent::NavSystem>())
+                .flatten()
+                .and_then(|s| s.preview_path(&runtime.state, i));
+            if let Some(route) = route {
+                let mut from = ground;
+                for w in route {
+                    let to = Vec3::new(w.x, ground.y, w.y);
+                    pen.line(from, to, GIZMO_NAV_ROUTE);
+                    from = to;
+                }
+            }
         }
     }
     pen.shapes
@@ -1611,6 +1726,10 @@ impl Editor {
                 }
             }
         }
+        if self.scene_input.nav_pick && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.scene_input.nav_pick = false;
+            self.notice("Nav target pick cancelled");
+        }
         if let Some(drag) = &self.drag {
             let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
             if cancel {
@@ -1636,6 +1755,26 @@ impl Editor {
                     self.drag = None;
                 } else if !ui.input(|i| i.pointer.primary_down()) {
                     self.select(self.selected.clone());
+                }
+            }
+        } else if response.clicked_by(PointerButton::Primary) && self.scene_input.nav_pick {
+            self.scene_input.nav_pick = false;
+            if let Some(pos) = response.interact_pointer_pos() {
+                // The horizontal plane through the primary agent (y = 0 without one).
+                let height = selected.map_or(0.0, |i| matrices[i].transform_point3(Vec3::ZERO).y);
+                let (origin, direction) = view.ray(pos);
+                let t = (height - origin.y) / direction.y;
+                if direction.y.abs() > 1e-4 && t > 0.0 && t.is_finite() {
+                    let at = (origin + direction * t)
+                        .to_array()
+                        .map(|v| (v * 1000.0).round() / 1000.0);
+                    actions.extend(
+                        self.set_nav_target(Some(axiom_core::navigation::NavTarget::Point(at))),
+                    );
+                } else {
+                    self.set_error(
+                        "Nav target: click the ground (the view looks along the horizon)",
+                    );
                 }
             }
         } else if response.clicked_by(PointerButton::Primary) {
@@ -1683,6 +1822,13 @@ impl Editor {
         } else {
             0
         };
+        if self.prefs.nav_grid {
+            let focus = selected.map_or(self.orbit.target, |i| {
+                matrices[i].transform_point3(Vec3::ZERO)
+            });
+            self.scene_input.gizmo_shapes +=
+                draw_nav_grid(&painter, &view, runtime, focus, selected);
+        }
         let dragged = self.scene_input.point_drag.as_ref().map(|d| d.index);
         for (k, at, _) in &point_handles {
             let chosen = self.scene_input.path_point == Some(*k);
@@ -3203,5 +3349,126 @@ mod tests {
             frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]).len(),
             1
         );
+    }
+
+    /// editor-lab plus a nav agent `bob` (cube at the origin), an obstacle between it and the
+    /// marker `home`, and bob's target `home`.
+    fn nav_fixture() -> (World, WorldRuntime) {
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, fixture().0).unwrap();
+        store
+            .execute(Request::Acl {
+                text: "create cube id=bob at=0,0.5,0\nnav bob agent\ncreate obstacle id=box at=2,0.5,0\nset box nav.blocker/half [0.5,1.5]\ncreate empty id=home at=4,0,0\nnav bob target home".into(),
+                preview: false,
+                expected_rev: None,
+                propose: false,
+            })
+            .unwrap();
+        let world = store.current().unwrap().1;
+        let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        (world, runtime)
+    }
+
+    #[test]
+    fn nav_gizmo_previews_the_route_and_the_grid_overlay_toggles() {
+        let (world, runtime) = nav_fixture();
+        let system = runtime
+            .system::<crate::nav_agent::NavSystem>()
+            .expect("nav.steer runs");
+        let slot = runtime.state.compiled.indices["bob"];
+        // The preview goes round the obstacle (more than the direct line) and is cached.
+        let route = system.preview_path(&runtime.state, slot).unwrap();
+        assert!(route.len() >= 2, "{route:?}");
+        assert!(route.iter().any(|w| w.y.abs() > 1.0), "{route:?}");
+        assert_eq!(system.preview_path(&runtime.state, slot).unwrap(), route);
+        let mut editor = Editor::new(world, 1, Some("bob".into()));
+        let ctx = egui::Context::default();
+        let draw = |editor: &mut Editor| {
+            for _ in 0..2 {
+                frame(&ctx, editor, &runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let selected = draw(&mut editor);
+        // Not selected: no route preview (circle, label, target line and cross remain).
+        editor.select(Some("home".into()));
+        let unselected = draw(&mut editor);
+        assert!(
+            selected >= unselected + route.len(),
+            "{selected} vs {unselected}"
+        );
+        editor.select(Some("bob".into()));
+        // The grid overlay adds the blocked cells around the agent.
+        editor.run_command("view.nav_grid").unwrap();
+        let with_grid = draw(&mut editor);
+        assert!(with_grid > selected + 40, "{with_grid} vs {selected}");
+        editor.run_command("view.nav_grid").unwrap();
+        assert_eq!(draw(&mut editor), selected);
+        // Hidden agents draw no NAV gizmo.
+        editor.set_view_flag(&["bob".into()], false);
+        assert!(draw(&mut editor) < unselected);
+    }
+
+    #[test]
+    fn nav_ground_pick_sets_the_target_through_the_shared_op() {
+        let (world, runtime) = nav_fixture();
+        let mut editor = Editor::new(world.clone(), 1, Some("bob".into()));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            frame(&ctx, &mut editor, &runtime, vec![]);
+        }
+        assert!(editor.run_command("nav.target_point").unwrap().is_empty());
+        assert!(editor.scene_input.nav_pick);
+        // Click where the plane through bob (y = 0.5) shows the point (-2, 0.5, 2).
+        let at = screen_of(&editor, Vec3::new(-2.0, 0.5, 2.0));
+        assert!(frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![egui::Event::PointerMoved(at), primary(at, true)]
+        )
+        .is_empty());
+        let actions = frame(&ctx, &mut editor, &runtime, vec![primary(at, false)]);
+        assert!(!editor.scene_input.nav_pick);
+        let [Action::Write { request, .. }] = actions.as_slice() else {
+            panic!("expected one write, got {}", actions.len());
+        };
+        let Request::Apply { edits, .. } = request else {
+            panic!("expected an apply");
+        };
+        let [Edit::Core(CoreEdit::SetField { field, value, .. })] = edits.as_slice() else {
+            panic!("expected one target edit");
+        };
+        assert_eq!(field, "/components/nav.agent/target");
+        let point: [f32; 3] = serde_json::from_value(value["point"].clone()).unwrap();
+        assert!(
+            Vec3::from_array(point).distance(Vec3::new(-2.0, 0.5, 2.0)) < 0.05,
+            "{point:?}"
+        );
+        // Same world as the ACL target of that point.
+        let mut a =
+            Store::memory_with(crate::installed_registry().authoring, world.clone()).unwrap();
+        a.execute(request.clone()).unwrap();
+        let [x, y, z] = point;
+        let mut b = Store::memory_with(crate::installed_registry().authoring, world).unwrap();
+        b.execute(Request::Acl {
+            text: format!("nav bob target {x},{y},{z}"),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap();
+        assert_eq!(a.current().unwrap().1, b.current().unwrap().1);
+        // Escape disarms the pick; without an agent selected the command is blocked.
+        editor.run_command("nav.target_point").unwrap();
+        frame(
+            &ctx,
+            &mut editor,
+            &runtime,
+            vec![key(egui::Key::Escape, true)],
+        );
+        assert!(!editor.scene_input.nav_pick);
+        editor.select(Some("home".into()));
+        assert!(editor.run_command("nav.target_point").is_err());
     }
 }

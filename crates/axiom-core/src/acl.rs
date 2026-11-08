@@ -29,6 +29,9 @@ EDIT (any number, atomic):
                                   several followers start evenly spaced along the path
   path ID add [x,y,z] | path ID insert I [x,y,z] | path ID move I x,y,z | path ID remove I
                                   edit points (path-local); no x,y,z = extend the end / split the piece
+  create obstacle P               1 m cube + nav.blocker (agents walk around it; id obstacle)
+  nav SEL agent [speed=M/S] [radius=M]   nav.agent on each object (no target yet)
+  nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -279,6 +282,8 @@ enum Statement {
     Ground(Box<Selection>),
     Follow(Box<Selection>, String, crate::ops::FollowOptions),
     PathPoint(String, crate::ops::PointEdit),
+    NavAgent(Box<Selection>, crate::ops::NavOptions),
+    NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
 }
 
 impl Statement {
@@ -563,6 +568,44 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             ensure!(tokens.len() <= max, "unexpected '{}'", tokens[max]);
             Statement::PathPoint(id, edit)
         }
+        "nav" => {
+            let select = Box::new(selector(arg(1)?)?);
+            match arg(2)?.as_str() {
+                "agent" => {
+                    let mut options = crate::ops::NavOptions::default();
+                    for t in &tokens[3..] {
+                        let (k, v) = t
+                            .split_once('=')
+                            .with_context(|| format!("option '{t}' must be key=value"))?;
+                        let number = v
+                            .parse::<f32>()
+                            .with_context(|| format!("{k} must be a number"))?;
+                        match k {
+                            "speed" => options.speed = Some(number),
+                            "radius" => options.radius = Some(number),
+                            other => bail!("unknown option '{other}' (use speed, radius)"),
+                        }
+                    }
+                    Statement::NavAgent(select, options)
+                }
+                "target" => {
+                    ensure!(
+                        tokens.len() == 4,
+                        "use: nav SEL target x,y,z | nav SEL target ENTITY | nav SEL target none"
+                    );
+                    let goal = arg(3)?;
+                    let target = if goal == "none" {
+                        None
+                    } else if goal.contains(',') {
+                        Some(crate::navigation::NavTarget::Point(vec3(goal)?))
+                    } else {
+                        Some(crate::navigation::NavTarget::Entity(goal.clone()))
+                    };
+                    Statement::NavTarget(select, target)
+                }
+                other => bail!("unknown nav verb '{other}' (agent, target)"),
+            }
+        }
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             match rest.as_slice() {
@@ -828,6 +871,10 @@ pub fn run(
             Statement::Follow(select, path, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::follow_path(w, &ids, &path, &options)),
             Statement::PathPoint(id, edit) => crate::ops::edit_path_point(w, &id, &edit),
+            Statement::NavAgent(select, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_nav_agent(w, &ids, &options)),
+            Statement::NavTarget(select, target) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::set_nav_target(w, &ids, target.as_ref())),
             _ => unreachable!(),
         }
         .map_err(wrap)?;

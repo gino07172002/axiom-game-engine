@@ -22,6 +22,11 @@
 | `object.follow_path`(Object ▸ Follow Path):選取的物件跟隨選取中的路徑(沒選路徑時用唯一的路徑);多個跟隨者起點平均分散 | `follow SEL PATH [speed=] [end=loop\|ping_pong\|stop] [offset=]` | ✅ 同上(兩個跟隨者的 `start_fraction`、沒選路徑時的唯一路徑;兩條路徑都沒選 = problem 不寫入);`path_verbs_match_the_ops_and_report_structured_errors` |
 | `path.add_point` / `path.remove_point`(Object 選單、Inspector ▸ Path points 按鈕),作用在選取的點 | `path ID add [x,y,z]`、`path ID insert I [x,y,z]`、`path ID remove I` | ✅ 同上(無選點 add、選點 1 後 insert 2、remove 0;低於最少點數 = problem) |
 | 場景視口拖曳路徑點把手(水平面、吸附) | `path ID move I x,y,z` | ✅ `path_point_handles_drag_one_point_through_the_shared_op`(egui 事件實際拖曳,結果與 ACL 相同)+ parity 測試的 `edit_path_point` |
+| `object.obstacle`(Object 選單、指令面板)、Hierarchy「+ Object」▸ Obstacle | `create obstacle P`。1 m 方塊 + `nav.blocker {half:[0.5,0.5]}`,世界缺少時補 `render` capability,見 `docs/navigation.zh-TW.md` | ✅ `nav_agents_obstacles_and_targets_match_acl`(兩種入口、空世界) |
+| `object.nav_agent`(Object ▸ Add Nav Agent):選取的物件都加上預設 `nav.agent`(取代既有的) | `nav SEL agent [speed=] [radius=]`(世界缺少時補 `nav` capability 與 `nav.steer` 系統) | ✅ 同上;`nav_verbs_match_the_ops_and_report_structured_errors` |
+| `nav.target_object`(Object ▸ Nav Target: Selected Object):選取中的代理走向選取中唯一不是代理的物件(沒有或兩個以上 = problem 不寫入) | `nav AGENTS target ENTITY` | ✅ 同上 |
+| `nav.target_point`(Object ▸ Nav Target: Click Ground…):下一次在場景視口點地面(通過主選取代理高度的水平面),Esc 取消 | `nav AGENTS target x,y,z` | ✅ `nav_ground_pick_sets_the_target_through_the_shared_op`(egui 事件實際點擊,結果與 ACL 相同)+ parity 測試的 `set_nav_target` |
+| `nav.clear_target`(Object ▸ Nav Target: Clear) | `nav AGENTS target none` | ✅ `nav_agents_obstacles_and_targets_match_acl` |
 | Assets ▸ 點 prefab 實例化 | `instantiate PREFAB [id=] [at=] [parent=] [scene=]` | ✅ `instantiate_prefab_matches_acl` |
 | 大量生成(帶 tag、label、step 間距) | `spawn PREFAB count=N …`(只有 ACL 有;編輯器只能一次一個) | — |
 | `edit.duplicate`(Ctrl+D)、Inspector 的 Duplicate | `duplicate SEL`(ID 依序為 `SRC/copy`、`/copy/2`;`entities[id=a,id=b]` 照書寫順序處理;每個複本緊接在來源**之後**,也就是同層的下一列) | ✅ `duplicate_and_paste_match_acl`(含順序檢查) |
@@ -63,14 +68,15 @@
 | `view.perspective` / `view.top` / `view.front` / `view.right` / `view.bottom` / `view.back` / `view.left`(Alt+1..7、場景工具列 View 選單、右下角座標軸點 X / Y / Z,再點一次切到反面,點模式文字回 Perspective) | 只影響編輯器相機:正交軸向視圖,picking / gizmo 拖曳 / 框選都用同一個投影矩陣。在軸向視圖中按右鍵旋轉會回到 Perspective。`editor_view` 觀察結果的 `view` 欄位回報目前模式 |
 | 飛行相機:按住右鍵 + WASD(Q / E 下降 / 上升),Shift 3 倍速;按住右鍵時滾輪調整飛行速度(畫面下方短暫顯示) | 只是相機;速度存在 `*.editor-prefs.json` 的 `fly_speed`。按住右鍵期間單鍵快捷鍵(W = Move 等)暫停。沒按移動鍵的右鍵拖曳仍是環繞 |
 | 框選:左鍵在空白處(或非 gizmo 握把處)拖曳畫框,放開時選取「投影中心點落在框內」的物件(網格 / 骨架網格用包圍盒中心,其餘用 pivot);Shift 加選、Ctrl 反選(主選取保留)、空框清除選取 | 只是選取;隱藏 / 鎖定物件不會被框到。無頭用 `select` |
-| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM)、`trigger.zone` 線框(box 依軸向、sphere 三個圓,`exit_margin` 加暗色外框;停用暗綠、選取白;區內狀態不在這裡畫,見下方 Play 預覽的 Behavior overlay)、`path.spline` 折線 / 曲線(控制點十字、方向箭頭、標 PATH;選取的路徑顯示可拖曳的點把手)、`path.follow` 到起點的暗線(標 FOLLOW) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
+| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM)、`trigger.zone` 線框(box 依軸向、sphere 三個圓,`exit_margin` 加暗色外框;停用暗綠、選取白;區內狀態不在這裡畫,見下方 Play 預覽的 Behavior overlay)、`path.spline` 折線 / 曲線(控制點十字、方向箭頭、標 PATH;選取的路徑顯示可拖曳的點把手)、`path.follow` 到起點的暗線(標 FOLLOW)、`nav.agent` 半徑圈(標 NAV)+ 到編寫目標的線與十字,選取的代理另畫預覽路徑(綠色,有上限的同步搜尋,依輸入快取) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
 | `view.bookmark.save.N`(Ctrl+F6..F9)/ `view.bookmark.recall.N`(F6..F9),N = 1..4;場景工具列 View 選單也有 | 只是相機;依 world ID 存在偏好檔 `bookmarks`。空的槽位不可用(指令回報原因) |
-| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `TRIG` `PATH` `FOLLOW` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、`trigger.zone`、`path.spline`、`path.follow`、prefab 實例) |
+| `view.nav_grid`(View ▸ Toggle Navigation Grid Overlay) | 只影響編輯器視圖:在選取物件(沒選時為相機注視點)周圍 81 × 81 格內,用紅色 × 標出選取代理(沒選代理時以 0.3 m 計)不能進入的格子,最多 2,400 個;存在偏好檔 `nav_grid`。無頭用 `observe` 的 `nav.grid` 或 `call nav.inspect` |
+| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `TRIG` `PATH` `FOLLOW` `NAV` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、`trigger.zone`、`path.spline`、`path.follow`、`nav.agent`、prefab 實例) |
 | 點一下路徑點把手 / Inspector ▸ Path points 的列 = 選取路徑點 | 只是編輯器狀態(`path.add_point` / `path.remove_point` 作用的點);無頭直接在 `path ID insert\|remove I` 指定索引 |
 | `edit.copy`、`file.copy_context`、`help.copy_discovery` | 用 `inspect ID` / `discover` |
 | `file.verify` | `axiom verify` |
 | `play.start`(Play 預覽,不寫入 revision) | `axiom play` / `axiom scenario FILE` |
-| Play 預覽的「Behavior overlay」:FSM 狀態標籤 + `trigger.zone` 線框(青綠 = 空、粉紅加粗 = 有實體在區內) | 只是畫面;無頭用 `observe` 的 `trigger` 或 `call trigger.inspect` |
+| Play 預覽的「Behavior overlay」:FSM 狀態標籤 + `trigger.zone` 線框(青綠 = 空、粉紅加粗 = 有實體在區內)+ 導航代理剩下的路線(綠線) | 只是畫面;無頭用 `observe` 的 `trigger` / `nav` 或 `call trigger.inspect` / `nav.inspect` |
 | History 的 diff 檢視 | `diff REV REV` |
 | Scenarios 分頁 | `axiom scenario FILE` |
 | Problems、Graphs、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |

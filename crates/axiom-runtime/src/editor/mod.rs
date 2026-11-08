@@ -663,6 +663,55 @@ impl Editor {
         action
     }
 
+    /// The effective `nav.agent` of `id`, if it has a valid one.
+    pub(super) fn nav_agent(&self, id: &str) -> Option<axiom_core::navigation::NavAgent> {
+        let entity = self.world.entity(id)?;
+        serde_json::from_value(self.world.resolved_components(entity).remove("nav.agent")?).ok()
+    }
+
+    /// Selected objects that are navigation agents (selection order).
+    pub(super) fn selected_agents(&self) -> Vec<String> {
+        self.selection()
+            .into_iter()
+            .filter(|id| self.nav_agent(id).is_some())
+            .collect()
+    }
+
+    /// Object ▸ Add Nav Agent (`ACL: nav SEL agent`).
+    pub(super) fn add_nav_agents(&mut self) -> Option<Action> {
+        let result =
+            ops::add_nav_agent(&self.world, &self.selection(), &ops::NavOptions::default());
+        self.op_write(result, None)
+    }
+
+    /// Object ▸ Nav Target: Selected Object (`ACL: nav AGENTS target ID`): the selected agents
+    /// walk to the one selected object that is not an agent.
+    pub(super) fn nav_target_selection(&mut self) -> Option<Action> {
+        let selection = self.selection();
+        let others: Vec<&String> = selection
+            .iter()
+            .filter(|id| self.nav_agent(id).is_none())
+            .collect();
+        let [target] = others.as_slice() else {
+            self.set_error(
+                "Select the agents together with one target object that is not an agent (Ctrl+click)",
+            );
+            return None;
+        };
+        let target = axiom_core::navigation::NavTarget::Entity((*target).clone());
+        self.set_nav_target(Some(target))
+    }
+
+    /// Writes the selected agents' target (`ACL: nav SEL target x,y,z|ID|none`); the scene
+    /// view's ground pick and Nav Target: Clear land here.
+    pub(super) fn set_nav_target(
+        &mut self,
+        target: Option<axiom_core::navigation::NavTarget>,
+    ) -> Option<Action> {
+        let result = ops::set_nav_target(&self.world, &self.selected_agents(), target.as_ref());
+        self.op_write(result, None)
+    }
+
     /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
     pub(super) fn instantiate_prefab(&mut self, prefab: &str) -> Option<Action> {
         let result = ops::instantiate_prefab(&self.world, prefab, &self.placement());

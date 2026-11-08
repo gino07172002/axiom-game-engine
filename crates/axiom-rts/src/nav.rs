@@ -1,9 +1,7 @@
 use anyhow::{ensure, Result};
+use axiom_core::grid_search::{GridSearch, Neighbourhood, Progress};
 use serde::{Deserialize, Serialize};
-use std::{
-    cmp::Reverse,
-    collections::{BinaryHeap, VecDeque},
-};
+use std::collections::VecDeque;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GridConfig {
@@ -140,74 +138,41 @@ impl Grid {
         }
         None
     }
+    /// Shortest 4-connected path (unit cost, Manhattan heuristic) expanding at most `budget`
+    /// nodes. Runs on the shared `axiom_core::grid_search` engine; `exhausted` = the budget
+    /// ran out before the goal was reached.
     pub fn search(&self, start: [i32; 2], goal: [i32; 2], budget: usize) -> Search {
-        let fail = Search {
-            path: None,
-            expanded: 0,
-            exhausted: false,
-        };
         if !self.walkable(start) || !self.walkable(goal) {
-            return fail;
+            return Search {
+                path: None,
+                expanded: 0,
+                exhausted: false,
+            };
         }
-        let from = self.index(start).unwrap();
-        let target = self.index(goal).unwrap();
-        let mut distance = vec![u32::MAX; self.blocked.len()];
-        let mut parent = vec![usize::MAX; self.blocked.len()];
-        let mut open = BinaryHeap::new();
-        distance[from] = 0;
-        let h = |c: [i32; 2]| (c[0] - goal[0]).unsigned_abs() + (c[1] - goal[1]).unsigned_abs();
-        open.push(Reverse((h(start), 0, from)));
-        let mut expanded = 0;
-        while let Some(Reverse((_, cost, i))) = open.pop() {
-            if cost != distance[i] {
-                continue;
-            }
-            if i == target {
-                let mut path = VecDeque::new();
-                let mut current = i;
-                while current != from {
-                    path.push_front([
-                        (current as u32 % self.config.width) as i32,
-                        (current as u32 / self.config.width) as i32,
-                    ]);
-                    current = parent[current];
-                }
-                return Search {
-                    path: Some(path),
-                    expanded,
-                    exhausted: false,
-                };
-            }
-            if expanded == budget {
-                return Search {
-                    path: None,
-                    expanded,
-                    exhausted: true,
-                };
-            }
-            expanded += 1;
-            let c = [
-                (i as u32 % self.config.width) as i32,
-                (i as u32 / self.config.width) as i32,
-            ];
-            for d in [[1, 0], [0, 1], [-1, 0], [0, -1]] {
-                let n = [c[0] + d[0], c[1] + d[1]];
-                if !self.walkable(n) {
-                    continue;
-                }
-                let ni = self.index(n).unwrap();
-                let next = cost + 1;
-                if next < distance[ni] {
-                    distance[ni] = next;
-                    parent[ni] = i;
-                    open.push(Reverse((next + h(n), next, ni)));
-                }
-            }
+        // Search buffers are reused per thread (generation stamps make reuse exact), so a
+        // query allocates only its result.
+        thread_local! {
+            static SEARCH: std::cell::RefCell<Option<GridSearch>> = const { std::cell::RefCell::new(None) };
         }
-        Search {
-            path: None,
-            expanded,
-            exhausted: false,
-        }
+        SEARCH.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let (w, h) = (self.config.width, self.config.height);
+            let search = match slot.as_mut() {
+                Some(s) if s.width() == w && s.height() == h => s,
+                _ => slot.insert(GridSearch::new(w, h)),
+            };
+            search.begin(start, goal, Neighbourhood::Four);
+            let progress = search.run(budget, |i| !self.blocked[i]);
+            let path = (progress == Progress::Found).then(|| {
+                let mut cells = vec![];
+                search.path(&mut cells);
+                VecDeque::from(cells)
+            });
+            Search {
+                path,
+                expanded: search.expanded(),
+                exhausted: progress == Progress::Pending,
+            }
+        })
     }
 }

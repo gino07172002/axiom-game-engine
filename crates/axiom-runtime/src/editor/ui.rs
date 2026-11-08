@@ -304,6 +304,7 @@ impl Editor {
                             ("trigger.box", "Box trigger"),
                             ("trigger.sphere", "Sphere trigger"),
                             ("path", "Path"),
+                            ("obstacle", "Obstacle (nav.blocker)"),
                         ] {
                             if ui.button(label).clicked() {
                                 actions.extend(self.create_object(preset));
@@ -1325,6 +1326,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("trigger.zone", "TRIG", Color32::from_rgb(120, 230, 210)),
         ("path.spline", "PATH", Color32::from_rgb(255, 176, 72)),
         ("path.follow", "FOLLOW", Color32::from_rgb(255, 214, 150)),
+        ("nav.agent", "NAV", Color32::from_rgb(110, 200, 255)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1347,6 +1349,7 @@ fn badge_meaning(text: &str) -> &'static str {
         "TRIG" => "trigger.zone (enter/exit events)",
         "PATH" => "path.spline (route for path followers)",
         "FOLLOW" => "path.follow (moves along a path)",
+        "NAV" => "nav.agent (walks to targets around obstacles)",
         _ => "prefab instance",
     }
 }

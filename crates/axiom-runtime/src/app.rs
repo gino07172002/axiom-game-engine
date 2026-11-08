@@ -1130,6 +1130,8 @@ impl App {
         // the first game view of this frame.
         // Trigger zones are outlined too, pink while something is inside.
         let mut zone_lines: Vec<([f32; 2], [f32; 2], bool)> = vec![];
+        // Navigation agents' remaining routes.
+        let mut route_lines: Vec<([f32; 2], [f32; 2])> = vec![];
         let overlay: Vec<([f32; 2], String)> =
             if !editing && self.editor.as_ref().is_some_and(|e| e.overlay) {
                 let screen = self.ctx.screen_rect();
@@ -1146,6 +1148,21 @@ impl App {
                             Some((view.project(a, bounds)?, view.project(b, bounds)?, occupied))
                         })
                         .collect();
+                }
+                if let (Some(nav), Some(view)) =
+                    (self.runtime.system::<crate::nav_agent::NavSystem>(), view)
+                {
+                    for (at, rest) in nav.routes(&self.runtime.state) {
+                        let mut from = at;
+                        for to in rest {
+                            if let (Some(a), Some(b)) =
+                                (view.project(from, bounds), view.project(to, bounds))
+                            {
+                                route_lines.push((a, b));
+                            }
+                            from = to;
+                        }
+                    }
                 }
                 match (self.runtime.system::<crate::fsm::FsmSystem>(), view) {
                     (Some(fsm), Some(view)) => fsm
@@ -1201,6 +1218,12 @@ impl App {
                         painter.line_segment(
                             [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
                             egui::Stroke::new(if *occupied { 2.0_f32 } else { 1.0 }, color),
+                        );
+                    }
+                    for ([ax, ay], [bx, by]) in &route_lines {
+                        painter.line_segment(
+                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(170, 240, 120)),
                         );
                     }
                     for ([x, y], text) in &overlay {

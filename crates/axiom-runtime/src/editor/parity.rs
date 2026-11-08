@@ -272,6 +272,105 @@ fn path_presets_follow_and_point_edits_match_acl() {
 }
 
 #[test]
+fn nav_agents_obstacles_and_targets_match_acl() {
+    // Create obstacle: Object menu / palette and the hierarchy "+ Object" menu.
+    assert_parity(
+        lab(),
+        |e| vec![e.run_command("object.obstacle").unwrap()],
+        "create obstacle",
+    );
+    assert_parity(
+        lab(),
+        |e| vec![e.create_object("obstacle").into_iter().collect()],
+        "create obstacle",
+    );
+    // Empty world: the render capability is added (nav.blocker is core).
+    let blank = World::empty("blank");
+    assert_parity(
+        blank.clone(),
+        |e| vec![e.run_command("object.obstacle").unwrap()],
+        "create obstacle",
+    );
+    // Add Nav Agent on the selection (selection order); nav capability + nav.steer once.
+    let start = headless(
+        &lab(),
+        "create cube id=bob\ncreate cube id=ann\ncreate empty id=home at=4,0,2",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("bob".into()));
+            e.extra.insert("ann".into());
+            vec![e.run_command("object.nav_agent").unwrap()]
+        },
+        "nav entities[id=bob,id=ann] agent",
+    );
+    let agents = headless(&start, "nav entities[id=bob,id=ann] agent");
+    assert_eq!(agents.capabilities.get("nav"), Some(&1));
+    assert!(agents.systems.iter().any(|s| s == "nav.steer"));
+    // Nav Target: Selected Object — the selected agents walk to the one non-agent selected.
+    assert_parity(
+        agents.clone(),
+        |e| {
+            e.select(Some("bob".into()));
+            e.extra.insert("ann".into());
+            e.extra.insert("home".into());
+            vec![e.run_command("nav.target_object").unwrap()]
+        },
+        "nav entities[id=bob,id=ann] target home",
+    );
+    // The scene-view ground pick lands in set_nav_target (driven with egui in viewport tests).
+    assert_parity(
+        agents.clone(),
+        |e| {
+            e.select(Some("ann".into()));
+            vec![e
+                .set_nav_target(Some(axiom_core::navigation::NavTarget::Point([
+                    1.5, 0.0, -2.25,
+                ])))
+                .into_iter()
+                .collect()]
+        },
+        "nav ann target 1.5,0,-2.25",
+    );
+    // Nav Target: Clear.
+    let targeted = headless(&agents, "nav bob target home");
+    assert_parity(
+        targeted.clone(),
+        |e| {
+            e.select(Some("bob".into()));
+            vec![e.run_command("nav.clear_target").unwrap()]
+        },
+        "nav bob target none",
+    );
+    // Inspector form edit of the agent equals the ACL set of the same field.
+    assert_parity(
+        targeted.clone(),
+        |e| {
+            e.select(Some("bob".into()));
+            let entity = e.world.entity("bob").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "nav.agent");
+            let form = draft.form.as_mut().unwrap();
+            form["speed"] = serde_json::json!(2.5);
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "set bob nav.agent/speed 2.5",
+    );
+    // No target object, or two: a problem, not a write. No agent selected: blocked.
+    let mut e = Editor::new(agents.clone(), 1, Some("bob".into()));
+    assert!(e.run_command("nav.target_object").unwrap().is_empty());
+    e.extra.insert("home".into());
+    e.extra.insert("stage/floor".into());
+    assert!(e.run_command("nav.target_object").unwrap().is_empty());
+    let mut e = Editor::new(agents, 1, Some("home".into()));
+    assert!(e.run_command("nav.clear_target").is_err());
+    assert!(e.run_command("nav.target_point").is_err());
+}
+#[test]
 fn remove_component_matches_acl() {
     let start = headless(&lab(), "create trigger box id=gate");
     assert_parity(

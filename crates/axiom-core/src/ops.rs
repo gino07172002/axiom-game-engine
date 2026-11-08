@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 /// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is
 /// shorthand for `create light.point` (and `create trigger box` for `create trigger.box`).
-pub const PRESETS: [&str; 10] = [
+pub const PRESETS: [&str; 11] = [
     "empty",
     "cube",
     "camera",
@@ -24,6 +24,7 @@ pub const PRESETS: [&str; 10] = [
     "trigger.box",
     "trigger.sphere",
     "path",
+    "obstacle",
 ];
 
 /// An edit batch that creates objects, and the created IDs (first = the one to select).
@@ -258,7 +259,9 @@ fn enable_system(world: &World, capability: Option<&str>, system: Option<&str>) 
 /// Trigger presets (`trigger.box|sphere`) add a `trigger.zone` and, when missing, the
 /// `trigger` capability and the `trigger.detect` system; `path` adds an 8 x 6 m closed
 /// rectangle `path.spline` and, when missing, the `path` capability and the `path.move`
-/// system. Every other preset but `empty` adds the `render` capability when the world lacks it.
+/// system; `obstacle` is a 1 m cube with a matching `nav.blocker` (navigation agents, FSM
+/// agents and the action controller walk around it). Every other preset but `empty` adds the
+/// `render` capability when the world lacks it.
 pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<Created> {
     if !PRESETS.contains(&preset) {
         let hint = match preset {
@@ -270,7 +273,7 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
             "unknown_preset",
             "/preset",
             format!(
-                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area, trigger.box|sphere, path){hint}"
+                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area, trigger.box|sphere, path, obstacle){hint}"
             ),
         ));
     }
@@ -278,7 +281,7 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
     let mut entity = Entity::new(&id);
     let mut transform = Transform::default();
     match preset {
-        "cube" => transform.position[1] = 0.5,
+        "cube" | "obstacle" => transform.position[1] = 0.5,
         "camera" => {
             transform.position = [0.0, 3.0, 6.0];
             transform.rotation = rotation_from_degrees([-16.0, 0.0, 0.0]);
@@ -302,13 +305,17 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
         transform.position = p;
     }
     entity.set("core.transform", transform)?;
-    if preset == "cube" {
+    if preset == "cube" || preset == "obstacle" {
         entity.set(
             "render.mesh",
             RenderMesh {
                 parts: vec![MeshPart {
                     transform: Transform::default(),
-                    color: [0.20, 0.65, 0.73],
+                    color: if preset == "obstacle" {
+                        [0.55, 0.52, 0.48]
+                    } else {
+                        [0.20, 0.65, 0.73]
+                    },
                     emission: 0.0,
                     grid: false,
                 }],
@@ -335,6 +342,15 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
     }
     if preset == "path" {
         entity.set("path.spline", crate::path::PathSpline::preset())?;
+    }
+    if preset == "obstacle" {
+        entity.set(
+            "nav.blocker",
+            crate::blocker::NavBlocker {
+                half: [0.5, 0.5],
+                offset: [0.0, 0.0],
+            },
+        )?;
     }
     let mut edits = enable_system(world, capability, system);
     edits.extend(place_entity(entity, place));
@@ -930,6 +946,122 @@ pub fn edit_path_point(world: &World, id: &str, edit: &PointEdit) -> Result<Vec<
         field: "/components/path.spline/points".into(),
         value: json!(spline.points),
     })])
+}
+
+/// Options of `add_nav_agent` (`None` = the `nav.agent` default).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavOptions {
+    pub speed: Option<f32>,
+    pub radius: Option<f32>,
+}
+
+/// The effective `nav.agent` of an entity (prefab-inherited + authored).
+fn nav_agent_of(world: &World, id: &str) -> Result<crate::navigation::NavAgent> {
+    let entity = world
+        .entity(id)
+        .ok_or_else(|| not_found(entity_path(id), format!("entity '{id}' not found")))?;
+    let value = world
+        .resolved_components(entity)
+        .remove("nav.agent")
+        .ok_or_else(|| {
+            Diagnostic::error(
+                "not_a_nav_agent",
+                entity_path(id),
+                format!("entity '{id}' has no nav.agent component"),
+            )
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        Diagnostic::error(
+            "invalid_nav",
+            format!("{}/components/nav.agent", entity_path(id)),
+            format!("{e}"),
+        )
+    })
+}
+
+/// Object ▸ Add Nav Agent: puts a `nav.agent` (defaults plus `options`, no target) on each
+/// entity, replacing an existing one. Adds the `nav` capability and the `nav.steer` system
+/// when missing. Entities that already have another mover fail when the batch commits
+/// (`nav_conflict`).
+pub fn add_nav_agent(world: &World, ids: &[String], options: &NavOptions) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that should become navigation agents",
+        ));
+    }
+    let mut agent = crate::navigation::NavAgent::new();
+    agent.speed = options.speed.unwrap_or(agent.speed);
+    agent.radius = options.radius.unwrap_or(agent.radius);
+    agent.validate().map_err(|e| {
+        Diagnostic::error("invalid_value", "/components/nav.agent", format!("{e:#}"))
+    })?;
+    let mut edits = enable_system(world, Some("nav"), Some("nav.steer"));
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: "nav.agent".into(),
+                value: json!(agent),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
+/// Nav ▸ Set Target (editor: selected object, or a click on the ground; ACL `nav SEL target`):
+/// writes `nav.agent/target` on each agent; `None` clears it. The target entity must exist
+/// and must not be the agent itself; the resulting agent must stay valid (a point target
+/// with `follow_target` on is refused).
+pub fn set_nav_target(
+    world: &World,
+    ids: &[String],
+    target: Option<&crate::navigation::NavTarget>,
+) -> Result<Vec<Edit>> {
+    use crate::navigation::NavTarget;
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the navigation agents to send",
+        ));
+    }
+    if let Some(t) = target {
+        t.validate()
+            .map_err(|e| Diagnostic::error("invalid_value", "/target", format!("{e:#}")))?;
+        if let NavTarget::Entity(goal) = t {
+            require_entity(world, goal)?;
+        }
+    }
+    let mut edits = vec![];
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        let mut agent = nav_agent_of(world, id)?;
+        let at = format!("{}/components/nav.agent/target", entity_path(id));
+        if matches!(target, Some(NavTarget::Entity(goal)) if goal == id) {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                at,
+                format!("'{id}' cannot walk to itself"),
+            ));
+        }
+        agent.target = target.cloned();
+        agent
+            .validate()
+            .map_err(|e| Diagnostic::error("invalid_value", at, format!("{e:#}")))?;
+        edits.push(Edit::Core(CoreEdit::SetField {
+            target: Target::Entity { id: id.clone() },
+            field: "/components/nav.agent/target".into(),
+            value: target.map_or(Value::Null, |t| json!(t)),
+        }));
+    }
+    Ok(edits)
 }
 
 /// Where `move_entity` puts an entity in the authored order (= sibling order).

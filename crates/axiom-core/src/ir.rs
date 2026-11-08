@@ -193,6 +193,7 @@ impl World {
             let trigger = decode::<crate::trigger::TriggerZone>(&c, "trigger.zone")?;
             let path = decode::<crate::path::PathSpline>(&c, "path.spline")?;
             let follow = decode::<crate::path::PathFollow>(&c, "path.follow")?;
+            let nav_agent = decode::<crate::navigation::NavAgent>(&c, "nav.agent")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -203,6 +204,7 @@ impl World {
                     && trigger.is_none()
                     && path.is_none()
                     && follow.is_none()
+                    && nav_agent.is_none()
                     && collider.is_none()
                     && motion.is_none())
                     || transform.is_some(),
@@ -231,6 +233,7 @@ impl World {
                 trigger,
                 path,
                 follow,
+                nav_agent,
                 collider,
                 health,
                 motion,
@@ -314,6 +317,7 @@ impl World {
             .map(|i| !mentioned.contains(&i) || active.contains(&i))
             .collect();
         crate::path::validate_world(self, r, &entities, &ids, &parents)?;
+        crate::navigation::validate_world(self, r, &entities, &ids, &parents)?;
         let schedule = r.schedule(self)?;
         r.validate_world(self)?;
         Ok(CompiledWorld {
@@ -839,6 +843,7 @@ pub struct CompiledEntity {
     pub trigger: Option<crate::trigger::TriggerZone>,
     pub path: Option<crate::path::PathSpline>,
     pub follow: Option<crate::path::PathFollow>,
+    pub nav_agent: Option<crate::navigation::NavAgent>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,
