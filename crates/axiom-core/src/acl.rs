@@ -28,6 +28,10 @@ EDIT (any number, atomic):
   scene create ID [on|off] | scene activate ID on|off | scene delete ID (objects kept)
   scene member SCENE SEL on|off
   camera main ID                  active=true on ID, false on every other camera
+  rename ID LABEL                 display label (\"quoted\" for spaces/CJK); \"\" clears it
+  move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
+  prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
+                                  prefab gets ID's resolved components, ID keeps its core.transform
   Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
@@ -259,6 +263,9 @@ enum Statement {
     SceneDelete(String),
     SceneMember(String, Box<Selection>, bool),
     CameraMain(String),
+    Rename(String, String),
+    Move(String, crate::ops::Order),
+    PrefabCreate(Option<String>, String),
 }
 
 impl Statement {
@@ -448,6 +455,40 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 "use: camera main ID"
             );
             Statement::CameraMain(arg(2)?.clone())
+        }
+        "rename" => {
+            ensure!(
+                tokens.len() == 3,
+                "use: rename ID LABEL (\"\" clears the label)"
+            );
+            let label = match value(arg(2)?) {
+                Value::String(s) => s,
+                _ => arg(2)?.clone(),
+            };
+            Statement::Rename(arg(1)?.clone(), label)
+        }
+        "move" => {
+            let to = match (tokens.get(2).map(String::as_str), tokens.get(3)) {
+                (Some("before"), Some(o)) if tokens.len() == 4 => {
+                    crate::ops::Order::Before(o.clone())
+                }
+                (Some("after"), Some(o)) if tokens.len() == 4 => {
+                    crate::ops::Order::After(o.clone())
+                }
+                (Some("end"), None) => crate::ops::Order::End,
+                _ => bail!("use: move ID before OTHER | move ID after OTHER | move ID end"),
+            };
+            Statement::Move(arg(1)?.clone(), to)
+        }
+        "prefab" => {
+            let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
+            match rest.as_slice() {
+                ["create", "from", entity] => Statement::PrefabCreate(None, (*entity).into()),
+                ["create", id, "from", entity] => {
+                    Statement::PrefabCreate(Some((*id).into()), (*entity).into())
+                }
+                _ => bail!("use: prefab create [PREFAB_ID] from ENTITY"),
+            }
         }
         other => bail!("unknown statement '{other}'"),
     })
@@ -691,6 +732,11 @@ pub fn run(
                     })
                 }),
             Statement::CameraMain(id) => crate::ops::make_main_camera(w, &id),
+            Statement::Rename(id, label) => crate::ops::rename(w, &id, &label),
+            Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
+            Statement::PrefabCreate(id, entity) => {
+                crate::ops::create_prefab(w, id.as_deref(), &entity).map(|c| c.edits)
+            }
             _ => unreachable!(),
         }
         .map_err(wrap)?;
@@ -698,6 +744,12 @@ pub fn run(
             edit.clone().apply(&mut scratch, r).map_err(wrap)?;
         }
         edits.extend(compiled);
+    }
+    if edits.is_empty() {
+        // e.g. `move X end` when X is already last: nothing to commit, not an error.
+        return Ok(
+            json!({"ok":true,"format":"lines","rev":rev,"text":format!("unchanged rev={rev} changes=0")}),
+        );
     }
     ensure!(
         edits.len() <= 256,

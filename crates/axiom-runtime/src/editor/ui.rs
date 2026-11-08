@@ -42,7 +42,8 @@ impl Editor {
         let text_focused = ctx
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-        if !text_focused {
+        // An inline rename owns the keyboard (egui drops focus on Escape before we get here).
+        if !text_focused && self.renaming.is_none() {
             // Every shortcut comes from the command registry (user overrides included).
             let pressed = ctx.input(|i| self.shortcut_commands(i));
             for id in pressed {
@@ -378,15 +379,32 @@ impl Editor {
         // Dropping a dragged row here makes it a root object.
         let (_, root_drop) = ui.dnd_drop_zone::<String, ()>(egui::Frame::NONE, |ui| {
             ui.label(
-                RichText::new("Drop a row here to make it a root")
-                    .small()
-                    .color(MUTED),
+                RichText::new(
+                    "Drop on a row = child · on its top/bottom edge = reorder · here = root",
+                )
+                .small()
+                .color(MUTED),
             );
         });
         let mut reparent = root_drop.map(|id| ((*id).clone(), None));
         let modifiers = ui.input(|i| i.modifiers);
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        // Editor-view flags (own = set on this row; effective = inherited from an ancestor too).
+        let own_hidden = self.view_flags(false).cloned().unwrap_or_default();
+        let own_locked = self.view_flags(true).cloned().unwrap_or_default();
+        let hidden = self.view_flagged(false);
+        let locked = self.view_flagged(true);
+        let mut renaming = self.renaming.take();
+        // Some(None) = cancelled, Some(Some((id, text))) = commit.
+        let mut rename_done: Option<Option<(String, String)>> = None;
         let mut picked = None;
+        let mut secondary = None;
         let mut toggle = None;
+        let mut flag_toggle = None;
+        let mut menu_run: Option<&'static str> = None;
+        let mut reorder = None;
+        let mut rects = std::collections::HashMap::new();
         let mut scroll = ScrollArea::vertical()
             .id_salt("editor_objects")
             .auto_shrink([false, false]);
@@ -395,16 +413,19 @@ impl Editor {
                 .iter()
                 .position(|(id, _, _)| Some(*id) == self.selected.as_deref())
             {
-                let height = 20.0 + ui.spacing().item_spacing.y;
+                let height = ROW_HEIGHT + ui.spacing().item_spacing.y;
                 scroll = scroll.vertical_scroll_offset(
                     (i as f32 * height - ui.available_height() * 0.4).max(0.0),
                 );
             }
         }
-        scroll.show_rows(ui, 20.0, rows.len(), |ui, range| {
+        // Only the visible slice of rows is laid out (virtualized), so thousands of objects
+        // cost about the same per frame as a few dozen.
+        scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
             for (id, depth, branch) in rows[range].iter().copied() {
                 ui.push_id(id, |ui| {
-                    ui.horizontal(|ui| {
+                    let row = ui.horizontal(|ui| {
+                        ui.set_min_height(ROW_HEIGHT);
                         ui.add_space(depth.min(7) as f32 * 9.0);
                         if branch {
                             let text = if self.collapsed.contains(id) {
@@ -418,9 +439,41 @@ impl Editor {
                         } else {
                             ui.add_space(17.0);
                         }
+                        let eye = view_toggle(ui, own_hidden.contains(id), hidden.contains(id), false)
+                            .on_hover_text("Hide / show in the editor view (H). Play and content are unaffected.");
+                        rects.insert(format!("eye:{id}"), eye.rect);
+                        if eye.clicked() {
+                            flag_toggle = Some((id.to_owned(), false));
+                        }
+                        let lock = view_toggle(ui, own_locked.contains(id), locked.contains(id), true)
+                            .on_hover_text("Lock / unlock in the editor view (L): not pickable or draggable in the scene view.");
+                        rects.insert(format!("lock:{id}"), lock.rect);
+                        if lock.clicked() {
+                            flag_toggle = Some((id.to_owned(), true));
+                        }
                         let entity = graph.objects[id];
-                        let icon = if entity.prefab.is_some() { "◇" } else { "·" };
-                        let color = if graph.active(id) {
+                        if let Some(r) = renaming.as_mut().filter(|r| r.id == id) {
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut r.text)
+                                    .id(egui::Id::new(("hierarchy_rename", id)))
+                                    .margin(egui::Margin::symmetric(4, 1))
+                                    .desired_width(ui.available_width() - 4.0),
+                            );
+                            rects.insert(format!("rename:{id}"), edit.rect);
+                            if !r.focused {
+                                edit.request_focus();
+                                r.focused = true;
+                            } else if escape {
+                                rename_done = Some(None);
+                            } else if edit.lost_focus() {
+                                // Enter, Tab or clicking elsewhere commits (as in Unity/Godot).
+                                rename_done = Some(Some((id.to_owned(), r.text.clone())));
+                            }
+                            return;
+                        }
+                        let color = if hidden.contains(id) {
+                            MUTED.gamma_multiply(0.6)
+                        } else if graph.active(id) {
                             Color32::from_rgb(227, 234, 242)
                         } else {
                             MUTED
@@ -444,33 +497,144 @@ impl Editor {
                         };
                         let selected =
                             self.selected.as_deref() == Some(id) || self.extra.contains(id);
-                        let row = ui.dnd_drag_source(
-                            egui::Id::new(("tree_row", id)),
-                            id.to_owned(),
-                            |ui| {
-                                ui.selectable_label(
-                                    selected,
-                                    RichText::new(format!(
-                                        "{icon}  {crumb}{}",
-                                        truncate(label, 26)
+                        let shown = format!("{crumb}{}", truncate(label, 24));
+                        // One widget senses click *and* drag. (egui's `dnd_drag_source` lays a
+                        // drag-only widget over the label, and egui 0.31 then routes clicks to
+                        // nobody, so rows could not be clicked or right-clicked.)
+                        let response = ui
+                            .selectable_label(selected, RichText::new(&shown).color(color))
+                            .interact(egui::Sense::click_and_drag());
+                        if response.drag_started_by(egui::PointerButton::Primary) {
+                            egui::DragAndDrop::set_payload(ui.ctx(), id.to_owned());
+                        }
+                        if response.dragged_by(egui::PointerButton::Primary) {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            if let Some(p) = pointer {
+                                ui.ctx()
+                                    .layer_painter(egui::LayerId::new(
+                                        egui::Order::Tooltip,
+                                        egui::Id::new("hierarchy_drag_ghost"),
                                     ))
-                                    .color(color),
-                                )
-                            },
-                        );
-                        let response = row.inner.on_hover_text(id);
+                                    .text(
+                                        p + egui::vec2(14.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        &shown,
+                                        egui::FontId::proportional(13.0),
+                                        ACCENT,
+                                    );
+                            }
+                        }
+                        let response = response.on_hover_text(id);
+                        rects.insert(format!("label:{id}"), response.rect);
                         if response.clicked() {
                             picked = Some(id.to_owned());
                         }
-                        if let Some(dragged) = row.response.dnd_release_payload::<String>() {
-                            if dragged.as_str() != id {
-                                reparent = Some(((*dragged).clone(), Some(id.to_owned())));
-                            }
+                        if response.secondary_clicked() && !selected {
+                            secondary = Some(id.to_owned());
+                        }
+                        response.context_menu(|ui| {
+                            ui.set_min_width(220.0);
+                            let mut item = |ui: &mut Ui, cmd: &'static str, title: &str| {
+                                let blocked = self.command_blocked(cmd);
+                                let r = ui
+                                    .add_enabled(
+                                        blocked.is_none(),
+                                        egui::Button::new(title)
+                                            .shortcut_text(self.shortcut_text(cmd)),
+                                    )
+                                    .on_disabled_hover_text(blocked.unwrap_or_default());
+                                rects.insert(format!("menu:{cmd}"), r.rect);
+                                if r.clicked() {
+                                    menu_run = Some(cmd);
+                                    ui.close_menu();
+                                }
+                            };
+                            ui.menu_button("Create Child", |ui| {
+                                item(ui, "object.child_empty", "Empty");
+                                item(ui, "object.child_cube", "Cube");
+                                item(ui, "object.child_camera", "Camera");
+                            });
+                            item(ui, "edit.rename", "Rename");
+                            item(ui, "edit.duplicate", "Duplicate");
+                            item(ui, "edit.delete", "Delete");
+                            ui.separator();
+                            item(ui, "edit.copy", "Copy ID");
+                            item(ui, "edit.select_children", "Select Children");
+                            item(ui, "object.create_prefab", "Create Prefab From Selection");
+                            item(ui, "edit.frame", "Focus");
+                            ui.separator();
+                            item(ui, "edit.toggle_hidden", "Hide / Show (Editor View)");
+                            item(ui, "edit.toggle_locked", "Lock / Unlock (Editor View)");
+                        });
+                        for (text, badge) in badges(&self.world, entity) {
+                            ui.label(RichText::new(text).monospace().size(9.0).color(badge))
+                                .on_hover_text(badge_meaning(text));
                         }
                     });
+                    let rect = row.response.rect;
+                    rects.insert(format!("row:{id}"), rect);
+                    let zone = |y: f32| {
+                        let edge = rect.height() * 0.28;
+                        if filtered {
+                            Drop::Into
+                        } else if y < rect.top() + edge {
+                            Drop::Before
+                        } else if y > rect.bottom() - edge {
+                            Drop::After
+                        } else {
+                            Drop::Into
+                        }
+                    };
+                    if let (Some(dragged), Some(p)) =
+                        (row.response.dnd_hover_payload::<String>(), pointer)
+                    {
+                        if dragged.as_str() != id {
+                            let painter = ui.painter();
+                            let line = egui::Stroke::new(2.0_f32, ACCENT);
+                            match zone(p.y) {
+                                Drop::Before => {
+                                    painter.hline(rect.x_range(), rect.top(), line);
+                                }
+                                Drop::After => {
+                                    painter.hline(rect.x_range(), rect.bottom(), line);
+                                }
+                                Drop::Into => {
+                                    painter.rect_stroke(
+                                        rect,
+                                        2.0,
+                                        egui::Stroke::new(1.5_f32, ACCENT),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    if let Some(dragged) = row.response.dnd_release_payload::<String>() {
+                        if dragged.as_str() != id {
+                            match pointer.map_or(Drop::Into, |p| zone(p.y)) {
+                                Drop::Into => {
+                                    reparent = Some(((*dragged).clone(), Some(id.to_owned())))
+                                }
+                                Drop::Before => {
+                                    reorder = Some(((*dragged).clone(), id.to_owned(), false))
+                                }
+                                Drop::After => {
+                                    reorder = Some(((*dragged).clone(), id.to_owned(), true))
+                                }
+                            }
+                        }
+                    }
                 });
             }
         });
+        self.rects = rects;
+        self.renaming = renaming;
+        if let Some(done) = rename_done {
+            self.renaming = None;
+            if let Some((id, text)) = done {
+                actions.extend(self.rename_entity(&id, &text));
+            }
+        }
         if let Some(id) = toggle {
             if !self.collapsed.remove(&id) {
                 self.collapsed.insert(id);
@@ -479,8 +643,20 @@ impl Editor {
         if let Some(id) = picked {
             self.click_select(Some(id), modifiers);
         }
+        if let Some(id) = secondary {
+            self.click_select(Some(id), egui::Modifiers::NONE);
+        }
+        if let Some((id, locked)) = flag_toggle {
+            self.set_view_flag(&[id], locked);
+        }
+        if let Some(cmd) = menu_run {
+            self.run_into(cmd, actions);
+        }
         if let Some((entity, parent)) = reparent.filter(|_| !self.dirty()) {
             actions.extend(self.reparent_drop(&entity, parent.as_deref()));
+        }
+        if let Some((dragged, target, after)) = reorder.filter(|_| !self.dirty()) {
+            actions.extend(self.reorder_drop(&dragged, &target, after));
         }
     }
 
@@ -989,6 +1165,108 @@ impl Editor {
             self.open_material(&id);
         }
     }
+}
+
+/// Hierarchy row height (also the virtualization step of `show_rows`).
+const ROW_HEIGHT: f32 = 20.0;
+
+/// Where a dragged hierarchy row lands relative to the row under the pointer.
+#[derive(Clone, Copy)]
+enum Drop {
+    Before,
+    Into,
+    After,
+}
+
+fn has_component(world: &World, e: &Entity, component: &str) -> bool {
+    e.components.contains_key(component)
+        || e.prefab
+            .as_ref()
+            .and_then(|p| world.prefabs.get(p))
+            .is_some_and(|p| p.components.contains_key(component))
+}
+
+/// Small type badges for a hierarchy row. Plain ASCII: the bundled fonts lack most symbols.
+pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> {
+    let mut out = vec![];
+    for (component, text, color) in [
+        ("render.camera", "CAM", Color32::from_rgb(120, 180, 255)),
+        ("render.mesh", "MESH", Color32::from_rgb(105, 205, 190)),
+        ("render.geometry", "GEO", Color32::from_rgb(140, 210, 120)),
+        ("animation.player", "SKIN", Color32::from_rgb(200, 150, 255)),
+        ("fsm.agent", "FSM", Color32::from_rgb(255, 170, 100)),
+    ] {
+        if has_component(world, e, component) {
+            out.push((text, color));
+        }
+    }
+    if e.prefab.is_some() {
+        out.push(("PFB", Color32::from_rgb(235, 205, 110)));
+    }
+    out
+}
+
+fn badge_meaning(text: &str) -> &'static str {
+    match text {
+        "CAM" => "render.camera",
+        "MESH" => "render.mesh (primitive parts)",
+        "GEO" => "render.geometry (procedural)",
+        "SKIN" => "animation.player (glTF skinned model)",
+        "FSM" => "fsm.agent (state machine behaviour)",
+        _ => "prefab instance",
+    }
+}
+
+/// A 14 px painted toggle (eye or padlock), so it does not depend on symbol glyphs.
+/// `own` = flag set on this row, `inherited` = set on an ancestor.
+fn view_toggle(ui: &mut Ui, own: bool, inherited: bool, lock: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+    let on = own || inherited;
+    let color = if own {
+        WARNING
+    } else if inherited {
+        WARNING.gamma_multiply(0.5)
+    } else if response.hovered() {
+        Color32::from_gray(210)
+    } else {
+        Color32::from_gray(95)
+    };
+    let stroke = egui::Stroke::new(1.2_f32, color);
+    let painter = ui.painter();
+    let c = rect.center();
+    if lock {
+        let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(9.0, 6.0));
+        if on {
+            painter.rect_filled(body, 1.0, color);
+        } else {
+            painter.rect_stroke(body, 1.0, stroke, egui::StrokeKind::Inside);
+        }
+        let (left, right, top) = (c.x - 2.5, c.x + 2.5, c.y - 4.5);
+        painter.line_segment(
+            [egui::pos2(left, body.top()), egui::pos2(left, top)],
+            stroke,
+        );
+        painter.line_segment([egui::pos2(left, top), egui::pos2(right, top)], stroke);
+        // An open padlock has a shorter right leg.
+        let leg = if on { body.top() } else { top + 2.0 };
+        painter.line_segment([egui::pos2(right, top), egui::pos2(right, leg)], stroke);
+    } else {
+        let points = (0..16)
+            .map(|i| {
+                let a = i as f32 / 16.0 * std::f32::consts::TAU;
+                c + egui::vec2(6.0 * a.cos(), 3.4 * a.sin())
+            })
+            .collect();
+        painter.add(egui::Shape::closed_line(points, stroke));
+        painter.circle_filled(c, 1.7, color);
+        if on {
+            painter.line_segment(
+                [c + egui::vec2(-6.0, -5.0), c + egui::vec2(6.0, 5.0)],
+                stroke,
+            );
+        }
+    }
+    response
 }
 
 /// Hierarchy search: whitespace-separated tokens that must all match. `tag:x` (exact tag),

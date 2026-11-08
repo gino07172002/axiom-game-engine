@@ -22,7 +22,12 @@
 | `edit.duplicate`(Ctrl+D)、Inspector 的 Duplicate | `duplicate SEL`(ID 依序為 `SRC/copy`、`/copy/2`;`entities[id=a,id=b]` 照書寫順序處理) | ✅ `duplicate_and_paste_match_acl` |
 | `edit.paste`(Ctrl+V,複製剪貼簿裡的 ID) | `duplicate SEL` | ✅ 同上 |
 | `edit.delete`(Delete)、Inspector 的 Delete | `delete SEL` | ✅ `delete_matches_acl` |
-| Hierarchy 拖曳改 parent(保留世界姿態) | `reparent ID PARENT\|root`(預設 `keep=world`) | ✅ `reparent_drag_matches_acl` |
+| Hierarchy 拖曳到列的中間 = 改 parent(保留世界姿態) | `reparent ID PARENT\|root`(預設 `keep=world`) | ✅ `reparent_drag_matches_acl` |
+| Hierarchy 拖曳到列的上緣 / 下緣 = 同層排序(青色細線指示);來源 parent 不同時先改 parent 再排序,同一筆 revision | `move ID before OTHER\|after OTHER\|end`(必要時前面加 `reparent ID P\|root`) | ✅ `hierarchy_reorder_drop_matches_acl` |
+| `edit.rename`(F2、右鍵 ▸ Rename):列內改名,Enter / 點別處提交、Esc 取消,支援中文 | `rename ID "LABEL"`(前後空白會修掉;`""` 清除 label,列改顯示 ID) | ✅ `rename_matches_acl` |
+| `object.child_empty\|child_cube\|child_camera`(右鍵 ▸ Create Child) | `create empty\|cube\|camera parent=ID [scene=…]` | ✅ `create_child_matches_acl` |
+| `object.create_prefab`(右鍵 ▸ Create Prefab From Selection,作用在主選取) | `prefab create [PID] from ID`(預設 PID = 物件 ID,已存在就用 `ID/2`…) | ✅ `create_prefab_from_selection_matches_acl` |
+| 右鍵 ▸ Duplicate / Delete | `duplicate SEL` / `delete SEL` | ✅ 同 `edit.duplicate` / `edit.delete` |
 | Inspector 的 Parent 欄位 + Keep world 勾選 | `reparent ID PARENT\|root keep=world\|local` | ✅(ops 相同)`acl_verbs_compile_to_the_shared_ops` |
 | Scene ▸ Create scene | `scene create ID [on\|off]` | ✅ `scene_operations_match_acl` |
 | Scene ▸ Activate / Deactivate | `scene activate ID on\|off` | ✅ 同上 |
@@ -46,7 +51,10 @@
 | `tool.select/move/rotate/scale`、`view.space`、`view.snap`、`view.grid` | 工具與偏好設定 |
 | `view.palette`、`help.shortcuts`、`edit.preferences`、`file.exit` | 只是 UI |
 | `window.*`(dock 分頁) | 只是 UI;需要的話用 `editor_view {dock}` 遠端切換 |
-| `edit.select_none`、`edit.frame`、選取、聚焦 | 只是畫面;無頭查詢用 `select` / `inspect` |
+| `edit.select_none`、`edit.frame`(右鍵 ▸ Focus)、選取、聚焦 | 只是畫面;無頭查詢用 `select` / `inspect` |
+| `edit.select_children`(右鍵 ▸ Select Children) | 把所有子孫加進選取;無頭用 `select entities[parent=ID]` 逐層查 |
+| `edit.toggle_hidden`(H)、`edit.toggle_locked`(L)、Hierarchy 每列的眼睛 / 鎖頭 | **只影響編輯器視圖**:隱藏 = 場景視口不畫、不能點選;鎖定 = 照畫,但視口不能點選、gizmo 不能拖(Hierarchy 仍可選)。子孫一起生效。存在 `*.editor-prefs.json` 的 `hidden` / `locked`(以 world ID 為 key),不進 revision,Play 照常顯示。`editor_view` 的觀察結果有 `hidden` / `locked` 欄位 |
+| Hierarchy 型別標籤 `CAM` `MESH` `GEO` `SKIN` `FSM` `PFB` | 只是顯示(`render.camera`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、prefab 實例) |
 | `edit.copy`、`file.copy_context`、`help.copy_discovery` | 用 `inspect ID` / `discover` |
 | `file.verify` | `axiom verify` |
 | `play.start`(Play 預覽,不寫入 revision) | `axiom play` / `axiom scenario FILE` |
@@ -57,4 +65,8 @@
 ## 刻意改變的行為
 
 - 從 Assets 實例化 prefab 時,預設 ID 原本是 `instance`、`instance/2`,現在改成 **prefab ID**(例如 `cargo-crate`、`cargo-crate/2`),跟 `spawn` 的命名一致。
+- Hierarchy 的同層順序改成**物件的編寫順序**(`world.entities` 的順序,也就是 diff 裡的 `/entities/@order`),以前是依 ID 排序。這樣 `move` 才有意義。`scene_tree` 協定回傳的列仍依 ID 排序,沒有改。新協定 edit:`{"kind":"move_entity","id":…,"before":ID|null}`。
+- Create Prefab From Selection:prefab 拿到物件「解析後」的全部元件(prefab 繼承值 + 覆寫),所以原本就是 prefab 實例也不會遺失覆寫。物件本身只保留 `core.transform` 作為覆寫,prefab 裡的 transform 重設為 `{}`,這樣之後 `instantiate` 出來的新實例不會全部疊在同一個位置。這跟「元件全部清空」的原始需求不同,是刻意的。
+- 只會編譯出 0 個 edit 的 ACL 腳本(例如 `move X end` 而 X 已經在最後)現在回 `unchanged rev=R changes=0`,不寫 revision;以前同樣情況會變成「batch must contain 1..256 edits」錯誤。
+- 修正:Hierarchy 的列以前用 egui 的 `dnd_drag_source` 包住標籤,egui 0.31 的 hit test 遇到「只感應拖曳的元件疊在可點擊元件上面」時不把點擊交給任何人,所以點列(含 Ctrl / Shift 多選、右鍵)都沒反應。現在標籤本身同時感應點擊和拖曳。
 - ACL 腳本裡後面的敘述可以看到前面敘述的結果(`create cube; create cube` 會產生 `cube`、`cube/2`;`create empty id=t; delete t` 也合法)。整份腳本仍然只寫一個 revision。

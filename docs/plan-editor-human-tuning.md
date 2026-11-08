@@ -218,6 +218,9 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
   證據:`editor::commands` 單元測試 5 項(註冊表一致性與所有預設快捷鍵可解析、無重複綁定;每個指令要嘛執行、要嘛回報原因;以 egui 鍵盤事件驗證 Ctrl+D、Ctrl+3、改綁 Ctrl+J 後 Ctrl+D 失效、命令面板開啟後輸入 R 不會切換工具;面板輸入「create cube」+ Enter 產生寫入;偏好往返與錯值夾限)。原有「只按 Ctrl 不切換工具」的測試仍通過(修正:比對時 Ctrl 與 Command 視為同一個鍵)。clippy exit 0;workspace 257 passed;`editor-smoke-test.ps1` ok:true。即時驗證:經 bridge 執行 `object.cube`(rev 1→2)、`edit.undo`(→3,以追加修訂還原)、未知指令與「nothing selected」都回報原因、`file.exit` 讓編輯器以 code 0 結束。截圖確認選單列、狀態列、命令面板(整列寬、快捷鍵靠右、不可用項目灰色)。修正一處缺字:Snap 下拉的「▾」改為「…」。
   未做 / 延後:預覽期間編輯器 UI 被遊戲 UI 取代(看不到選單),留給 M4 的 Game 視圖;選單無法用 egui 測試展開截圖,選單項目以 `run_into` 與指令測試覆蓋。
 
+- **M2a Hierarchy 工作流程(2026-11-08)**:右鍵選單(Create Child、Rename、Duplicate、Delete、Copy ID、Select Children、Create Prefab From Selection、Focus、Hide / Lock),F2 列內改名(Enter / 點別處提交,Esc 取消,中文可用),拖到列上 / 下緣同層排序(青色細線)、拖到列中間改 parent,每列畫出的眼睛 / 鎖頭(不依賴字型符號),型別標籤 `CAM MESH GEO SKIN FSM PFB`。會改內容的都走 `axiom_core::ops`(`rename`、`move_entity`、`create_prefab`)與 ACL `rename`、`move`、`prefab create`,新協定 edit `move_entity`;同層順序 = `world.entities` 順序(原本依 ID 排序)。隱藏 / 鎖定只存在編輯器偏好檔(依 world ID),不影響 Play 與內容。新指令 9 個(`edit.rename` F2、`edit.select_children`、`edit.toggle_hidden` H、`edit.toggle_locked` L、`object.child_*`、`object.create_prefab`)。
+  證據:對等測試 5 項、hierarchy egui 互動測試 7 項、視口隱藏 / 鎖定測試 2 項、core ops / ACL 測試。量測(debug build,無頭 egui,含整個編輯器 frame):2000 物件只排版 13 列,frame 中位數 7.3–8.2 ms(3 次)。順手修正:`dnd_drag_source` 讓 Hierarchy 列無法點選(egui 0.31 hit test 把點擊丟給疊在上面的純拖曳元件)。詳見 `docs/editor-parity.zh-TW.md`。
+
 ## 修訂補記
 
 - 2026-11-08:決策 2(egui_dock)選定後,原計畫沒有把「可停靠 / 可重排面板與版面存檔」排進任何里程碑 → **併入 M2**(與 Hierarchy、視口手感一起,版面存在 `*.editor-prefs.json`)。理由:M1 先把所有入口集中到指令註冊表;重排面板需要把現有固定面板改成 TabViewer,和 M2 要改的 Hierarchy、視口剛好是同一批程式碼。

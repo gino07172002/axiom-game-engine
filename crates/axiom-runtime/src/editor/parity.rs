@@ -239,3 +239,105 @@ fn failed_ops_become_problems_not_writes() {
     assert!(editor.instantiate_prefab("missing").is_none());
     assert_eq!(editor.problems[0]["code"], "not_found");
 }
+
+#[test]
+fn rename_matches_acl() {
+    assert_parity(
+        lab(),
+        |e| {
+            vec![e
+                .rename_entity("stage/crate", "  信號 箱 ")
+                .into_iter()
+                .collect()]
+        },
+        "rename stage/crate \"信號 箱\"",
+    );
+    // An empty label clears it (the row then shows the ID).
+    assert_parity(
+        lab(),
+        |e| vec![e.rename_entity("stage/crate", "").into_iter().collect()],
+        "rename stage/crate \"\"",
+    );
+}
+
+#[test]
+fn create_child_matches_acl() {
+    for preset in ["empty", "cube", "camera"] {
+        assert_parity(
+            lab(),
+            |e| {
+                e.select(Some("stage/rack".into()));
+                vec![e.run_command(&format!("object.child_{preset}")).unwrap()]
+            },
+            &format!("create {preset} parent=stage/rack"),
+        );
+    }
+}
+
+#[test]
+fn create_prefab_from_selection_matches_acl() {
+    // A plain entity, and a prefab instance (its resolved components go into the new prefab).
+    for id in ["stage/beacon", "stage/crate"] {
+        assert_parity(
+            lab(),
+            |e| {
+                e.select(Some(id.into()));
+                vec![e.run_command("object.create_prefab").unwrap()]
+            },
+            &format!("prefab create from {id}"),
+        );
+    }
+}
+
+#[test]
+fn hierarchy_reorder_drop_matches_acl() {
+    assert_parity(
+        lab(),
+        |e| {
+            vec![e
+                .reorder_drop("stage/camera", "stage/floor", false)
+                .into_iter()
+                .collect()]
+        },
+        "move stage/camera before stage/floor",
+    );
+    assert_parity(
+        lab(),
+        |e| {
+            vec![e
+                .reorder_drop("stage/floor", "stage/beacon", true)
+                .into_iter()
+                .collect()]
+        },
+        "move stage/floor after stage/beacon",
+    );
+    // Dropping beside a row with another parent reparents (keeping the world pose) first.
+    assert_parity(
+        lab(),
+        |e| {
+            vec![e
+                .reorder_drop("stage/crate", "stage/rack/cargo", false)
+                .into_iter()
+                .collect()]
+        },
+        "reparent stage/crate stage/rack\nmove stage/crate before stage/rack/cargo",
+    );
+}
+
+#[test]
+fn view_only_hierarchy_commands_never_write() {
+    let mut editor = Editor::new(lab(), 1, Some("stage/rack".into()));
+    for cmd in [
+        "edit.toggle_hidden",
+        "edit.toggle_locked",
+        "edit.select_children",
+        "edit.rename",
+    ] {
+        assert!(editor.run_command(cmd).unwrap().is_empty(), "{cmd}");
+    }
+    assert_eq!(editor.world, lab());
+    assert!(editor.extra.contains("stage/rack/cargo"), "select children");
+    let hidden = editor.view_flagged(false);
+    assert!(hidden.contains("stage/rack") && hidden.contains("stage/rack/cargo"));
+    assert!(editor.prefs.locked["editor-lab"].contains("stage/rack"));
+}

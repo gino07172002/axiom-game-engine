@@ -26,8 +26,9 @@ impl<'a> Hierarchy<'a> {
             .filter(|r| r.kind == "parent")
             .map(|r| (r.source.as_str(), r.target.as_str()))
             .collect();
+        // Siblings keep the authored entity order (what `move_entity` edits).
         let mut children: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        for &id in objects.keys() {
+        for id in world.entities.iter().map(|e| e.id.as_str()) {
             children
                 .entry(parents.get(id).copied())
                 .or_default()
@@ -352,6 +353,35 @@ pub(crate) fn duplicate(world: &mut World, source: &str, id: String) -> Result<(
             scene.entities.push(id.clone());
         }
     }
+    Ok(())
+}
+
+pub(crate) fn move_entity(world: &mut World, id: &str, before: Option<&str>) -> Result<()> {
+    let path = format!("/entities/@{}", escape(id));
+    let from = world
+        .entities
+        .iter()
+        .position(|e| e.id == id)
+        .ok_or_else(|| Diagnostic::error("not_found", &path, "entity ID not found"))?;
+    if before == Some(id) {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            &path,
+            "an entity cannot be moved before itself",
+        ));
+    }
+    if let Some(other) = before.filter(|o| world.entity(o).is_none()) {
+        return Err(Diagnostic::error(
+            "not_found",
+            format!("/entities/@{}", escape(other)),
+            "entity ID not found",
+        ));
+    }
+    let entity = world.entities.remove(from);
+    let to = before
+        .and_then(|other| world.entities.iter().position(|e| e.id == other))
+        .unwrap_or(world.entities.len());
+    world.entities.insert(to, entity);
     Ok(())
 }
 

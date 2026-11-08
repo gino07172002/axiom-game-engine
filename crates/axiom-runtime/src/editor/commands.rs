@@ -4,7 +4,7 @@
 use super::{Action, Dock, Editor, Tool};
 use egui::{Key, RichText};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct Command {
     pub id: &'static str,
@@ -43,7 +43,21 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("edit.duplicate", "Duplicate", "Edit", "Ctrl+D"),
     c("edit.delete", "Delete", "Edit", "Delete"),
     c("edit.select_none", "Select None", "Edit", "Escape"),
+    c("edit.rename", "Rename", "Edit", "F2"),
+    c("edit.select_children", "Select Children", "Edit", ""),
     c("edit.frame", "Frame Selection", "Edit", "F"),
+    c(
+        "edit.toggle_hidden",
+        "Hide / Show in Editor View",
+        "Edit",
+        "H",
+    ),
+    c(
+        "edit.toggle_locked",
+        "Lock / Unlock in Editor View",
+        "Edit",
+        "L",
+    ),
     c("edit.preferences", "Preferences…", "Edit", "Ctrl+Comma"),
     c("tool.select", "Select Tool", "View", "Q"),
     c("tool.move", "Move Tool", "View", "W"),
@@ -56,6 +70,15 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.empty", "Create Empty", "Object", "Ctrl+Shift+N"),
     c("object.cube", "Create Cube", "Object", ""),
     c("object.camera", "Create Camera", "Object", ""),
+    c("object.child_empty", "Create Child Empty", "Object", ""),
+    c("object.child_cube", "Create Child Cube", "Object", ""),
+    c("object.child_camera", "Create Child Camera", "Object", ""),
+    c(
+        "object.create_prefab",
+        "Create Prefab From Selection",
+        "Object",
+        "",
+    ),
     c("play.start", "Play", "Play", "F5"),
     c("window.changes", "Changes", "Window", "Ctrl+1"),
     c("window.proposals", "Proposals", "Window", "Ctrl+2"),
@@ -153,6 +176,10 @@ pub(crate) struct Prefs {
     pub dock: String,
     /// Command ID -> replacement shortcut(s) (`|`-separated; empty string unbinds).
     pub shortcuts: BTreeMap<String, String>,
+    /// Editor-view only, per world ID: objects not drawn or picked in the scene view.
+    pub hidden: BTreeMap<String, BTreeSet<String>>,
+    /// Editor-view only, per world ID: objects drawn but not pickable or draggable there.
+    pub locked: BTreeMap<String, BTreeSet<String>>,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -165,6 +192,8 @@ impl Default for Prefs {
             local_space: false,
             dock: "changes".into(),
             shortcuts: BTreeMap::new(),
+            hidden: BTreeMap::new(),
+            locked: BTreeMap::new(),
         }
     }
 }
@@ -182,6 +211,12 @@ impl Prefs {
         self.snap_scale = clamp(self.snap_scale, 0.001, 10.0, 0.1);
         self.shortcuts
             .retain(|id, keys| command(id).is_some() && keys.len() <= 64);
+        for sets in [&mut self.hidden, &mut self.locked] {
+            sets.retain(|world, ids| world.len() <= 128 && !ids.is_empty() && ids.len() <= 4096);
+            while sets.len() > 64 {
+                sets.pop_first();
+            }
+        }
         self
     }
     pub fn load(path: &std::path::Path) -> Self {
@@ -236,20 +271,45 @@ impl Editor {
             "edit.undo" if self.undo.is_empty() => Some("nothing to undo"),
             "edit.redo" if self.redo.is_empty() => Some("nothing to redo"),
             "edit.paste" if self.clipboard.is_empty() => Some("nothing copied"),
-            "edit.duplicate" | "edit.delete" | "edit.copy" | "edit.frame" | "file.copy_context"
+            "edit.duplicate"
+            | "edit.delete"
+            | "edit.copy"
+            | "edit.frame"
+            | "file.copy_context"
+            | "edit.rename"
+            | "edit.select_children"
+            | "edit.toggle_hidden"
+            | "edit.toggle_locked"
+            | "object.child_empty"
+            | "object.child_cube"
+            | "object.child_camera"
+            | "object.create_prefab"
                 if nothing =>
             {
                 Some("nothing selected")
             }
             "play.start" if self.previewing => Some("already playing"),
-            "edit.undo" | "edit.redo" | "edit.paste" | "edit.duplicate" | "edit.delete"
-            | "edit.select_none" | "object.empty" | "object.cube" | "object.camera"
+            "edit.undo"
+            | "edit.redo"
+            | "edit.paste"
+            | "edit.duplicate"
+            | "edit.delete"
+            | "edit.select_none"
+            | "object.empty"
+            | "object.cube"
+            | "object.camera"
             | "play.start"
+            | "edit.rename"
+            | "object.child_empty"
+            | "object.child_cube"
+            | "object.child_camera"
+            | "object.create_prefab"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")
             }
             "tool.select" | "tool.move" | "tool.rotate" | "tool.scale" | "view.space"
+            | "edit.toggle_hidden" | "edit.toggle_locked"
                 if self.drag.is_some() =>
             {
                 Some("finish the current drag first")
@@ -292,6 +352,14 @@ impl Editor {
                 self.select(None);
             }
             "edit.frame" => self.frame_selection = true,
+            "edit.rename" => self.begin_rename(),
+            "edit.select_children" => self.select_children(),
+            "edit.toggle_hidden" => self.toggle_view_flag(false),
+            "edit.toggle_locked" => self.toggle_view_flag(true),
+            "object.child_empty" => actions.extend(self.create_child("empty")),
+            "object.child_cube" => actions.extend(self.create_child("cube")),
+            "object.child_camera" => actions.extend(self.create_child("camera")),
+            "object.create_prefab" => actions.extend(self.create_prefab_from_selection()),
             "edit.preferences" => self.show_prefs = true,
             "tool.select" => self.tool = Tool::Select,
             "tool.move" => self.tool = Tool::Move,
@@ -626,6 +694,11 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",
                 "edit.delete": "delete SEL",
+                "edit.rename": "rename ID \"LABEL\"",
+                "object.child_cube": "create cube parent=ID (also empty, camera)",
+                "object.create_prefab": "prefab create [PID] from ID",
+                "hierarchy.reorder": "move ID before OTHER|after OTHER|end",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",

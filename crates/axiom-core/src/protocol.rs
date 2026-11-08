@@ -189,6 +189,13 @@ pub enum CoreEdit {
     DeleteEntity {
         id: String,
     },
+    /// Moves an entity within the authored entity order (which is also the sibling order in
+    /// the scene tree): directly before `before`, or to the end when `before` is null.
+    MoveEntity {
+        id: String,
+        #[serde(default)]
+        before: Option<String>,
+    },
     SetSceneMembership {
         scene: String,
         entity: String,
@@ -291,6 +298,9 @@ impl Edit {
                 crate::scene_edit::duplicate(w, &source, id)?
             }
             Self::Core(CoreEdit::DeleteEntity { id }) => crate::scene_edit::delete(w, &id)?,
+            Self::Core(CoreEdit::MoveEntity { id, before }) => {
+                crate::scene_edit::move_entity(w, &id, before.as_deref())?
+            }
             Self::Core(CoreEdit::SetSceneMembership {
                 scene,
                 entity,
@@ -450,6 +460,7 @@ impl Edit {
                         "reparent",
                         "duplicate_entity",
                         "delete_entity",
+                        "move_entity",
                         "set_scene_membership",
                         "set_component",
                         "remove_component",

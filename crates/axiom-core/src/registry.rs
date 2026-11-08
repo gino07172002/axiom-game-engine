@@ -192,9 +192,10 @@ impl Registry {
                 {"kind":"reparent","entity":"object-id","parent":null,"keep_world":true},
                 {"kind":"duplicate_entity","source":"object-id","id":"new-id"},
                 {"kind":"delete_entity","id":"object-id"},
+                {"kind":"move_entity","id":"object-id","before":"sibling-id, or null for the end"},
                 {"kind":"set_scene_membership","scene":"scene-id","entity":"object-id","member":true}
             ],
-            "rules":["label is mutable; ID is stable","duplicate copies one entity, its parent and scene memberships","delete removes incident relations and memberships; children become roots with local transforms","keep_world can reject shear or out-of-range local TRS"],
+            "rules":["label is mutable; ID is stable","sibling order is the authored entity order; move_entity reorders it","duplicate copies one entity, its parent and scene memberships","delete removes incident relations and memberships; children become roots with local transforms","keep_world can reject shear or out-of-range local TRS"],
             "write":"Use preview or apply with expected_rev; use execute with a request ID for durable retries",
             "observe":{"op":"observe_delta","fields":["/editor","/activation"]},
             "view":{"op":"editor_view","select":["object-id"],"focus":true,"dock":"changes|proposals|history|problems|assets|agent","capture":"name -> artifacts/captures/<name>.png on the next frame; refused while a human draft is dirty"},
@@ -446,7 +447,7 @@ impl Registry {
                     .collect(),
             )),
             Some("edits") => Ok(
-                json!({"kinds":["set_field","put_object","remove_object","set","put_entity","remove_entity","reparent","duplicate_entity","delete_entity","set_scene_membership","set_component","remove_component","put_prefab","set_resource","remove_resource","define_component","define_resource","put_relation","remove_relation","put_scene","set_systems","replace_world"],"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
+                json!({"kinds":["set_field","put_object","remove_object","set","put_entity","remove_entity","reparent","duplicate_entity","delete_entity","move_entity","set_scene_membership","set_component","remove_component","put_prefab","set_resource","remove_resource","define_component","define_resource","put_relation","remove_relation","put_scene","set_systems","replace_world"],"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
             ),
             Some(name) => self
                 .topics

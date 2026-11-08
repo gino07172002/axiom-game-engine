@@ -408,6 +408,145 @@ pub fn make_main_camera(world: &World, id: &str) -> Result<Vec<Edit>> {
     Ok(edits)
 }
 
+/// Sets an entity's display label. Surrounding whitespace is trimmed; an empty label clears
+/// it (the hierarchy then shows the ID). Labels are 1..128 bytes without control characters.
+pub fn rename(world: &World, id: &str, label: &str) -> Result<Vec<Edit>> {
+    require_entity(world, id)?;
+    let label = label.trim();
+    if label.len() > 128 || label.chars().any(char::is_control) {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            format!("{}/label", entity_path(id)),
+            "label must be at most 128 bytes of display text",
+        ));
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetField {
+        target: Target::Entity { id: id.to_owned() },
+        field: "/label".into(),
+        value: if label.is_empty() {
+            Value::Null
+        } else {
+            json!(label)
+        },
+    })])
+}
+
+/// Where `move_entity` puts an entity in the authored order (= sibling order).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Order {
+    Before(String),
+    After(String),
+    End,
+}
+
+/// Reorders an entity among the authored entities, which is also its position among its
+/// siblings in the hierarchy. `After(x)` compiles to "before the entity that follows x".
+/// Moving to where it already is yields an empty batch.
+pub fn move_entity(world: &World, id: &str, to: &Order) -> Result<Vec<Edit>> {
+    require_entity(world, id)?;
+    let other = match to {
+        Order::Before(o) | Order::After(o) => Some(o.as_str()),
+        Order::End => None,
+    };
+    if let Some(other) = other {
+        require_entity(world, other)?;
+        if other == id {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                entity_path(id),
+                "an entity cannot be moved relative to itself",
+            ));
+        }
+    }
+    let rest: Vec<&str> = world
+        .entities
+        .iter()
+        .map(|e| e.id.as_str())
+        .filter(|e| *e != id)
+        .collect();
+    let before = match to {
+        Order::Before(o) => Some(o.clone()),
+        Order::After(o) => {
+            let i = rest.iter().position(|e| e == o).unwrap();
+            rest.get(i + 1).map(|e| (*e).to_owned())
+        }
+        Order::End => None,
+    };
+    let current = world.entities.iter().position(|e| e.id == id).unwrap();
+    let next = world.entities.get(current + 1).map(|e| e.id.as_str());
+    if next == before.as_deref() {
+        return Ok(vec![]);
+    }
+    Ok(vec![Edit::Core(CoreEdit::MoveEntity {
+        id: id.to_owned(),
+        before,
+    })])
+}
+
+/// Default prefab ID for "Create Prefab From Selection": the entity ID, then `ID/2`, ...
+pub fn prefab_id_for(world: &World, entity: &str) -> String {
+    let base: String = entity.chars().take(120).collect();
+    if !world.prefabs.contains_key(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}/{n}"))
+        .find(|id| !world.prefabs.contains_key(id))
+        .unwrap()
+}
+
+/// Turns an entity into a prefab instance. The new prefab receives the entity's resolved
+/// components (prefab-inherited values merged with its overrides, so an existing instance
+/// loses nothing); the entity then points at the new prefab and keeps only its pose
+/// (`core.transform`) as an override, with the prefab's own transform left at the default, so
+/// further instances do not all appear at this spot. Label, tags, parent and scenes stay.
+/// With `id = None` the prefab ID is [`prefab_id_for`].
+pub fn create_prefab(world: &World, id: Option<&str>, entity: &str) -> Result<Created> {
+    let source = world
+        .entity(entity)
+        .ok_or_else(|| not_found(entity_path(entity), format!("entity '{entity}' not found")))?;
+    let id = match id {
+        Some(id) => id.to_owned(),
+        None => prefab_id_for(world, entity),
+    };
+    let path = format!("/prefabs/{}", escape(&id));
+    check_new_id(path.clone(), &id)?;
+    if world.prefabs.contains_key(&id) {
+        return Err(Diagnostic::error(
+            "id_taken",
+            path,
+            format!("prefab '{id}' already exists"),
+        ));
+    }
+    let mut components = world.resolved_components(source);
+    if components.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_entity",
+            entity_path(entity),
+            format!("entity '{entity}' has no components to put in a prefab"),
+        ));
+    }
+    let mut instance = source.clone();
+    instance.prefab = Some(id.clone());
+    instance.components.clear();
+    if let Some(transform) = components.get_mut("core.transform") {
+        instance.components.insert(
+            "core.transform".into(),
+            std::mem::replace(transform, json!({})),
+        );
+    }
+    Ok(Created {
+        edits: vec![
+            Edit::Core(CoreEdit::PutPrefab {
+                id: id.clone(),
+                prefab: Prefab { components },
+            }),
+            Edit::Core(CoreEdit::PutEntity { entity: instance }),
+        ],
+        ids: vec![id],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +605,98 @@ mod tests {
         assert_eq!(
             code(instantiate_prefab(&w, "nope", &Placement::default()).unwrap_err()),
             "not_found"
+        );
+        assert_eq!(code(rename(&w, "x", "A").unwrap_err()), "not_found");
+        assert_eq!(
+            code(rename(&w, "a", &"x".repeat(129)).unwrap_err()),
+            "invalid_value"
+        );
+        assert_eq!(
+            code(move_entity(&w, "a", &Order::Before("a".into())).unwrap_err()),
+            "invalid_value"
+        );
+        assert_eq!(
+            code(move_entity(&w, "a", &Order::After("x".into())).unwrap_err()),
+            "not_found"
+        );
+        assert_eq!(
+            code(create_prefab(&w, None, "a").unwrap_err()),
+            "empty_entity"
+        );
+    }
+
+    fn apply(mut w: World, edits: Vec<Edit>) -> World {
+        let r = Registry::core();
+        for e in edits {
+            e.apply(&mut w, &r).unwrap();
+        }
+        w
+    }
+
+    fn order(w: &World) -> Vec<&str> {
+        w.entities.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn rename_trims_and_empty_clears() {
+        let w = world();
+        let w = apply(w.clone(), rename(&w, "a", "  路燈 A ").unwrap());
+        assert_eq!(w.entity("a").unwrap().label.as_deref(), Some("路燈 A"));
+        let w = apply(w.clone(), rename(&w, "a", " ").unwrap());
+        assert_eq!(w.entity("a").unwrap().label, None);
+    }
+
+    #[test]
+    fn move_entity_reorders_before_after_and_end() {
+        let mut w = world();
+        for id in ["b", "c", "d"] {
+            w.entities.push(Entity::new(id));
+        }
+        let step =
+            |w: &World, id: &str, to: Order| apply(w.clone(), move_entity(w, id, &to).unwrap());
+        let w = step(&w, "d", Order::Before("a".into()));
+        assert_eq!(order(&w), ["d", "a", "b", "c"]);
+        let w = step(&w, "d", Order::After("b".into()));
+        assert_eq!(order(&w), ["a", "b", "d", "c"]);
+        let w = step(&w, "a", Order::End);
+        assert_eq!(order(&w), ["b", "d", "c", "a"]);
+        let w = step(&w, "c", Order::After("a".into()));
+        assert_eq!(order(&w), ["b", "d", "a", "c"]);
+        // Already in place: no edit at all.
+        assert!(move_entity(&w, "d", &Order::After("b".into()))
+            .unwrap()
+            .is_empty());
+        assert!(move_entity(&w, "c", &Order::End).unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_prefab_keeps_resolved_components_and_pose() {
+        let mut w = world();
+        let mut base = Prefab::default();
+        base.components
+            .insert("render.mesh".into(), json!({"parts":[{"color":[1,0,0]}]}));
+        base.components
+            .insert("core.transform".into(), json!({"scale":[2,2,2]}));
+        w.prefabs.insert("a".into(), base);
+        let e = w.entity_mut("a").unwrap();
+        e.prefab = Some("a".into());
+        e.label = Some("Lamp".into());
+        e.components
+            .insert("core.transform".into(), json!({"position":[1,2,3]}));
+        e.components.insert("x.y".into(), json!({"v":1}));
+        let before = w.resolved_components(w.entity("a").unwrap());
+        let created = create_prefab(&w, None, "a").unwrap();
+        assert_eq!(created.ids, ["a/2"], "prefab 'a' exists, so the ID gets /2");
+        let after = apply(w.clone(), created.edits);
+        let e = after.entity("a").unwrap();
+        assert_eq!(e.prefab.as_deref(), Some("a/2"));
+        assert_eq!(e.label.as_deref(), Some("Lamp"));
+        assert_eq!(e.components.keys().collect::<Vec<_>>(), ["core.transform"]);
+        assert_eq!(after.prefabs["a/2"].components["core.transform"], json!({}));
+        assert_eq!(after.resolved_components(e), before);
+        assert_eq!(
+            code(create_prefab(&after, Some("a/2"), "a").unwrap_err()),
+            "id_taken"
         );
     }
 }

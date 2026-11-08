@@ -88,6 +88,34 @@ fn acl_verbs_compile_to_the_shared_ops() {
             "scene member staging stage/crate on",
             ops::set_scene_membership(&start, "staging", "stage/crate", true).unwrap(),
         ),
+        (
+            "rename stage/crate \"信號 Crate\"",
+            ops::rename(&start, "stage/crate", "信號 Crate").unwrap(),
+        ),
+        (
+            "move stage/camera before stage/floor",
+            ops::move_entity(
+                &start,
+                "stage/camera",
+                &ops::Order::Before("stage/floor".into()),
+            )
+            .unwrap(),
+        ),
+        (
+            "move stage/floor after stage/beacon",
+            ops::move_entity(
+                &start,
+                "stage/floor",
+                &ops::Order::After("stage/beacon".into()),
+            )
+            .unwrap(),
+        ),
+        (
+            "prefab create beacon-kit from stage/beacon",
+            ops::create_prefab(&start, Some("beacon-kit"), "stage/beacon")
+                .unwrap()
+                .edits,
+        ),
     ];
     for (script, edits) in cases {
         let mut s = store();
@@ -222,8 +250,57 @@ fn bad_input_reports_structured_errors() {
         ("create cube colour=red", "acl_syntax"),
         ("scene rename a b", "acl_syntax"),
         ("camera follow a", "acl_syntax"),
+        ("rename nope x", "not_found"),
+        ("rename stage/crate", "acl_syntax"),
+        ("move stage/crate before stage/crate", "invalid_value"),
+        ("move stage/crate sideways", "acl_syntax"),
+        ("prefab create cargo-crate from stage/crate", "id_taken"),
+        ("prefab create from nope", "not_found"),
+        ("prefab make x", "acl_syntax"),
     ] {
         assert_eq!(code(acl(&mut s, script).unwrap_err()), expected, "{script}");
     }
     assert_eq!(s.current().unwrap().0, 1, "failed scripts never commit");
+}
+
+#[test]
+fn rename_move_and_prefab_create_round_trip() {
+    let mut s = store();
+    let out = acl(
+        &mut s,
+        "rename stage/crate \"信號 箱\"\nmove stage/crate end\nprefab create from stage/beacon",
+    )
+    .unwrap();
+    assert!(out.starts_with("ok rev=2"), "{out}");
+    let w = s.current().unwrap().1;
+    assert_eq!(
+        w.entity("stage/crate").unwrap().label.as_deref(),
+        Some("信號 箱")
+    );
+    assert_eq!(w.entities.last().unwrap().id, "stage/crate");
+    let beacon = w.entity("stage/beacon").unwrap();
+    assert_eq!(beacon.prefab.as_deref(), Some("stage/beacon"));
+    assert!(w.prefabs["stage/beacon"]
+        .components
+        .contains_key("render.mesh"));
+    // The resolved look is unchanged, so the world still compiles to the same meshes.
+    assert_eq!(
+        w.resolved_components(beacon),
+        lab().resolved_components(lab().entity("stage/beacon").unwrap())
+    );
+    // An empty label clears; a second prefab from the same entity gets /2.
+    acl(
+        &mut s,
+        "rename stage/crate \"\"\nprefab create from stage/beacon",
+    )
+    .unwrap();
+    let w = s.current().unwrap().1;
+    assert_eq!(w.entity("stage/crate").unwrap().label, None);
+    assert_eq!(
+        w.entity("stage/beacon").unwrap().prefab.as_deref(),
+        Some("stage/beacon/2")
+    );
+    // Moving to where it already is commits nothing new.
+    let out = acl(&mut s, "move stage/crate end").unwrap();
+    assert!(out.starts_with("unchanged"), "{out}");
 }

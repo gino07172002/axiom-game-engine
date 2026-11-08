@@ -259,11 +259,13 @@ pub(super) fn focus_bounds(matrix: Mat4, mesh: Option<&axiom_core::RenderMesh>) 
     }
 }
 
+/// Nearest object under `p`. `skip` excludes editor-view hidden or locked objects.
 fn pick(
     runtime: &WorldRuntime,
     matrices: &[Mat4],
     view: &ProjectionView,
     p: Pos2,
+    skip: &dyn Fn(&str) -> bool,
 ) -> Option<String> {
     let (origin, direction) = view.ray(p);
     let state = &runtime.state.compiled;
@@ -275,7 +277,7 @@ fn pick(
         .zip(&runtime.authored_visibility)
         .enumerate()
     {
-        if !visible {
+        if !visible || skip(&entity.id) {
             continue;
         }
         let matrix = matrices[i];
@@ -300,7 +302,7 @@ fn pick(
     // Imported/skinned meshes (glTF, procedural geometry) have no render.mesh parts; test the
     // ray against the world-space bounds of their current pose. Only runs on click.
     for mesh in runtime.render_frame().meshes {
-        let Some(&slot) = state.indices.get(&mesh.id) else {
+        let Some(&slot) = state.indices.get(&mesh.id).filter(|_| !skip(&mesh.id)) else {
             continue;
         };
         if !runtime
@@ -470,7 +472,20 @@ impl Editor {
         let ready = self.rev == runtime.rev;
         let matrices = runtime.state.matrices();
         let state = &runtime.state.compiled;
-        let visible = |i| runtime.authored_visibility.get(i).copied().unwrap_or(false);
+        // Editor-view flags: hidden objects are neither drawn nor picked; locked ones are drawn
+        // but cannot be picked or dragged here (the hierarchy still selects them).
+        let hidden = self.view_flagged(false);
+        let locked = self.view_flagged(true);
+        let hidden_slots: std::collections::HashSet<usize> = hidden
+            .iter()
+            .filter_map(|id| state.indices.get(id).copied())
+            .collect();
+        let visible = |i| {
+            runtime.authored_visibility.get(i).copied().unwrap_or(false)
+                && !hidden_slots.contains(&i)
+        };
+        let skip = |id: &str| hidden.contains(id) || locked.contains(id);
+        let selected_locked = self.selected.as_ref().is_some_and(|id| locked.contains(id));
         let selected = self
             .selected
             .as_ref()
@@ -593,6 +608,7 @@ impl Editor {
                 self.tool != Tool::Select
                     && ready
                     && selected.is_some_and(visible)
+                    && !selected_locked
                     && self.draft.as_ref().is_some_and(|d| d.transform.is_some())
             })
             .and_then(|m| Handles::new(&view, &self.orbit, m, self.tool, self.prefs.local_space));
@@ -660,7 +676,7 @@ impl Editor {
             if let Some(pos) = response.interact_pointer_pos() {
                 if hovered_axis.is_none() {
                     let modifiers = ui.input(|i| i.modifiers);
-                    self.click_select(pick(runtime, &matrices, &view, pos), modifiers);
+                    self.click_select(pick(runtime, &matrices, &view, pos, &skip), modifiers);
                 }
             }
         }
@@ -792,7 +808,14 @@ mod tests {
             .project(model.transform_point3(Vec3::ZERO))
             .unwrap();
         assert_eq!(
-            pick(&runtime, &runtime.state.matrices(), &projection, point).as_deref(),
+            pick(
+                &runtime,
+                &runtime.state.matrices(),
+                &projection,
+                point,
+                &|_| false
+            )
+            .as_deref(),
             Some("stage/crate")
         );
         frame(
@@ -1126,11 +1149,18 @@ mod tests {
             rect,
         };
         let at = view.project(center).unwrap();
-        let picked = pick(&runtime, &runtime.state.matrices(), &view, at);
+        let picked = pick(&runtime, &runtime.state.matrices(), &view, at, &|_| false);
         assert_eq!(picked.as_deref(), Some(target.id.as_str()));
         // A click in the screen corner, far outside the character's bounds, must not pick it.
         assert_ne!(
-            pick(&runtime, &runtime.state.matrices(), &view, pos2(5.0, 5.0)).as_deref(),
+            pick(
+                &runtime,
+                &runtime.state.matrices(),
+                &view,
+                pos2(5.0, 5.0),
+                &|_| false
+            )
+            .as_deref(),
             Some(target.id.as_str())
         );
     }
@@ -1478,5 +1508,84 @@ mod tests {
         assert!((extent - 2.0).abs() < 1e-4);
         let (pivot, unit) = focus_bounds(Mat4::IDENTITY, None);
         assert_eq!((pivot, unit), (Vec3::ZERO, 1.0));
+    }
+
+    /// Screen point of the crate's pivot in the editor's current view.
+    fn crate_point(editor: &Editor, runtime: &WorldRuntime) -> Pos2 {
+        let model = runtime.state.matrices()[runtime.state.compiled.indices["stage/crate"]];
+        ProjectionView {
+            matrix: editor.orbit.matrix(editor.viewport),
+            rect: editor.viewport,
+        }
+        .project(model.transform_point3(Vec3::ZERO))
+        .unwrap()
+    }
+
+    fn click_at(ctx: &egui::Context, editor: &mut Editor, runtime: &WorldRuntime, at: Pos2) {
+        frame(
+            ctx,
+            editor,
+            runtime,
+            vec![egui::Event::PointerMoved(at), primary(at, true)],
+        );
+        frame(ctx, editor, runtime, vec![primary(at, false)]);
+    }
+
+    #[test]
+    fn hidden_objects_are_not_drawn_or_pickable_in_the_editor_view_only() {
+        let (world, mut runtime) = fixture();
+        let ctx = egui::Context::default();
+        // Baseline: a click on the crate picks it.
+        let mut editor = Editor::new(world.clone(), 1, None);
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let at = crate_point(&editor, &runtime);
+        click_at(&ctx, &mut editor, &runtime, at);
+        assert_eq!(editor.selected.as_deref(), Some("stage/crate"));
+        let drawn = editor
+            .render_frame(&mut runtime, ctx.screen_rect())
+            .instances
+            .len();
+        // Hide it: the same click no longer picks it, and the editor view draws fewer instances.
+        editor.select(None);
+        editor.set_view_flag(&["stage/crate".into()], false);
+        click_at(&ctx, &mut editor, &runtime, at);
+        assert_ne!(editor.selected.as_deref(), Some("stage/crate"));
+        let hidden = editor
+            .render_frame(&mut runtime, ctx.screen_rect())
+            .instances
+            .len();
+        assert!(hidden < drawn, "{hidden} < {drawn}");
+        // Play renders from the runtime directly and still shows it; content is untouched.
+        assert!(runtime.render_frame().instances.len() >= drawn);
+        assert_eq!(editor.world, world);
+        // Hiding a parent hides its children too.
+        editor.set_view_flag(&["stage/rack".into()], false);
+        assert!(editor.view_flagged(false).contains("stage/rack/cargo"));
+    }
+
+    #[test]
+    fn locked_objects_are_drawn_but_not_pickable_or_draggable() {
+        let (world, runtime) = fixture();
+        let ctx = egui::Context::default();
+        let mut editor = Editor::new(world.clone(), 1, None);
+        editor.set_view_flag(&["stage/crate".into()], true);
+        frame(&ctx, &mut editor, &runtime, vec![]);
+        let at = crate_point(&editor, &runtime);
+        click_at(&ctx, &mut editor, &runtime, at);
+        assert_ne!(editor.selected.as_deref(), Some("stage/crate"));
+        // Selected from the hierarchy, its gizmo does not respond to a drag.
+        editor.select(Some("stage/crate".into()));
+        let end = start_drag(&ctx, &mut editor, &runtime);
+        assert!(editor.drag.is_none() && !editor.dirty());
+        assert!(frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]).is_empty());
+        // Unlocked again, the same drag writes one transform edit.
+        editor.set_view_flag(&["stage/crate".into()], true);
+        editor.select(Some("stage/crate".into()));
+        let end = start_drag(&ctx, &mut editor, &runtime);
+        assert!(editor.drag.is_some());
+        assert_eq!(
+            frame(&ctx, &mut editor, &runtime, vec![primary(end, false)]).len(),
+            1
+        );
     }
 }

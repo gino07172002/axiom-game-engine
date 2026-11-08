@@ -8,6 +8,8 @@ mod viewport;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
+mod hierarchy_tests;
+#[cfg(test)]
 mod parity;
 use axiom_core::{local::Target, ops, CoreEdit, Edit, Request, Transform, World};
 use serde_json::{json, Value};
@@ -317,6 +319,17 @@ pub(crate) struct Editor {
     scenario_results: std::collections::BTreeMap<String, Value>,
     material: Option<assets::MaterialDraft>,
     prefab: Option<assets::PrefabDraft>,
+    /// Inline hierarchy rename in progress (F2 / context menu).
+    renaming: Option<Rename>,
+    /// Screen rects of hierarchy rows and context-menu items drawn last frame (tests, focus).
+    pub(crate) rects: std::collections::HashMap<String, egui::Rect>,
+}
+
+/// Inline rename state: the row being renamed, the text being typed, focus requested yet.
+pub(crate) struct Rename {
+    pub id: String,
+    pub text: String,
+    pub focused: bool,
 }
 
 impl Editor {
@@ -371,6 +384,8 @@ impl Editor {
             scenario_results: Default::default(),
             material: None,
             prefab: None,
+            renaming: None,
+            rects: Default::default(),
         };
         if selected
             .as_ref()
@@ -395,6 +410,13 @@ impl Editor {
         self.needs_history = true;
         let world = &self.world;
         self.extra.retain(|id| world.entity(id).is_some());
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|r| world.entity(&r.id).is_none())
+        {
+            self.renaming = None;
+        }
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
         // Dropping the drag without resetting would strand an uncommittable stale draft.
         let interrupted = self.drag.take().is_some();
@@ -559,6 +581,197 @@ impl Editor {
     pub(super) fn scene_delete(&mut self, id: &str) -> Option<Action> {
         let result = ops::delete_scene(&self.world, id);
         self.op_write(result, None)
+    }
+
+    /// Object ▸ Create Child (`ACL: create PRESET parent=ID [scene=..]`).
+    pub(super) fn create_child(&mut self, preset: &str) -> Option<Action> {
+        let place = ops::Placement {
+            parent: self.selected.clone(),
+            ..self.placement()
+        };
+        let result = ops::create_object(&self.world, preset, &place);
+        self.created(result)
+    }
+
+    /// Object ▸ Create Prefab From Selection (`ACL: prefab create from ID`).
+    pub(super) fn create_prefab_from_selection(&mut self) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::create_prefab(&self.world, None, &id);
+        if let Ok(created) = &result {
+            self.notice(format!("Prefab {} created from {id}", created.ids[0]));
+        }
+        self.op_write(result.map(|c| c.edits), Some(id))
+    }
+
+    /// Starts the inline hierarchy rename of the primary selection (F2).
+    pub(super) fn begin_rename(&mut self) {
+        let Some(e) = self
+            .selected
+            .as_deref()
+            .and_then(|id| self.world.entity(id))
+        else {
+            return;
+        };
+        self.renaming = Some(Rename {
+            id: e.id.clone(),
+            text: e.label.clone().unwrap_or_else(|| e.id.clone()),
+            focused: false,
+        });
+        self.scroll_selection = true;
+    }
+
+    /// Commits an inline rename (`ACL: rename ID "LABEL"`); unchanged text writes nothing.
+    pub(super) fn rename_entity(&mut self, id: &str, text: &str) -> Option<Action> {
+        let entity = self.world.entity(id)?;
+        let shown = entity.label.as_deref().unwrap_or(id);
+        if text.trim() == shown {
+            return None;
+        }
+        let result = ops::rename(&self.world, id, text);
+        self.op_write(result, None)
+    }
+
+    /// Hierarchy drop between rows: reorder among siblings, reparenting first when the row
+    /// came from another parent (`ACL: reparent ID P|root` + `move ID before|after OTHER`).
+    pub(super) fn reorder_drop(
+        &mut self,
+        dragged: &str,
+        target: &str,
+        after: bool,
+    ) -> Option<Action> {
+        if dragged == target {
+            return None;
+        }
+        let parent_of = |id: &str| {
+            self.world
+                .relations
+                .iter()
+                .find(|r| r.kind == "parent" && r.source == id)
+                .map(|r| r.target.clone())
+        };
+        let parent = parent_of(target);
+        let order = if after {
+            ops::Order::After(target.to_owned())
+        } else {
+            ops::Order::Before(target.to_owned())
+        };
+        let mut edits = vec![];
+        if parent_of(dragged) != parent {
+            match ops::reparent(&self.world, dragged, parent.as_deref(), true) {
+                Ok(more) => edits.extend(more),
+                Err(e) => {
+                    self.problem(&e);
+                    return None;
+                }
+            }
+        }
+        match ops::move_entity(&self.world, dragged, &order) {
+            Ok(more) => edits.extend(more),
+            Err(e) => {
+                self.problem(&e);
+                return None;
+            }
+        }
+        if edits.is_empty() {
+            return None;
+        }
+        Some(self.write(edits, None))
+    }
+
+    /// Adds every descendant of the selection to the selection (view state only).
+    pub(super) fn select_children(&mut self) {
+        let graph = axiom_core::scene_edit::Hierarchy::new(&self.world);
+        let selection = self.selection();
+        let mut stack = selection.clone();
+        let mut found = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            for child in graph.children.get(&Some(id.as_str())).into_iter().flatten() {
+                if !selection.iter().any(|s| s == child) && found.insert(child.to_string()) {
+                    stack.push(child.to_string());
+                }
+            }
+        }
+        let added = found.len();
+        self.extra.extend(found);
+        self.notice(format!("Selected {added} descendant(s)"));
+    }
+
+    /// Hidden (`locked == false`) or locked IDs set for this world in the editor prefs.
+    pub(crate) fn view_flags(&self, locked: bool) -> Option<&BTreeSet<String>> {
+        let sets = if locked {
+            &self.prefs.locked
+        } else {
+            &self.prefs.hidden
+        };
+        sets.get(&self.world.id).filter(|s| !s.is_empty())
+    }
+
+    /// Objects hidden/locked in the editor view, directly or through an ancestor.
+    pub(crate) fn view_flagged(&self, locked: bool) -> BTreeSet<String> {
+        let Some(set) = self.view_flags(locked) else {
+            return BTreeSet::new();
+        };
+        let parents: std::collections::HashMap<&str, &str> = self
+            .world
+            .relations
+            .iter()
+            .filter(|r| r.kind == "parent")
+            .map(|r| (r.source.as_str(), r.target.as_str()))
+            .collect();
+        self.world
+            .entities
+            .iter()
+            .filter(|e| {
+                let mut cursor = Some(e.id.as_str());
+                for _ in 0..64 {
+                    let Some(id) = cursor else { break };
+                    if set.contains(id) {
+                        return true;
+                    }
+                    cursor = parents.get(id).copied();
+                }
+                false
+            })
+            .map(|e| e.id.clone())
+            .collect()
+    }
+
+    /// Toggles the editor-view hidden or locked flag of `ids` (all on unless all already on).
+    /// Never touches the world; persisted per world in the editor prefs.
+    pub(crate) fn set_view_flag(&mut self, ids: &[String], locked: bool) {
+        let world = self.world.id.clone();
+        let sets = if locked {
+            &mut self.prefs.locked
+        } else {
+            &mut self.prefs.hidden
+        };
+        let set = sets.entry(world.clone()).or_default();
+        let on = !ids.iter().all(|id| set.contains(id));
+        for id in ids {
+            if on {
+                set.insert(id.clone());
+            } else {
+                set.remove(id);
+            }
+        }
+        if set.is_empty() {
+            sets.remove(&world);
+        }
+        let what = match (locked, on) {
+            (false, true) => "Hidden in the editor view",
+            (false, false) => "Shown in the editor view",
+            (true, true) => "Locked in the editor view",
+            (true, false) => "Unlocked in the editor view",
+        };
+        self.notice(format!(
+            "{what}: {} object(s); play and content unchanged",
+            ids.len()
+        ));
+    }
+
+    fn toggle_view_flag(&mut self, locked: bool) {
+        let ids = self.selection();
+        self.set_view_flag(&ids, locked);
     }
 
     /// Remote view control from the bridge (`editor_view`). Never touches drafts.
@@ -877,6 +1090,8 @@ impl Editor {
             "draft_dirty":self.dirty(),
             "tool":self.tool.name(),
             "pending_proposals":self.proposals.len(),
+            "hidden":self.prefs.hidden.get(&self.world.id),
+            "locked":self.prefs.locked.get(&self.world.id),
             "selection":self.selection()
         })
     }
@@ -911,6 +1126,12 @@ impl Editor {
         // Gameplay may choose a different scene during its initial entry actions.
         let mut visibility = runtime.authored_visibility.clone();
         visibility.resize(runtime.state.compiled.len(), false);
+        // Editor-view "hidden" objects (and their descendants) are not drawn; play is unaffected.
+        for id in self.view_flagged(false) {
+            if let Some(&slot) = runtime.state.compiled.indices.get(&id) {
+                visibility[slot] = false;
+            }
+        }
         let original_visibility =
             std::mem::replace(&mut runtime.state.compiled.enabled, visibility);
         let mut frame = runtime.render_frame();
