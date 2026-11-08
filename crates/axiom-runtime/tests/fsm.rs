@@ -85,6 +85,73 @@ fn overlay_labels_follow_agents_and_project_into_the_game_view() {
         .is_none());
 }
 
+fn skirmish() -> World {
+    ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/skirmish"),
+        &axiom_runtime::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+#[test]
+fn data_only_combat_reaches_victory_through_events_and_rules() {
+    let mut r = WorldRuntime::new(skirmish(), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 2400);
+    let summary = call(&mut r, "summary", json!({}));
+    assert_eq!(summary["states"]["dead"], 6, "{summary}");
+    assert_eq!(summary["emitted"], 6);
+    assert!(summary["fault"].is_null());
+    let obs = json!(r.observation());
+    assert_eq!(obs["gameplay"]["ending"], "victory", "{}", obs["gameplay"]);
+    assert_eq!(obs["gameplay"]["variables"]["kills"], 6);
+    let hero = r.state.compiled.indices["hero"];
+    let hp = r.state.health[hero].as_ref().unwrap().value;
+    assert!(
+        hp < 100.0 && hp > 0.0,
+        "grunts fight back but lose: hp={hp}"
+    );
+    // Dead grunts are no longer targets, so the hero stops attacking corpses.
+    let hits = summary["hits"].as_u64().unwrap();
+    run(&mut r, 600);
+    assert_eq!(
+        call(&mut r, "summary", json!({}))["hits"].as_u64().unwrap(),
+        hits
+    );
+}
+
+#[test]
+fn stronger_grunts_defeat_the_hero_by_data_edit_alone() {
+    let mut w = skirmish();
+    w.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"]["states"]["attack"]
+        ["action"]["damage"] = json!(40);
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 3000);
+    let obs = json!(r.observation());
+    assert_eq!(obs["gameplay"]["ending"], "defeat", "{}", obs["gameplay"]);
+    assert_eq!(obs["gameplay"]["variables"]["hero_alive"], false);
+}
+
+#[test]
+fn emits_and_attacks_are_validated_before_the_world_runs() {
+    let registry = axiom_runtime::installed_registry();
+    let mut undeclared = skirmish();
+    undeclared.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"]["states"]["dead"]
+        ["emit"] = json!("ghost_event");
+    let error = WorldRuntime::new(undeclared, 1, registry.clone())
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("does not declare"),
+        "{error:#}"
+    );
+    let mut bad = skirmish();
+    bad.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"]["states"]["attack"]
+        ["action"]["interval_ticks"] = json!(0);
+    let error = format!("{:#}", bad.compile(&registry.authoring).unwrap_err());
+    assert!(error.contains("interval_ticks"), "{error}");
+}
+
 #[test]
 fn identical_runs_are_deterministic() {
     let snapshot = || {

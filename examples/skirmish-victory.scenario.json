@@ -1,0 +1,5 @@
+{"ticks":2400,"assertions":[
+ {"kind":"equals","pointer":"/gameplay/ending","value":"victory"},
+ {"kind":"call","action":"fsm.summary","pointer":"/states/dead","op":"eq","value":6},
+ {"kind":"field","entity":"hero","field":"health","op":"gt","value":0}
+]}

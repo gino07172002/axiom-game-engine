@@ -28,6 +28,13 @@ pub enum ActionDef {
         tag: String,
         speed: f32,
     },
+    /// Damage the nearest `tag` target within `range` meters every `interval_ticks`.
+    Attack {
+        tag: String,
+        range: f32,
+        damage: f32,
+        interval_ticks: u32,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -72,6 +79,10 @@ impl Cond {
 pub struct StateDef {
     #[serde(default)]
     pub action: ActionDef,
+    /// `behavior.program` event emitted when an agent enters this state. If the event
+    /// declares a text field `agent`, it receives the agent's entity ID.
+    #[serde(default)]
+    pub emit: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +150,23 @@ impl Machines {
                             "machine {id}.{name}: speed 0..100"
                         );
                     }
+                    ActionDef::Attack {
+                        tag,
+                        range,
+                        damage,
+                        interval_ticks,
+                    } => {
+                        valid_id(tag)?;
+                        ensure!(
+                            finite(*range, 0.0, 1000.0)
+                                && finite(*damage, 0.0, 100000.0)
+                                && (1..=1_000_000).contains(interval_ticks),
+                            "machine {id}.{name}: range 0..1000, damage 0..100000, interval_ticks 1..1000000"
+                        );
+                    }
+                }
+                if let Some(event) = &s.emit {
+                    valid_id(event)?;
                 }
             }
             for t in &m.transitions {
@@ -178,6 +206,8 @@ impl Machines {
 struct Compiled {
     id: String,
     states: Vec<(String, ActionDef)>,
+    /// Event emitted on entering each state (parallel to `states`).
+    emits: Vec<Option<String>>,
     initial: usize,
     /// Per source state: ordered (condition, target) list; `*` transitions are appended in order.
     outgoing: Vec<Vec<(Cond, usize)>>,
@@ -206,6 +236,7 @@ impl Compiled {
         Self {
             id: id.into(),
             initial: index(&m.initial),
+            emits: m.states.values().map(|s| s.emit.clone()).collect(),
             states,
             outgoing,
         }
@@ -227,31 +258,48 @@ struct Agents {
     state: Vec<usize>,
     ticks: Vec<u32>,
     last: Vec<Option<Last>>,
+    cooldown: Vec<u32>,
 }
 
 pub struct FsmSystem {
     machines: Vec<Compiled>,
     agents: Agents,
+    /// Emitted event -> whether its payload declares a text `agent` field.
+    events: BTreeMap<String, bool>,
+    hits: u64,
+    emitted: u64,
+    fault: Option<String>,
 }
 
-fn nearest(state: &RuntimeState, me: usize, tag: &str) -> Option<(f32, Vec3)> {
+/// Nearest enabled, living entity carrying `tag`: (XZ distance, XZ direction, slot).
+/// Entities whose health reached 0 are no longer targets; entities without health are.
+fn nearest_slot(state: &RuntimeState, me: usize, tag: &str) -> Option<(f32, Vec3, usize)> {
     let here = Vec3::from_array(state.transforms[me].as_ref()?.position);
     state
         .compiled
         .entities
         .iter()
         .enumerate()
-        .filter(|(i, e)| *i != me && state.compiled.enabled[*i] && e.tags.iter().any(|t| t == tag))
+        .filter(|(i, e)| {
+            *i != me
+                && state.compiled.enabled[*i]
+                && e.tags.iter().any(|t| t == tag)
+                && state.health[*i].as_ref().is_none_or(|h| h.value > 0.0)
+        })
         .filter_map(|(i, _)| {
             state.transforms[i]
                 .as_ref()
-                .map(|t| Vec3::from_array(t.position))
+                .map(|t| (Vec3::from_array(t.position), i))
         })
-        .map(|p| {
+        .map(|(p, i)| {
             let d = Vec3::new(p.x - here.x, 0.0, p.z - here.z);
-            (d.length(), d)
+            (d.length(), d, i)
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+fn nearest(state: &RuntimeState, me: usize, tag: &str) -> Option<(f32, Vec3)> {
+    nearest_slot(state, me, tag).map(|(d, dir, _)| (d, dir))
 }
 
 impl FsmSystem {
@@ -290,8 +338,81 @@ impl FsmSystem {
             agents.state.push(machines[m].initial);
             agents.ticks.push(0);
             agents.last.push(None);
+            agents.cooldown.push(0);
         }
-        Ok(Self { machines, agents })
+        // Every emitted event must exist in behavior.program and need at most an `agent` field.
+        let mut events = BTreeMap::new();
+        let program = state.compiled.source.resources.get("behavior.program");
+        for m in defs.machines.values() {
+            for event in m.states.values().filter_map(|s| s.emit.as_ref()) {
+                let fields = program
+                    .and_then(|p| {
+                        p.pointer(&format!(
+                            "/events/{}/fields",
+                            axiom_core::local::escape(event)
+                        ))
+                    })
+                    .and_then(Value::as_object)
+                    .with_context(|| {
+                        format!("fsm emits {event}, which behavior.program does not declare")
+                    })?;
+                ensure!(
+                    fields.keys().all(|k| k == "agent")
+                        && fields.get("agent").is_none_or(|t| t == "text"),
+                    "fsm event {event} may only declare a text `agent` field"
+                );
+                ensure!(
+                    state
+                        .compiled
+                        .source
+                        .systems
+                        .iter()
+                        .any(|s| s == "behavior.execute"),
+                    "fsm emits {event}; enable the behavior.execute system"
+                );
+                events.insert(event.clone(), fields.contains_key("agent"));
+            }
+        }
+        Ok(Self {
+            machines,
+            agents,
+            events,
+            hits: 0,
+            emitted: 0,
+            fault: None,
+        })
+    }
+
+    fn emit(&mut self, state: &mut RuntimeState, event: &str, agent: &str) {
+        let mut fields = BTreeMap::new();
+        if self.events.get(event) == Some(&true) {
+            fields.insert(
+                "agent".to_owned(),
+                axiom_core::gameplay::Scalar::Text(agent.to_owned()),
+            );
+        }
+        let tick = state.tick;
+        let result = match state.gameplay.as_mut() {
+            Some(g) => g.command(
+                &axiom_core::gameplay::RuntimeCommand::Emit {
+                    event: event.to_owned(),
+                    fields,
+                },
+                tick,
+            ),
+            None => Err(anyhow::anyhow!("behavior.execute is not running")),
+        };
+        match result {
+            Ok(_) => {
+                self.emitted += 1;
+                state.sync_scenes();
+            }
+            // Keep simulating; surface the first failure through summary/inspect/observe.
+            Err(e) => {
+                self.fault
+                    .get_or_insert_with(|| format!("emit {event}: {e:#}"));
+            }
+        }
     }
 
     /// Measured value and verdict for one condition, without side effects.
@@ -342,6 +463,7 @@ impl FsmSystem {
         Ok(json!({
             "id":id,"machine":m.id,"state":m.states[s].0,"action":m.states[s].1,
             "ticks_in_state":self.agents.ticks[a],
+            "cooldown":self.agents.cooldown[a],
             "last":self.agents.last[a].map(|l|json!({"from":m.states[l.from].0,"to":m.states[l.to].0,"tick":l.tick})),
             "position":state.transforms[slot].as_ref().map(|t|t.position),
             "health":state.health[slot].as_ref().map(|h|h.value),
@@ -374,7 +496,7 @@ impl FsmSystem {
                 .entry(m.states[self.agents.state[a]].0.clone())
                 .or_default() += 1;
         }
-        json!({"agents":self.agents.ids.len(),"states":counts})
+        json!({"agents":self.agents.ids.len(),"states":counts,"hits":self.hits,"emitted":self.emitted,"fault":self.fault})
     }
 }
 
@@ -401,6 +523,8 @@ impl RuntimeSystem for FsmSystem {
                     break;
                 }
             }
+            let mi = self.agents.machine[a];
+            let mut entered = None;
             if let Some(to) = next.filter(|to| *to != current) {
                 self.agents.last[a] = Some(Last {
                     from: current,
@@ -409,10 +533,33 @@ impl RuntimeSystem for FsmSystem {
                 });
                 self.agents.state[a] = to;
                 self.agents.ticks[a] = 0;
+                entered = self.machines[mi].emits[to].clone();
             } else {
                 self.agents.ticks[a] = self.agents.ticks[a].saturating_add(1);
             }
-            let action = &m.states[self.agents.state[a]].1;
+            let s = self.agents.state[a];
+            if let ActionDef::Attack {
+                tag,
+                range,
+                damage,
+                interval_ticks,
+            } = &self.machines[mi].states[s].1
+            {
+                self.agents.cooldown[a] = self.agents.cooldown[a].saturating_sub(1);
+                if self.agents.cooldown[a] == 0 {
+                    let target = nearest_slot(state, slot, tag).filter(|(d, _, _)| *d <= *range);
+                    if let Some(h) = target.and_then(|(_, _, t)| state.health[t].as_mut()) {
+                        h.value = (h.value - damage).max(0.0);
+                        self.hits += 1;
+                        self.agents.cooldown[a] = *interval_ticks;
+                    }
+                }
+            }
+            if let Some(event) = entered {
+                let id = self.agents.ids[a].clone();
+                self.emit(state, &event, &id);
+            }
+            let action = &self.machines[mi].states[s].1;
             let step = match action {
                 ActionDef::Stop => None,
                 ActionDef::MoveToward {
@@ -425,6 +572,7 @@ impl RuntimeSystem for FsmSystem {
                 ActionDef::MoveAway { tag, speed } => nearest(state, slot, tag)
                     .filter(|(d, _)| *d > 1e-4)
                     .map(|(d, dir)| -dir / d * *speed * FIXED_DT),
+                ActionDef::Attack { .. } => None,
             };
             if let (Some(delta), Some(t)) = (step, state.transforms[slot].as_mut()) {
                 t.position = (Vec3::from_array(t.position) + delta).to_array();
@@ -494,7 +642,7 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.resource(
         "fsm.machines",
         "fsm",
-        json!({"machines":"id -> {initial, states:{name:{action:{kind:stop|move_toward{tag,speed,stop_within?}|move_away{tag,speed}}}}, transitions:[{from:state|*, to, when:{kind:near{tag,within}|far{tag,beyond}|health_below{value}|in_state_ticks{ticks}|chance{per_tick}|always}}]}; first passing transition per tick wins"}),
+        json!({"machines":"id -> {initial, states:{name:{action:{kind:stop|move_toward{tag,speed,stop_within?}|move_away{tag,speed}|attack{tag,range,damage,interval_ticks}}, emit?: behavior.program event on enter (text field `agent` receives the agent ID)}}, transitions:[{from:state|*, to, when:{kind:near{tag,within}|far{tag,beyond}|health_below{value}|in_state_ticks{ticks}|chance{per_tick}|always}}]}; first passing transition per tick wins"}),
         |v| serde_json::from_value::<Machines>(v.clone())?.validate(),
     );
     r.authoring.component(

@@ -189,3 +189,10 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M12(2026-11-08)**:Assets 分頁新增 prefab「edit」(Prefab 檢視器以 M8 表單編輯 prefab 預設值,只寫改變的葉節點;顯示繼承實例數)與 MATERIALS 清單(Material 檢視器:依 shader 宣告的 min/max 產生參數滑桿、tint 取色器、alpha_cutoff;寫入 `render.shaders` 的對應子樹)。表單對名稱含 color/tint/accent、值為 3–4 個 0..1 數字的欄位改用取色器(涵蓋 `render.mesh` 部件顏色)。新增 Graphs 分頁(唯讀):fsm 狀態機(初始狀態、動作、轉移條件)、narrative.graph(節點、說話者、選項→下一節點、結局)、behavior.program 規則列表。
   證據:編輯器單元測試 21 項(新增材質/prefab 草稿經 Store 寫入驗證、Graphs 以 behavior-lab 與 adv 內容渲染、取色器判定);clippy exit 0;workspace 228 passed;editor smoke `ok:true`;Graphs 分頁 GPU 截圖目視確認。
   未做:可視化節點圖編輯(non-goal);材質檢視器僅單元測試與編譯驗證,未截圖(需手動開啟)。
+
+## 第二輪(2026-11-08 晚)
+
+- **M14 `.gitattributes` + CI**:LF 正規化(.cmd/.bat/.ps1 保持 CRLF、二進位標註);GitHub Actions(windows-latest + MSYS2 MinGW gcc,fmt/clippy/test)。第一次因工具鏈安裝步驟失敗,改為明確安裝 `stable-x86_64-pc-windows-gnu`(結果見執行紀錄)。
+- **M15 資料驅動戰鬥**:FSM 新增 `attack{tag,range,damage,interval_ticks}` 動作與狀態 `emit`(進入狀態時發送 `behavior.program` 事件,若事件宣告文字欄位 `agent` 則帶入實體 ID;建立時驗證事件存在且需 `behavior.execute`);目標搜尋略過 health ≤ 0 的實體;summary 新增 hits/emitted/fault,inspect 新增 cooldown。新內容包 `content/skirmish`(1 英雄 vs 6 敵,擊殺計數規則 → `victory`,英雄倒下 → `defeat`)與 `examples/skirmish-victory.scenario.json`。
+  證據:`tests/fsm.rs` 新增 3 項(勝利結局經事件與規則達成、只改 grunt 傷害數值即導致 `defeat`、未宣告事件與非法 interval 在執行前被拒);clippy exit 0;workspace 231 passed;CLI scenario 3/3 通過;GPU 截圖目視確認。
+  未做:死亡視覺(屍體仍以原外觀留在場上)、投射物/遠程攻擊、群體 AI 協調。
