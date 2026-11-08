@@ -16,6 +16,7 @@ pub mod fsm;
 pub mod gameplay;
 pub mod geometry;
 mod input;
+pub mod measure;
 mod mesh_render;
 pub mod narrative;
 pub mod postfx;

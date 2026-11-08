@@ -92,7 +92,7 @@ pub fn run(population: usize, ticks: u32, registry: RuntimeRegistry) -> Result<V
     )
 }
 #[cfg(windows)]
-fn process_memory() -> Value {
+pub fn process_memory() -> Value {
     #[repr(C)]
     struct Counters {
         cb: u32,
@@ -135,6 +135,6 @@ fn process_memory() -> Value {
     }
 }
 #[cfg(not(windows))]
-fn process_memory() -> Value {
+pub fn process_memory() -> Value {
     Value::Null
 }

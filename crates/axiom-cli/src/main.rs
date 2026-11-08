@@ -184,6 +184,9 @@ enum Command {
     Verify {
         #[arg(long, default_value_t = 0)]
         ticks: u32,
+        /// Time read/decode, compile and runtime build (median of N runs) and report RSS.
+        #[arg(long)]
+        measure: Option<usize>,
     },
     Observe,
     /// Typed gameplay command JSON, dispatched to a live engine with --connect.
@@ -648,9 +651,17 @@ fn execute() -> Result<()> {
                 _ => anyhow::bail!("apply/preview expects an editing request"),
             }
         }
-        Command::Verify { ticks } => {
+        Command::Verify { ticks, measure } => {
             ensure!(ticks <= 1_000_000, "tick budget exceeds 1000000");
             let mut result = dispatch(Request::Verify {})?;
+            if let Some(runs) = measure {
+                ensure!(
+                    cli.connect.is_none(),
+                    "load measurement requires a local database"
+                );
+                result["load"] =
+                    axiom_runtime::measure::load_profile(store.as_ref().unwrap(), &registry, runs)?;
+            }
             if ticks > 0 {
                 ensure!(
                     cli.connect.is_none(),

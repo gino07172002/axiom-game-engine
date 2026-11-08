@@ -601,9 +601,13 @@ impl App {
                 let json_path = path.with_extension("json");
                 std::fs::write(json_path, serde_json::to_string_pretty(&obs)?)?;
             }
+            let gpu_memory = self
+                .renderer
+                .as_ref()
+                .map(|r| crate::measure::gpu_memory(&r.device));
             println!(
                 "{}",
-                serde_json::json!({"ok":true,"frames":self.frames,"gpu":self.ui.gpu,"observation":obs,"screenshot":self.options.screenshot})
+                serde_json::json!({"ok":true,"frames":self.frames,"gpu":self.ui.gpu,"gpu_memory":gpu_memory,"process_memory":crate::measure::process_memory(),"observation":obs,"screenshot":self.options.screenshot})
             );
             event_loop.exit();
         }

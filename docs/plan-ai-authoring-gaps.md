@@ -161,6 +161,10 @@ M2 是 walking skeleton:JSON 選擇器 → SetWhere 交易 → diff → lines �
 - **M5(2026-11-08)**:`RuntimeState.rng`(SplitMix64,`core.rng {seed}` 資源,預設固定 seed,熱重載在 seed 未變時延續,checkpoint 新增可選 `rng` 欄位、舊存檔相容);FSM `chance{per_tick}` 條件消耗該串流(inspect 不消耗);scenario 新斷言 `field`(即時 position/health/enabled/components)與 `call`(僅 `*.inspect`/`*.summary`);scenario 結果新增 `state_hash`(tick、rng、transforms、health、非計時 metrics)。範例 `examples/behavior-chase.scenario.json`。
   證據:`tests/determinism.rs` 4 項;clippy exit 0;workspace 207 passed;兩個獨立程序跑同一 scenario,hash 皆為 `3d81c13dc3f25543`,5/5 斷言通過;`m1-smoke-test.ps1` PASS(含 checkpoint 存讀)。
   未做:Rapier `enhanced-determinism`(R6:僅同機器同程式,跨平台 bit-exact 列為 non-goal);FPS 的 Rapier 狀態仍不支援 checkpoint(既有行為)。
+- **M6(2026-11-08)**:`axiom-runtime/src/measure.rs`(`load_profile`:read+decode/compile/runtime build 的 min/median/max 與程序工作集;`gpu_memory`:wgpu allocator report);`axiom verify --measure N`;play/editor smoke 輸出新增 `gpu_memory`、`process_memory`。
+  **Spike S1 結論(release,中位數,9 次)**:fps 105 KB → read+decode 1.60 ms / compile 5.78 ms / runtime build 7.77 ms;rts 1.22 / 2.98 / 13.49;effects-tour 2.58 / 19.58 / 92.83;behavior-lab 0.10 / 0.12 / 0.83。二進位格式只能取代 read+decode(≤ 2.6 ms,遠低於 20 ms 門檻)→ **不做二進位場景快取**(決策 9)。effects-tour 的成本在原生系統建置,屬另一個效能題目。
+  VRAM:wgpu 24 在 Vulkan 後端不提供 allocator report,實測回 `available:false`,如實回報而非估算。工作集:無頭 14.5 MB,FPS 開視窗遊玩 378 MB(含驅動與視窗)。
+  證據:`tests/measure.rs`;clippy exit 0;workspace 208 passed。
 
 ## 修訂補記
 
