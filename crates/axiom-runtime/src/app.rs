@@ -215,6 +215,7 @@ impl App {
             dock,
             capture,
             play,
+            open,
         } = request
         {
             if let Some(play) = play {
@@ -229,6 +230,9 @@ impl App {
             })?;
             anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
             editor.remote_view(&select, focus, dock.as_deref())?;
+            if let Some(target) = open.as_deref() {
+                editor.remote_open(target)?;
+            }
             let path = match capture {
                 Some(name) => {
                     anyhow::ensure!(

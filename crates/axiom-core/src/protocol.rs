@@ -124,6 +124,9 @@ pub enum Request {
         /// Start (true) or stop (false) the Play-in-editor preview.
         #[serde(default)]
         play: Option<bool>,
+        /// Open an asset inspector: `material:ID`, `prefab:ID` or `resource:ID`.
+        #[serde(default)]
+        open: Option<String>,
     },
     Undo {
         rev: i64,

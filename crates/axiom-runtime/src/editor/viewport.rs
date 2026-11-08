@@ -107,6 +107,9 @@ pub(super) struct Drag {
     screen_axis: Vec2,
     parent_inverse: Mat4,
     axis: usize,
+    /// Handle direction in world space (object axis when `local`, world axis otherwise).
+    world_axis: Vec3,
+    local: bool,
     world_units: f32,
     tool: Tool,
 }
@@ -120,17 +123,24 @@ impl Drag {
             Tool::Move => {
                 let offset = self
                     .parent_inverse
-                    .transform_vector3(AXES[self.axis] * step(pixels * self.world_units, 0.25));
+                    .transform_vector3(self.world_axis * step(pixels * self.world_units, 0.25));
                 next.position = (Vec3::from_array(next.position) + offset)
                     .clamp(Vec3::splat(-100000.0), Vec3::splat(100000.0))
                     .to_array();
             }
             Tool::Rotate => {
-                next.rotation = (Quat::from_array(next.rotation)
-                    * Quat::from_axis_angle(
-                        AXES[self.axis],
-                        step(pixels * 0.012, 15f32.to_radians()),
-                    ))
+                let angle = step(pixels * 0.012, 15f32.to_radians());
+                let current = Quat::from_array(next.rotation);
+                next.rotation = if self.local {
+                    current * Quat::from_axis_angle(AXES[self.axis], angle)
+                } else {
+                    // World-axis spin expressed in the parent's frame: P⁻¹·Q·P·R.
+                    let (_, parent_inv, _) = self.parent_inverse.to_scale_rotation_translation();
+                    parent_inv
+                        * Quat::from_axis_angle(self.world_axis, angle)
+                        * parent_inv.inverse()
+                        * current
+                }
                 .normalize()
                 .to_array();
             }
@@ -286,7 +296,48 @@ fn pick(
             depth = distance;
         }
     }
+    // Imported/skinned meshes (glTF, procedural geometry) have no render.mesh parts; test the
+    // ray against the world-space bounds of their current pose. Only runs on click.
+    for mesh in runtime.render_frame().meshes {
+        let Some(&slot) = state.indices.get(&mesh.id) else {
+            continue;
+        };
+        if !runtime
+            .authored_visibility
+            .get(slot)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(bounds) = mesh_bounds(&mesh) {
+            if let Some(distance) =
+                box_hit(origin, direction, bounds).filter(|&d| d >= 0.0 && d < depth)
+            {
+                best = Some(mesh.id.clone());
+                depth = distance;
+            }
+        }
+    }
     best
+}
+
+/// Unit-box matrix covering a mesh frame's world-space vertex bounds.
+pub(super) fn mesh_bounds(mesh: &crate::presentation::MeshFrame) -> Option<Mat4> {
+    let (min, max) = mesh.vertices.iter().fold(
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        |(lo, hi), v| {
+            let p = mesh.model.transform_point3(v.position);
+            (lo.min(p), hi.max(p))
+        },
+    );
+    (min.is_finite() && max.is_finite()).then(|| {
+        Mat4::from_scale_rotation_translation(
+            (max - min).max(Vec3::splat(0.02)),
+            Quat::IDENTITY,
+            (min + max) * 0.5,
+        )
+    })
 }
 
 fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4, color: Color32) {
@@ -317,24 +368,34 @@ fn draw_line(painter: &egui::Painter, view: &ProjectionView, a: Vec3, b: Vec3, s
     }
 }
 
+/// Gizmo axis in world space. Scale always uses the object's axes; Move and Rotate follow
+/// the Global/Local toggle.
+fn handle_axis(model: Mat4, axis: Vec3, tool: Tool, local: bool) -> Vec3 {
+    if tool == Tool::Scale || local {
+        model.transform_vector3(axis).normalize_or_zero()
+    } else {
+        axis
+    }
+}
+
 struct Handles {
     pivot: Pos2,
     tips: [Option<Pos2>; 3],
     units: f32,
 }
 impl Handles {
-    fn new(view: &ProjectionView, orbit: &Orbit, model: Mat4, tool: Tool) -> Option<Self> {
+    fn new(
+        view: &ProjectionView,
+        orbit: &Orbit,
+        model: Mat4,
+        tool: Tool,
+        local: bool,
+    ) -> Option<Self> {
         let world = model.transform_point3(Vec3::ZERO);
         let pivot = view.project(world)?;
         let units = (world - orbit.eye()).length() * 92.0 / view.rect.height().max(1.0);
-        let tips = AXES.map(|axis| {
-            let axis = if tool == Tool::Move {
-                axis
-            } else {
-                model.transform_vector3(axis).normalize_or_zero()
-            };
-            view.project(world + axis * units)
-        });
+        let tips =
+            AXES.map(|axis| view.project(world + handle_axis(model, axis, tool, local) * units));
         Some(Self { pivot, tips, units })
     }
     fn hit(&self, cursor: Pos2) -> Option<usize> {
@@ -431,7 +492,22 @@ impl Editor {
         }
         if std::mem::take(&mut self.frame_selection) {
             if let Some(i) = selected {
-                let (center, extent) = focus_bounds(matrices[i], state.entities[i].mesh.as_ref());
+                let skinned = state.entities[i]
+                    .mesh
+                    .is_none()
+                    .then(|| {
+                        runtime
+                            .render_frame()
+                            .meshes
+                            .iter()
+                            .find(|m| m.id == state.entities[i].id)
+                            .and_then(mesh_bounds)
+                    })
+                    .flatten();
+                let (center, extent) = match skinned {
+                    Some(b) => focus_bounds(b, None),
+                    None => focus_bounds(matrices[i], state.entities[i].mesh.as_ref()),
+                };
                 self.orbit.target = center;
                 self.orbit.distance = (extent * 4.4).clamp(1.3, 4000.0);
             } else {
@@ -518,7 +594,7 @@ impl Editor {
                     && selected.is_some_and(visible)
                     && self.draft.as_ref().is_some_and(|d| d.transform.is_some())
             })
-            .and_then(|m| Handles::new(&view, &self.orbit, m, self.tool));
+            .and_then(|m| Handles::new(&view, &self.orbit, m, self.tool, self.local_space));
         let hovered_axis = response
             .hover_pos()
             .and_then(|pos| handles.as_ref()?.hit(pos));
@@ -531,7 +607,10 @@ impl Editor {
             ) {
                 if let Some(axis) = handles.hit(origin) {
                     let vector = handles.tips[axis].unwrap() - handles.pivot;
+                    let model = parent * initial.matrix();
                     self.drag = Some(Drag {
+                        world_axis: handle_axis(model, AXES[axis], self.tool, self.local_space),
+                        local: self.local_space,
                         initial,
                         origin,
                         screen_axis: vector.normalized(),
@@ -722,7 +801,7 @@ mod tests {
             matrix: editor.orbit.matrix(editor.viewport),
             rect: editor.viewport,
         };
-        let handles = Handles::new(&projection, &editor.orbit, model, Tool::Move).unwrap();
+        let handles = Handles::new(&projection, &editor.orbit, model, Tool::Move, false).unwrap();
         let start = handles.tips[0].unwrap();
         let end = start + (start - handles.pivot).normalized() * 27.0;
         assert!(editor.viewport.contains(end));
@@ -798,7 +877,7 @@ mod tests {
             matrix: editor.orbit.matrix(editor.viewport),
             rect: editor.viewport,
         };
-        let handles = Handles::new(&projection, &editor.orbit, model, Tool::Move).unwrap();
+        let handles = Handles::new(&projection, &editor.orbit, model, Tool::Move, false).unwrap();
         let start = handles.tips[0].unwrap();
         let end = start + (start - handles.pivot).normalized() * 27.0;
         frame(
@@ -1016,8 +1095,93 @@ mod tests {
     }
 
     #[test]
+    fn skinned_gltf_characters_are_pickable_by_their_pose_bounds() {
+        let world = pack("mascot");
+        let runtime = WorldRuntime::new(world, 1, crate::installed_registry()).unwrap();
+        let frame = runtime.render_frame();
+        assert!(
+            !frame.meshes.is_empty(),
+            "mascot pack renders skinned meshes"
+        );
+        let target = &frame.meshes[0];
+        let bounds = mesh_bounds(target).unwrap();
+        let center = bounds.transform_point3(Vec3::ZERO);
+        let size = bounds.transform_vector3(Vec3::ONE);
+        assert!(
+            size.y > 0.5,
+            "a character is taller than half a meter: {size:?}"
+        );
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0));
+        let eye = center + Vec3::new(0.0, 0.3, 4.0);
+        let view = ProjectionView {
+            matrix: Mat4::perspective_rh(FOV.to_radians(), 1280.0 / 720.0, NEAR, FAR)
+                * Mat4::look_at_rh(eye, center, Vec3::Y),
+            rect,
+        };
+        let at = view.project(center).unwrap();
+        let picked = pick(&runtime, &runtime.state.matrices(), &view, at);
+        assert_eq!(picked.as_deref(), Some(target.id.as_str()));
+        // A click in the screen corner, far outside the character's bounds, must not pick it.
+        assert_ne!(
+            pick(&runtime, &runtime.state.matrices(), &view, pos2(5.0, 5.0)).as_deref(),
+            Some(target.id.as_str())
+        );
+    }
+
+    #[test]
+    fn global_and_local_gizmo_axes_move_and_rotate_correctly() {
+        let yaw90 = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let initial = Transform {
+            rotation: yaw90.to_array(),
+            ..Default::default()
+        };
+        let model = initial.matrix();
+        let drag = |tool, local, parent: Mat4| Drag {
+            world_axis: handle_axis(parent * model, AXES[0], tool, local),
+            local,
+            initial: initial.clone(),
+            origin: Pos2::ZERO,
+            screen_axis: vec2(1.0, 0.0),
+            parent_inverse: parent.inverse(),
+            axis: 0,
+            world_units: 0.01,
+            tool,
+        };
+        let cursor = pos2(100.0, 0.0);
+        // Global X moves along world X; local X of a yawed object points along world -Z.
+        let p = drag(Tool::Move, false, Mat4::IDENTITY)
+            .transform(cursor, false)
+            .position;
+        assert!((Vec3::from_array(p) - Vec3::X).length() < 1e-4, "{p:?}");
+        let p = drag(Tool::Move, true, Mat4::IDENTITY)
+            .transform(cursor, false)
+            .position;
+        assert!((Vec3::from_array(p) - Vec3::NEG_Z).length() < 1e-4, "{p:?}");
+        // World-axis rotation under a rotated parent: world result = Q(X, a)·P·R.
+        let parent = Mat4::from_quat(Quat::from_rotation_z(0.7));
+        let angle = 100.0 * 0.012;
+        let r = drag(Tool::Rotate, false, parent)
+            .transform(cursor, false)
+            .rotation;
+        let world = Quat::from_rotation_z(0.7) * Quat::from_array(r);
+        let expected = Quat::from_axis_angle(Vec3::X, angle) * Quat::from_rotation_z(0.7) * yaw90;
+        assert!(
+            world.dot(expected).abs() > 0.9999,
+            "{world:?} vs {expected:?}"
+        );
+        // Local rotation spins about the object's own X.
+        let r = drag(Tool::Rotate, true, Mat4::IDENTITY)
+            .transform(cursor, false)
+            .rotation;
+        let expected = yaw90 * Quat::from_axis_angle(Vec3::X, angle);
+        assert!(Quat::from_array(r).dot(expected).abs() > 0.9999);
+    }
+
+    #[test]
     fn snapping_quantizes_move_rotate_and_scale() {
         let drag = |tool| Drag {
+            world_axis: Vec3::X,
+            local: false,
             initial: Transform::default(),
             origin: Pos2::ZERO,
             screen_axis: vec2(1.0, 0.0),
@@ -1186,6 +1350,31 @@ mod tests {
             after.prefabs["enemy.basic"].components["core.health"]["max"],
             150
         );
+    }
+
+    #[test]
+    fn hierarchy_search_supports_tag_component_and_prefab_filters() {
+        let world = pack("behavior-lab");
+        let hits = |term: &str| {
+            let mut ids: Vec<&str> = world
+                .entities
+                .iter()
+                .filter(|e| super::super::ui::search_matches(&world, e, &term.to_lowercase()))
+                .map(|e| e.id.as_str())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(hits("tag:player"), ["player"]);
+        assert_eq!(
+            hits("has:fsm.agent").len(),
+            6,
+            "prefab-inherited components count"
+        );
+        assert_eq!(hits("prefab:enemy.basic enemy/3"), ["enemy/3"]);
+        assert_eq!(hits("has:core.motion tag:player"), ["player"]);
+        assert!(hits("tag:enemy has:core.motion").is_empty());
+        assert_eq!(hits("FLOOR"), ["floor"]);
     }
 
     #[test]

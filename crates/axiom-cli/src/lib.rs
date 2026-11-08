@@ -124,6 +124,9 @@ enum Command {
         /// Start (true) or stop (false) the Play-in-editor preview.
         #[arg(long)]
         play: Option<bool>,
+        /// Open an asset inspector: material:ID, prefab:ID or resource:ID.
+        #[arg(long)]
+        open: Option<String>,
     },
     /// List queued edit proposals (newest first).
     Proposals {
@@ -591,6 +594,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             dock,
             capture,
             play,
+            open,
         } => {
             ensure!(
                 cli.connect.is_some(),
@@ -602,6 +606,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 dock,
                 capture,
                 play,
+                open,
             }
         }
         Command::Proposals { status, limit } => Request::Proposals { status, limit },

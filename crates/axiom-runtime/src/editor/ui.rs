@@ -167,10 +167,11 @@ impl Editor {
                     });
                 });
             });
+        let dock_max = (ctx.screen_rect().height() * 0.7).max(160.0);
         egui::TopBottomPanel::bottom("editor_dock")
             .resizable(true)
-            .default_height(100.0)
-            .height_range(72.0..=240.0)
+            .default_height(200.0)
+            .height_range(72.0..=dock_max)
             .frame(panel(HEADER, 8))
             .show(ctx, |ui| {
                 self.dock(ui, &mut actions);
@@ -222,6 +223,15 @@ impl Editor {
                         ui.toggle_value(&mut self.snap, "Snap").on_hover_text(
                             "0.25 m · 15° · 0.1 scale. Hold Ctrl while dragging to invert.",
                         );
+                        let space = if self.local_space { "Local" } else { "Global" };
+                        if ui
+                            .button(space)
+                            .on_hover_text("Move/Rotate gizmo axes: world (Global) or the object's own (Local). Scale is always local.")
+                            .clicked()
+                            && self.drag.is_none()
+                        {
+                            self.local_space = !self.local_space;
+                        }
                         ui.toggle_value(&mut self.grid, "Grid")
                             .on_hover_text("Always draw the ground grid");
                     });
@@ -263,9 +273,10 @@ impl Editor {
         ui.add_space(6.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.search)
-                .hint_text("Search objects…")
+                .hint_text("Search…  tag: has: prefab:")
                 .desired_width(f32::INFINITY),
-        );
+        )
+        .on_hover_text("Space-separated filters that must all match: tag:NAME, has:COMPONENT (includes prefab-inherited), prefab:ID, or text in the ID/label");
         ui.add_space(3.0);
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("scene_filter")
@@ -377,10 +388,7 @@ impl Editor {
                         .memberships
                         .get(id)
                         .is_some_and(|s| s.contains(&scene))
-                }) && (id.to_lowercase().contains(&term)
-                    || e.label
-                        .as_ref()
-                        .is_some_and(|n| n.to_lowercase().contains(&term)));
+                }) && search_matches(&self.world, e, &term);
                 matches.then_some((id, 0, false))
             }));
         } else {
@@ -1111,6 +1119,30 @@ impl Editor {
     }
 }
 
+/// Hierarchy search: whitespace-separated tokens that must all match. `tag:x` (exact tag),
+/// `has:component` (authored or prefab-inherited), `prefab:id`; any other token matches a
+/// substring of the ID or label. `term` is already lowercase.
+pub(crate) fn search_matches(world: &World, e: &Entity, term: &str) -> bool {
+    term.split_whitespace().all(|token| {
+        if let Some(tag) = token.strip_prefix("tag:") {
+            e.tags.iter().any(|t| t.to_lowercase() == tag)
+        } else if let Some(c) = token.strip_prefix("has:") {
+            e.components.keys().any(|k| k.to_lowercase() == c)
+                || e.prefab
+                    .as_ref()
+                    .and_then(|p| world.prefabs.get(p))
+                    .is_some_and(|p| p.components.keys().any(|k| k.to_lowercase() == c))
+        } else if let Some(p) = token.strip_prefix("prefab:") {
+            e.prefab.as_ref().is_some_and(|x| x.to_lowercase() == p)
+        } else {
+            e.id.to_lowercase().contains(token)
+                || e.label
+                    .as_ref()
+                    .is_some_and(|n| n.to_lowercase().contains(token))
+        }
+    })
+}
+
 fn component_editor(
     ui: &mut Ui,
     world: &World,
@@ -1149,6 +1181,37 @@ fn component_editor(
                 draft.open_component(world, entity, &id);
             }
         });
+        // Picker over every component this world can use that the object lacks.
+        let mut available: Vec<&String> = hints
+            .keys()
+            .chain(world.component_schemas.keys())
+            .filter(|id| {
+                !keys.contains(*id)
+                    && id.as_str() != "core.transform"
+                    && hints.get(*id).is_none_or(|_| {
+                        world
+                            .capabilities
+                            .keys()
+                            .any(|c| id.starts_with(&format!("{c}.")))
+                    })
+            })
+            .collect();
+        available.sort();
+        available.dedup();
+        let mut chosen = None;
+        egui::ComboBox::from_id_salt("add_component")
+            .selected_text(format!("Add component… ({})", available.len()))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for id in &available {
+                    if ui.selectable_label(false, id.as_str()).clicked() {
+                        chosen = Some((*id).clone());
+                    }
+                }
+            });
+        if let Some(id) = chosen {
+            draft.open_component(world, entity, &id);
+        }
     });
     if !draft.component.is_empty() && draft.component != "core.transform" {
         let known = hints.contains_key(&draft.component)
@@ -1217,6 +1280,17 @@ fn component_editor(
                 (false, false) => "New component JSON",
             },
         );
+        if !own && !inherits {
+            // Show the registry/world schema so a new component can be typed without docs.
+            if let Some(schema) = super::form::hints_for(hints, world, &draft.component) {
+                ui.label(
+                    RichText::new(format!("schema {}", schema))
+                        .small()
+                        .monospace()
+                        .color(MUTED),
+                );
+            }
+        }
         draft.component_dirty |= ui
             .add(
                 egui::TextEdit::multiline(&mut draft.json)

@@ -290,6 +290,8 @@ pub(crate) struct Editor {
     snap: bool,
     /// Always draw the ground grid (otherwise only in worlds without meshes).
     grid: bool,
+    /// Move/Rotate gizmos use the object's axes instead of world axes.
+    local_space: bool,
     /// Pending AI proposals awaiting review, newest first, and the store signature they match.
     proposals: Vec<Value>,
     pub(crate) proposal_signature: Option<(i64, i64)>,
@@ -341,6 +343,7 @@ impl Editor {
             clipboard: Vec::new(),
             snap: false,
             grid: false,
+            local_space: false,
             proposals: Vec::new(),
             proposal_signature: None,
             proposal_focus: None,
@@ -518,6 +521,39 @@ impl Editor {
             self.extra = rest.iter().cloned().collect();
         }
         self.frame_selection |= focus;
+        Ok(())
+    }
+
+    /// Remote asset inspector: `material:ID`, `prefab:ID` or `resource:ID`.
+    pub(crate) fn remote_open(&mut self, target: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.dirty(), "the editor has an unsaved draft");
+        let (kind, id) = target
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("open expects material:ID, prefab:ID or resource:ID"))?;
+        let missing = || {
+            axiom_core::Diagnostic::error("not_found", "/open", format!("{kind} {id} not found"))
+        };
+        match kind {
+            "material" => {
+                self.open_material(id);
+                if self.material.is_none() {
+                    return Err(missing());
+                }
+            }
+            "prefab" => {
+                self.open_prefab(id);
+                if self.prefab.is_none() {
+                    return Err(missing());
+                }
+            }
+            "resource" => {
+                if !self.world.resources.contains_key(id) {
+                    return Err(missing());
+                }
+                self.open_resource(id);
+            }
+            other => anyhow::bail!("unknown asset kind {other}; use material, prefab or resource"),
+        }
         Ok(())
     }
 
