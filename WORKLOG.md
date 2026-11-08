@@ -1,5 +1,12 @@
 # WORKLOG
 
+## 2026-11-08 (late night) — Claude (Opus 5.5) — Axiom Town, HUD regions, collision
+
+**Done (pushed):** Axiom Town social demo (`content/axiom-town`, `Play Axiom Town.cmd`, `runtime.bindings`, FSM `wander/face/clip`, `ui.nameplate`). `9429b54`: `ui.document.regions` (anchored HUD), core `nav.blocker` (module `axiom_core::blocker`) shared by Action obstacles + FSM agents, agent separation, wander resampling. 242 tests, M1 smoke PASS.
+
+**Next:** RTS demo is not fun: the enemy faction has no AI at all (only idle soldiers auto-attack within 4 m), no health bars, hit/death feedback, or fog; units are primitive boxes. User asked to look at it — proposal pending (enemy AI director + feedback visuals + map/content tuning).
+
+**Gotchas added:** Do not name a core module `nav`: `axiom_rts` also exports `nav`, and tests glob-import both crates (E0659 ambiguity). `cargo test` can fail with "failed to remove axiom.exe" (os error 5) if a smoke/play process is still exiting; rerun. After `env.ps1`, `$env:TEMP` points to `.tools\tmp`, so read logs after sourcing it.
 ## 2026-11-08 (night) — Claude (Opus 5.5) — round 2: CI, data-only combat, benchmark, editor polish
 
 **Done (pushed):** `.gitattributes` + Windows CI (green from `b567f5b`). FSM `attack` + state `emit` → `content/skirmish` (data-only victory/defeat). `benchmarks/ai-tasks.json` + `docs/benchmark-ai-tasks.md` (ACL 9.5 KB vs selective JSON 18.8 KB vs legacy 136.6 KB, replay, bytes not tokens). Editor `ab42cc4`: search `tag:/has:/prefab:`, component picker, Global/Local gizmo (Rotate default changed to Global), skinned-mesh picking/focus, `view --open`. 234 tests.
