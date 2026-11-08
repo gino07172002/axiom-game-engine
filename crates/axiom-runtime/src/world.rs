@@ -525,6 +525,7 @@ pub struct WorldRuntime {
     systems: Vec<(String, Box<dyn RuntimeSystem>)>,
     pub bindings: InputBindings,
     settings: RenderSettings,
+    environment: axiom_core::RenderEnvironment,
     shaders: std::sync::Arc<crate::shader::Prepared>,
     event_bindings: EventBindings,
     /// Last gameplay trace sequence already scanned for bindings.
@@ -679,6 +680,11 @@ impl WorldRuntime {
         } else {
             RenderSettings::default()
         };
+        let environment = if world.resources.contains_key("render.environment") {
+            world.resource("render.environment")?
+        } else {
+            axiom_core::RenderEnvironment::default()
+        };
         let bindings = if world.resources.contains_key("input.bindings") {
             world.resource("input.bindings")?
         } else {
@@ -750,6 +756,7 @@ impl WorldRuntime {
             systems,
             bindings,
             settings,
+            environment,
             shaders,
             event_bindings,
             binding_fault: None,
@@ -1109,6 +1116,8 @@ impl WorldRuntime {
             cube_materials: vec![],
             vfx: Default::default(),
             lights: vec![],
+            scene_lights: vec![],
+            environment: self.environment.clone(),
             postfx: vec![],
         };
         for (i, e) in self.state.compiled.entities.iter().enumerate() {
@@ -1132,6 +1141,16 @@ impl WorldRuntime {
                         frame.cube_materials.push((start..end, material.id.clone()));
                     }
                 }
+            }
+            if let Some(light) = e.light.as_ref().filter(|l| l.enabled) {
+                let m = matrices[i];
+                frame.scene_lights.push(crate::presentation::SceneLight {
+                    id: e.id.clone(),
+                    light: light.clone(),
+                    position: m.transform_point3(Vec3::ZERO),
+                    direction: m.transform_vector3(-Vec3::Z).normalize_or(-Vec3::Y),
+                    right: m.transform_vector3(Vec3::X).normalize_or(Vec3::X),
+                });
             }
             if let Some(camera) = &e.camera {
                 if camera.active {

@@ -837,8 +837,95 @@ const GIZMO_CAMERA_ACTIVE: Color32 = Color32::from_rgb(255, 214, 92);
 const GIZMO_BLOCKER: Color32 = Color32::from_rgb(255, 146, 72);
 const GIZMO_COLLIDER: Color32 = Color32::from_rgb(110, 232, 150);
 const GIZMO_AGENT: Color32 = Color32::from_rgb(232, 140, 255);
+const GIZMO_LIGHT: Color32 = Color32::from_rgb(255, 222, 120);
+const GIZMO_LIGHT_OFF: Color32 = Color32::from_rgb(130, 120, 90);
 
-/// Editor-only component gizmos: camera frusta (active camera highlighted), `nav.blocker`
+/// `render.light` gizmo: directional = arrow along the light, point = range circles,
+/// spot = outer/inner cone, area = rect/disk outline + normal. Returns nothing; counts via `pen`.
+fn draw_light_gizmo(
+    pen: &mut Pen,
+    light: &axiom_core::RenderLight,
+    position: Vec3,
+    [x, y, z]: [Vec3; 3],
+    color: Color32,
+) {
+    use axiom_core::{AreaShape, LightKind};
+    use std::f32::consts::TAU;
+    let forward = -z;
+    let range = light.range.unwrap_or(1.0);
+    match light.kind {
+        LightKind::Directional => {
+            pen.loop_through(&arc(position, x, y, 0.25, 0.0, TAU, 13)[..12], color);
+            let tip = position + forward * 1.6;
+            pen.line(position, tip, color);
+            for side in [x, -x, y, -y] {
+                pen.line(tip, tip - forward * 0.3 + side * 0.15, color);
+            }
+            pen.label(position, "SUN", color);
+        }
+        LightKind::Point => {
+            for (a, b) in [(Vec3::X, Vec3::Y), (Vec3::X, Vec3::Z), (Vec3::Y, Vec3::Z)] {
+                pen.loop_through(&arc(position, a, b, range, 0.0, TAU, 33)[..32], color);
+            }
+            if let Some(r) = light.source_radius.filter(|r| *r > 0.0) {
+                pen.loop_through(&arc(position, x, y, r, 0.0, TAU, 13)[..12], color);
+            }
+            pen.label(position, "POINT", color);
+        }
+        LightKind::Spot => {
+            let cone = light.spot.unwrap_or(axiom_core::SpotCone {
+                inner_degrees: 0.0,
+                outer_degrees: 30.0,
+            });
+            // Rim on the range sphere, so wide cones stay bounded.
+            for (degrees, dim) in [(cone.outer_degrees, false), (cone.inner_degrees, true)] {
+                let half = (degrees * 0.5).to_radians();
+                let (radius, depth) = (range * half.sin(), range * half.cos());
+                let rim = arc(position + forward * depth, x, y, radius, 0.0, TAU, 25);
+                let c = if dim {
+                    color.gamma_multiply(0.5)
+                } else {
+                    color
+                };
+                pen.loop_through(&rim[..24], c);
+                if !dim {
+                    for k in [0, 6, 12, 18] {
+                        pen.line(position, rim[k], c);
+                    }
+                }
+            }
+            pen.line(
+                position,
+                position + forward * range,
+                color.gamma_multiply(0.5),
+            );
+            pen.label(position, "SPOT", color);
+        }
+        LightKind::Area => {
+            let area = light.area.unwrap_or(axiom_core::AreaLight {
+                shape: AreaShape::Rect,
+                size: [1.0, 1.0],
+            });
+            let (hw, hh) = (area.size[0] * 0.5, area.size[1] * 0.5);
+            match area.shape {
+                AreaShape::Rect => pen.loop_through(
+                    &[(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                        .map(|(sx, sy)| position + x * (sx * hw) + y * (sy * hh)),
+                    color,
+                ),
+                AreaShape::Disk => {
+                    pen.loop_through(&arc(position, x, y, hw, 0.0, TAU, 25)[..24], color)
+                }
+            }
+            let tip = position + forward * hw.max(hh).max(0.5);
+            pen.line(position, tip, color);
+            pen.label(position, "AREA", color);
+        }
+    }
+}
+
+/// Editor-only component gizmos: camera frusta (active camera highlighted), `render.light`
+/// shapes (see `draw_light_gizmo`), `nav.blocker`
 /// rectangles (XZ at the authored position + offset, like the runtime), `physics.collider`
 /// boxes/capsules and `fsm.agent` body radii. Returns the number of shapes drawn.
 fn draw_component_gizmos(
@@ -915,6 +1002,16 @@ fn draw_component_gizmos(
             );
             let name = if camera.active { "CAM (active)" } else { "CAM" };
             pen.label(position, name, color);
+        }
+        if let Some(light) = &e.light {
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if light.enabled {
+                GIZMO_LIGHT
+            } else {
+                GIZMO_LIGHT_OFF
+            };
+            draw_light_gizmo(&mut pen, light, position, [x, y, z], color);
         }
         if let Some(blocker) = e
             .components
@@ -2576,6 +2673,38 @@ mod tests {
         editor.set_view_flag(&["plaza/fountain".into()], false);
         frame(&ctx, &mut editor, &runtime, vec![]);
         assert!(editor.scene_input.gizmo_shapes < gizmos);
+    }
+
+    #[test]
+    fn light_gizmos_draw_every_kind_and_follow_hidden_and_toggle() {
+        let world = pack("light-lab");
+        let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+        let mut editor = Editor::new(world, 1, None);
+        let ctx = egui::Context::default();
+        let shapes = |editor: &mut Editor| {
+            for _ in 0..3 {
+                frame(&ctx, editor, &runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let all = shapes(&mut editor);
+        // Three point lights alone are 3 x 3 range circles of 32 segments.
+        assert!(all > 200, "{all}");
+        let mut previous = all;
+        for id in [
+            "statue/spot",
+            "sign/light",
+            "kiosk/light",
+            "moon",
+            "lamp/west",
+        ] {
+            editor.set_view_flag(&[id.into()], false);
+            let now = shapes(&mut editor);
+            assert!(now < previous, "hiding {id}: {now} !< {previous}");
+            previous = now;
+        }
+        editor.run_command("view.gizmos").unwrap();
+        assert_eq!(shapes(&mut editor), 0);
     }
 
     #[test]

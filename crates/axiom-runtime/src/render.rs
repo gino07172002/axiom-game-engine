@@ -28,13 +28,11 @@ pub(crate) fn cube_vertex_layouts() -> [wgpu::VertexBufferLayout<'static>; 2] {
         },
     ]
 }
-pub(crate) const GLOBALS_STRIDE: u32 = 1280;
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct LocalLight {
-    position_radius: [f32; 4],
-    color_intensity: [f32; 4],
-}
+/// Per-view uniform slot (dynamic offset); a multiple of the 256-byte offset alignment.
+pub(crate) const GLOBALS_STRIDE: u32 = 3072;
+/// Bytes of `Globals` (the WGSL struct in lighting.wgsl must match).
+pub(crate) const GLOBALS_SIZE: u64 = std::mem::size_of::<Globals>() as u64;
+const _: () = assert!(GLOBALS_SIZE <= GLOBALS_STRIDE as u64);
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
@@ -42,8 +40,11 @@ struct Globals {
     light_vp: [[f32; 4]; 4],
     eye_time: [f32; 4],
     accent: [f32; 4],
-    lights: [LocalLight; 32],
+    lights: [crate::lighting::GpuLocalLight; crate::lighting::GPU_LOCAL_LIGHTS],
     view_params: [f32; 4],
+    suns: [crate::lighting::GpuSun; crate::lighting::GPU_SUNS],
+    ambient: [[f32; 4]; 3],
+    fog: [f32; 4],
 }
 
 pub struct Renderer {
@@ -182,7 +183,7 @@ impl Renderer {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &uniform,
                         offset: 0,
-                        size: std::num::NonZeroU64::new(std::mem::size_of::<Globals>() as u64),
+                        size: std::num::NonZeroU64::new(GLOBALS_SIZE),
                     }),
                 },
                 wgpu::BindGroupEntry {
@@ -203,7 +204,7 @@ impl Renderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &uniform,
                     offset: 0,
-                    size: std::num::NonZeroU64::new(std::mem::size_of::<Globals>() as u64),
+                    size: std::num::NonZeroU64::new(GLOBALS_SIZE),
                 }),
             }],
         });
@@ -220,7 +221,7 @@ impl Renderer {
             });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("axiom scene WGSL"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(crate::lighting::SCENE_WGSL.into()),
         });
         let buffers = cube_vertex_layouts();
         let depth_state = wgpu::DepthStencilState {
@@ -410,9 +411,8 @@ impl Renderer {
                 snapshot.tick,
             );
         }
-        let extent = snapshot.settings.shadow_extent;
-        let light_vp = Mat4::orthographic_rh(-extent, extent, -extent, extent, 1.0, 170.0)
-            * Mat4::look_at_rh(Vec3::new(-45.0, 75.0, 35.0), Vec3::ZERO, Vec3::Y);
+        let lighting = crate::lighting::pack(snapshot);
+        let light_vp = lighting.light_vp;
         let mut uniforms = vec![0_u8; views.len() * GLOBALS_STRIDE as usize];
         let mut geometry = snapshot.instances.clone();
         let shared = geometry.len() as u32;
@@ -454,23 +454,6 @@ impl Renderer {
                     v.camera.far,
                 ),
             };
-            let mut lights = [LocalLight::zeroed(); 32];
-            for (out, light) in lights.iter_mut().zip(snapshot.lights.iter().take(32)) {
-                *out = LocalLight {
-                    position_radius: [
-                        light.position.x,
-                        light.position.y,
-                        light.position.z,
-                        light.radius,
-                    ],
-                    color_intensity: [
-                        light.color[0],
-                        light.color[1],
-                        light.color[2],
-                        light.intensity,
-                    ],
-                };
-            }
             let global = Globals {
                 view_proj: (projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up))
                     .to_cols_array_2d(),
@@ -480,9 +463,9 @@ impl Renderer {
                     snapshot.settings.accent[0],
                     snapshot.settings.accent[1],
                     snapshot.settings.accent[2],
-                    snapshot.lights.len().min(32) as f32,
+                    lighting.local_count as f32,
                 ],
-                lights,
+                lights: lighting.locals,
                 view_params: [
                     v.camera.near,
                     v.camera.far,
@@ -496,6 +479,9 @@ impl Renderer {
                     },
                     0.0,
                 ],
+                suns: lighting.suns,
+                ambient: lighting.ambient,
+                fog: lighting.fog,
             };
             let bytes = bytemuck::bytes_of(&global);
             uniforms[i * GLOBALS_STRIDE as usize..i * GLOBALS_STRIDE as usize + bytes.len()]
@@ -539,7 +525,8 @@ impl Renderer {
                 label: Some("frame"),
             });
         self.vfx.compute(&mut encoder);
-        {
+        // Sun 0 without shadows: the shadow map is not sampled, so skip its depth pass.
+        if lighting.shadow {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sun depth"),
                 color_attachments: &[],

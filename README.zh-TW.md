@@ -67,7 +67,7 @@ ok rev=3 restored_from=1
 | **執行層** | 120 Hz 固定步進、帶 generation 檢查的 entity handle、具型別的 component 欄、跨 revision 保留狀態的熱重載。 |
 | **行為** | 任何 entity 都可使用資料定義的有限狀態機(`fsm.machines`)、共用的玩法／敘事／UI IR,以及原生 FPS、RTS、動作戰鬥模組。 |
 | **驗證** | 含輸入、指令、斷言時間軸的 scenario;`field` 和 `call` 斷言;seeded RNG;跨程序比對用的狀態雜湊;checkpoint 與存檔欄位。 |
-| **渲染** | `wgpu` forward renderer,支援 Lit／Toon／自訂 WGSL 材質、骨架動畫(glTF/GLB、PMX)、GPU compute 粒子、貼花、霧與後製效果。 |
+| **渲染** | `wgpu` forward renderer,支援編寫的燈光(`render.light`:可投射陰影的平行光、點光源、聚光燈、近似面光源)與環境光／霧(`render.environment`)、Lit／Toon／自訂 WGSL 材質、骨架動畫(glTF/GLB、PMX)、GPU compute 粒子、貼花、霧與後製效果。 |
 | **編輯器** | 原生場景編輯器(場景樹、視口 gizmo、Inspector),與 AI agent 共用同一套 revision,並即時同步外部寫入。 |
 | **即時連線** | Loopback JSONL(`--connect 127.0.0.1:4242`),可對執行中的遊戲觀察、下指令、修改和存檔。不需要 MCP。 |
 

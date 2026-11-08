@@ -466,7 +466,9 @@ fn vertex_hook_signature_and_blend_modes_are_validated_as_material_contracts() {
     );
     for source in [
         include_str!("../src/vfx_compute.wgsl"),
-        include_str!("../src/vfx_draw.wgsl"),
+        axiom_runtime::lighting::VFX_DRAW_WGSL,
+        axiom_runtime::lighting::SCENE_WGSL,
+        axiom_runtime::lighting::MESH_WGSL,
         include_str!("../src/postfx.wgsl"),
     ] {
         let module = naga::front::wgsl::parse_str(source).unwrap();

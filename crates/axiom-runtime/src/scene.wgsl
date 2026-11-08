@@ -1,6 +1,3 @@
-struct LocalLight {position_radius:vec4<f32>,color_intensity:vec4<f32>}
-struct Globals { view_proj: mat4x4<f32>, light_vp: mat4x4<f32>, eye_time: vec4<f32>, accent: vec4<f32>, lights:array<LocalLight,32>, view_params:vec4<f32> }
-@group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var shadow_map: texture_depth_2d;
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
 struct In {
@@ -31,11 +28,15 @@ fn scene_shadow(light: vec4<f32>) -> f32 {
     }
     return shadow;
 }
+// The shadow map belongs to sun 0 when its direction_shadow.w is set.
+fn sun_shadow(light: vec4<f32>) -> f32 {
+    if g.suns[0].direction_shadow.w > 0.5 { return scene_shadow(light); }
+    return 1.0;
+}
 @fragment fn fs_main(v: Out) -> @location(0) vec4<f32> {
-    let n=normalize(v.normal);let ld=normalize(vec3<f32>(-0.45,0.85,0.35));
-    let shadow=scene_shadow(v.light);
-    let diffuse=max(dot(n,ld),0.0);
-    let ambient=mix(vec3<f32>(0.11,0.16,0.19),vec3<f32>(0.37,0.48,0.53),n.y*0.5+0.5)*(vec3<f32>(0.85)+g.accent.rgb*0.15);
+    let n=normalize(v.normal);
+    let shadow=sun_shadow(v.light);
+    let ambient=axiom_ambient(n);
     var base=v.color.rgb;
     let emission=v.material.x;
     let grid_width=max(fwidth(v.world.xz/2.0),vec2<f32>(0.001));
@@ -44,13 +45,17 @@ fn scene_shadow(light: vec4<f32>) -> f32 {
         let line=1.0-min(min(grid.x,grid.y),1.0);
         base=mix(base,vec3<f32>(0.22,0.32,0.34),line*0.38);
     }
-    let view=normalize(g.eye_time.xyz-v.world);let halfv=normalize(ld+view);
-    let spec=pow(max(dot(n,halfv),0.0),48.0)*0.17*shadow;
-    var lit=base*(ambient+vec3<f32>(1.12,1.0,0.82)*diffuse*shadow)+vec3<f32>(spec)+base*emission;
+    let view=normalize(g.eye_time.xyz-v.world);
+    var direct=vec3<f32>(0.0);var spec=vec3<f32>(0.0);
+    for(var i=0u;i<min(u32(g.ambient_sky.w),4u);i=i+1u) {
+        let sun=g.suns[i];let ld=sun.direction_shadow.xyz;
+        let lit_by=select(1.0,shadow,sun.direction_shadow.w>0.5);
+        direct+=sun.color.rgb*max(dot(n,ld),0.0)*lit_by;
+        spec+=sun.specular.rgb*(pow(max(dot(n,normalize(ld+view)),0.0),48.0)*0.17*lit_by);
+    }
+    var lit=base*(ambient+direct)+spec+base*emission;
     lit+=base*axiom_lighting(v.world,n);
-    let distance=length(g.eye_time.xyz-v.world);
-    let fog=1.0-exp(-distance*distance*0.00012);
-    lit=mix(lit,vec3<f32>(0.055,0.09,0.12),fog);
+    lit=axiom_fog(lit,v.world);
     lit=lit/(lit+vec3<f32>(0.7));
     return vec4<f32>(lit,1.0);
 }
@@ -62,9 +67,3 @@ fn scene_shadow(light: vec4<f32>) -> f32 {
     return vec4<f32>(mix(vec3<f32>(0.018,0.032,0.055),vec3<f32>(0.12,0.18,0.21),horizon),1.0);
 }
 
-fn axiom_lighting(p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
- var color=vec3<f32>(0.0);for(var i=0u;i<min(u32(g.accent.w),32u);i=i+1u) {
-  let light=g.lights[i];let d=light.position_radius.xyz-p;let distance=length(d);let falloff=pow(max(1.0-distance/light.position_radius.w,0.0),2.0);
-  color+=light.color_intensity.rgb*light.color_intensity.w*falloff*max(dot(n,normalize(d+vec3<f32>(0.00001))),0.0);
- }return color;
-}

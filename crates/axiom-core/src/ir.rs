@@ -189,11 +189,16 @@ impl World {
             let mesh = decode::<RenderMesh>(&c, "render.mesh")?;
             let material = decode::<MaterialBinding>(&c, "render.material")?;
             let camera = decode::<Camera>(&c, "render.camera")?;
+            let light = decode::<crate::light::RenderLight>(&c, "render.light")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
             ensure!(
-                (mesh.is_none() && camera.is_none() && collider.is_none() && motion.is_none())
+                (mesh.is_none()
+                    && camera.is_none()
+                    && light.is_none()
+                    && collider.is_none()
+                    && motion.is_none())
                     || transform.is_some(),
                 "spatial component requires core.transform on {}",
                 e.id
@@ -216,11 +221,18 @@ impl World {
                 mesh,
                 material,
                 camera,
+                light,
                 collider,
                 health,
                 motion,
             });
         }
+        crate::light::validate_budget(
+            entities
+                .iter()
+                .filter_map(|e: &CompiledEntity| e.light.as_ref().map(|l| l.kind)),
+        )
+        .map_err(|err| Diagnostic::error("light_budget", "/entities", format!("{err:#}")))?;
         ensure!(
             instances <= MAX_INSTANCES,
             "render instance budget exceeded"
@@ -808,6 +820,7 @@ pub struct CompiledEntity {
     pub mesh: Option<RenderMesh>,
     pub material: Option<MaterialBinding>,
     pub camera: Option<Camera>,
+    pub light: Option<crate::light::RenderLight>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,

@@ -76,8 +76,23 @@ pub struct RenderFrame {
     pub shaders: std::sync::Arc<crate::shader::Prepared>,
     pub cube_materials: Vec<(std::ops::Range<u32>, String)>,
     pub vfx: crate::vfx::Frame,
+    /// VFX particle lights (point lights, fixed radius); packed after `scene_lights`.
     pub lights: Vec<crate::vfx::Light>,
+    /// Enabled `render.light` entities in authored entity order.
+    pub scene_lights: Vec<SceneLight>,
+    /// `render.environment` (default = legacy ambient and fog).
+    pub environment: axiom_core::RenderEnvironment,
     pub postfx: Vec<crate::postfx::Volume>,
+}
+/// One authored light in world space. `direction` is where it shines (entity -Z),
+/// `right` the entity +X axis (orients area rectangles).
+#[derive(Clone, Debug)]
+pub struct SceneLight {
+    pub id: String,
+    pub light: axiom_core::RenderLight,
+    pub position: Vec3,
+    pub direction: Vec3,
+    pub right: Vec3,
 }
 pub struct MeshFrame {
     pub id: String,

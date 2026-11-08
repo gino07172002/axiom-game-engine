@@ -81,7 +81,7 @@ impl MeshRenderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: globals,
                     offset: 0,
-                    size: std::num::NonZeroU64::new(1200),
+                    size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
                 }),
             }],
         });
@@ -123,7 +123,7 @@ impl MeshRenderer {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("triangle shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(crate::lighting::MESH_WGSL.into()),
         });
         let mut pipelines = vec![];
         for blend in [false, true] {

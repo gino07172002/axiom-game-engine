@@ -1,0 +1,111 @@
+# 燈光系統(`render.light` 與 `render.environment`)
+
+參考 Blender / Unity 的燈光類型。燈光是一般元件,和其他內容一樣走交易協定(`apply` / ACL / 編輯器),不需要改 Rust。
+範例內容包:`content/light-lab`(夜間廣場,`Play Light Lab.cmd`)。
+
+## `render.light`(元件,capability `render`)
+
+燈光沿實體的**本地 -Z 軸**照射,跟 `render.camera` 的方向慣例相同。位置、方向都來自 `core.transform`(含 parent)。
+
+```json
+{"kind":"spot","color":[0.85,0.92,1],"intensity":5,"range":9,
+ "spot":{"inner_degrees":28,"outer_degrees":44},"source_radius":0.05,"shadows":false,"enabled":true}
+```
+
+| 欄位 | 說明 |
+|---|---|
+| `kind` | `directional` / `point` / `spot` / `area`(必填) |
+| `color` | RGB 0..1,預設 `[1,1,1]` |
+| `intensity` | 0..100,預設 1 |
+| `range` | 公尺 0.01..500。point / spot / area **必填**;directional **不可填** |
+| `spot` | 只限 `spot`(且 spot 必填):`{inner_degrees, outer_degrees}`,**整個錐角**(Unity spotAngle、Blender spot_size 的定義),`0 ≤ inner ≤ outer`、`outer` 1..179。內外角之間用 smoothstep 漸弱 |
+| `area` | 只限 `area`(且 area 必填):`{shape: rect\|disk, size:[w,h]}`,公尺 0.01..100;rect 沿本地 X / Y,disk 必須是 `[直徑, 直徑]`。大小不受 transform scale 影響 |
+| `source_radius` | 選填,只限 point / spot,0..range:讓明暗交界變柔和(近似球形光源) |
+| `shadows` | 預設 false。見下方「陰影」 |
+| `enabled` | 預設 true |
+
+驗證是嚴格的:未知欄位、種類不符的欄位(例如 point 帶 `spot`)、超出範圍的數值都會讓交易失敗,並回傳原因。
+
+### 預算
+
+- 每個世界最多 **4 盞 directional**、**32 盞 point / spot / area**(所有帶 `render.light` 的實體都算,不論啟用與否或場景狀態,結果因此是確定的)。超過時交易失敗(`directional light budget exceeded` / `point/spot/area light budget exceeded`)。
+- GPU 的局部光陣列有 32 格,由編寫的燈光和 VFX 粒子光源(`vfx.library` renderer `light`)共用:**編寫的燈光先放(依實體編寫順序),VFX 光源接在後面(依 emitter 順序)**,放不下的丟棄。32 格沒有改:每格從 32 bytes 增加到 80 bytes,每個 view 的 uniform 從 1280 bytes 增加到 3072 bytes(8 個相機共 24 KB)。
+
+### 平行光(directional)
+
+- 使用**第一盞啟用中的** directional(依實體編寫順序)當主光,其餘(最多到第 4 盞)也會照明,但**只有第一盞能投射陰影**,而且要它的 `shadows: true`。第一盞 `shadows: false` 時,陰影 pass 直接跳過。
+- 陰影矩陣沿著該平行光方向,範圍沿用 `render.settings.shadow_extent`,中心固定在**世界原點**(跟舊版一樣;不跟著相機移動,所以大場景遠處沒有陰影)。
+- 世界裡**沒有任何啟用的 directional** 時,沿用舊版寫死的太陽(方向 `(-0.45,0.85,0.35)`、顏色 `(1.12,1.0,0.82)`、舊的陰影矩陣)。所以停用唯一一盞 directional 會讓預設太陽回來;要「沒有太陽」請把 intensity 設成 0。
+
+### 點光源、聚光燈
+
+- 衰減:`(1 - 距離/range)²`,超過 range 為 0(和舊的 VFX 光源同一個公式)。
+- 聚光燈再乘上 `smoothstep(cos(outer/2), cos(inner/2), dot(光軸, 光→表面方向))`。inner = outer 時視為硬邊。
+- `source_radius`:把 N·L 改成 wrap 形式 `(N·L + k)/(1 + k)`,`k = source_radius / 距離`(上限 1)。`source_radius = 0` 時和原本完全相同。這是**近似**,不是真正的球形面光源積分。
+
+### 面光源(area)— **近似**
+
+面光源**不是** LTC(Linearly Transformed Cosines)那種準確的面光源積分。實作方式:
+
+1. 取矩形 / 圓盤上**離被照點最近的一點**當代表點;
+2. 對該點套用點光源的 range 衰減與 N·L;
+3. 再乘上單面發光的餘弦 `max(dot(光軸, 代表點→表面), 0)`,所以只朝 -Z 那面發光。
+
+面積越大、照亮的區域越大(代表點會跟著移動),但亮度不會按面積積分,也沒有正確的鏡面反射形狀。schema 說明與編輯器選單都標了「approximate」。
+
+### 陰影
+
+| 種類 | 狀態 |
+|---|---|
+| directional | 第一盞啟用的 directional 可投射陰影(2048² PCF,和舊版相同) |
+| spot | **尚未支援**,`shadows: true` 會被拒絕:`spot light shadows not supported yet` |
+| point | **尚未支援**,`shadows: true` 會被拒絕:`point light shadows not supported yet` |
+| area | **尚未支援**,`shadows: true` 會被拒絕:`area light shadows not supported yet` |
+
+聚光燈陰影的成本量測見下方「量測」。點光源與面光源也不會被物體遮擋(光會穿過牆)。
+
+## `render.environment`(資源,capability `render`)
+
+```json
+{"ambient":{"mode":"gradient","sky":[0.05,0.06,0.12],"equator":[0.025,0.03,0.05],"ground":[0.012,0.01,0.015],"intensity":1},
+ "fog":{"color":[0.02,0.03,0.06],"density":0.025}}
+```
+
+- `ambient`(選填):
+  - `{"mode":"color","color":[r,g,b],"intensity":k}`:單色環境光;
+  - `{"mode":"gradient","sky":…,"equator":…,"ground":…,"intensity":k}`:Unity Trilight。法線朝上用 sky,水平用 equator,朝下用 ground,之間線性插值。
+  - 省略時沿用舊版:ground `(0.11,0.16,0.19)` 到 sky `(0.37,0.48,0.53)` 的半球漸層,再乘 `0.85 + accent × 0.15`(`render.settings.accent`)。編寫了 ambient 就**不再**乘 accent。
+- `fog`(選填):`{color, density}`,指數平方霧 `1 - exp(-(density × 距離)²)`(Unity ExponentialSquared 的定義)。省略時沿用舊版(`k = 0.00012`,約等於 density 0.011)。
+- 背景天空的漸層**還不能設定**(仍是引擎預設)。
+
+## 和舊版的相容性
+
+- 沒有 `render.light` directional、也沒有 `render.environment` 的世界,畫面跟改動前一樣:axiom-town、fps、shader-lab、action、effects-tour 在同一個視窗大小下前後截圖逐像素比對,576,000 像素中最多 2 個像素差 1/255(浮點捨入)。
+- 匯入的三角網格(角色、glTF):沒有編寫燈光時仍用原本的平光公式;世界一旦編寫了 directional 或 `render.environment`,網格改用和方塊相同的模型(環境光 + 平行光 + 局部光 + 霧 + 色調曲線),但**不接收陰影**(網格 pipeline 沒有陰影貼圖)。
+- 自訂材質(`render.shaders`):`SurfaceInput.diffuse` / `shadow` 改成第一盞 directional(或預設太陽)的值;`axiom_local_light(p, n)` 現在包含編寫的 point / spot / area 光和 VFX 光源。
+
+## 編輯器與無頭操作
+
+| 編輯器 | 無頭(ACL) |
+|---|---|
+| Object 選單 / 指令面板:`object.light_directional`、`object.light_point`、`object.light_spot`、`object.light_area` | `create light directional\|point\|spot\|area [id=] [at=x,y,z] [parent=] [scene=]` |
+| Hierarchy「+ Object」▸ Directional / Point / Spot / Area light | 同上;也可寫 `create light.point` |
+
+預設值:directional 和預設太陽同方向、`shadows: true`;point range 6;spot range 10、內外角 30° / 45°、朝正下方;area 2×1 m 矩形、range 8、朝正下方。預設 ID 是 preset 名稱(`light.point`、`light.point/2`…)。
+
+Gizmo(場景工具列 Gizmos 開關,隱藏的物件不畫):directional = 小圓 + 箭頭(標 SUN);point = 三個軸向的 range 圓(有 source_radius 再加一個小圓);spot = 外錐(邊緣在 range 球面上)+ 較暗的內錐圓 + 光軸;area = 矩形 / 圓盤外框 + 法線。停用的燈光畫暗色,選取中的畫白色。Hierarchy 標籤 `LIGHT`。
+
+## 量測(聚光燈陰影要不要做)
+
+先量現有平行光陰影的成本,當作「多一張陰影貼圖」的代價估計(聚光燈陰影同樣是一個深度 pass 加上 PCF 取樣)。
+
+- 環境:**debug build**(`target/debug/axiom.exe`)、NVIDIA GeForce MX150 / Vulkan、960×600 隱藏視窗(`--smoke-frames`)。
+- 量測時**暫時**把 present mode 改成 `AutoNoVsync`(量完已改回 `AutoVsync`),否則每幀都被 vsync 卡在 16.7 ms,看不出差異。
+- 方法:每次都開新的 process,每幀成本 = (600 幀的牆鐘時間 − 60 幀的牆鐘時間) / 540。A = 第一盞 directional `shadows: true`(陰影 pass + 9 次 PCF 取樣),B = `shadows: false`(跳過陰影 pass,shader 也不取樣)。A / B 交錯(ABBA…),取中位數。
+
+| 場景 | 回合 | A(有陰影)中位數 | B(無陰影)中位數 | 差 |
+|---|---|---|---|---|
+| `content/light-lab`(27 個方塊部件) | 5 | 2.48 ms | 2.60 ms | 測不出來(落在雜訊內,B 甚至比較慢) |
+| `content/rts-bench` + `create light directional id=sun`(64 個單位) | 7 | 4.73 ms | 3.81 ms | 約 +0.9 ms / 幀(7 回合中有 6 回合 A 比較慢) |
+
+結論:在 MX150 上,一張 2048² 陰影貼圖在方塊多的場景大約多 1 ms / 幀(debug build,數字會隨負載變動 2–3 倍,只能當量級參考)。每多一盞投影的聚光燈就要多一個 pass,而且還需要額外的貼圖綁定與每盞燈的矩陣。這一版**不實作**聚光燈陰影,`shadows: true` 會被明確拒絕。點光源要 6 面 cube map,成本約是聚光燈的 6 倍,同樣不做。沒有量 GPU 時間戳(wgpu 沒開 `TIMESTAMP_QUERY`),上面的數字是整個 process 的牆鐘時間差。

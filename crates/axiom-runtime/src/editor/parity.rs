@@ -75,6 +75,43 @@ fn create_presets_match_acl() {
 }
 
 #[test]
+fn light_presets_match_acl() {
+    for kind in ["directional", "point", "spot", "area"] {
+        // Object menu / palette command.
+        assert_parity(
+            lab(),
+            |e| vec![e.run_command(&format!("object.light_{kind}")).unwrap()],
+            &format!("create light {kind}"),
+        );
+        // Hierarchy "+ Object" menu (calls create_object with the preset name).
+        assert_parity(
+            lab(),
+            |e| {
+                vec![e
+                    .create_object(&format!("light.{kind}"))
+                    .into_iter()
+                    .collect()]
+            },
+            &format!("create light.{kind}"),
+        );
+    }
+    // Empty world: the render capability is added; the scene filter places the light.
+    assert_parity(
+        World::empty("blank"),
+        |e| vec![e.run_command("object.light_spot").unwrap()],
+        "create light spot",
+    );
+    assert_parity(
+        lab(),
+        |e| {
+            e.scene = Some("staging".into());
+            vec![e.run_command("object.light_point").unwrap()]
+        },
+        "create light point scene=staging",
+    );
+}
+
+#[test]
 fn repeated_creates_and_scene_filter_match_acl() {
     // Two commits in the editor vs. two statements in one ACL revision: same IDs.
     let mut editor = Editor::new(lab(), 1, None);

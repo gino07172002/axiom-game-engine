@@ -30,7 +30,7 @@ fn surface(s: SurfaceInput) -> vec4<f32> {
 }
 ```
 
-`SurfaceInput` 提供 `base_color`、`world_position`、`normal`、`uv`、`view_direction`、`time`、`diffuse`、`shadow` 和 `params`。`time` 以模擬秒為單位。方塊 UV 是依面法線選取的世界座標投影，網格使用來源 UV。`params` 是四個 float slots，可用 `{slot,default,min,max}` 定義參數名稱和範圍。WGSL hook 可用輔助函式、常數及條件分支。Axiom 管理 entry point、binding、深度與 alpha 處理。
+`SurfaceInput` 提供 `base_color`、`world_position`、`normal`、`uv`、`view_direction`、`time`、`diffuse`、`shadow` 和 `params`。`time` 以模擬秒為單位。方塊 UV 是依面法線選取的世界座標投影，網格使用來源 UV。`diffuse` 與 `shadow` 來自第一盞啟用的 `render.light` directional(沒有時是預設太陽,見 [lighting.zh-TW.md](lighting.zh-TW.md))。`params` 是四個 float slots，可用 `{slot,default,min,max}` 定義參數名稱和範圍。WGSL hook 可用輔助函式、常數及條件分支。Axiom 管理 entry point、binding、深度與 alpha 處理。
 
 ```powershell
 .\target\debug\axiom.exe discover shader
@@ -72,6 +72,6 @@ cargo build --workspace
 
 原生驗證以 PowerShell 7 執行。測試包含內容包載入、WGSL 診斷、運行中 shader 替換、故意觸發 GPU 管線錯誤後保留舊畫面，以及 GLB 蒙皮網格套用同一材質介面。會對截圖取樣像素驗證顏色，並重跑 FPS、ADV、RTS 與多相機場景。報告與截圖位於 `artifacts/shader-validation.json` 所列的目錄。
 
-新增的 [Effects Atlas](effects-atlas.zh-TW.md) 提供程序化三角網格、可選 `vertex_offset` 函式、additive／multiply 混合、GPU 粒子，以及場景顏色／深度後處理。`vertex_offset(p:vec3<f32>, n:vec3<f32>, uv:vec2<f32>, time:f32, params:vec4<f32>) -> vec3<f32>` 回傳本地頂點位置；未提供時保持原有幾何。`axiom_local_light(position, normal)` 可取得局部點光源的貢獻。
+新增的 [Effects Atlas](effects-atlas.zh-TW.md) 提供程序化三角網格、可選 `vertex_offset` 函式、additive／multiply 混合、GPU 粒子，以及場景顏色／深度後處理。`vertex_offset(p:vec3<f32>, n:vec3<f32>, uv:vec2<f32>, time:f32, params:vec4<f32>) -> vec3<f32>` 回傳本地頂點位置；未提供時保持原有幾何。`axiom_local_light(position, normal)` 可取得局部光源的貢獻(編寫的 point / spot / area 燈光與 VFX 光源)。
 
 GPU 粒子使用引擎內建 compute 管線；自訂材質介面仍不開放任意 compute 或資源 binding。材質節點圖與外部引擎 shader 原始碼匯入尚未支援。自訂程式仍有 16 KiB、16 個使用者函式與 2048 個運算式的上限，且禁止迴圈。透明與網格陰影的上述限制仍適用。

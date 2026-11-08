@@ -11,8 +11,17 @@ use glam::{EulerRot, Quat};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-/// Presets offered by the editor's "+ Object" menu.
-pub const PRESETS: [&str; 3] = ["empty", "cube", "camera"];
+/// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is
+/// shorthand for `create light.point`.
+pub const PRESETS: [&str; 7] = [
+    "empty",
+    "cube",
+    "camera",
+    "light.directional",
+    "light.point",
+    "light.spot",
+    "light.area",
+];
 
 /// An edit batch that creates objects, and the created IDs (first = the one to select).
 #[derive(Clone, Debug)]
@@ -172,20 +181,63 @@ fn place_entity(entity: Entity, place: &Placement) -> Vec<Edit> {
     edits
 }
 
-/// Creates an object from an editor preset: `empty`, `cube` (one default mesh part) or
-/// `camera` (perspective; active only when no other camera is active). Cube and camera add
-/// the `render` capability when the world lacks it.
+/// The `render.light` a light preset creates (`None` for other presets).
+pub fn preset_light(preset: &str) -> Option<RenderLight> {
+    let mut light = RenderLight::directional([1.0, 0.95, 0.85], 1.0, true);
+    match preset {
+        "light.directional" => {}
+        "light.point" => {
+            light.kind = LightKind::Point;
+            light.color = [1.0, 0.85, 0.6];
+            light.intensity = 2.0;
+            light.range = Some(6.0);
+            light.shadows = false;
+        }
+        "light.spot" => {
+            light.kind = LightKind::Spot;
+            light.color = [1.0, 0.95, 0.85];
+            light.intensity = 3.0;
+            light.range = Some(10.0);
+            light.spot = Some(SpotCone {
+                inner_degrees: 30.0,
+                outer_degrees: 45.0,
+            });
+            light.shadows = false;
+        }
+        "light.area" => {
+            light.kind = LightKind::Area;
+            light.color = [0.9, 0.95, 1.0];
+            light.intensity = 2.0;
+            light.range = Some(8.0);
+            light.area = Some(AreaLight {
+                shape: AreaShape::Rect,
+                size: [2.0, 1.0],
+            });
+            light.shadows = false;
+        }
+        _ => return None,
+    }
+    Some(light)
+}
+
+/// Creates an object from an editor preset: `empty`, `cube` (one default mesh part),
+/// `camera` (perspective; active only when no other camera is active) or a light
+/// (`light.directional|point|spot|area`: a `render.light` aimed along local -Z; the
+/// directional one matches the engine's default sun, the others point straight down).
+/// Every preset but `empty` adds the `render` capability when the world lacks it.
 pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<Created> {
     if !PRESETS.contains(&preset) {
         let hint = if preset == "light" {
-            "; this engine has no light component (use a cube with emission, or a vfx light)"
+            "; lights need a kind: light point|spot|area|directional"
         } else {
             ""
         };
         return Err(Diagnostic::error(
             "unknown_preset",
             "/preset",
-            format!("unknown preset '{preset}' (use empty, cube, camera){hint}"),
+            format!(
+                "unknown preset '{preset}' (use empty, cube, camera, light.directional|point|spot|area){hint}"
+            ),
         ));
     }
     let id = placement_id(world, preset, place)?;
@@ -196,6 +248,19 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
         "camera" => {
             transform.position = [0.0, 3.0, 6.0];
             transform.rotation = rotation_from_degrees([-16.0, 0.0, 0.0]);
+        }
+        "light.directional" => {
+            // Aim -Z along the default sun (it shines away from DEFAULT_SUN_TOWARD).
+            transform.position = [0.0, 6.0, 0.0];
+            let toward = glam::Vec3::from_array(DEFAULT_SUN_TOWARD).normalize();
+            transform.rotation = Quat::from_rotation_arc(glam::Vec3::NEG_Z, -toward)
+                .normalize()
+                .to_array();
+        }
+        "light.point" => transform.position = [0.0, 2.0, 0.0],
+        "light.spot" | "light.area" => {
+            transform.position = [0.0, 3.0, 0.0];
+            transform.rotation = rotation_from_degrees([-90.0, 0.0, 0.0]);
         }
         _ => {}
     }
@@ -220,6 +285,9 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
         let mut camera = Camera::perspective();
         camera.active = !any_active_camera(world);
         entity.set("render.camera", camera)?;
+    }
+    if let Some(light) = preset_light(preset) {
+        entity.set("render.light", light)?;
     }
     let mut edits = vec![];
     if preset != "empty" && !world.capabilities.contains_key("render") {

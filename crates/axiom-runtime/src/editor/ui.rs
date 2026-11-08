@@ -297,6 +297,10 @@ impl Editor {
                             ("empty", "Empty object"),
                             ("cube", "Cube"),
                             ("camera", "Camera"),
+                            ("light.directional", "Directional light"),
+                            ("light.point", "Point light"),
+                            ("light.spot", "Spot light"),
+                            ("light.area", "Area light (approximate)"),
                         ] {
                             if ui.button(label).clicked() {
                                 actions.extend(self.create_object(preset));
@@ -1244,6 +1248,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
     let mut out = vec![];
     for (component, text, color) in [
         ("render.camera", "CAM", Color32::from_rgb(120, 180, 255)),
+        ("render.light", "LIGHT", Color32::from_rgb(255, 222, 120)),
         ("render.mesh", "MESH", Color32::from_rgb(105, 205, 190)),
         ("render.geometry", "GEO", Color32::from_rgb(140, 210, 120)),
         ("animation.player", "SKIN", Color32::from_rgb(200, 150, 255)),
@@ -1262,6 +1267,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
 fn badge_meaning(text: &str) -> &'static str {
     match text {
         "CAM" => "render.camera",
+        "LIGHT" => "render.light (directional, point, spot or area)",
         "MESH" => "render.mesh (primitive parts)",
         "GEO" => "render.geometry (procedural)",
         "SKIN" => "animation.player (glTF skinned model)",

@@ -64,6 +64,32 @@ fn acl_verbs_compile_to_the_shared_ops() {
             .edits,
         ),
         (
+            "create light spot at=1,4,0",
+            ops::create_object(
+                &start,
+                "light.spot",
+                &ops::Placement {
+                    position: Some([1.0, 4.0, 0.0]),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .edits,
+        ),
+        (
+            "create light.area id=panel",
+            ops::create_object(
+                &start,
+                "light.area",
+                &ops::Placement {
+                    id: Some("panel".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .edits,
+        ),
+        (
             "instantiate cargo-crate at=0,0,2",
             ops::instantiate_prefab(
                 &start,
@@ -251,7 +277,9 @@ fn preview_and_propose_leave_the_revision_alone() {
 fn bad_input_reports_structured_errors() {
     let mut s = store();
     for (script, expected) in [
-        ("create light", "unknown_preset"),
+        ("create light", "acl_syntax"),
+        ("create light laser", "unknown_preset"),
+        ("create light point id=bad!id", "invalid_id"),
         ("create cube id=stage/rack", "id_taken"),
         ("create cube scene=nope", "not_found"),
         ("create cube parent=nope", "not_found"),
@@ -315,4 +343,69 @@ fn rename_move_and_prefab_create_round_trip() {
     // Moving to where it already is commits nothing new.
     let out = acl(&mut s, "move stage/crate end").unwrap();
     assert!(out.starts_with("unchanged"), "{out}");
+}
+
+#[test]
+fn light_presets_create_valid_lights_aimed_along_minus_z() {
+    use axiom_core::{LightKind, RenderLight};
+    let mut s = store();
+    acl(
+        &mut s,
+        "create light directional\ncreate light point at=2,3,4\ncreate light spot\ncreate light area\ncreate light point",
+    )
+    .unwrap();
+    let world = s.current().unwrap().1;
+    let light = |id: &str| -> RenderLight {
+        serde_json::from_value(world.entity(id).unwrap().components["render.light"].clone())
+            .unwrap()
+    };
+    assert_eq!(light("light.directional").kind, LightKind::Directional);
+    assert!(light("light.directional").shadows);
+    assert_eq!(light("light.point").range, Some(6.0));
+    assert_eq!(light("light.point/2").kind, LightKind::Point);
+    assert!(light("light.spot").spot.is_some());
+    assert!(light("light.area").area.is_some());
+    assert_eq!(
+        world.entity("light.point").unwrap().components["core.transform"]["position"],
+        serde_json::json!([2.0, 3.0, 4.0])
+    );
+    // The directional preset matches the default sun: -Z maps onto -DEFAULT_SUN_TOWARD.
+    let t: axiom_core::Transform = serde_json::from_value(
+        world.entity("light.directional").unwrap().components["core.transform"].clone(),
+    )
+    .unwrap();
+    let forward = glam::Quat::from_array(t.rotation) * -glam::Vec3::Z;
+    let toward = glam::Vec3::from_array(axiom_core::DEFAULT_SUN_TOWARD).normalize();
+    assert!((forward + toward).length() < 1e-5, "{forward}");
+    // Spot/area presets point straight down.
+    let t: axiom_core::Transform = serde_json::from_value(
+        world.entity("light.spot").unwrap().components["core.transform"].clone(),
+    )
+    .unwrap();
+    assert!((glam::Quat::from_array(t.rotation) * -glam::Vec3::Z + glam::Vec3::Y).length() < 1e-5);
+    // Bad component values are rejected by the transaction, with the reason.
+    let error = acl(&mut s, "set light.point render.light/shadows true").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("point light shadows not supported yet"),
+        "{error}"
+    );
+}
+
+#[test]
+fn light_budget_is_enforced_at_commit() {
+    let mut s = store();
+    let script = (0..5)
+        .map(|_| "create light directional")
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error = acl(&mut s, &script).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("directional light budget exceeded"),
+        "{error}"
+    );
+    acl(&mut s, "create light directional\ncreate light directional").unwrap();
 }

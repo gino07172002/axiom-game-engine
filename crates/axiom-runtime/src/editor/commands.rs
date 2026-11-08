@@ -127,6 +127,15 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.empty", "Create Empty", "Object", "Ctrl+Shift+N"),
     c("object.cube", "Create Cube", "Object", ""),
     c("object.camera", "Create Camera", "Object", ""),
+    c(
+        "object.light_directional",
+        "Create Directional Light",
+        "Object",
+        "",
+    ),
+    c("object.light_point", "Create Point Light", "Object", ""),
+    c("object.light_spot", "Create Spot Light", "Object", ""),
+    c("object.light_area", "Create Area Light", "Object", ""),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -373,6 +382,10 @@ impl Editor {
             | "object.empty"
             | "object.cube"
             | "object.camera"
+            | "object.light_directional"
+            | "object.light_point"
+            | "object.light_spot"
+            | "object.light_area"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -466,6 +479,10 @@ impl Editor {
             "object.empty" => actions.extend(self.create_object("empty")),
             "object.cube" => actions.extend(self.create_object("cube")),
             "object.camera" => actions.extend(self.create_object("camera")),
+            "object.light_directional" => actions.extend(self.create_object("light.directional")),
+            "object.light_point" => actions.extend(self.create_object("light.point")),
+            "object.light_spot" => actions.extend(self.create_object("light.spot")),
+            "object.light_area" => actions.extend(self.create_object("light.area")),
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
@@ -817,6 +834,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.empty": "create empty",
                 "object.cube": "create cube",
                 "object.camera": "create camera",
+                "object.light_point": "create light point (also directional, spot, area)",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",
                 "edit.delete": "delete SEL",

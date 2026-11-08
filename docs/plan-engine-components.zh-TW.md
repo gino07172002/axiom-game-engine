@@ -5,11 +5,11 @@
 
 ## 現況(以 `axiom discover` 的實際註冊表為準)
 
-物件元件 20 個,多數綁定特定玩法(`fps.*`、`rts.*`、`action.actor`)。`physics.collider` 只有 box / capsule,而且只供 FPS 使用;音效只有全域的 `audio.library`;燈光只有寫死的太陽,以及 VFX 產生的點光源(半徑固定 2 m、最多 32 盞)。
+物件元件 20 個,多數綁定特定玩法(`fps.*`、`rts.*`、`action.actor`)。`physics.collider` 只有 box / capsule,而且只供 FPS 使用;音效只有全域的 `audio.library`;燈光只有寫死的太陽,以及 VFX 產生的點光源(半徑固定 2 m、最多 32 盞)。(2026-11-08 起:`render.light` / `render.environment` 已加入。)
 
 ## 執行順序
 
-1. **燈光系統**(使用者指定,參考 Blender / Unity):`render.light` 的 `directional` / `point` / `spot`(內外錐角) / `area`(矩形、圓盤;第一版以代表點近似,並如實標示),以及 `render.environment`(單色,或天空 / 地平線 / 地面三段漸層的環境光)。太陽改由元件提供,未設定時沿用現有預設。陰影:平行光沿用;聚光燈與點光源的陰影先量測成本再決定。
+1. **燈光系統**(使用者指定,參考 Blender / Unity):`render.light` 的 `directional` / `point` / `spot`(內外錐角) / `area`(矩形、圓盤;第一版以代表點近似,並如實標示),以及 `render.environment`(單色,或天空 / 地平線 / 地面三段漸層的環境光)。太陽改由元件提供,未設定時沿用現有預設。陰影:平行光沿用;聚光燈與點光源的陰影先量測成本再決定。**狀態:已完成第一版**,見 [lighting.zh-TW.md](lighting.zh-TW.md)(spot / point / area 陰影未支援,會明確拒絕)。
 2. **觸發區**:進入 / 離開事件,接 `behavior.program` 與 `runtime.bindings`(取代城鎮「FSM + near」的權宜做法)。
 3. **路徑與路徑跟隨**:可循環、速度、朝向切線(車輛、行人)。
 4. **導航代理**:繞過 `nav.blocker` 與建築的尋路(通用版,不綁 RTS)。

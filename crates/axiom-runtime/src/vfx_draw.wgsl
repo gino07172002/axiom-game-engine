@@ -1,6 +1,3 @@
-struct Light {position_radius:vec4<f32>,color_intensity:vec4<f32>}
-struct Globals {view_proj:mat4x4<f32>,light_vp:mat4x4<f32>,eye_time:vec4<f32>,accent:vec4<f32>,lights:array<Light,32>,view_params:vec4<f32>}
-@group(0) @binding(0) var<uniform> g:Globals;
 @group(0) @binding(1) var scene_depth:texture_depth_2d;
 struct Out {@builtin(position) clip:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) color:vec4<f32>,@location(2) kind:f32}
 fn point(p:vec4<f32>,color:vec4<f32>,misc:vec4<f32>,i:u32)->Out {

@@ -125,6 +125,18 @@ impl Registry {
         );
         r.component("render.camera","render",json!({"projection":"{kind:perspective,fov_degrees} | {kind:orthographic,height}","near":"positive number","far":"number > near","viewport":"normalized [x,y,width,height]","active":"bool"}),|v|typed(v,Camera::validate));
         r.component(
+            "render.light",
+            "render",
+            crate::light::light_schema(),
+            |v| typed(v, crate::light::RenderLight::validate),
+        );
+        r.resource(
+            "render.environment",
+            "render",
+            crate::light::environment_schema(),
+            |v| typed(v, crate::light::RenderEnvironment::validate),
+        );
+        r.component(
             "physics.collider",
             "physics",
             json!({"shape":"box + half_extents[3] | capsule + half_height, radius"}),

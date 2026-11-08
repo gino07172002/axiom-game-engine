@@ -132,7 +132,7 @@ impl VfxGpu {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(1200),
+                        min_binding_size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
                     },
                     count: None,
                 },
@@ -151,7 +151,7 @@ impl VfxGpu {
         let draw_bind = Self::bind(device, &draw_layout, globals, depth);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("VFX sprite / model / ribbon"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("vfx_draw.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(crate::lighting::VFX_DRAW_WGSL.into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -256,7 +256,7 @@ impl VfxGpu {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: globals,
                         offset: 0,
-                        size: std::num::NonZeroU64::new(1200),
+                        size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
                     }),
                 },
                 wgpu::BindGroupEntry {

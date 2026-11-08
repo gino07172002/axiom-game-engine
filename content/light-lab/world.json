@@ -1,0 +1,69 @@
+{
+ "schema_version":2,"id":"light-lab","title":"Light Lab / Night Plaza",
+ "capabilities":{"core":1,"render":1,"motion":1},"systems":["motion.integrate"],
+ "prefabs":{
+  "lamp-post":{"components":{"core.transform":{},"render.mesh":{"parts":[
+   {"transform":{"position":[0,1.5,0],"scale":[0.14,3,0.14]},"color":[0.16,0.17,0.2]},
+   {"transform":{"position":[0,3.05,0],"scale":[0.5,0.12,0.5]},"color":[0.16,0.17,0.2]},
+   {"transform":{"position":[0,2.88,0],"scale":[0.3,0.22,0.3]},"color":[1,0.78,0.5],"emission":1.6}
+  ]}}},
+  "street-lamp":{"components":{"core.transform":{},"render.light":{"kind":"point","color":[1,0.72,0.42],"intensity":3.2,"range":6.5,"source_radius":0.15}}},
+  "crate":{"components":{"core.transform":{},"render.mesh":{"parts":[{"color":[0.62,0.56,0.48]}]}}}
+ },
+ "entities":[
+  {"id":"ground","label":"Plaza ground","components":{"core.transform":{"position":[0,-0.25,0],"scale":[26,0.5,26]},"render.mesh":{"parts":[{"color":[0.36,0.37,0.4]}]}}},
+  {"id":"wall/back","label":"Shop wall","components":{"core.transform":{"position":[-3,2,-6],"scale":[9,4,0.4]},"render.mesh":{"parts":[{"color":[0.5,0.48,0.46]}]}}},
+  {"id":"wall/side","components":{"core.transform":{"position":[-7.3,1.5,-2],"scale":[0.4,3,8]},"render.mesh":{"parts":[{"color":[0.46,0.48,0.5]}]}}},
+
+  {"id":"moon","label":"Moon (directional)","components":{"core.transform":{"position":[0,9,-4],"rotation":[-0.7750785,0.4133752,0,0.4778853]},"render.light":{"kind":"directional","color":[0.62,0.7,1],"intensity":0.16,"shadows":true}}},
+
+  {"id":"lamp/west","prefab":"lamp-post","components":{"core.transform":{"position":[-5,0,1]}}},
+  {"id":"lamp/west/light","prefab":"street-lamp","components":{"core.transform":{"position":[0,2.7,0]}}},
+  {"id":"lamp/east","prefab":"lamp-post","components":{"core.transform":{"position":[6,0,-1]}}},
+  {"id":"lamp/east/light","prefab":"street-lamp","components":{"core.transform":{"position":[0,2.7,0]}}},
+  {"id":"lamp/north","prefab":"lamp-post","components":{"core.transform":{"position":[2,0,-8]}}},
+  {"id":"lamp/north/light","prefab":"street-lamp","components":{"core.transform":{"position":[0,2.7,0]},"render.light":{"color":[0.75,0.85,1]}}},
+
+  {"id":"statue/base","label":"Statue plinth","components":{"core.transform":{"position":[3,0.4,2]},"render.mesh":{"parts":[
+   {"transform":{"scale":[1.6,0.8,1.6]},"color":[0.55,0.55,0.58]},
+   {"transform":{"position":[0,1.2,0],"scale":[0.7,1.6,0.7]},"color":[0.85,0.83,0.78]},
+   {"transform":{"position":[0,2.25,0],"scale":[0.5,0.5,0.5]},"color":[0.85,0.83,0.78]}
+  ]}}},
+  {"id":"statue/spot","label":"Statue spot light","components":{"core.transform":{"position":[3,6,2],"rotation":[-0.70710677,0,0,0.70710677]},"render.light":{"kind":"spot","color":[0.85,0.92,1],"intensity":5,"range":9,"spot":{"inner_degrees":28,"outer_degrees":44},"source_radius":0.05}}},
+
+  {"id":"sign","label":"Neon sign panel","components":{"core.transform":{"position":[-3,2.6,-5.75]},"render.mesh":{"parts":[{"transform":{"scale":[3,1,0.08]},"color":[1,0.45,0.85],"emission":2.5}]}}},
+  {"id":"sign/light","label":"Sign area light (rect, approximate)","components":{"core.transform":{"position":[-3,2.6,-5.65],"rotation":[0,1,0,0]},"render.light":{"kind":"area","color":[1,0.42,0.82],"intensity":3.5,"range":8,"area":{"shape":"rect","size":[3,1]}}}},
+
+  {"id":"kiosk","label":"Kiosk","components":{"core.transform":{"position":[-2,0,3.5]},"render.mesh":{"parts":[
+   {"transform":{"position":[-0.9,1.2,0],"scale":[0.12,2.4,0.12]},"color":[0.2,0.22,0.25]},
+   {"transform":{"position":[0.9,1.2,0],"scale":[0.12,2.4,0.12]},"color":[0.2,0.22,0.25]},
+   {"transform":{"position":[0,2.45,0],"scale":[2.2,0.1,1.6]},"color":[0.2,0.22,0.25]},
+   {"transform":{"position":[0,0.45,0],"scale":[1.4,0.9,0.7]},"color":[0.66,0.64,0.6]}
+  ]}}},
+  {"id":"kiosk/light","label":"Kiosk disk light (approximate)","components":{"core.transform":{"position":[-2,2.35,3.5],"rotation":[-0.70710677,0,0,0.70710677]},"render.light":{"kind":"area","color":[0.45,1,0.65],"intensity":2.5,"range":4.5,"area":{"shape":"disk","size":[1.2,1.2]}}}},
+
+  {"id":"crate/1","prefab":"crate","components":{"core.transform":{"position":[-4.2,0.5,-0.2]}}},
+  {"id":"crate/2","prefab":"crate","components":{"core.transform":{"position":[-4.4,1.5,-0.1],"rotation":[0,0.258819,0,0.9659258],"scale":[0.8,0.8,0.8]}}},
+  {"id":"crate/3","prefab":"crate","components":{"core.transform":{"position":[6.8,0.4,0.4],"scale":[0.8,0.8,0.8]}}},
+  {"id":"spinner","label":"Spinning block","components":{"core.transform":{"position":[0.5,0.6,-3],"scale":[1.2,1.2,1.2]},"core.motion":{"angular_velocity":[0,0.5,0]},"render.mesh":{"parts":[{"color":[0.7,0.72,0.75]}]}}},
+  {"id":"bench","components":{"core.transform":{"position":[6,0.3,2.6]},"render.mesh":{"parts":[
+   {"transform":{"scale":[2,0.12,0.6]},"color":[0.55,0.4,0.28]},
+   {"transform":{"position":[-0.8,-0.18,0],"scale":[0.12,0.36,0.5]},"color":[0.2,0.2,0.22]},
+   {"transform":{"position":[0.8,-0.18,0],"scale":[0.12,0.36,0.5]},"color":[0.2,0.2,0.22]}
+  ]}}},
+
+  {"id":"camera","components":{"core.transform":{"position":[0,6.5,14],"rotation":[-0.17364818,0,0,0.98480775]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.1,"far":120,"viewport":[0,0,1,1],"active":true}}}
+ ],
+ "relations":[
+  {"source":"lamp/west/light","target":"lamp/west","kind":"parent"},
+  {"source":"lamp/east/light","target":"lamp/east","kind":"parent"},
+  {"source":"lamp/north/light","target":"lamp/north","kind":"parent"}
+ ],
+ "resources":{
+  "render.settings":{"accent":[0.55,0.65,1],"shadow_extent":16},
+  "render.environment":{
+   "ambient":{"mode":"gradient","sky":[0.05,0.06,0.12],"equator":[0.025,0.03,0.05],"ground":[0.012,0.01,0.015],"intensity":1},
+   "fog":{"color":[0.02,0.03,0.06],"density":0.025}
+  }
+ }
+}

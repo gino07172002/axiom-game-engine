@@ -208,14 +208,14 @@ impl ShaderGpu {
     ) -> Vec<wgpu::RenderPipeline> {
         let (base, wrapper, vertex, layout) = if mesh {
             (
-                include_str!("mesh.wgsl"),
+                crate::lighting::MESH_WGSL,
                 include_str!("mesh_surface.wgsl"),
                 "vertex_main",
                 &self.mesh,
             )
         } else {
             (
-                include_str!("scene.wgsl"),
+                crate::lighting::SCENE_WGSL,
                 include_str!("cube_surface.wgsl"),
                 "vs_main",
                 &self.cube,

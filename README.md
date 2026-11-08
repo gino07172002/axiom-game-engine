@@ -67,7 +67,7 @@ ok rev=3 restored_from=1
 | **Runtime** | Fixed-step 120 Hz simulation, generation-checked entity handles, typed component columns, and hot reload that keeps state across revisions. |
 | **Behavior** | Data-defined finite state machines (`fsm.machines`) for any entity, a shared gameplay/narrative/UI IR, and native FPS, RTS and action-combat modules. |
 | **Verification** | Scenarios with input, command and assertion timelines; `field` and `call` assertions; a seeded RNG; state hashes for cross-process comparison; checkpoints and save slots. |
-| **Rendering** | `wgpu` forward renderer with lit, toon and custom WGSL materials, skeletal animation (glTF/GLB, PMX), GPU compute particles, decals, fog and post effects. |
+| **Rendering** | `wgpu` forward renderer with authored lights (`render.light`: directional with shadows, point, spot, approximate area) and ambient/fog (`render.environment`), lit, toon and custom WGSL materials, skeletal animation (glTF/GLB, PMX), GPU compute particles, decals, fog and post effects. |
 | **Editor** | A native scene editor (hierarchy, viewport gizmos, inspector) that uses the same revisions as AI agents. It picks up external revisions live. |
 | **Live bridge** | Loopback JSONL (`--connect 127.0.0.1:4242`) to observe, command, edit and save a running game. MCP is not required. |
 

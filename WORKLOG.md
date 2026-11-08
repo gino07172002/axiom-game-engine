@@ -1,5 +1,12 @@
 # WORKLOG
 
+## 2026-11-09 — Claude (Opus 5.5) — lighting system (plan-engine-components item 1), not committed
+
+**Done (uncommitted, for review):** `render.light` component (directional / point / spot / approximate area; strict validation; budgets 4 directional + 32 local) and `render.environment` resource (ambient color | gradient trilight, optional exp² fog) in `axiom-core/src/light.rs`; GPU packing `axiom-runtime/src/lighting.rs` + shared WGSL prelude `lighting.wgsl` (Globals 1184 → 2992 B, stride 3072). Defaults are pixel-identical (before/after diff on axiom-town, fps, shader-lab, action, effects-tour: ≤2 px differ by 1/255). Presets `light.*`, ACL `create light KIND`, editor commands `object.light_*`, "+ Object" entries, gizmos, `LIGHT` badge, parity tests. `content/light-lab` + `Play Light Lab.cmd`. Docs `docs/lighting.zh-TW.md`.
+
+**Next:** spot shadows (measured: one 2048² shadow pass ≈ +0.9 ms/frame on rts-bench, debug build, vsync off), configurable sky gradient, shadow matrix following the camera (texel-snapped).
+
+**Gotchas added:** Smoke screenshots take the window size from the primary monitor (1805×950 vs 960×600 changed mid-session); capture BEFORE/AFTER back to back (`git stash` tracked changes, build, capture, pop). Smoke runs are vsync-capped (AutoVsync), so frame-time A/B needs a temporary `AutoNoVsync` build. PowerShell variables are case-insensitive (`$long` == `$Long`). There is no Python on this machine; image diffs use C# via `Add-Type`.
 ## 2026-11-08 (night 3) — Claude (Opus 5.5) — Effects Atlas camera, editor plan, editor M1
 
 **Done:** Effects Atlas mouse camera + navigation (`d86eb1e`; smoke PASS after the machine recovered). Editor plan `docs/plan-editor-human-tuning.md` (Godot/Unity parity, M1–M10) with spikes S1–S4 recorded (egui_dock 0.16 / egui-snarl 0.7.1 work with egui 0.31; Game view/camera preview via viewport composition, no offscreen pass; typed schema conforms on all 41 instances, ~3.5x bytes so projected on demand). **M1** editor shell: `editor/commands.rs` registry (32 commands) drives menu bar, Ctrl+Shift+P palette, shortcuts (overridable), F1 shortcut table, preferences (`*.editor-prefs.json`), status bar, `editor_view {command}` / `view --command`, `discover editor_commands`, preview Pause/Step. 257 tests, editor smoke ok.

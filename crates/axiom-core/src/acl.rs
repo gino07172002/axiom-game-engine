@@ -21,6 +21,7 @@ EDIT (any number, atomic):
   delete SEL
  editor operations (same code as the editor UI; P = [id=ID] [at=x,y,z] [parent=ID] [scene=ID]):
   create empty|cube|camera P      new object; default id = preset name, then NAME/2, NAME/3..
+  create light directional|point|spot|area P   render.light aimed along local -Z (id light.KIND)
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -408,6 +409,12 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "delete" => {
             ensure!(tokens.len() == 2, "delete takes one selector");
             Statement::Delete(Box::new(selector(arg(1)?)?))
+        }
+        "create" if tokens.get(1).is_some_and(|t| t == "light") => {
+            let kind = tokens.get(2).with_context(|| {
+                "create light needs a kind: directional|point|spot|area".to_owned()
+            })?;
+            Statement::Create(format!("light.{kind}"), Box::new(placement(&tokens[3..])?))
         }
         "create" => Statement::Create(arg(1)?.clone(), Box::new(placement(&tokens[2..])?)),
         "instantiate" => {
