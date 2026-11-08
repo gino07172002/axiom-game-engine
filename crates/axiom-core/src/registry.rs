@@ -185,6 +185,7 @@ impl Registry {
         );
         r.topics.insert("observe_delta".into(),json!({"op":"observe_delta","cursor":"optional opaque cursor from previous response","fields":"optional array of JSON pointers; default excludes timing noise and UI text","trace_limit":"0..128; optional recent trace records","max_bytes":"256..65536; default 8192","responses":"snapshot + reset reason, or changes + cursor; expired cursors reset explicitly"}));
         r.topics.insert("editor".into(),json!({
+            "commands":"discover editor_commands; run with {\"op\":\"editor_view\",\"command\":ID}",
             "read":{"op":"scene_tree","query":{"parent":"optional immediate parent ID","roots_only":"optional; mutually exclusive with parent","scene":"optional scene ID","text":"optional label or ID substring","limit":"1..128, default 32","max_bytes":"256..65536, default 8192","cursor":"next_cursor from same revision and filters"}},
             "inspect":{"op":"select","query":{"from":"entities","ids":["object-id"],"fields":["label","components/core.transform"]}},
             "edits":[

@@ -214,6 +214,10 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
   - **S4 型別化 schema:可用。** 以 JSON-Schema 子集加上 `x-unit` / `x-widget` / `x-ref` / `x-discriminator` 描述 `render.camera`、`fsm.agent`、`ui.nameplate`。`content/` 內 41 個實例(16 / 19 / 6)全部符合,0 違規。生成的表單:投影方式用下拉選單加對應欄位、viewport 用 rect、radius / height 用滑桿並標示單位、machine 用資源選取器、color 用取色器。大小:typed schema 為 874 / 235 / 340 B,現有說明文字為 ~180 / ~40 / ~100 B,約 3.5 倍。→ 決策 4 定案:`discover` 預設與 `discover <component>` 維持精簡說明,typed schema 只在 `discover <component> --typed`(或 `{"typed":true}`)時投影;編輯器在程式內直接讀 registry,不經協定。另發現說明與實作已不同步:`fsm.agent` 的說明沒有列出已存在的 `radius`。typed schema 讓這類漂移可以用測試抓到(M3 加入「實例符合 schema」的測試)。
   - **GATE 1 通過**;決策 2(egui_dock)、5(viewport 合成)、4(typed schema 依需投影)定案。長期風險:專案的 egui 0.31 落後最新版 0.36 五個大版本,dock 與節點圖套件都要跟著升級(已列在 pre-mortem #6)。
 
+- **M1 外框骨架(2026-11-08)**:`editor/commands.rs` 指令註冊表,共 32 個指令(File / Edit / View / Object / Play / Window / Help),每個有 ID、標題、選單、預設快捷鍵與「不可用原因」;選單列、命令面板(Ctrl+Shift+P,關鍵字過濾、方向鍵、Enter、Esc)、快捷鍵分派、快捷鍵表(F1)、偏好視窗都從同一張表產生。原本寫死在 `draw` 的快捷鍵全部改走註冊表(Ctrl+C / V 仍走 egui 的 Copy / Paste 事件,但執行同一指令)。偏好 `*.editor-prefs.json`(Snap 開關與三種間距、Grid、Global / Local、dock 分頁、快捷鍵覆寫;載入時夾限範圍並丟棄未知指令;未變更不寫檔)。Snap 間距由偏好提供(場景工具列 Snap 旁有「…」可調)。狀態列顯示訊息、選取、問題、提案、REV、bridge、FPS。`editor_view {command}` 與 CLI `view --command`;`discover editor_commands`(1449 B)。Play 預覽浮層新增 Pause / Resume 與 Step。File ▸ Exit。
+  證據:`editor::commands` 單元測試 5 項(註冊表一致性與所有預設快捷鍵可解析、無重複綁定;每個指令要嘛執行、要嘛回報原因;以 egui 鍵盤事件驗證 Ctrl+D、Ctrl+3、改綁 Ctrl+J 後 Ctrl+D 失效、命令面板開啟後輸入 R 不會切換工具;面板輸入「create cube」+ Enter 產生寫入;偏好往返與錯值夾限)。原有「只按 Ctrl 不切換工具」的測試仍通過(修正:比對時 Ctrl 與 Command 視為同一個鍵)。clippy exit 0;workspace 257 passed;`editor-smoke-test.ps1` ok:true。即時驗證:經 bridge 執行 `object.cube`(rev 1→2)、`edit.undo`(→3,以追加修訂還原)、未知指令與「nothing selected」都回報原因、`file.exit` 讓編輯器以 code 0 結束。截圖確認選單列、狀態列、命令面板(整列寬、快捷鍵靠右、不可用項目灰色)。修正一處缺字:Snap 下拉的「▾」改為「…」。
+  未做 / 延後:預覽期間編輯器 UI 被遊戲 UI 取代(看不到選單),留給 M4 的 Game 視圖;選單無法用 egui 測試展開截圖,選單項目以 `run_into` 與指令測試覆蓋。
+
 ## 修訂補記
 
-(無)
+- 2026-11-08:決策 2(egui_dock)選定後,原計畫沒有把「可停靠 / 可重排面板與版面存檔」排進任何里程碑 → **併入 M2**(與 Hierarchy、視口手感一起,版面存在 `*.editor-prefs.json`)。理由:M1 先把所有入口集中到指令註冊表;重排面板需要把現有固定面板改成 TabViewer,和 M2 要改的 Hierarchy、視口剛好是同一批程式碼。

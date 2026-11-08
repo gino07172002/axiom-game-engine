@@ -114,22 +114,29 @@ pub(super) struct Drag {
     tool: Tool,
 }
 impl Drag {
-    /// Gizmo result; with `snap`, moves step 0.25 m, rotations 15°, scales 0.1.
-    fn transform(&self, cursor: Pos2, snap: bool) -> Transform {
+    /// Gizmo result; with `snap` = [move m, rotate radians, scale], values are quantized.
+    fn transform(&self, cursor: Pos2, snap: Option<[f32; 3]>) -> Transform {
         let mut next = self.initial.clone();
         let pixels = (cursor - self.origin).dot(self.screen_axis);
-        let step = |x: f32, s: f32| if snap { (x / s).round() * s } else { x };
+        let [snap_move, snap_rotate, snap_scale] = snap.unwrap_or([0.0; 3]);
+        let step = |x: f32, s: f32| {
+            if snap.is_some() {
+                (x / s).round() * s
+            } else {
+                x
+            }
+        };
         match self.tool {
             Tool::Move => {
-                let offset = self
-                    .parent_inverse
-                    .transform_vector3(self.world_axis * step(pixels * self.world_units, 0.25));
+                let offset = self.parent_inverse.transform_vector3(
+                    self.world_axis * step(pixels * self.world_units, snap_move),
+                );
                 next.position = (Vec3::from_array(next.position) + offset)
                     .clamp(Vec3::splat(-100000.0), Vec3::splat(100000.0))
                     .to_array();
             }
             Tool::Rotate => {
-                let angle = step(pixels * 0.012, 15f32.to_radians());
+                let angle = step(pixels * 0.012, snap_rotate);
                 let current = Quat::from_array(next.rotation);
                 next.rotation = if self.local {
                     current * Quat::from_axis_angle(AXES[self.axis], angle)
@@ -145,8 +152,9 @@ impl Drag {
                 .to_array();
             }
             Tool::Scale => {
-                next.scale[self.axis] = step(next.scale[self.axis] * (pixels * 0.014).exp(), 0.1)
-                    .clamp(if snap { 0.1 } else { 0.0001 }, 10000.0)
+                next.scale[self.axis] =
+                    step(next.scale[self.axis] * (pixels * 0.014).exp(), snap_scale)
+                        .clamp(if snap.is_some() { snap_scale } else { 0.0001 }, 10000.0)
             }
             Tool::Select => {}
         }
@@ -518,7 +526,7 @@ impl Editor {
             matrix: self.orbit.matrix(rect),
             rect,
         };
-        if self.grid
+        if self.prefs.grid
             || !state
                 .entities
                 .iter()
@@ -594,7 +602,7 @@ impl Editor {
                     && selected.is_some_and(visible)
                     && self.draft.as_ref().is_some_and(|d| d.transform.is_some())
             })
-            .and_then(|m| Handles::new(&view, &self.orbit, m, self.tool, self.local_space));
+            .and_then(|m| Handles::new(&view, &self.orbit, m, self.tool, self.prefs.local_space));
         let hovered_axis = response
             .hover_pos()
             .and_then(|pos| handles.as_ref()?.hit(pos));
@@ -609,8 +617,13 @@ impl Editor {
                     let vector = handles.tips[axis].unwrap() - handles.pivot;
                     let model = parent * initial.matrix();
                     self.drag = Some(Drag {
-                        world_axis: handle_axis(model, AXES[axis], self.tool, self.local_space),
-                        local: self.local_space,
+                        world_axis: handle_axis(
+                            model,
+                            AXES[axis],
+                            self.tool,
+                            self.prefs.local_space,
+                        ),
+                        local: self.prefs.local_space,
                         initial,
                         origin,
                         screen_axis: vector.normalized(),
@@ -622,14 +635,15 @@ impl Editor {
                 }
             }
         }
+        let snap_steps = self.snap_steps();
         if let Some(drag) = &self.drag {
             let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
             if cancel {
                 self.select(self.selected.clone());
             } else if let Some(draft) = &mut self.draft {
                 if let Some(cursor) = ui.input(|i| i.pointer.latest_pos()) {
-                    let snap = self.snap != ui.input(|i| i.modifiers.command);
-                    let t = drag.transform(cursor, snap);
+                    let snap = self.prefs.snap != ui.input(|i| i.modifiers.command);
+                    let t = drag.transform(cursor, snap.then_some(snap_steps));
                     draft.transform_dirty = t != drag.initial;
                     draft.angles = degrees(&t);
                     draft.transform = Some(t);
@@ -1150,18 +1164,18 @@ mod tests {
         let cursor = pos2(100.0, 0.0);
         // Global X moves along world X; local X of a yawed object points along world -Z.
         let p = drag(Tool::Move, false, Mat4::IDENTITY)
-            .transform(cursor, false)
+            .transform(cursor, None)
             .position;
         assert!((Vec3::from_array(p) - Vec3::X).length() < 1e-4, "{p:?}");
         let p = drag(Tool::Move, true, Mat4::IDENTITY)
-            .transform(cursor, false)
+            .transform(cursor, None)
             .position;
         assert!((Vec3::from_array(p) - Vec3::NEG_Z).length() < 1e-4, "{p:?}");
         // World-axis rotation under a rotated parent: world result = Q(X, a)·P·R.
         let parent = Mat4::from_quat(Quat::from_rotation_z(0.7));
         let angle = 100.0 * 0.012;
         let r = drag(Tool::Rotate, false, parent)
-            .transform(cursor, false)
+            .transform(cursor, None)
             .rotation;
         let world = Quat::from_rotation_z(0.7) * Quat::from_array(r);
         let expected = Quat::from_axis_angle(Vec3::X, angle) * Quat::from_rotation_z(0.7) * yaw90;
@@ -1171,7 +1185,7 @@ mod tests {
         );
         // Local rotation spins about the object's own X.
         let r = drag(Tool::Rotate, true, Mat4::IDENTITY)
-            .transform(cursor, false)
+            .transform(cursor, None)
             .rotation;
         let expected = yaw90 * Quat::from_axis_angle(Vec3::X, angle);
         assert!(Quat::from_array(r).dot(expected).abs() > 0.9999);
@@ -1191,16 +1205,17 @@ mod tests {
             tool,
         };
         let cursor = pos2(31.0, 0.0);
-        let moved = drag(Tool::Move).transform(cursor, true).position[0];
+        let steps = Some([0.25, 15f32.to_radians(), 0.1]);
+        let moved = drag(Tool::Move).transform(cursor, steps).position[0];
         assert!(
             (moved / 0.25 - (moved / 0.25).round()).abs() < 1e-5,
             "{moved}"
         );
-        assert!((drag(Tool::Move).transform(cursor, false).position[0] - 0.403).abs() < 1e-4);
-        let r = Quat::from_array(drag(Tool::Rotate).transform(cursor, true).rotation);
+        assert!((drag(Tool::Move).transform(cursor, None).position[0] - 0.403).abs() < 1e-4);
+        let r = Quat::from_array(drag(Tool::Rotate).transform(cursor, steps).rotation);
         let deg = r.to_axis_angle().1.to_degrees();
         assert!((deg / 15.0 - (deg / 15.0).round()).abs() < 1e-3, "{deg}");
-        let s = drag(Tool::Scale).transform(cursor, true).scale[0];
+        let s = drag(Tool::Scale).transform(cursor, steps).scale[0];
         assert!((s * 10.0 - (s * 10.0).round()).abs() < 1e-4, "{s}");
     }
 

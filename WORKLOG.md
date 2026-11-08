@@ -1,5 +1,12 @@
 # WORKLOG
 
+## 2026-11-08 (night 3) — Claude (Opus 5.5) — Effects Atlas camera, editor plan, editor M1
+
+**Done:** Effects Atlas mouse camera + navigation (`d86eb1e`; smoke PASS after the machine recovered). Editor plan `docs/plan-editor-human-tuning.md` (Godot/Unity parity, M1–M10) with spikes S1–S4 recorded (egui_dock 0.16 / egui-snarl 0.7.1 work with egui 0.31; Game view/camera preview via viewport composition, no offscreen pass; typed schema conforms on all 41 instances, ~3.5x bytes so projected on demand). **M1** editor shell: `editor/commands.rs` registry (32 commands) drives menu bar, Ctrl+Shift+P palette, shortcuts (overridable), F1 shortcut table, preferences (`*.editor-prefs.json`), status bar, `editor_view {command}` / `view --command`, `discover editor_commands`, preview Pause/Step. 257 tests, editor smoke ok.
+
+**Next:** M2 (hierarchy context menu/rename/visibility/lock/reorder, fly camera, ortho views, box select, component gizmos, **egui_dock panels** moved here), then M3 Inspector 2.0 (typed schema, live apply). See plan file.
+
+**Gotchas added:** egui 0.31 has no `Button::selectable`; use `Button::new(..).selected(..)`. Labels are selectable by default; node-graph drags need `selectable_labels = false`. Shortcut matching must treat `ctrl` and `command` as the same key (tests send CTRL without COMMAND). Glyphs like ▾ ❚❚ ⤒ are missing from the bundled fonts; prefer plain text or "…". Windows PowerShell 5.1 piping text into a native exe's stdin fails JSON parsing; pass a request file instead (effects smoke fixed). A bridge capture taken in the same request as a UI-changing command shows the previous frame; capture in a second request.
 ## 2026-11-08 (night 2) — Claude (Opus 5.5) — RTS Frontier playable + polish
 
 **Done (pushed `8ba9d24`):** `content/rts` is now "Frontier" (generator `axiom-rts/src/frontier.rs`, export with `export_rts_pack frontier`): `rts.session.opponent` AI director, tower `attack`, `rts.attack.engage` (attack-move), depot-based victory, `approach()` cell spreading, shots/death presentation, health/production bars, minimap (`minimap: true`), `rts.camera`, `team_colors`. Core `ui.document.styles` + `chrome:"compact"`. Old 64-unit fixture = `content/rts-bench` (byte-identical to old pack); m2/animation/shader smoke and `build-m4-content.ps1` point there. `Play RTS.cmd` uses `data/frontier.sqlite`. 250 tests; m2(+M1.5/M1/M0), combat, m4 smoke PASS; release stress PASS.

@@ -54,5 +54,6 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     postfx::register(&mut r);
     showcase::register(&mut r);
     shader::register(&mut r.authoring);
+    editor::register_topics(&mut r.authoring);
     r
 }

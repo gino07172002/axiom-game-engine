@@ -127,6 +127,9 @@ pub enum Request {
         /// Open an asset inspector: `material:ID`, `prefab:ID` or `resource:ID`.
         #[serde(default)]
         open: Option<String>,
+        /// Run a registered editor command (the same IDs as the menu bar and palette).
+        #[serde(default)]
+        command: Option<String>,
     },
     Undo {
         rev: i64,

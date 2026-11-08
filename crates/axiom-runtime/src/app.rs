@@ -65,6 +65,8 @@ struct App {
     error: Option<anyhow::Error>,
     fps_smooth: f32,
     audio: crate::audio::Output,
+    /// File ▸ Exit requested from the editor.
+    quit: bool,
 }
 
 pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Result<()> {
@@ -103,6 +105,9 @@ impl App {
                 files.sort();
                 files.truncate(64);
                 editor.set_scenarios(files);
+                // Per-user editor preferences live beside the database, outside revisions.
+                editor.set_prefs_path(options.db.with_extension("editor-prefs.json"));
+                editor.bridge = (options.port > 0).then_some(options.port);
                 Some(editor)
             }
         };
@@ -174,6 +179,7 @@ impl App {
             _bridge: bridge,
             error: None,
             fps_smooth: 60.0,
+            quit: false,
             audio: crate::audio::Output::new(),
         })
     }
@@ -216,6 +222,7 @@ impl App {
             capture,
             play,
             open,
+            command,
         } = request
         {
             if let Some(play) = play {
@@ -232,6 +239,14 @@ impl App {
             editor.remote_view(&select, focus, dock.as_deref())?;
             if let Some(target) = open.as_deref() {
                 editor.remote_open(target)?;
+            }
+            // Registered editor commands run exactly as from the menu bar or palette.
+            let commanded = match command.as_deref() {
+                Some(id) => Some(editor.run_command(id)?),
+                None => None,
+            };
+            for action in editor::coalesce(commanded.unwrap_or_default()) {
+                self.editor_action(action)?;
             }
             let path = match capture {
                 Some(name) => {
@@ -388,6 +403,10 @@ impl App {
         let editor = self.editor.as_mut().unwrap();
         match action {
             editor::Action::Play => self.editor_play(true),
+            editor::Action::Quit => {
+                self.quit = true;
+                Ok(())
+            }
             editor::Action::Write { request, select } => {
                 let previous = editor.rev;
                 let result = self.store.execute(request.clone())?;
@@ -623,6 +642,8 @@ impl App {
         let mut actions = vec![];
         let mut editor_actions = vec![];
         let mut stop = false;
+        let mut toggle = false;
+        let mut step = false;
         // Play-in-editor debug overlay: live FSM state above each agent, projected through
         // the first game view of this frame.
         let overlay: Vec<([f32; 2], String)> =
@@ -649,7 +670,9 @@ impl App {
             };
         let output = ctx.run(raw, |ctx| {
             if editing {
-                editor_actions = self.editor.as_mut().unwrap().draw(ctx, &self.runtime);
+                let editor = self.editor.as_mut().unwrap();
+                editor.fps = self.ui.fps;
+                editor_actions = editor.draw(ctx, &self.runtime);
             } else {
                 actions = self.runtime.draw_ui(ctx, &mut self.ui);
                 if self.editor.is_some() {
@@ -657,7 +680,17 @@ impl App {
                         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
-                            stop = ui.button("■ Stop Preview  F8").clicked();
+                            ui.horizontal(|ui| {
+                                stop = ui.button("■ Stop Preview  F8").clicked();
+                                toggle = ui
+                                    .button(if self.ui.playing { "Pause" } else { "Resume" })
+                                    .on_hover_text("Esc")
+                                    .clicked();
+                                step = ui
+                                    .add_enabled(!self.ui.playing, egui::Button::new("Step"))
+                                    .on_hover_text("Advance one fixed tick while paused")
+                                    .clicked();
+                            });
                             if let Some(editor) = self.editor.as_mut() {
                                 ui.checkbox(&mut editor.overlay, "Behavior overlay");
                             }
@@ -703,8 +736,19 @@ impl App {
                 .unwrap()
                 .set_history(&rows["revisions"]);
         }
+        if toggle {
+            self.ui.playing = !self.ui.playing;
+            self.capture();
+        }
+        if step && !self.ui.playing {
+            self.runtime.step(&ActionMap::default());
+        }
         if stop {
             self.editor_play(false)?;
+        }
+        if self.quit {
+            event_loop.exit();
+            return Ok(());
         }
         for action in actions {
             match action {

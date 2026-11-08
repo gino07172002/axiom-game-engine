@@ -4,7 +4,7 @@ use axiom_core::{
     local::Target, merge_json, scene_edit::Hierarchy, Camera, CoreEdit, Edit, Entity, MeshPart,
     RenderMesh, Request, Scene, Transform, World,
 };
-use egui::{Color32, Frame, Key, Layout, Margin, RichText, ScrollArea, Ui};
+use egui::{Color32, Frame, Layout, Margin, RichText, ScrollArea, Ui};
 use serde_json::{json, Value};
 
 const SURFACE: Color32 = Color32::from_rgb(23, 28, 37);
@@ -44,75 +44,45 @@ impl Editor {
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
         if !text_focused {
-            let mut copied = None;
-            ctx.input(|i| {
-                // Bare letter shortcuts only; Ctrl+R / Ctrl+W etc. belong to other commands.
-                let bare = !i.modifiers.any();
-                for (key, tool) in [
-                    (Key::Q, Tool::Select),
-                    (Key::W, Tool::Move),
-                    (Key::E, Tool::Rotate),
-                    (Key::R, Tool::Scale),
-                ] {
-                    if bare && i.key_pressed(key) && self.drag.is_none() {
-                        self.tool = tool;
-                    }
+            // Every shortcut comes from the command registry (user overrides included).
+            let pressed = ctx.input(|i| self.shortcut_commands(i));
+            for id in pressed {
+                if self.command_blocked(id).is_none() {
+                    self.run_into(id, &mut actions);
                 }
-                self.frame_selection |= bare && i.key_pressed(Key::F);
-                if i.key_pressed(Key::F5) && !self.dirty() {
-                    actions.push(Action::Play);
-                }
-                let undo = i.modifiers.command && i.key_pressed(Key::Z);
-                let redo =
-                    i.modifiers.command && (i.key_pressed(Key::Y) || (undo && i.modifiers.shift));
-                if (undo || redo) && !self.dirty() {
-                    if let Some(action) = self.restore_action(redo) {
-                        actions.push(action);
-                    }
-                }
-                let idle = !self.dirty() && self.drag.is_none();
-                if idle && bare && i.key_pressed(Key::Delete) {
-                    actions.extend(self.delete_selection());
-                }
-                if idle && i.modifiers.command && i.key_pressed(Key::D) {
-                    actions.extend(self.duplicate_ids(&self.selection()));
-                }
-                // egui-winit turns Ctrl+C / Ctrl+V into Copy / Paste events, not key presses.
-                for event in &i.events {
-                    match event {
-                        egui::Event::Copy if self.selected.is_some() => {
-                            self.clipboard = self.selection();
-                            copied = Some(self.clipboard.join("\n"));
-                        }
-                        egui::Event::Paste(text) if idle => {
-                            // Pasted text may be an ID list from another window or an agent.
-                            let ids: Vec<String> = text
-                                .lines()
-                                .map(str::trim)
-                                .filter(|id| self.world.entity(id).is_some())
-                                .map(str::to_owned)
-                                .collect();
-                            let ids = if ids.is_empty() {
-                                self.clipboard.clone()
-                            } else {
-                                ids
-                            };
-                            actions.extend(self.duplicate_ids(&ids));
-                        }
-                        _ => {}
-                    }
-                }
-            });
-            if let Some(text) = copied {
-                ctx.copy_text(text);
-                self.notice(format!("Copied {} object ID(s)", self.clipboard.len()));
             }
-            let escape = ctx.input(|i| i.key_pressed(Key::Escape));
-            if escape && self.drag.is_none() && !self.dirty() {
-                self.extra.clear();
-                self.select(None);
+            // egui-winit turns Ctrl+C / Ctrl+V into Copy / Paste events, not key presses.
+            let events = ctx.input(|i| i.events.clone());
+            for event in events {
+                match event {
+                    egui::Event::Copy if self.selected.is_some() => {
+                        self.run_into("edit.copy", &mut actions);
+                    }
+                    egui::Event::Paste(text) if !self.dirty() && self.drag.is_none() => {
+                        // Pasted text may be an ID list from another window or an agent.
+                        let ids: Vec<String> = text
+                            .lines()
+                            .map(str::trim)
+                            .filter(|id| self.world.entity(id).is_some())
+                            .map(str::to_owned)
+                            .collect();
+                        if !ids.is_empty() {
+                            self.clipboard = ids;
+                        }
+                        if !self.clipboard.is_empty() {
+                            self.run_into("edit.paste", &mut actions);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
+        if let Some(text) = self.pending_copy.take() {
+            ctx.copy_text(text);
+        }
+        egui::TopBottomPanel::top("editor_menu")
+            .frame(panel(HEADER, 4))
+            .show(ctx, |ui| self.menu_bar(ui, &mut actions));
         egui::TopBottomPanel::top("editor_toolbar")
             .frame(panel(HEADER, 9))
             .show(ctx, |ui| {
@@ -167,6 +137,9 @@ impl Editor {
                     });
                 });
             });
+        egui::TopBottomPanel::bottom("editor_status")
+            .frame(panel(HEADER, 4))
+            .show(ctx, |ui| self.status_bar(ui));
         let dock_max = (ctx.screen_rect().height() * 0.7).max(160.0);
         egui::TopBottomPanel::bottom("editor_dock")
             .resizable(true)
@@ -220,28 +193,39 @@ impl Editor {
                             self.frame_selection = true;
                         }
                         ui.separator();
-                        ui.toggle_value(&mut self.snap, "Snap").on_hover_text(
-                            "0.25 m · 15° · 0.1 scale. Hold Ctrl while dragging to invert.",
-                        );
-                        let space = if self.local_space { "Local" } else { "Global" };
+                        ui.toggle_value(&mut self.prefs.snap, "Snap").on_hover_text(format!(
+                            "{} m · {}° · {} scale. Hold Ctrl while dragging to invert.",
+                            self.prefs.snap_move, self.prefs.snap_rotate_degrees, self.prefs.snap_scale
+                        ));
+                        ui.menu_button("…", |ui| {
+                            ui.label(RichText::new("Snap increments").small());
+                            ui.add(egui::DragValue::new(&mut self.prefs.snap_move).speed(0.01).range(0.001..=100.0).prefix("Move ").suffix(" m"));
+                            ui.add(egui::DragValue::new(&mut self.prefs.snap_rotate_degrees).speed(0.5).range(0.1..=180.0).prefix("Rotate ").suffix("°"));
+                            ui.add(egui::DragValue::new(&mut self.prefs.snap_scale).speed(0.01).range(0.001..=10.0).prefix("Scale "));
+                        })
+                        .response
+                        .on_hover_text("Snap increments");
+                        let space = if self.prefs.local_space { "Local" } else { "Global" };
                         if ui
                             .button(space)
                             .on_hover_text("Move/Rotate gizmo axes: world (Global) or the object's own (Local). Scale is always local.")
                             .clicked()
                             && self.drag.is_none()
                         {
-                            self.local_space = !self.local_space;
+                            self.prefs.local_space = !self.prefs.local_space;
                         }
-                        ui.toggle_value(&mut self.grid, "Grid")
+                        ui.toggle_value(&mut self.prefs.grid, "Grid")
                             .on_hover_text("Always draw the ground grid");
                     });
                 });
                 self.scene_view(ui, runtime, &mut actions);
             });
+        self.command_windows(ctx, &mut actions);
+        self.save_prefs();
         actions
     }
 
-    fn restore_action(&self, redo: bool) -> Option<Action> {
+    pub(super) fn restore_action(&self, redo: bool) -> Option<Action> {
         let rev = *if redo {
             self.redo.last()?
         } else {
@@ -800,15 +784,6 @@ impl Editor {
             ] {
                 ui.selectable_value(&mut self.dock, dock, title);
             }
-            ui.separator();
-            ui.label(
-                RichText::new(truncate(&self.status, 95)).color(if self.error {
-                    WARNING
-                } else {
-                    MUTED
-                }),
-            )
-            .on_hover_text(&self.status);
         });
         ui.separator();
         let mut jump = None;
@@ -1062,7 +1037,7 @@ impl Editor {
             .unwrap()
     }
 
-    fn create_object(&self, preset: &str, prefab: Option<&str>) -> Action {
+    pub(super) fn create_object(&self, preset: &str, prefab: Option<&str>) -> Action {
         let mut edits = Vec::new();
         let id = self.next_id(preset);
         let mut entity = Entity::new(&id);

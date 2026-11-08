@@ -1,5 +1,7 @@
 mod assets;
+mod commands;
 mod form;
+pub use commands::register_topics;
 mod resource;
 mod ui;
 mod viewport;
@@ -38,6 +40,8 @@ pub(crate) enum Action {
     RunScenario {
         path: String,
     },
+    /// Close the editor window (File ▸ Exit).
+    Quit,
 }
 
 /// Entity ID referenced by a diagnostic path, if any (`/entities/@a~1b/...` or
@@ -286,12 +290,18 @@ pub(crate) struct Editor {
     /// Additional selected objects (Ctrl/Shift click); `selected` stays the inspector target.
     extra: BTreeSet<String>,
     clipboard: Vec<String>,
-    /// Snap gizmo edits (0.25 m, 15°, 0.1 scale); holding Ctrl inverts while dragging.
-    snap: bool,
-    /// Always draw the ground grid (otherwise only in worlds without meshes).
-    grid: bool,
-    /// Move/Rotate gizmos use the object's axes instead of world axes.
-    local_space: bool,
+    /// Per-user preferences (snap steps and toggles, grid, axes, dock, shortcut overrides).
+    prefs: commands::Prefs,
+    prefs_path: Option<std::path::PathBuf>,
+    prefs_saved: Option<String>,
+    palette: Option<commands::Palette>,
+    show_shortcuts: bool,
+    show_prefs: bool,
+    /// Text to place on the system clipboard on the next drawn frame.
+    pending_copy: Option<String>,
+    /// Status-bar readouts supplied by the host window.
+    pub(crate) fps: f32,
+    pub(crate) bridge: Option<u16>,
     /// Pending AI proposals awaiting review, newest first, and the store signature they match.
     proposals: Vec<Value>,
     pub(crate) proposal_signature: Option<(i64, i64)>,
@@ -341,9 +351,15 @@ impl Editor {
             problems: Vec::new(),
             extra: BTreeSet::new(),
             clipboard: Vec::new(),
-            snap: false,
-            grid: false,
-            local_space: false,
+            prefs: Default::default(),
+            prefs_path: None,
+            prefs_saved: None,
+            palette: None,
+            show_shortcuts: false,
+            show_prefs: false,
+            pending_copy: None,
+            fps: 0.0,
+            bridge: None,
             proposals: Vec::new(),
             proposal_signature: None,
             proposal_focus: None,
@@ -502,19 +518,11 @@ impl Editor {
             }
         }
         if let Some(dock) = dock {
-            self.dock = match dock {
-                "changes" => Dock::Changes,
-                "proposals" => Dock::Proposals,
-                "history" => Dock::History,
-                "problems" => Dock::Problems,
-                "scenarios" => Dock::Scenarios,
-                "graphs" => Dock::Graphs,
-                "assets" => Dock::Assets,
-                "agent" => Dock::Agent,
-                other => anyhow::bail!(
-                    "unknown dock {other}; use changes|proposals|history|problems|assets|agent"
-                ),
-            };
+            self.dock = commands::dock_from_name(dock).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown dock {dock}; use changes|proposals|history|problems|scenarios|graphs|assets|agent"
+                )
+            })?;
         }
         if let Some((first, rest)) = select.split_first() {
             self.select(Some(first.clone()));

@@ -127,6 +127,9 @@ enum Command {
         /// Open an asset inspector: material:ID, prefab:ID or resource:ID.
         #[arg(long)]
         open: Option<String>,
+        /// Run an editor command by ID (same as the menu bar / palette), e.g. edit.duplicate.
+        #[arg(long)]
+        command: Option<String>,
     },
     /// List queued edit proposals (newest first).
     Proposals {
@@ -595,6 +598,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             capture,
             play,
             open,
+            command,
         } => {
             ensure!(
                 cli.connect.is_some(),
@@ -607,6 +611,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 capture,
                 play,
                 open,
+                command,
             }
         }
         Command::Proposals { status, limit } => Request::Proposals { status, limit },
