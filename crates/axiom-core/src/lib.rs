@@ -20,6 +20,7 @@ pub mod retry;
 pub mod scene_edit;
 pub mod store;
 pub mod trigger;
+pub mod tween;
 pub use ir::*;
 pub use light::*;
 pub use package::*;

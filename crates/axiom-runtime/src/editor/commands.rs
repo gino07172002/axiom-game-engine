@@ -169,6 +169,14 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     c("nav.clear_target", "Nav Target: Clear", "Object", ""),
     c("object.interactable", "Make Interactable", "Object", ""),
+    c("object.tween_clip", "Add Tween Clip", "Object", ""),
+    c(
+        "tween.record_key",
+        "Record Tween Key at Playhead",
+        "Object",
+        "",
+    ),
+    c("tween.remove_key", "Remove Tween Key", "Object", ""),
     c("object.child_empty", "Create Child Empty", "Object", ""),
     c("object.child_cube", "Create Child Cube", "Object", ""),
     c("object.child_camera", "Create Child Camera", "Object", ""),
@@ -407,9 +415,19 @@ impl Editor {
             | "object.follow_path"
             | "object.nav_agent"
             | "object.interactable"
+            | "object.tween_clip"
                 if nothing =>
             {
                 Some("nothing selected")
+            }
+            "tween.record_key" | "tween.remove_key" if self.tween_target().is_none() => {
+                Some("select an object with tween clips")
+            }
+            "tween.remove_key" if self.tween_ui.key.is_none() => {
+                Some("select a key on the Inspector timeline")
+            }
+            "tween.record_key" | "tween.remove_key" if self.previewing => {
+                Some("stop Play first (keys edit the authored clip)")
             }
             "path.add_point" | "path.remove_point"
                 if self
@@ -451,6 +469,9 @@ impl Editor {
             | "nav.target_point"
             | "nav.clear_target"
             | "object.interactable"
+            | "object.tween_clip"
+            | "tween.record_key"
+            | "tween.remove_key"
             | "play.start"
             | "edit.rename"
             | "object.child_empty"
@@ -565,6 +586,9 @@ impl Editor {
             }
             "nav.clear_target" => actions.extend(self.set_nav_target(None)),
             "object.interactable" => actions.extend(self.make_interactable()),
+            "object.tween_clip" => actions.extend(self.add_tween_clip()),
+            "tween.record_key" => actions.extend(self.record_tween_key()),
+            "tween.remove_key" => actions.extend(self.remove_tween_key()),
             "view.nav_grid" => self.prefs.nav_grid = !self.prefs.nav_grid,
             "play.start" => actions.push(Action::Play),
             "help.shortcuts" => self.show_shortcuts = true,
@@ -941,6 +965,10 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
                 "nav.clear_target": "nav AGENTS target none",
                 "object.interactable": "interact SEL [event=] [prompt=] [range=] [action=]",
+                "object.tween_clip": "tween SEL clip NAME [property=] [target=] [duration=] [mode=] [autoplay=] [on_finish=]",
+                "tween.record_key": "tween ID key CLIP TRACK add T (no value = record the current one)",
+                "tween.remove_key": "tween ID key CLIP TRACK remove I",
+                "tween.timeline": "key drag: tween ID key CLIP TRACK move I T; mode/autoplay: tween ID clip NAME set mode=|autoplay=; Add track: tween ID track CLIP add P; Remove clip: tween ID clip NAME remove; scrub = view only",
                 "inspector.remove_component": "remove SEL COMPONENT",
                 "edit.duplicate": "duplicate SEL",
                 "edit.paste": "duplicate SEL",

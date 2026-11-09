@@ -92,7 +92,7 @@ impl Registry {
     pub fn core() -> Self {
         let mut r = Self::default();
         for id in [
-            "core", "render", "physics", "motion", "trigger", "path", "nav", "interact",
+            "core", "render", "physics", "motion", "trigger", "path", "nav", "interact", "tween",
         ] {
             r.capabilities.insert(id.into(), 1);
         }
@@ -169,6 +169,9 @@ impl Registry {
             crate::interact::target_schema(),
             |v| typed(v, crate::interact::InteractTarget::validate),
         );
+        r.component("tween.clips", "tween", crate::tween::clips_schema(), |v| {
+            typed(v, crate::tween::TweenClips::validate)
+        });
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());
@@ -267,6 +270,25 @@ impl Registry {
                     "core.transform".into(),
                 ],
                 writes: vec!["core.transform".into(), "runtime.events".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "tween.animate".into(),
+            SystemDescriptor {
+                id: "tween.animate".into(),
+                capability: "tween".into(),
+                // After the authored movers of other entities (fsm 8, motion 10, path 12,
+                // nav 13) so a tweened child sees its parent of this step; before rts (15),
+                // action/fps (20) and trigger.detect (25), which see the tweened poses.
+                phase: 14,
+                reads: vec!["tween.clips".into()],
+                writes: vec![
+                    "core.transform".into(),
+                    "render.light".into(),
+                    "render.mesh".into(),
+                    "runtime.events".into(),
+                ],
                 after: vec![],
             },
         );

@@ -6,6 +6,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-paths 64x1024`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-nav 256 [--nav-budget 4096]
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-interact 256x64``
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-tween 1024x4`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -135,6 +136,40 @@ fn generated_interact(targets: usize, players: usize) -> Result<World> {
         "capabilities":{"core":1,"motion":1,"interact":1},"systems":["motion.integrate","interact.focus"],
         "entities":entities,
         "resources":{"input.bindings":{"buttons":{"interact":"KeyE"}}}
+    }))?)
+}
+
+/// `components` cubes 2 m apart, each with one autoplay clip of `tracks` (1..4) tracks on
+/// itself: yaw, position, scale, mesh colour, 8 keys over 2 s with mixed easing; clips
+/// alternate loop / ping_pong with speeds 0.5..2, so every component samples every step.
+fn generated_tween(components: usize, tracks: usize) -> Result<World> {
+    anyhow::ensure!((1..=4).contains(&tracks), "1..4 tracks per component");
+    let eases = ["linear", "ease_in", "ease_out", "ease_in_out", "step"];
+    let mut entities = vec![];
+    for i in 0..components {
+        let (x, z) = ((i % 32) as f32 * 2.0, (i / 32) as f32 * 2.0);
+        let keys = |f: &dyn Fn(usize) -> Value| -> Vec<Value> {
+            (0..8)
+                .map(|k| json!({"t":k as f32 * 2.0 / 7.0,"v":f(k),"ease":eases[(i + k) % eases.len()]}))
+                .collect()
+        };
+        let all = [
+            json!({"property":"core.transform/yaw","keys":keys(&|k| json!(k as f32 * 45.0))}),
+            json!({"property":"core.transform/position","keys":keys(&|k| json!([x, (k % 3) as f32 * 0.5, z]))}),
+            json!({"property":"core.transform/scale","keys":keys(&|k| json!([1.0 + (k % 2) as f32 * 0.5, 1.0, 1.0]))}),
+            json!({"property":"render.mesh/color","keys":keys(&|k| json!([(k % 2) as f32, 0.5, 1.0 - (k % 2) as f32]))}),
+        ];
+        let clip = json!({"autoplay":true,"mode":if i % 2 == 0 {"loop"} else {"ping_pong"},
+            "speed":0.5 + (i % 4) as f32 * 0.5,"tracks":all[..tracks]});
+        entities.push(
+            json!({"id":format!("tween/{i}"),"components":{"core.transform":{"position":[x,0,z]},
+            "render.mesh":{"parts":[{"color":[0.5,0.5,0.5]}]},"tween.clips":{"clips":{"a":clip}}}}),
+        );
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("tween-{components}x{tracks}"),"title":"Tween bench",
+        "capabilities":{"core":1,"render":1,"tween":1},"systems":["tween.animate"],
+        "entities":entities
     }))?)
 }
 
@@ -268,6 +303,12 @@ fn main() -> Result<()> {
             .split_once('x')
             .context("--generated-interact TARGETSxPLAYERS")?;
         let world = generated_interact(targets.parse()?, players.parse()?)?;
+        (world.id.clone(), world)
+    } else if let Some(spec) = arg("--generated-tween") {
+        let (components, tracks) = spec
+            .split_once('x')
+            .context("--generated-tween COMPONENTSxTRACKS")?;
+        let world = generated_tween(components.parse()?, tracks.parse()?)?;
         (world.id.clone(), world)
     } else if let Some(agents) = arg("--generated-nav") {
         let budget = arg("--nav-budget").map(|b| b.parse()).transpose()?;

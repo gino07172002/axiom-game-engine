@@ -3,6 +3,7 @@ mod commands;
 mod form;
 pub use commands::register_topics;
 mod resource;
+mod timeline;
 mod ui;
 mod viewport;
 
@@ -332,6 +333,8 @@ pub(crate) struct Editor {
     pub(crate) rects: std::collections::HashMap<String, egui::Rect>,
     /// Scene-view input state: box selection, fly mode, speed readout.
     scene_input: SceneInput,
+    /// Inspector tween timeline: clip, playhead, selected key, scrub preview.
+    tween_ui: timeline::TweenUi,
 }
 
 /// Inline rename state: the row being renamed, the text being typed, focus requested yet.
@@ -402,6 +405,7 @@ impl Editor {
             renaming: None,
             rects: Default::default(),
             scene_input: SceneInput::default(),
+            tween_ui: Default::default(),
         };
         if selected
             .as_ref()
@@ -721,6 +725,127 @@ impl Editor {
             &ops::InteractOptions::default(),
         );
         self.op_write(result, None)
+    }
+
+    /// The `tween.clips` authored on `id`, if it has a valid one.
+    pub(super) fn tween_clips(&self, id: &str) -> Option<axiom_core::tween::TweenClips> {
+        serde_json::from_value(
+            self.world
+                .entity(id)?
+                .components
+                .get("tween.clips")?
+                .clone(),
+        )
+        .ok()
+    }
+
+    /// The timeline clip of the selected object: the one picked in the Inspector, else the
+    /// first; with its track index clamped to the clip.
+    pub(super) fn tween_target(&self) -> Option<(String, String, usize)> {
+        let id = self.selected.clone()?;
+        let clips = self.tween_clips(&id)?;
+        let clip = self
+            .tween_ui
+            .clip
+            .clone()
+            .filter(|c| clips.clips.contains_key(c))
+            .or_else(|| clips.clips.keys().next().cloned())?;
+        let track = self
+            .tween_ui
+            .track
+            .min(clips.clips[&clip].tracks.len().saturating_sub(1));
+        Some((id, clip, track))
+    }
+
+    /// Object ▸ Add Tween Clip (`ACL: tween SEL clip NAME`): a new clip (first free name of
+    /// `clip`, `clip2`, ...) on the selection; it becomes the timeline clip.
+    pub(super) fn add_tween_clip(&mut self) -> Option<Action> {
+        let ids = self.selection();
+        let name = ops::free_clip_name(&self.world, &ids);
+        let result =
+            ops::add_tween_clip(&self.world, &ids, &name, &ops::TweenClipOptions::default());
+        let action = self.op_write(result, None);
+        if action.is_some() {
+            self.tween_ui = timeline::TweenUi {
+                clip: Some(name),
+                ..Default::default()
+            };
+        }
+        action
+    }
+
+    /// Timeline ▸ Record key (`ACL: tween ID key CLIP TRACK add T`): the selected track's
+    /// current authored value at the playhead.
+    pub(super) fn record_tween_key(&mut self) -> Option<Action> {
+        let (id, clip, track) = self.tween_target()?;
+        let edit = ops::KeyEdit::Add {
+            time: self.tween_ui.time,
+            value: None,
+            ease: None,
+        };
+        let result = ops::edit_tween_key(&self.world, &id, &clip, track, &edit);
+        self.op_write(result, None)
+    }
+
+    /// Timeline ▸ Delete key (`ACL: tween ID key CLIP TRACK remove I`).
+    pub(super) fn remove_tween_key(&mut self) -> Option<Action> {
+        let (id, clip, track) = self.tween_target()?;
+        let index = self.tween_ui.key?;
+        let result =
+            ops::edit_tween_key(&self.world, &id, &clip, track, &ops::KeyEdit::Remove(index));
+        let action = self.op_write(result, None);
+        if action.is_some() {
+            self.tween_ui.key = None;
+        }
+        action
+    }
+
+    /// Timeline key drag (`ACL: tween ID key CLIP TRACK move I T`).
+    pub(super) fn move_tween_key(
+        &mut self,
+        clip: &str,
+        track: usize,
+        index: usize,
+        time: f32,
+    ) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::edit_tween_key(
+            &self.world,
+            &id,
+            clip,
+            track,
+            &ops::KeyEdit::Move { index, time },
+        );
+        self.op_write(result, None)
+    }
+
+    /// Timeline mode / autoplay controls (`ACL: tween ID clip NAME set ...`).
+    pub(super) fn set_tween_options(
+        &mut self,
+        clip: &str,
+        options: &ops::TweenClipOptions,
+    ) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::set_tween_clip(&self.world, &id, clip, options);
+        self.op_write(result, None)
+    }
+
+    /// Timeline ▸ Add track (`ACL: tween ID track CLIP add PROPERTY`).
+    pub(super) fn add_tween_track(&mut self, clip: &str, property: &str) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::add_tween_track(&self.world, &id, clip, property, "");
+        self.op_write(result, None)
+    }
+
+    /// Timeline ▸ Remove clip (`ACL: tween ID clip NAME remove`).
+    pub(super) fn remove_tween_clip(&mut self, clip: &str) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::remove_tween_clip(&self.world, &id, clip);
+        let action = self.op_write(result, None);
+        if action.is_some() {
+            self.tween_ui = Default::default();
+        }
+        action
     }
 
     /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
@@ -1250,6 +1375,7 @@ impl Editor {
         let selected = entity.map(|e| e.id.clone());
         if selected != self.selected {
             self.scene_input.path_point = None;
+            self.tween_ui = Default::default();
         }
         self.selected = selected;
         self.drag = None;
@@ -1420,7 +1546,26 @@ impl Editor {
         }
         let original_visibility =
             std::mem::replace(&mut runtime.state.compiled.enabled, visibility);
+        // Timeline scrub: the selected clip at the playhead, for this frame only (edit mode;
+        // nothing is written to the revision or kept in the simulation).
+        let scrub = self
+            .tween_target()
+            .filter(|_| self.tween_ui.preview && !self.previewing)
+            .and_then(|(id, clip, _)| {
+                let writes = runtime.system::<crate::tween::TweenSystem>()?.preview(
+                    &id,
+                    &clip,
+                    self.tween_ui.time,
+                )?;
+                Some(crate::tween::TweenSystem::apply_preview(
+                    &mut runtime.state,
+                    &writes,
+                ))
+            });
         let mut frame = runtime.render_frame();
+        if let Some(restore) = scrub {
+            restore.restore(&mut runtime.state);
+        }
         runtime.state.compiled.enabled = original_visibility;
         // VFX live in a resource, not on entities: drop the emitters attached to hidden objects.
         // (Meshes, procedural geometry and skinned models already skip disabled slots.)

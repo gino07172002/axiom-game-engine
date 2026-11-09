@@ -37,6 +37,7 @@ pub mod shader;
 mod shader_gpu;
 pub mod showcase;
 pub mod trigger;
+pub mod tween;
 pub mod ui;
 pub mod vfx;
 pub mod vfx_gpu;
@@ -58,6 +59,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     trigger::register(&mut r);
     interact::register(&mut r);
     path_follow::register(&mut r);
+    tween::register(&mut r);
     nav_agent::register(&mut r);
     nameplate::register(&mut r);
     vfx::register(&mut r);

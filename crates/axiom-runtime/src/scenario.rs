@@ -66,7 +66,8 @@ pub enum Assertion {
         max: f64,
     },
     /// Compare one live entity field. The record is
-    /// `{"position":[x,y,z],"health":v,"enabled":b,"components":{...}}`; `field` is a JSON
+    /// `{"position":[x,y,z],"rotation":[x,y,z,w],"scale":[x,y,z],"health":v,"enabled":b,
+    /// "components":{...}}` (local transform as simulated); `field` is a JSON
     /// pointer into it (or a bare key such as `health`).
     Field {
         entity: String,
@@ -274,6 +275,8 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
             .with_context(|| format!("assertion entity {entity} missing"))?;
         let record = json!({
             "position":runtime.state.transforms[i].as_ref().map(|t|t.position),
+            "rotation":runtime.state.transforms[i].as_ref().map(|t|t.rotation),
+            "scale":runtime.state.transforms[i].as_ref().map(|t|t.scale),
             "health":runtime.state.health[i].as_ref().map(|h|h.value),
             "enabled":runtime.state.compiled.enabled[i],
             "components":runtime.state.compiled.entities[i].components,

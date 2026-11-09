@@ -1221,6 +1221,602 @@ pub fn make_interactable(
     Ok(edits)
 }
 
+/// Clip options of `add_tween_clip` / `set_tween_clip`; `None` keeps the current value (or
+/// the default when adding). `property` / `target` only apply when adding.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TweenClipOptions {
+    /// First track's property (default `core.transform/position`).
+    pub property: Option<String>,
+    /// First track's target entity (default: the entity itself).
+    pub target: Option<String>,
+    /// `Some(None)` = automatic (the last key time).
+    pub duration: Option<Option<f32>>,
+    pub mode: Option<crate::tween::TweenMode>,
+    pub speed: Option<f32>,
+    pub autoplay: Option<bool>,
+    /// `""` clears it.
+    pub on_finish: Option<String>,
+    /// A `behavior.program` event that plays this clip: appends a `tween.play` call to the
+    /// event's `runtime.bindings` entry (declaring the event when missing). `""` = none.
+    pub play_on: Option<String>,
+}
+
+/// One change to the keys of a tween track (Inspector timeline; ACL `tween ID key ...`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyEdit {
+    /// A key at `time`; `value: None` records the property's current authored value. A key
+    /// already at that time (within 0.1 ms) gets the new value instead.
+    Add {
+        time: f32,
+        value: Option<Vec<f32>>,
+        ease: Option<crate::tween::Ease>,
+    },
+    Move {
+        index: usize,
+        time: f32,
+    },
+    Remove(usize),
+}
+
+/// Keys closer than this are the same key (seconds).
+const KEY_EPSILON: f32 = 1e-4;
+/// Default property of the first track of a new clip.
+pub const DEFAULT_TWEEN_PROPERTY: &str = "core.transform/position";
+
+fn tween_path(id: &str, rest: &str) -> String {
+    format!("{}/components/tween.clips{rest}", entity_path(id))
+}
+
+/// The `tween.clips` authored on entity `id` (`None` when it has none). Tweens inherited from
+/// a prefab are edited on the prefab: an override cannot remove inherited clips or keys.
+fn tween_of(world: &World, id: &str) -> Result<Option<crate::tween::TweenClips>> {
+    require_entity(world, id)?;
+    let entity = world.entity(id).unwrap();
+    if entity
+        .prefab
+        .as_ref()
+        .and_then(|p| world.prefabs.get(p))
+        .is_some_and(|p| p.components.contains_key("tween.clips"))
+    {
+        return Err(Diagnostic::error(
+            "inherited",
+            tween_path(id, ""),
+            format!("'{id}' inherits tween.clips from its prefab; edit the prefab (set prefabs[id=P] tween.clips/...)"),
+        ));
+    }
+    entity
+        .components
+        .get("tween.clips")
+        .map(|v| {
+            serde_json::from_value(v.clone())
+                .map_err(|e| Diagnostic::error("invalid_tween", tween_path(id, ""), format!("{e}")))
+        })
+        .transpose()
+}
+
+fn tween_clip<'a>(
+    clips: &'a mut crate::tween::TweenClips,
+    id: &str,
+    name: &str,
+) -> Result<&'a mut crate::tween::TweenClip> {
+    let names = clips.clips.keys().cloned().collect::<Vec<_>>().join(", ");
+    clips.clips.get_mut(name).ok_or_else(|| {
+        not_found(
+            tween_path(id, &format!("/clips/{}", escape(name))),
+            format!("'{id}' has no tween clip {name} (clips: {names})"),
+        )
+    })
+}
+
+/// The recorded value of `property` on `target` ("" = `id`) for a new key.
+fn recorded(world: &World, id: &str, target: &str, property: &str) -> Result<Vec<f32>> {
+    let p = crate::tween::Property::parse(property)
+        .map_err(|e| Diagnostic::error("invalid_value", "/property", format!("{e:#}")))?;
+    let on = if target.is_empty() { id } else { target };
+    crate::tween::authored_value(world, on, &p).map_err(|e| {
+        Diagnostic::error(
+            "invalid_tween",
+            format!("{}/components", entity_path(on)),
+            format!("cannot record {property}: {e:#}"),
+        )
+    })
+}
+
+/// Validates `clips` and writes them as the whole component (replacing the override).
+fn write_tween(id: &str, clips: &crate::tween::TweenClips) -> Result<Edit> {
+    clips
+        .validate()
+        .map_err(|e| Diagnostic::error("invalid_tween", tween_path(id, ""), format!("{e:#}")))?;
+    Ok(Edit::Core(CoreEdit::SetComponent {
+        entity: id.to_owned(),
+        component: "tween.clips".into(),
+        value: json!(clips),
+    }))
+}
+
+/// Edits that make tweens run: the `tween` capability and `tween.animate`; with `behavior`
+/// also `behavior.execute`, and `events` (name, declared fields) declared in
+/// `behavior.program` when missing (the program is created when absent). One edit per list
+/// and one program edit (see make_interactable).
+fn enable_tweens(world: &World, behavior: bool, events: &[(&str, Value)]) -> Result<Vec<Edit>> {
+    let (mut capabilities, mut systems) = (world.capabilities.clone(), world.systems.clone());
+    let mut needs = |capability: &str, system: &str| {
+        capabilities.entry(capability.into()).or_insert(1);
+        if !systems.iter().any(|s| s == system) {
+            systems.push(system.into());
+        }
+    };
+    needs("tween", "tween.animate");
+    if behavior || !events.is_empty() {
+        needs("behavior", "behavior.execute");
+    }
+    let mut edits = vec![];
+    if capabilities != world.capabilities {
+        edits.push(Edit::set("/capabilities", json!(capabilities)));
+    }
+    if systems != world.systems {
+        edits.push(Edit::set("/systems", json!(systems)));
+    }
+    let mut program = world
+        .resources
+        .get("behavior.program")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let mut declared = false;
+    for (event, fields) in events {
+        let declarations = program
+            .as_object_mut()
+            .map(|p| p.entry("events").or_insert_with(|| json!({})))
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                Diagnostic::error(
+                    "invalid_value",
+                    "/resources/behavior.program/events",
+                    "behavior.program events must be an object",
+                )
+            })?;
+        if !declarations.contains_key(*event) {
+            declarations.insert((*event).to_owned(), json!({ "fields": fields }));
+            declared = true;
+        }
+    }
+    if declared {
+        edits.push(Edit::Core(CoreEdit::SetResource {
+            id: "behavior.program".into(),
+            value: program,
+        }));
+    }
+    Ok(edits)
+}
+
+/// The behavior events a clip option set needs declared: `on_finish` (text fields `entity`
+/// and `clip`) and `play_on` (no fields: any event may trigger a play).
+fn tween_events(options: &TweenClipOptions) -> Vec<(&str, Value)> {
+    let mut events = vec![];
+    if let Some(e) = options.on_finish.as_deref().filter(|e| !e.is_empty()) {
+        events.push((e, json!({"entity":"text","clip":"text"})));
+    }
+    if let Some(e) = options.play_on.as_deref().filter(|e| !e.is_empty()) {
+        if !events.iter().any(|(n, _)| *n == e) {
+            events.push((e, json!({})));
+        }
+    }
+    events
+}
+
+/// `runtime.bindings` calls of `tween.play` for `(entity, clip)` pairs.
+fn play_call(id: &str, clip: &str) -> Value {
+    json!({"kind":"call","capability":"tween","action":"play","args":{"id":id,"clip":clip}})
+}
+
+/// The `runtime.bindings` edit that makes `event` play `clip` on each of `ids` (appending to
+/// the event's binding, creating the resource when missing; existing identical calls are
+/// kept once). `None` when nothing changes.
+fn bind_plays(world: &World, ids: &[&String], clip: &str, event: &str) -> Result<Option<Edit>> {
+    valid_id(event).map_err(|_| {
+        Diagnostic::error(
+            "invalid_value",
+            "/play_on",
+            format!("invalid event name '{event}'"),
+        )
+    })?;
+    let mut bindings = world
+        .resources
+        .get("runtime.bindings")
+        .cloned()
+        .unwrap_or_else(|| json!({"events":[]}));
+    let path = "/resources/runtime.bindings/events";
+    let list = bindings
+        .as_object_mut()
+        .map(|b| b.entry("events").or_insert_with(|| json!([])))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            Diagnostic::error(
+                "invalid_value",
+                path,
+                "runtime.bindings events must be an array",
+            )
+        })?;
+    let at = match list.iter().position(|b| b["event"] == event) {
+        Some(at) => at,
+        None => {
+            list.push(json!({"event":event,"calls":[]}));
+            list.len() - 1
+        }
+    };
+    let calls = list[at]["calls"].as_array_mut().ok_or_else(|| {
+        Diagnostic::error("invalid_value", path, "binding calls must be an array")
+    })?;
+    let before = calls.len();
+    for id in ids {
+        let call = play_call(id, clip);
+        if !calls.contains(&call) {
+            calls.push(call);
+        }
+    }
+    if calls.len() > 8 || list.len() > 128 {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            path,
+            format!(
+                "runtime.bindings allows 8 calls per event and 128 events; {event} would exceed it"
+            ),
+        ));
+    }
+    let changed = list[at]["calls"].as_array().map_or(0, Vec::len) != before;
+    Ok(changed.then(|| {
+        Edit::Core(CoreEdit::SetResource {
+            id: "runtime.bindings".into(),
+            value: bindings,
+        })
+    }))
+}
+
+/// Drops `runtime.bindings` calls that play `clip` on `id` (and bindings left without calls).
+fn unbind_plays(world: &World, id: &str, clip: &str) -> Option<Edit> {
+    let mut bindings = world.resources.get("runtime.bindings")?.clone();
+    let call = play_call(id, clip);
+    let list = bindings.get_mut("events")?.as_array_mut()?;
+    let before = list.clone();
+    for binding in list.iter_mut() {
+        if let Some(calls) = binding.get_mut("calls").and_then(Value::as_array_mut) {
+            calls.retain(|c| *c != call);
+        }
+    }
+    list.retain(|b| b["calls"].as_array().is_some_and(|c| !c.is_empty()));
+    (*list != before).then(|| {
+        Edit::Core(CoreEdit::SetResource {
+            id: "runtime.bindings".into(),
+            value: bindings,
+        })
+    })
+}
+/// Applies the clip options of `options` (not property / target) to `clip`; autoplay on one
+/// clip turns it off on the others (at most one autoplay clip per component).
+fn apply_clip_options(
+    clips: &mut crate::tween::TweenClips,
+    name: &str,
+    options: &TweenClipOptions,
+) {
+    if options.autoplay == Some(true) {
+        for (other, clip) in clips.clips.iter_mut() {
+            if other != name {
+                clip.autoplay = false;
+            }
+        }
+    }
+    let clip = clips.clips.get_mut(name).expect("clip exists");
+    if let Some(duration) = options.duration {
+        clip.duration = duration;
+    }
+    if let Some(mode) = options.mode {
+        clip.mode = mode;
+    }
+    if let Some(speed) = options.speed {
+        clip.speed = speed;
+    }
+    if let Some(autoplay) = options.autoplay {
+        clip.autoplay = autoplay;
+    }
+    if let Some(event) = &options.on_finish {
+        clip.on_finish = event.clone();
+    }
+}
+
+fn variable_property(property: &str) -> bool {
+    property.starts_with("behavior.program/variables/")
+}
+
+/// Object ▸ Add Tween Clip / ACL `tween SEL clip NAME`: adds clip `name` to each entity's
+/// `tween.clips` (creating the component). Its first track animates `options.property` of
+/// `options.target` with two keys, at 0 and at the clip length (default 1 s), both recording
+/// the current authored value, so the clip changes nothing until a key is moved or recorded.
+/// Adds the `tween` capability and `tween.animate` (and `behavior.execute` plus the declared
+/// `on_finish` event when needed) in the same batch.
+pub fn add_tween_clip(
+    world: &World,
+    ids: &[String],
+    name: &str,
+    options: &TweenClipOptions,
+) -> Result<Vec<Edit>> {
+    use crate::tween::*;
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that get the tween clip",
+        ));
+    }
+    if valid_id(name).is_err() {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            "/clip",
+            format!("invalid clip name '{name}' (letters, digits, . _ / -)"),
+        ));
+    }
+    let property = options
+        .property
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TWEEN_PROPERTY.to_owned());
+    let target = options.target.clone().unwrap_or_default();
+    let length = options.duration.flatten().unwrap_or(DEFAULT_DURATION);
+    let mut edits = enable_tweens(world, variable_property(&property), &tween_events(options))?;
+    let mut seen = BTreeSet::new();
+    let mut owners = vec![];
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        owners.push(id);
+        let mut clips = tween_of(world, id)?.unwrap_or(TweenClips {
+            clips: Default::default(),
+            enabled: true,
+        });
+        if clips.clips.contains_key(name) {
+            return Err(Diagnostic::error(
+                "clip_exists",
+                tween_path(id, &format!("/clips/{}", escape(name))),
+                format!(
+                    "'{id}' already has a tween clip {name}; use tween {id} clip {name} set ..."
+                ),
+            ));
+        }
+        let value = recorded(world, id, &target, &property)?;
+        let key = |t: f32| TweenKey {
+            t,
+            v: KeyValue::from_slice(&value),
+            ease: Ease::Linear,
+        };
+        clips.clips.insert(
+            name.to_owned(),
+            TweenClip {
+                tracks: vec![TweenTrack {
+                    target: target.clone(),
+                    property: property.clone(),
+                    keys: vec![key(0.0), key(length)],
+                }],
+                duration: None,
+                mode: TweenMode::Once,
+                speed: 1.0,
+                autoplay: false,
+                on_finish: String::new(),
+            },
+        );
+        apply_clip_options(&mut clips, name, options);
+        edits.push(write_tween(id, &clips)?);
+    }
+    if let Some(event) = options.play_on.as_deref().filter(|e| !e.is_empty()) {
+        edits.extend(bind_plays(world, &owners, name, event)?);
+    }
+    Ok(edits)
+}
+
+/// Inspector timeline options / ACL `tween ID clip NAME set ...`: changes duration, mode,
+/// speed, autoplay (turning it off on the other clips) and on_finish of an existing clip.
+pub fn set_tween_clip(
+    world: &World,
+    id: &str,
+    name: &str,
+    options: &TweenClipOptions,
+) -> Result<Vec<Edit>> {
+    let mut clips = tween_of(world, id)?
+        .ok_or_else(|| not_found(tween_path(id, ""), format!("'{id}' has no tween.clips")))?;
+    tween_clip(&mut clips, id, name)?;
+    apply_clip_options(&mut clips, name, options);
+    let mut edits = enable_tweens(world, false, &tween_events(options))?;
+    edits.push(write_tween(id, &clips)?);
+    if let Some(event) = options.play_on.as_deref().filter(|e| !e.is_empty()) {
+        edits.extend(bind_plays(world, &[&id.to_owned()], name, event)?);
+    }
+    Ok(edits)
+}
+
+/// Inspector ▸ Remove clip / ACL `tween ID clip NAME remove`. The last clip removes the
+/// component; `runtime.bindings` calls that play the clip are removed with it.
+pub fn remove_tween_clip(world: &World, id: &str, name: &str) -> Result<Vec<Edit>> {
+    let mut clips = tween_of(world, id)?
+        .ok_or_else(|| not_found(tween_path(id, ""), format!("'{id}' has no tween.clips")))?;
+    tween_clip(&mut clips, id, name)?;
+    clips.clips.remove(name);
+    let mut edits = if clips.clips.is_empty() {
+        remove_component(world, &[id.to_owned()], "tween.clips")?
+    } else {
+        vec![write_tween(id, &clips)?]
+    };
+    edits.extend(unbind_plays(world, id, name));
+    Ok(edits)
+}
+
+/// Inspector timeline ▸ Add track / ACL `tween ID track CLIP add PROPERTY [target=ID]`: a track
+/// with keys at 0 and at the clip length that record the current authored value.
+pub fn add_tween_track(
+    world: &World,
+    id: &str,
+    clip: &str,
+    property: &str,
+    target: &str,
+) -> Result<Vec<Edit>> {
+    use crate::tween::*;
+    let mut clips = tween_of(world, id)?
+        .ok_or_else(|| not_found(tween_path(id, ""), format!("'{id}' has no tween.clips")))?;
+    let value = recorded(world, id, target, property)?;
+    let c = tween_clip(&mut clips, id, clip)?;
+    let length = c.length();
+    let key = |t: f32| TweenKey {
+        t,
+        v: KeyValue::from_slice(&value),
+        ease: Ease::Linear,
+    };
+    c.tracks.push(TweenTrack {
+        target: target.to_owned(),
+        property: property.to_owned(),
+        keys: vec![key(0.0), key(length)],
+    });
+    let mut edits = enable_tweens(world, variable_property(property), &[])?;
+    edits.push(write_tween(id, &clips)?);
+    Ok(edits)
+}
+
+/// Inspector timeline ▸ Remove track / ACL `tween ID track CLIP remove I`. A clip keeps at
+/// least one track (remove the clip instead).
+pub fn remove_tween_track(world: &World, id: &str, clip: &str, index: usize) -> Result<Vec<Edit>> {
+    let mut clips = tween_of(world, id)?
+        .ok_or_else(|| not_found(tween_path(id, ""), format!("'{id}' has no tween.clips")))?;
+    let c = tween_clip(&mut clips, id, clip)?;
+    let path = tween_path(id, &format!("/clips/{}/tracks/{index}", escape(clip)));
+    if index >= c.tracks.len() {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            path,
+            format!(
+                "track index {index} is out of range 0..{}",
+                c.tracks.len() - 1
+            ),
+        ));
+    }
+    if c.tracks.len() == 1 {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            path,
+            format!("{clip} needs at least one track; remove the clip instead (tween {id} clip {clip} remove)"),
+        ));
+    }
+    c.tracks.remove(index);
+    Ok(vec![write_tween(id, &clips)?])
+}
+
+/// Inspector timeline keys (record at the playhead, drag, delete) / ACL `tween ID key CLIP
+/// TRACK add|move|remove`. Keys stay sorted by time; the result must be a valid clip.
+pub fn edit_tween_key(
+    world: &World,
+    id: &str,
+    clip: &str,
+    track: usize,
+    edit: &KeyEdit,
+) -> Result<Vec<Edit>> {
+    use crate::tween::*;
+    let mut clips = tween_of(world, id)?
+        .ok_or_else(|| not_found(tween_path(id, ""), format!("'{id}' has no tween.clips")))?;
+    let c = tween_clip(&mut clips, id, clip)?;
+    let path = tween_path(id, &format!("/clips/{}/tracks/{track}", escape(clip)));
+    let Some(t) = c.tracks.get_mut(track) else {
+        return Err(Diagnostic::error(
+            "invalid_value",
+            path,
+            format!(
+                "track index {track} is out of range (clip {clip} has {} tracks)",
+                c.tracks.len()
+            ),
+        ));
+    };
+    let keys_path = format!("{path}/keys");
+    let bad = |message: String| Diagnostic::error("invalid_value", keys_path.clone(), message);
+    let checked_time = |time: f32| -> Result<f32> {
+        if time.is_finite() && (0.0..=MAX_DURATION).contains(&time) {
+            Ok(time)
+        } else {
+            Err(bad(format!("key time must be 0..{MAX_DURATION} seconds")))
+        }
+    };
+    let index_error =
+        |i: usize, n: usize| bad(format!("key index {i} is out of range 0..{}", n - 1));
+    match edit {
+        KeyEdit::Add { time, value, ease } => {
+            let time = checked_time(*time)?;
+            let value = match value {
+                Some(v) => v.clone(),
+                None => recorded(world, id, &t.target, &t.property)?,
+            };
+            let v = KeyValue::from_slice(&value);
+            if let Some(k) = t.keys.iter_mut().find(|k| (k.t - time).abs() < KEY_EPSILON) {
+                k.v = v;
+                if let Some(e) = ease {
+                    k.ease = *e;
+                }
+            } else {
+                let at = t.keys.partition_point(|k| k.t < time);
+                t.keys.insert(
+                    at,
+                    TweenKey {
+                        t: time,
+                        v,
+                        ease: ease.unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        KeyEdit::Move { index, time } => {
+            let time = checked_time(*time)?;
+            if *index >= t.keys.len() {
+                return Err(index_error(*index, t.keys.len()));
+            }
+            let mut key = t.keys.remove(*index);
+            if let Some(other) = t.keys.iter().position(|k| (k.t - time).abs() < KEY_EPSILON) {
+                return Err(bad(format!(
+                    "another key is already at {time} s (remove key {} first)",
+                    if other >= *index { other + 1 } else { other }
+                )));
+            }
+            key.t = time;
+            let at = t.keys.partition_point(|k| k.t < time);
+            t.keys.insert(at, key);
+        }
+        KeyEdit::Remove(index) => {
+            if *index >= t.keys.len() {
+                return Err(index_error(*index, t.keys.len()));
+            }
+            if t.keys.len() == 1 {
+                return Err(bad("a track keeps at least one key".into()));
+            }
+            t.keys.remove(*index);
+        }
+    }
+    Ok(vec![write_tween(id, &clips)?])
+}
+
+/// The first `clip`, `clip2`, `clip3`... no entity in `ids` has yet (editor default name).
+pub fn free_clip_name(world: &World, ids: &[String]) -> String {
+    let taken = |name: &str| {
+        ids.iter().any(|id| {
+            world
+                .entity(id)
+                .and_then(|e| e.components.get("tween.clips"))
+                .and_then(|v| v.pointer(&format!("/clips/{}", escape(name))))
+                .is_some()
+        })
+    };
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                "clip".to_owned()
+            } else {
+                format!("clip{n}")
+            }
+        })
+        .find(|name| !taken(name))
+        .unwrap()
+}
+
 /// Where `move_entity` puts an entity in the authored order (= sibling order).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Order {

@@ -14,7 +14,7 @@
 3. **路徑與路徑跟隨**:可循環、速度、朝向切線(車輛、行人)。**狀態:已完成第一版**,見 [paths.zh-TW.md](paths.zh-TW.md)(`path.spline` linear / Catmull-Rom、`path.follow` loop / ping_pong / stop + `on_arrive`、側向 offset、暫停 / 恢復 / 改速指令、移動者衝突為編寫錯誤;存檔不支援,會明確失敗)。
 4. **導航代理**:繞過 `nav.blocker` 與建築的尋路(通用版,不綁 RTS)。**狀態:已完成第一版**,見 [navigation.zh-TW.md](navigation.zh-TW.md)(`nav.agent` 點 / 實體目標、加速煞車、轉身、簡單避讓、`on_arrive` / `on_fail`;`nav.grid` clearance 格子在建立執行期時建好並依內容快取;每步尋路工作量有上限、請求排隊;與 RTS 共用 A* 引擎 `axiom_core::grid_search`,RTS 結果逐位相同;存檔不支援,會明確失敗)。
 5. **互動元件**:範圍、提示文字、按鍵,觸發事件(對話、開門)。**狀態:已完成第一版**,見 [interaction.zh-TW.md](interaction.zh-TW.md)(`interact.target` range / 遲滯 / view_angle / priority / cooldown / once、互動者 filter 與觸發區同語意;焦點依 priority → 距離 → 朝向 → 編寫順序;按鍵用 `input.bindings` 的按鈕名稱;提示走 `ui.document` 的 `prompt` 綁定(沒編寫時有預設提示);`interact.use` / `inspect` / `summary`;城鎮的「FSM near + nearby」交談已改用互動元件,逐 tick 等價測試;存檔不支援,會明確失敗)。
-6. **屬性補間 / 動畫軌**:開門、燈號、UI 動效(與 M7 共用)。
+6. **屬性補間 / 動畫軌**:開門、燈號、UI 動效(與 M7 共用)。**狀態:已完成第一版**,見 [tweens.zh-TW.md](tweens.zh-TW.md)(`tween.clips` 具名片段 × 軌 × 關鍵影格,easing linear / step / ease_in / ease_out / ease_in_out,once / loop / ping_pong、autoplay、speed、倒播、seek;目標是自己或子孫的 transform(position / rotation / yaw / scale)、`render.light` 顏色與強度、`render.mesh` 顏色與自發光、`behavior.program` 數字變數(UI 進度條 / 文字 / 條件用它;UI 不透明度留給 M7);建立執行期時解析成型別化欄位,key 在平坦陣列、每軌快取段落,每步零配置;`tween.play` / `stop` / `seek` / `inspect` / `summary`、`on_finish` 事件、`play_on` 直接綁定事件;與移動者、靜態障礙衝突是編寫錯誤;**移動中的 `nav.blocker` 不支援**(門扇不要放 blocker,見文件);存檔不支援,會明確失敗)。
 7. **3D 聲源與聽者**:位置、衰減、循環。
 8. **跟隨相機 + 碰撞**:相機不穿牆(進房間時需要)。
 9. → 接著做街道 demo,並整理缺口報告。

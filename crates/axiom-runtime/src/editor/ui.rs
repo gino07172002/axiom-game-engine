@@ -161,6 +161,15 @@ impl Editor {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 self.hierarchy(ui, &mut actions);
             });
+        // Play preview: the timeline playhead follows the runtime.
+        self.tween_ui.live = if self.previewing {
+            self.selected
+                .as_deref()
+                .and_then(|id| runtime.system::<crate::tween::TweenSystem>()?.playback(id))
+                .map(|(clip, time, _)| (clip.to_owned(), time))
+        } else {
+            None
+        };
         egui::SidePanel::right("editor_inspector")
             .default_width(302.0)
             .width_range(270.0..=440.0)
@@ -738,6 +747,9 @@ impl Editor {
         let path = self.selected.as_deref().and_then(|id| self.path_spline(id));
         let mut path_point = self.scene_input.path_point;
         let mut path_command = None;
+        let tween = self.selected.as_deref().and_then(|id| self.tween_clips(id));
+        let mut tween_ui = self.tween_ui.clone();
+        let mut tween_request = None;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -799,6 +811,23 @@ impl Editor {
                             caption(ui, format!("Prefab · {prefab}"));
                         }
                         ui.add_space(8.0);
+                        // First for animated objects: the inspector is short on laptop screens
+                        // and the timeline is what one edits on them (Transform follows).
+                        if let Some(clips) = &tween {
+                            egui::CollapsingHeader::new("Tween timeline")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    let live = tween_ui.live.clone();
+                                    let editable = !draft.dirty() && live.is_none();
+                                    tween_request = super::timeline::timeline(
+                                        ui,
+                                        clips,
+                                        &mut tween_ui,
+                                        live.as_ref().map(|(c, t)| (c.as_str(), *t)),
+                                        editable,
+                                    );
+                                });
+                        }
                         egui::CollapsingHeader::new("Transform")
                             .default_open(true)
                             .show(ui, |ui| {
@@ -992,6 +1021,34 @@ impl Editor {
             None => {}
         }
         self.scene_input.path_point = path_point;
+        self.tween_ui = tween_ui;
+        match tween_request {
+            Some(super::timeline::TweenRequest::Command(command)) => {
+                match self.run_command(command) {
+                    Ok(more) => actions.extend(more),
+                    Err(error) => self.set_error(format!("{error:#}")),
+                }
+            }
+            Some(super::timeline::TweenRequest::MoveKey {
+                clip,
+                track,
+                index,
+                time,
+            }) => {
+                actions.extend(self.move_tween_key(&clip, track, index, time));
+                self.tween_ui.key = None;
+            }
+            Some(super::timeline::TweenRequest::Options { clip, options }) => {
+                actions.extend(self.set_tween_options(&clip, &options));
+            }
+            Some(super::timeline::TweenRequest::AddTrack { clip, property }) => {
+                actions.extend(self.add_tween_track(&clip, &property));
+            }
+            Some(super::timeline::TweenRequest::RemoveClip(clip)) => {
+                actions.extend(self.remove_tween_clip(&clip));
+            }
+            None => {}
+        }
         if let Some(command) = path_command {
             match self.run_command(command) {
                 Ok(more) => actions.extend(more),
@@ -1328,6 +1385,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("path.follow", "FOLLOW", Color32::from_rgb(255, 214, 150)),
         ("nav.agent", "NAV", Color32::from_rgb(110, 200, 255)),
         ("interact.target", "USE", Color32::from_rgb(255, 205, 90)),
+        ("tween.clips", "TWEEN", Color32::from_rgb(240, 150, 200)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1352,6 +1410,7 @@ fn badge_meaning(text: &str) -> &'static str {
         "FOLLOW" => "path.follow (moves along a path)",
         "NAV" => "nav.agent (walks to targets around obstacles)",
         "USE" => "interact.target (talk / open with a button near it)",
+        "TWEEN" => "tween.clips (keyframed property animation)",
         _ => "prefab instance",
     }
 }

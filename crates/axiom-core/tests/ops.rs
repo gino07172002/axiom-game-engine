@@ -892,3 +892,303 @@ fn interact_verb_matches_the_op_and_wires_events_and_bindings() {
     let error = acl(&mut e, "interact ghost").unwrap_err();
     assert!(error.to_string().contains("core.transform"), "{error}");
 }
+
+#[test]
+fn tween_verbs_match_the_ops_and_record_keys() {
+    use axiom_core::tween::{Ease, TweenClips, TweenMode};
+    let mut s = store();
+    acl(&mut s, "create cube id=door at=1,0,2\ncreate empty id=door/hinge parent=door\ncreate light point id=lamp").unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        t.current().unwrap().1
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    let clips = |world: &World, id: &str| -> TweenClips {
+        serde_json::from_value(world.entity(id).unwrap().components["tween.clips"].clone()).unwrap()
+    };
+    // Add a clip: the first track records the current value at 0 and at the end; the
+    // capability and system are added once.
+    let ids = ["door".to_owned()];
+    let options = ops::TweenClipOptions {
+        property: Some("core.transform/yaw".into()),
+        target: Some("door/hinge".into()),
+        on_finish: Some("opened".into()),
+        ..Default::default()
+    };
+    let expected = ops::add_tween_clip(&start, &ids, "open", &options).unwrap();
+    let w = after(
+        &start,
+        "tween door clip open property=core.transform/yaw target=door/hinge on_finish=opened",
+    );
+    assert_eq!(w, applied(&start, expected));
+    let c = &clips(&w, "door").clips["open"];
+    assert_eq!(c.tracks[0].target, "door/hinge");
+    assert_eq!(c.tracks[0].keys.len(), 2);
+    assert_eq!(c.tracks[0].keys[1].t, 1.0);
+    assert_eq!(c.on_finish, "opened");
+    assert_eq!(w.capabilities.get("tween"), Some(&1));
+    assert_eq!(
+        w.systems.iter().filter(|s| *s == "tween.animate").count(),
+        1
+    );
+    assert_eq!(
+        w.resources["behavior.program"]["events"]["opened"],
+        serde_json::json!({"fields":{"entity":"text","clip":"text"}})
+    );
+    // Keys: explicit value with ease, record (no value), move, remove; each equals its op.
+    let steps: Vec<(&str, ops::KeyEdit)> = vec![
+        (
+            "tween door key open 0 add 1 90 ease=ease_out",
+            ops::KeyEdit::Add {
+                time: 1.0,
+                value: Some(vec![90.0]),
+                ease: Some(Ease::EaseOut),
+            },
+        ),
+        (
+            "tween door key open 0 add 0.5",
+            ops::KeyEdit::Add {
+                time: 0.5,
+                value: None,
+                ease: None,
+            },
+        ),
+        (
+            "tween door key open 0 move 1 0.25",
+            ops::KeyEdit::Move {
+                index: 1,
+                time: 0.25,
+            },
+        ),
+        ("tween door key open 0 remove 1", ops::KeyEdit::Remove(1)),
+    ];
+    let mut w = w;
+    for (text, edit) in steps {
+        let expected = ops::edit_tween_key(&w, "door", "open", 0, &edit).unwrap();
+        let next = after(&w, text);
+        assert_eq!(next, applied(&w, expected), "{text}");
+        w = next;
+    }
+    let keys = &clips(&w, "door").clips["open"].tracks[0].keys;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        (keys[1].t, keys[1].v.as_slice(), keys[1].ease),
+        (1.0, &[90.0][..], Ease::EaseOut)
+    );
+    // Recording at an existing key time replaces its value (the hinge's authored yaw is 0).
+    let w = after(&w, "tween door key open 0 add 1");
+    assert_eq!(
+        clips(&w, "door").clips["open"].tracks[0].keys[1]
+            .v
+            .as_slice(),
+        &[0.0]
+    );
+    // Clip options and tracks.
+    let set = ops::TweenClipOptions {
+        mode: Some(TweenMode::PingPong),
+        autoplay: Some(true),
+        duration: Some(Some(2.0)),
+        on_finish: Some(String::new()),
+        ..Default::default()
+    };
+    let expected = ops::set_tween_clip(&w, "door", "open", &set).unwrap();
+    let w2 = after(
+        &w,
+        "tween door clip open set mode=ping_pong autoplay=on duration=2 on_finish=\"\"",
+    );
+    assert_eq!(w2, applied(&w, expected));
+    // Keeping on_finish with ping_pong is refused (it never finishes).
+    let error = ops::set_tween_clip(
+        &w,
+        "door",
+        "open",
+        &ops::TweenClipOptions {
+            mode: Some(TweenMode::Loop),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("on_finish only fires"),
+        "{error:#}"
+    );
+    let c = &clips(&w2, "door").clips["open"];
+    assert_eq!(
+        (c.mode, c.autoplay, c.duration, c.on_finish.as_str()),
+        (TweenMode::PingPong, true, Some(2.0), "")
+    );
+    let expected = ops::add_tween_track(&w2, "door", "open", "core.transform/scale", "").unwrap();
+    let w3 = after(&w2, "tween door track open add core.transform/scale");
+    assert_eq!(w3, applied(&w2, expected));
+    let t = &clips(&w3, "door").clips["open"].tracks[1];
+    assert_eq!(
+        (t.keys[0].t, t.keys[1].t),
+        (0.0, 2.0),
+        "new tracks span the clip"
+    );
+    let w4 = after(&w3, "tween door track open remove 1");
+    assert_eq!(clips(&w4, "door"), clips(&w2, "door"));
+    // A second clip on another entity, autoplay moves; remove clips.
+    let w5 = after(
+        &w4,
+        "tween lamp clip glow property=render.light/intensity duration=auto mode=loop",
+    );
+    assert_eq!(clips(&w5, "lamp").clips["glow"].duration, None);
+    let w6 = after(
+        &w5,
+        "tween door clip close property=core.transform/yaw target=door/hinge autoplay=on",
+    );
+    let d = clips(&w6, "door");
+    assert!(
+        d.clips["close"].autoplay && !d.clips["open"].autoplay,
+        "one autoplay clip"
+    );
+    let w7 = after(
+        &w6,
+        "tween door clip close remove; tween door clip open remove",
+    );
+    assert!(!w7
+        .entity("door")
+        .unwrap()
+        .components
+        .contains_key("tween.clips"));
+    // Structured errors.
+    let mut e = Store::memory_with(Registry::core(), w6.clone()).unwrap();
+    for (text, expect) in [
+        ("tween door clip open", "clip_exists"),
+        ("tween door clip nope set mode=loop", "not_found"),
+        (
+            "tween door clip x property=render.fog/color",
+            "invalid_value",
+        ),
+        (
+            "tween door clip x property=render.light/color",
+            "invalid_tween",
+        ),
+        ("tween door clip x target=nobody", "invalid_tween"),
+        ("tween door clip \"bad name\"", "invalid_value"),
+        ("tween door clip x mode=sometimes", "acl_syntax"),
+        ("tween door clip x color=red", "acl_syntax"),
+        ("tween door key open 0 add 9999", "invalid_value"),
+        ("tween door key open 0 add 3", "invalid_tween"),
+        ("tween door key open 5 add 1", "invalid_value"),
+        ("tween door key open 0 move 0 1", "invalid_value"),
+        ("tween door key open 0 move 7 1", "invalid_value"),
+        ("tween door key open 0 add 1 1,2,3", "invalid_tween"),
+        ("tween door key open 0 add x", "acl_syntax"),
+        ("tween door track open remove 0", "invalid_value"),
+        ("tween door bounce", "acl_syntax"),
+        ("tween ghost clip a", "no_match"),
+        ("tween lamp key glow 0 add 0.5 ease=wobbly", "acl_syntax"),
+    ] {
+        assert_eq!(code(acl(&mut e, text).unwrap_err()), expect, "{text}");
+    }
+}
+
+#[test]
+fn acl_scripts_may_start_with_a_byte_order_mark() {
+    let mut s = store();
+    let out = acl(
+        &mut s,
+        "\u{feff}create cube id=bom\nrename bom \"BOM 測試\"",
+    )
+    .unwrap();
+    assert!(out.starts_with("ok rev="), "{out}");
+    let world = s.current().unwrap().1;
+    assert_eq!(
+        world.entity("bom").unwrap().label.as_deref(),
+        Some("BOM 測試")
+    );
+    // A BOM anywhere else is still an error (only the file's leading mark is stripped).
+    let error = acl(&mut s, "create cube id=x\n\u{feff}create cube id=y").unwrap_err();
+    assert_eq!(code(error), "acl_syntax");
+}
+
+#[test]
+fn tween_play_on_wires_runtime_bindings_and_remove_unwires() {
+    // runtime.bindings is a runtime resource; register a stand-in like installed_registry does.
+    let mut registry = Registry::core();
+    registry.resource(
+        "runtime.bindings",
+        "core",
+        serde_json::json!({}),
+        |_| Ok(()),
+    );
+    let mut s = Store::memory_with(registry.clone(), lab()).unwrap();
+    acl(
+        &mut s,
+        "create cube id=door\ncreate cube id=gate at=3,0,0\ninteract door event=use_door",
+    )
+    .unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| {
+        let mut t = Store::memory_with(registry.clone(), world.clone()).unwrap();
+        acl(&mut t, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        t.current().unwrap().1
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(registry.clone(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    let options = ops::TweenClipOptions {
+        property: Some("core.transform/yaw".into()),
+        play_on: Some("use_door".into()),
+        ..Default::default()
+    };
+    let ids = ["door".to_owned(), "gate".to_owned()];
+    let expected = ops::add_tween_clip(&start, &ids, "open", &options).unwrap();
+    let w = after(
+        &start,
+        "tween entities[id=door,id=gate] clip open property=core.transform/yaw play_on=use_door",
+    );
+    assert_eq!(w, applied(&start, expected));
+    assert_eq!(
+        w.resources["runtime.bindings"],
+        serde_json::json!({"events":[{"event":"use_door","calls":[
+            {"kind":"call","capability":"tween","action":"play","args":{"id":"door","clip":"open"}},
+            {"kind":"call","capability":"tween","action":"play","args":{"id":"gate","clip":"open"}}]}]})
+    );
+    // The interact event keeps its declared fields; a new event is declared without fields.
+    assert_eq!(
+        w.resources["behavior.program"]["events"]["use_door"],
+        serde_json::json!({"fields":{"interactor":"text","target":"text"}})
+    );
+    let w2 = after(&w, "tween door clip open set play_on=bell");
+    assert_eq!(
+        w2.resources["behavior.program"]["events"]["bell"],
+        serde_json::json!({"fields":{}})
+    );
+    // Setting the same binding twice keeps one call.
+    let w3 = after(&w2, "tween door clip open set play_on=bell");
+    assert_eq!(
+        w3.resources["runtime.bindings"],
+        w2.resources["runtime.bindings"]
+    );
+    // Removing the clip removes every call that plays it (and emptied bindings).
+    let w4 = after(&w3, "tween door clip open remove");
+    assert_eq!(
+        w4.resources["runtime.bindings"],
+        serde_json::json!({"events":[{"event":"use_door","calls":[
+            {"kind":"call","capability":"tween","action":"play","args":{"id":"gate","clip":"open"}}]}]})
+    );
+    let mut e = Store::memory_with(registry.clone(), w.clone()).unwrap();
+    assert_eq!(
+        code(acl(&mut e, "tween door clip open set play_on=\"bad event\"").unwrap_err()),
+        "invalid_value"
+    );
+}

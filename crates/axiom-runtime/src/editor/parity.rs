@@ -427,6 +427,163 @@ fn make_interactable_and_field_edits_match_acl() {
     assert!(e.run_command("object.interactable").is_err());
 }
 #[test]
+fn tween_clips_keys_and_options_match_acl() {
+    // Object ▸ Add Tween Clip on the selection = ACL tween SEL clip NAME (default name clip).
+    let start = headless(&lab(), "create cube id=door at=3,0,0\ncreate cube id=npc");
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            e.extra.insert("npc".into());
+            vec![e.run_command("object.tween_clip").unwrap()]
+        },
+        "tween entities[id=door,id=npc] clip clip",
+    );
+    // A second clip gets the next free name; the empty world gains capability and system.
+    let one = headless(&start, "tween door clip clip");
+    assert_parity(
+        one.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e.run_command("object.tween_clip").unwrap()]
+        },
+        "tween door clip clip2",
+    );
+    let blank = headless(&World::empty("blank"), "create empty id=sign");
+    assert_parity(
+        blank,
+        |e| {
+            e.select(Some("sign".into()));
+            vec![e.run_command("object.tween_clip").unwrap()]
+        },
+        "tween sign clip clip",
+    );
+    // Timeline ▸ Record key at the playhead (track 0) after moving the door = ACL key add T.
+    let moved = headless(&one, "set door core.transform/position [4,1,0]");
+    assert_parity(
+        moved.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            e.tween_ui.time = 0.5;
+            vec![e.run_command("tween.record_key").unwrap()]
+        },
+        "tween door key clip 0 add 0.5",
+    );
+    let recorded = headless(&moved, "tween door key clip 0 add 0.5");
+    assert_eq!(
+        recorded.entity("door").unwrap().components["tween.clips"]["clips"]["clip"]["tracks"][0]
+            ["keys"][1]["v"],
+        serde_json::json!([4.0, 1.0, 0.0])
+    );
+    // Key drag (the timeline calls move_tween_key on release) and Delete key.
+    assert_parity(
+        recorded.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e.move_tween_key("clip", 0, 1, 0.75).into_iter().collect()]
+        },
+        "tween door key clip 0 move 1 0.75",
+    );
+    assert_parity(
+        recorded.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            e.tween_ui.key = Some(1);
+            vec![e.run_command("tween.remove_key").unwrap()]
+        },
+        "tween door key clip 0 remove 1",
+    );
+    // Mode / autoplay controls, Add track, Remove clip.
+    for (options, script) in [
+        (
+            axiom_core::ops::TweenClipOptions {
+                mode: Some(axiom_core::tween::TweenMode::Loop),
+                ..Default::default()
+            },
+            "tween door clip clip set mode=loop",
+        ),
+        (
+            axiom_core::ops::TweenClipOptions {
+                autoplay: Some(true),
+                ..Default::default()
+            },
+            "tween door clip clip set autoplay=on",
+        ),
+    ] {
+        assert_parity(
+            recorded.clone(),
+            |e| {
+                e.select(Some("door".into()));
+                vec![e.set_tween_options("clip", &options).into_iter().collect()]
+            },
+            script,
+        );
+    }
+    assert_parity(
+        recorded.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e
+                .add_tween_track("clip", "core.transform/scale")
+                .into_iter()
+                .collect()]
+        },
+        "tween door track clip add core.transform/scale",
+    );
+    assert_parity(
+        recorded.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e.remove_tween_clip("clip").into_iter().collect()]
+        },
+        "tween door clip clip remove",
+    );
+    // Unavailable: nothing selected, no clips, no key selected.
+    let mut e = Editor::new(recorded.clone(), 1, None);
+    assert!(e.run_command("object.tween_clip").is_err());
+    assert!(e.run_command("tween.record_key").is_err());
+    e.select(Some("npc".into()));
+    assert!(e.run_command("tween.record_key").is_err());
+    e.select(Some("door".into()));
+    assert!(e.run_command("tween.remove_key").is_err());
+    assert!(e.run_command("tween.record_key").is_ok());
+}
+
+#[test]
+fn tween_scrub_previews_without_writing_or_moving_the_simulation() {
+    let world = headless(
+        &lab(),
+        "create cube id=door at=3,0,0\ntween door clip open property=core.transform/yaw\ntween door key open 0 add 1 90",
+    );
+    let mut runtime =
+        crate::world::WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+    let mut e = Editor::new(world, 1, Some("door".into()));
+    let slot = runtime.state.compiled.indices["door"];
+    let yaw_of = |frame: &crate::presentation::RenderFrame| {
+        frame
+            .instances
+            .iter()
+            .map(|i| glam::Mat4::from_cols_array_2d(&i.model))
+            .find(|m| (m.w_axis.x - 3.0).abs() < 1e-4)
+            .map(|m| {
+                let (_, q, _) = m.to_scale_rotation_translation();
+                axiom_core::tween::yaw_degrees(q)
+            })
+            .unwrap()
+    };
+    let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 760.0));
+    assert!(yaw_of(&e.render_frame(&mut runtime, screen)).abs() < 1e-3);
+    e.tween_ui.time = 0.5;
+    e.tween_ui.preview = true;
+    let frame = e.render_frame(&mut runtime, screen);
+    assert!((yaw_of(&frame) - 45.0).abs() < 1e-2, "{}", yaw_of(&frame));
+    // The simulation keeps the authored pose and nothing was written.
+    let q = glam::Quat::from_array(runtime.state.transforms[slot].as_ref().unwrap().rotation);
+    assert!(axiom_core::tween::yaw_degrees(q).abs() < 1e-3);
+    assert_eq!(e.rev, 1);
+}
+
+#[test]
 fn remove_component_matches_acl() {
     let start = headless(&lab(), "create trigger box id=gate");
     assert_parity(

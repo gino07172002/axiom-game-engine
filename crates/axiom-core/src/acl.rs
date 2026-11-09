@@ -34,6 +34,14 @@ EDIT (any number, atomic):
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
   interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
                                   (defaults: event interacted declared with interactor/target, action interact -> KeyE)
+  tween SEL clip NAME [property=P] [target=ID] [duration=S|auto] [mode=once|loop|ping_pong] [speed=X]
+        [autoplay=on|off] [on_finish=E] [play_on=E]   new tween clip; first track records P (default
+                                  core.transform/position) of target (default the object) at 0 and at the end (default 1 s);
+                                  play_on=E: runtime.bindings plays it when event E fires (e.g. the interact event)
+  tween ID clip NAME set [duration=..] [mode=..] [speed=..] [autoplay=..] [on_finish=E|\"\"] [play_on=E] | tween ID clip NAME remove
+  tween ID track CLIP add P [target=ID] | tween ID track CLIP remove I
+  tween ID key CLIP TRACK add T [V] [ease=linear|step|ease_in|ease_out|ease_in_out]   no V = record the current value
+  tween ID key CLIP TRACK move I T | tween ID key CLIP TRACK remove I     (V: 90 | x,y,z)
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
@@ -287,6 +295,12 @@ enum Statement {
     NavAgent(Box<Selection>, crate::ops::NavOptions),
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
     Interact(Box<Selection>, crate::ops::InteractOptions),
+    TweenClip(Box<Selection>, String, Box<crate::ops::TweenClipOptions>),
+    TweenClipSet(String, String, Box<crate::ops::TweenClipOptions>),
+    TweenClipRemove(String, String),
+    TweenTrackAdd(String, String, String, String),
+    TweenTrackRemove(String, String, usize),
+    TweenKey(String, String, usize, crate::ops::KeyEdit),
 }
 
 impl Statement {
@@ -635,6 +649,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             }
             Statement::Interact(select, options)
         }
+        "tween" => tween(tokens)?,
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             match rest.as_slice() {
@@ -647,6 +662,140 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         }
         other => bail!("unknown statement '{other}'"),
     })
+}
+
+/// `tween` statements (see GRAMMAR).
+fn tween(tokens: &[String]) -> Result<Statement> {
+    use crate::ops::{KeyEdit, TweenClipOptions};
+    let arg = |n: usize| {
+        tokens.get(n).map(String::as_str).context(
+            "use: tween SEL clip NAME ... | tween ID track CLIP ... | tween ID key CLIP TRACK ...",
+        )
+    };
+    let index = |n: usize, what: &str| -> Result<usize> {
+        arg(n)?
+            .parse()
+            .with_context(|| format!("{what} index must be a non-negative integer"))
+    };
+    let number = |text: &str, what: &str| -> Result<f32> {
+        text.parse::<f32>()
+            .with_context(|| format!("{what} must be a number"))
+    };
+    let text = |v: &str| match value(v) {
+        Value::String(s) => s,
+        _ => v.to_owned(),
+    };
+    let options = |from: usize, adding: bool| -> Result<TweenClipOptions> {
+        let mut o = TweenClipOptions::default();
+        for t in &tokens[from.min(tokens.len())..] {
+            let (k, v) = t
+                .split_once('=')
+                .with_context(|| format!("option '{t}' must be key=value"))?;
+            match k {
+                "property" if adding => o.property = Some(text(v)),
+                "target" if adding => o.target = Some(text(v)),
+                "duration" => {
+                    o.duration = Some(if v == "auto" {
+                        None
+                    } else {
+                        Some(number(v, "duration")?)
+                    })
+                }
+                "mode" => o.mode = Some(crate::tween::TweenMode::parse(v)?),
+                "speed" => o.speed = Some(number(v, "speed")?),
+                "autoplay" => o.autoplay = Some(on_off(v)?),
+                "on_finish" => o.on_finish = Some(text(v)),
+                "play_on" => o.play_on = Some(text(v)),
+                other => bail!(
+                    "unknown option '{other}' (use {}duration, mode, speed, autoplay, on_finish, play_on)",
+                    if adding { "property, target, " } else { "" }
+                ),
+            }
+        }
+        Ok(o)
+    };
+    let id = arg(1)?.to_owned();
+    Ok(match arg(2)? {
+        "clip" => {
+            let name = arg(3)?.to_owned();
+            match tokens.get(4).map(String::as_str) {
+                Some("set") => Statement::TweenClipSet(id, name, Box::new(options(5, false)?)),
+                Some("remove") => {
+                    ensure!(tokens.len() == 5, "use: tween ID clip NAME remove");
+                    Statement::TweenClipRemove(id, name)
+                }
+                _ => Statement::TweenClip(
+                    Box::new(selector(&id)?),
+                    name,
+                    Box::new(options(4, true)?),
+                ),
+            }
+        }
+        "track" => {
+            let clip = arg(3)?.to_owned();
+            match arg(4)? {
+                "add" => {
+                    let property = arg(5)?.to_owned();
+                    let mut target = String::new();
+                    for t in &tokens[6..] {
+                        match t.split_once('=') {
+                            Some(("target", v)) => target = text(v),
+                            _ => bail!("unexpected '{t}' (expected target=ID)"),
+                        }
+                    }
+                    Statement::TweenTrackAdd(id, clip, property, target)
+                }
+                "remove" => {
+                    ensure!(tokens.len() == 6, "use: tween ID track CLIP remove I");
+                    Statement::TweenTrackRemove(id, clip, index(5, "track")?)
+                }
+                other => bail!("unknown tween track verb '{other}' (add, remove)"),
+            }
+        }
+        "key" => {
+            let clip = arg(3)?.to_owned();
+            let track = index(4, "track")?;
+            let edit = match arg(5)? {
+                "add" => {
+                    let time = number(arg(6)?, "key time")?;
+                    let (mut value, mut ease) = (None, None);
+                    for t in &tokens[7..] {
+                        if let Some(e) = t.strip_prefix("ease=") {
+                            ease = Some(crate::tween::Ease::parse(e)?);
+                        } else if value.is_none() {
+                            value = Some(numbers(t)?);
+                        } else {
+                            bail!("unexpected '{t}' (expected one value and ease=E)");
+                        }
+                    }
+                    KeyEdit::Add { time, value, ease }
+                }
+                "move" => {
+                    ensure!(tokens.len() == 8, "use: tween ID key CLIP TRACK move I T");
+                    KeyEdit::Move {
+                        index: index(6, "key")?,
+                        time: number(arg(7)?, "key time")?,
+                    }
+                }
+                "remove" => {
+                    ensure!(tokens.len() == 7, "use: tween ID key CLIP TRACK remove I");
+                    KeyEdit::Remove(index(6, "key")?)
+                }
+                other => bail!("unknown tween key verb '{other}' (add, move, remove)"),
+            };
+            Statement::TweenKey(id, clip, track, edit)
+        }
+        other => bail!("unknown tween verb '{other}' (clip, track, key)"),
+    })
+}
+
+/// A key value: `90`, `1,2,3` or `[1,2,3]`.
+fn numbers(text: &str) -> Result<Vec<f32>> {
+    text.trim_matches(['[', ']'])
+        .split(',')
+        .map(|p| p.trim().parse::<f32>())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("'{text}' must be a number or x,y,z numbers"))
 }
 
 fn vec3(text: &str) -> Result<[f32; 3]> {
@@ -794,6 +943,8 @@ pub fn run(
         !(preview && propose),
         "use either --preview or --propose (a proposal already includes a preview)"
     );
+    // Editors on Windows often save UTF-8 with a byte order mark; it is not part of line 1.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut statements = vec![];
     for (n, raw) in text.lines().enumerate() {
         if raw.trim_start().starts_with('#') {
@@ -906,6 +1057,21 @@ pub fn run(
                 .and_then(|ids| crate::ops::set_nav_target(w, &ids, target.as_ref())),
             Statement::Interact(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
+            Statement::TweenClip(select, name, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_tween_clip(w, &ids, &name, &options)),
+            Statement::TweenClipSet(id, name, options) => {
+                crate::ops::set_tween_clip(w, &id, &name, &options)
+            }
+            Statement::TweenClipRemove(id, name) => crate::ops::remove_tween_clip(w, &id, &name),
+            Statement::TweenTrackAdd(id, clip, property, target) => {
+                crate::ops::add_tween_track(w, &id, &clip, &property, &target)
+            }
+            Statement::TweenTrackRemove(id, clip, index) => {
+                crate::ops::remove_tween_track(w, &id, &clip, index)
+            }
+            Statement::TweenKey(id, clip, track, edit) => {
+                crate::ops::edit_tween_key(w, &id, &clip, track, &edit)
+            }
             _ => unreachable!(),
         }
         .map_err(wrap)?;

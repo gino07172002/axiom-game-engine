@@ -195,6 +195,7 @@ impl World {
             let follow = decode::<crate::path::PathFollow>(&c, "path.follow")?;
             let nav_agent = decode::<crate::navigation::NavAgent>(&c, "nav.agent")?;
             let interact = decode::<crate::interact::InteractTarget>(&c, "interact.target")?;
+            let tween = decode::<crate::tween::TweenClips>(&c, "tween.clips")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -237,6 +238,7 @@ impl World {
                 follow,
                 nav_agent,
                 interact,
+                tween,
                 collider,
                 health,
                 motion,
@@ -326,6 +328,7 @@ impl World {
             .collect();
         crate::path::validate_world(self, r, &entities, &ids, &parents)?;
         crate::navigation::validate_world(self, r, &entities, &ids, &parents)?;
+        crate::tween::validate_world(self, r, &entities, &ids, &parents)?;
         let schedule = r.schedule(self)?;
         r.validate_world(self)?;
         Ok(CompiledWorld {
@@ -853,6 +856,7 @@ pub struct CompiledEntity {
     pub follow: Option<crate::path::PathFollow>,
     pub nav_agent: Option<crate::navigation::NavAgent>,
     pub interact: Option<crate::interact::InteractTarget>,
+    pub tween: Option<crate::tween::TweenClips>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,
