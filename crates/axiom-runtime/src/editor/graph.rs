@@ -340,29 +340,60 @@ impl Model {
             .map_or(&[], Vec::as_slice);
         let any = transitions.iter().any(|t| t["from"] == "*");
         let saved = ops::fsm_node_positions(world, machine);
-        let mut slot = 0;
         let top = if any { 110.0 } else { 30.0 };
+        // Unsaved states are laid out in columns by their distance from the initial state
+        // (states it cannot reach in the last column); odd columns sit half a row lower so
+        // edges that skip a column pass between nodes. Bounded by the node budget.
+        let mut depth: std::collections::BTreeMap<&str, usize> = Default::default();
+        if let Some(initial) = m.and_then(|m| m["initial"].as_str()) {
+            depth.insert(initial, 0);
+            let mut frontier = vec![initial];
+            for d in 1..=MAX_DRAW_NODES {
+                let mut next = vec![];
+                for t in transitions.iter().take(MAX_DRAW_EDGES) {
+                    let (Some(from), Some(to)) = (t["from"].as_str(), t["to"].as_str()) else {
+                        continue;
+                    };
+                    if (from == "*" || frontier.contains(&from))
+                        && states.contains_key(to)
+                        && !depth.contains_key(to)
+                    {
+                        depth.insert(to, d);
+                        next.push(to);
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+        }
+        let last = depth.values().max().map_or(0, |d| d + 1);
+        let mut rows = vec![0usize; last + 1];
         let nodes: Vec<Node> = states
             .iter()
             .take(MAX_DRAW_NODES)
             .map(|(name, def)| {
                 let at = match saved.get(name) {
                     Some([x, y]) => pos2(*x, *y),
-                    // Grid slots (4 per row) that no saved node overlaps; bounded by the
-                    // node budget, so this loop ends.
-                    None => loop {
-                        let p = pos2(
-                            30.0 + (slot % 4) as f32 * 186.0,
-                            top + (slot / 4) as f32 * 90.0,
-                        );
-                        slot += 1;
-                        let free = saved.values().all(|[x, y]| {
-                            (x - p.x).abs() >= NODE.x + 8.0 || (y - p.y).abs() >= NODE.y + 8.0
-                        });
-                        if free || slot > 4 * MAX_DRAW_NODES {
-                            break p;
+                    None => {
+                        let col = depth.get(name.as_str()).copied().unwrap_or(last);
+                        loop {
+                            let row = rows[col];
+                            rows[col] += 1;
+                            let p = pos2(
+                                30.0 + col as f32 * (NODE.x + 90.0),
+                                top + row as f32 * (NODE.y + 56.0)
+                                    + if col % 2 == 1 { 50.0 } else { 0.0 },
+                            );
+                            let free = saved.values().all(|[x, y]| {
+                                (x - p.x).abs() >= NODE.x + 8.0 || (y - p.y).abs() >= NODE.y + 8.0
+                            });
+                            if free || row > MAX_DRAW_NODES {
+                                break p;
+                            }
                         }
-                    },
+                    }
                 };
                 let problem = problems
                     .iter()
@@ -409,7 +440,7 @@ impl Model {
                 continue;
             }
             let rank = group.iter().position(|&j| j == i).unwrap() as f32;
-            let lane = (rank - (group.len() - 1) as f32 / 2.0) * 18.0;
+            let lane = (rank - (group.len() - 1) as f32 / 2.0) * 26.0;
             let forward = edges[i].from.unwrap_or(usize::MAX) <= edges[i].to;
             edges[i].lane = if forward { lane } else { -lane };
         }
@@ -662,14 +693,16 @@ impl GraphUi {
                 // Initial state: green bar on the left edge.
                 painter.rect_filled(Rect::from_min_size(r.min, vec2(5.0, r.height())), 3.0, LIVE);
             }
-            painter.text(
+            // Names and subtitles longer than the node are cut at its edge.
+            let text = painter.with_clip_rect(r.shrink(3.0).intersect(rect));
+            text.text(
                 r.min + vec2(12.0, 7.0),
                 egui::Align2::LEFT_TOP,
                 &node.name,
                 egui::FontId::proportional(14.0),
                 Color32::WHITE,
             );
-            painter.text(
+            text.text(
                 r.min + vec2(12.0, 27.0),
                 egui::Align2::LEFT_TOP,
                 &node.detail,
@@ -1162,6 +1195,32 @@ impl Editor {
         }
         self.graph.machine = Some(machine.to_owned());
         self.graph.view = View::Machine;
+        self.show_dock(Dock::Graphs);
+        Ok(())
+    }
+
+    /// The rule table, with rule `id` selected unless empty (`editor_view {open:"rules:ID"}`).
+    pub(super) fn graph_open_rules(&mut self, id: &str) -> anyhow::Result<()> {
+        if !id.is_empty() {
+            let index = self
+                .graph_world()
+                .resources
+                .get("behavior.program")
+                .and_then(|p| p["rules"].as_array())
+                .and_then(|r| r.iter().position(|x| x["id"] == id))
+                .ok_or_else(|| {
+                    axiom_core::Diagnostic::error(
+                        "not_found",
+                        "/resources/behavior.program/rules",
+                        format!("no rule '{id}'"),
+                    )
+                })?;
+            if self.graph.rule_index != Some(index) {
+                self.graph_flush();
+                self.graph.rule_index = Some(index);
+            }
+        }
+        self.graph.view = View::Rules;
         self.show_dock(Dock::Graphs);
         Ok(())
     }
@@ -2013,10 +2072,12 @@ impl Editor {
             ui.label(RichText::new(format!("{} rule(s) · evaluated in order per event", rules.len())).small().color(MUTED));
         });
         let len = rules.len();
+        // Rows hold buttons: the row height show_rows virtualizes with must match them.
+        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
         egui::ScrollArea::vertical()
             .id_salt("graph_rules")
-            .max_height((ui.available_height() * 0.45).max(80.0))
-            .show_rows(ui, 20.0, len, |ui, range| {
+            .max_height((ui.available_height() * 0.4).max(100.0))
+            .show_rows(ui, row_height, len, |ui, range| {
                 for i in range {
                     let rule = &rules[i];
                     ui.horizontal(|ui| {
@@ -2029,8 +2090,8 @@ impl Editor {
                             rule["when"]["kind"].as_str().unwrap_or("always"),
                             rule["actions"].as_array().map_or(0, Vec::len)
                         );
-                        let r =
-                            ui.selectable_label(selected, RichText::new(text).monospace().small());
+                        let r = ui
+                            .selectable_label(selected, RichText::new(text).monospace().size(11.0));
                         self.rects.insert(format!("graph:rule:{i}"), r.rect);
                         if r.clicked() && !selected {
                             row = Some(i);
@@ -2062,7 +2123,12 @@ impl Editor {
             self.graph.rule_index = Some(i);
         }
         if let Some(i) = self.graph.rule_index.filter(|i| *i < len) {
-            self.rule_panel(ui, i, &rules[i], &events, &variables, actions);
+            egui::ScrollArea::vertical()
+                .id_salt("graph_rule_panel")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    self.rule_panel(ui, i, &rules[i], &events, &variables, actions)
+                });
         }
         if add {
             match ops::new_rule(self.graph_world(), None) {

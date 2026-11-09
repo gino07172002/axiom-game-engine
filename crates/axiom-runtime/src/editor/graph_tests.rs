@@ -74,7 +74,7 @@ impl Harness {
         let (editor, runtime) = (&mut self.editor, &self.runtime);
         let _ = self.ctx.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1000.0))),
                 events,
                 ..Default::default()
             },
@@ -200,7 +200,7 @@ fn graph_edits_through_egui_match_the_fsm_acl_verbs() {
     let from = node.center();
     let rev = h.editor.rev;
     let released = h.drag(from, from + vec2(60.0, 40.0), 8);
-    let edits = h.commit(released, "fsm lumi node state 648,70");
+    let edits = h.commit(released, "fsm lumi node state 828,120");
     assert_eq!(edits.len(), 1, "one editor.layout write");
     assert_eq!(h.editor.rev, rev + 1);
     assert!(h.frame(vec![]).is_empty(), "no write after the drag");
