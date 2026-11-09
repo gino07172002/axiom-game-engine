@@ -362,6 +362,11 @@ fn find_usages_lists_every_reference_and_jumps_to_it() {
             "{text}"
         );
     }
+    // Everything the details panel draws stays inside the tab (it scrolls).
+    let tab = h.rect("assets:clip");
+    for key in ["assets:usages", "usage:0", "usage:2"] {
+        assert!(h.rect(key).top() < tab.bottom(), "{key} below the tab");
+    }
     // Clicking a row selects that object.
     h.click("usage:1");
     assert_eq!(h.editor.selected.as_deref(), Some("npc/rin"));
@@ -539,6 +544,12 @@ fn thumbnail_job_reports_progress_and_cancels() {
     let last = h.editor.assets.thumbs.last.clone().unwrap();
     assert_eq!(last["state"], "cancelled", "{last}");
     assert!(last["done"].as_u64().unwrap() < 40, "{last}");
+    // Cancel holds: the visible cells do not restart a lazy job until the world changes.
+    for _ in 0..5 {
+        h.frame(vec![]);
+    }
+    assert!(h.editor.assets.thumbs.running().is_none());
+    assert!(h.editor.assets.thumbs.lazy_paused);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -617,4 +628,78 @@ fn model_thumbnails_without_a_gpu_fail_visibly_instead_of_hanging() {
     let observed = h.editor.observation()["thumbnails"].clone();
     assert_eq!(observed["gpu"], false);
     assert!(observed["failed"].as_u64().unwrap() >= 2, "{observed}");
+}
+
+/// Measurement, not a check (`cargo test --release -p axiom-runtime --lib -- --ignored
+/// measure_assets_tab --nocapture`): whole editor frame (headless egui) with the Assets tab
+/// shown vs the Changes tab in the same dock leaf, for Axiom Town and for 600 prefabs + 100
+/// image thumbnails.
+#[test]
+#[ignore]
+fn measure_assets_tab_frame_cost() {
+    // Only `Editor::new` / `run_command` / `draw`: the same body measures the base commit.
+    fn run(h: &mut Harness, dock: &str, frames: usize) -> (f64, f64) {
+        h.editor.run_command(&format!("window.{dock}")).unwrap();
+        let screen = Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 1000.0)));
+        let draw = |h: &mut Harness| {
+            let (editor, runtime) = (&mut h.editor, &h.runtime);
+            editor.poll_jobs();
+            let _ = h.ctx.run(
+                egui::RawInput {
+                    screen_rect: screen,
+                    ..Default::default()
+                },
+                |ctx| {
+                    editor.draw(ctx, runtime);
+                },
+            );
+        };
+        for _ in 0..30 {
+            draw(h);
+        }
+        let mut times: Vec<f64> = (0..frames)
+            .map(|_| {
+                let t = Instant::now();
+                draw(h);
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(f64::total_cmp);
+        (times[times.len() / 2], times[times.len() - 1])
+    }
+    let dir = scratch("measure");
+    let mut big = image_world(&dir.join("src"), 100);
+    for i in 0..600 {
+        big.prefabs.insert(
+            format!("bulk/{i:03}"),
+            axiom_core::Prefab {
+                components: [("core.transform".to_owned(), json!({}))].into(),
+            },
+        );
+    }
+    for (name, mut h) in [
+        ("town", Harness::new(town(), None)),
+        ("600 prefabs + 100 images", Harness::new(big, Some(lab()))),
+    ] {
+        h.editor.assets.thumbs.dir = Some(dir.join("thumbs"));
+        h.editor.run_command("asset.thumbnails").unwrap();
+        wait_for(&mut h, "thumbnails", |h| {
+            h.editor.assets.thumbs.running().is_none()
+        });
+        for round in 0..2 {
+            let changes = run(&mut h, "changes", 200);
+            let assets = run(&mut h, "assets", 200);
+            println!(
+                "{name} round {round}: Changes p50 {:.3} ms max {:.3} | Assets p50 {:.3} ms max {:.3} | textures {} builds {} filters {}",
+                changes.0,
+                changes.1,
+                assets.0,
+                assets.1,
+                h.editor.assets.thumbs.observation()["textures"],
+                h.editor.assets.builds,
+                h.editor.assets.filters
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

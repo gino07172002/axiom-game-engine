@@ -13,7 +13,7 @@ const MUTED: Color32 = Color32::from_rgb(138, 154, 172);
 const ACCENT: Color32 = Color32::from_rgb(105, 222, 195);
 const WARNING: Color32 = Color32::from_rgb(242, 176, 92);
 /// Grid cell: thumbnail square plus a label line.
-const CELL: egui::Vec2 = egui::vec2(96.0, 118.0);
+const CELL: egui::Vec2 = egui::vec2(84.0, 98.0);
 const LIST_ROW: f32 = 22.0;
 
 /// Drag-and-drop payload of an asset cell (the Hierarchy drags entity IDs as `String`).
@@ -163,9 +163,11 @@ enum Intent {
     Open(AssetKind, String),
     Place(AssetKind, String),
     Usages(AssetKind, String),
+    Relist(AssetKind, String),
     Rename(AssetKind, String, String),
     Jump(Owner),
     CancelRename,
+    CloseUsages,
     Command(&'static str),
 }
 
@@ -207,7 +209,7 @@ impl Editor {
         self.assets.thumbs.gpu = Some((device, queue));
     }
 
-    /// `<db>.thumbs/` next to the database (beside `<db>.editor-prefs.json`); none when
+    /// `<db stem>.thumbs/` next to the database (beside `<db stem>.editor-prefs.json`); none when
     /// preferences are not persisted.
     fn thumbs_dir(&self) -> Option<std::path::PathBuf> {
         let prefs = self.prefs_path.as_ref()?;
@@ -232,14 +234,12 @@ impl Editor {
                     self.assets.rename = None;
                 }
             }
+            // A cancelled lazy job stays off until the world changes.
+            self.assets.thumbs.resume_lazy();
         }
-        if self.thumbs_dir_unset() {
+        if self.assets.thumbs.dir.is_none() {
             self.assets.thumbs.dir = self.thumbs_dir();
         }
-    }
-
-    fn thumbs_dir_unset(&self) -> bool {
-        self.assets.thumbs.dir.is_none() && self.prefs_path.is_some()
     }
 
     /// Every frame (host): thumbnail results and the job outcome, drawn or not.
@@ -249,6 +249,11 @@ impl Editor {
 
     /// Selects `kind:id` in the browser and lists what references it.
     pub(crate) fn find_usages(&mut self, kind: AssetKind, id: &str) -> anyhow::Result<()> {
+        self.list_usages(kind, id, true)
+    }
+
+    /// `announce`: show the tab and the count (not when refreshing after a world change).
+    fn list_usages(&mut self, kind: AssetKind, id: &str, announce: bool) -> anyhow::Result<()> {
         anyhow::ensure!(
             assets::exists(&self.world, kind, id),
             "no {} asset '{id}'",
@@ -264,6 +269,9 @@ impl Editor {
             rows,
             lines,
         });
+        if !announce {
+            return Ok(());
+        }
         self.show_dock(Dock::Assets);
         self.notice(format!(
             "{} usage(s) of {}:{id} (ACL: usages {}:{id})",
@@ -300,8 +308,10 @@ impl Editor {
 
     /// An asset dropped on the Scene view at `at` (the ground point under the pointer).
     pub(crate) fn drop_asset(&mut self, drag: &AssetDrag, at: [f32; 3]) -> Option<Action> {
-        if self.dirty() {
-            self.set_error("Apply or reload the inspector draft before placing an asset");
+        if self.dirty() || self.previewing {
+            self.set_error(
+                "Stop Play and apply or reload the inspector draft before placing an asset",
+            );
             return None;
         }
         let action = self.place_asset(drag.kind, &drag.id, Some(at))?;
@@ -631,6 +641,7 @@ impl Editor {
             }
         });
         let rows = b.rows.take().expect("asset_rows built it");
+        rect!("assets:clip".into(), ui.clip_rect());
         // Tree: all, kinds, folders.
         egui::SidePanel::left("asset_tree")
             .resizable(true)
@@ -680,103 +691,121 @@ impl Editor {
                 u.version != rows.version && u.kind == entry.kind && u.id == entry.id
             }) {
                 // The world changed while the list was shown: list it again.
-                intents.push(Intent::Usages(entry.kind, entry.id.clone()));
+                intents.push(Intent::Relist(entry.kind, entry.id.clone()));
             }
-            egui::TopBottomPanel::bottom("asset_details")
+            // Beside the cells: the Assets tab is usually a wide, short bottom dock.
+            egui::SidePanel::right("asset_details")
                 .resizable(true)
-                .default_height(140.0)
+                .default_width(380.0)
                 .show_inside(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let (text, color) = badge(entry.kind);
-                        ui.label(RichText::new(text).monospace().strong().color(color));
-                        ui.label(RichText::new(&entry.id).monospace().color(ACCENT));
-                        ui.label(RichText::new(&rows.detail[i]).small().color(MUTED));
-                        if let Some(path) = &entry.path {
-                            ui.label(RichText::new(assets::file_name(path)).small().color(MUTED))
-                                .on_hover_text(path);
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.add_enabled(!busy, egui::Button::new("Open")).clicked() {
-                            intents.push(Intent::Open(entry.kind, entry.id.clone()));
-                        }
-                        let place = ui
-                            .add_enabled(
-                                !busy && entry.kind.placeable(),
-                                egui::Button::new("Place in Scene"),
-                            )
-                            .on_hover_text("Or drag the asset onto the Scene view");
-                        rect!("assets:place".into(), place.rect);
-                        if place.clicked() {
-                            intents.push(Intent::Place(entry.kind, entry.id.clone()));
-                        }
-                        let usages = ui.button("Find Usages");
-                        rect!("assets:usages".into(), usages.rect);
-                        if usages.clicked() {
-                            intents.push(Intent::Usages(entry.kind, entry.id.clone()));
-                        }
-                        let renameable = entry.kind.singleton().is_none();
-                        let rename = ui.add_enabled(
-                            !busy && renameable && b.rename.is_none(),
-                            egui::Button::new("Rename…"),
-                        );
-                        rect!("assets:rename".into(), rename.rect);
-                        if rename.clicked() {
-                            b.rename = Some(entry.id.clone());
-                        }
-                    });
-                    if let Some(text) = &mut b.rename {
-                        ui.horizontal(|ui| {
-                            let edit =
-                                ui.add(egui::TextEdit::singleline(text).desired_width(200.0));
-                            rect!("assets:rename_text".into(), edit.rect);
-                            let enter =
-                                edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            let apply = ui.add_enabled(!busy, egui::Button::new("Apply"));
-                            rect!("assets:rename_apply".into(), apply.rect);
-                            if apply.clicked() || enter {
-                                intents.push(Intent::Rename(
-                                    entry.kind,
-                                    entry.id.clone(),
-                                    text.clone(),
-                                ));
-                            }
-                            if ui.button("Cancel").clicked() {
-                                intents.push(Intent::CancelRename);
-                            }
-                        });
-                        ui.label(
-                            RichText::new(format!(
+                    // A short dock scrolls the rename row and its ACL line.
+                    egui::ScrollArea::vertical()
+                        .id_salt("asset_details_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let (text, color) = badge(entry.kind);
+                                ui.label(RichText::new(text).monospace().strong().color(color));
+                                ui.label(RichText::new(&entry.id).monospace().color(ACCENT));
+                                let detail =
+                                    ui.label(RichText::new(&rows.detail[i]).small().color(MUTED));
+                                if let Some(path) = &entry.path {
+                                    detail.on_hover_text(path);
+                                }
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.add_enabled(!busy, egui::Button::new("Open")).clicked() {
+                                    intents.push(Intent::Open(entry.kind, entry.id.clone()));
+                                }
+                                let place = ui
+                                    .add_enabled(
+                                        !busy && entry.kind.placeable(),
+                                        egui::Button::new("Place in Scene"),
+                                    )
+                                    .on_hover_text("Or drag the asset onto the Scene view");
+                                rect!("assets:place".into(), place.rect);
+                                if place.clicked() {
+                                    intents.push(Intent::Place(entry.kind, entry.id.clone()));
+                                }
+                                let usages = ui.button("Find Usages");
+                                rect!("assets:usages".into(), usages.rect);
+                                if usages.clicked() {
+                                    intents.push(Intent::Usages(entry.kind, entry.id.clone()));
+                                }
+                                let renameable = entry.kind.singleton().is_none();
+                                let rename = ui.add_enabled(
+                                    !busy && renameable && b.rename.is_none(),
+                                    egui::Button::new("Rename…"),
+                                );
+                                rect!("assets:rename".into(), rename.rect);
+                                if rename.clicked() {
+                                    b.rename = Some(entry.id.clone());
+                                }
+                            });
+                            if let Some(text) = &mut b.rename {
+                                ui.horizontal(|ui| {
+                                    let edit = ui
+                                        .add(egui::TextEdit::singleline(text).desired_width(200.0));
+                                    rect!("assets:rename_text".into(), edit.rect);
+                                    let enter = edit.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    let apply = ui.add_enabled(!busy, egui::Button::new("Apply"));
+                                    rect!("assets:rename_apply".into(), apply.rect);
+                                    if apply.clicked() || enter {
+                                        intents.push(Intent::Rename(
+                                            entry.kind,
+                                            entry.id.clone(),
+                                            text.clone(),
+                                        ));
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        intents.push(Intent::CancelRename);
+                                    }
+                                });
+                                ui.label(
+                                    RichText::new(format!(
                                 "ACL: asset rename {}:{} {}  (fixes {} reference(s), one revision)",
                                 entry.kind.name(),
                                 entry.id,
                                 text.trim(),
                                 rows.refs[i]
                             ))
-                            .monospace()
-                            .small()
-                            .weak(),
-                        );
-                    }
-                    if let Some(view) = b
-                        .usages
-                        .as_ref()
-                        .filter(|u| u.kind == entry.kind && u.id == entry.id)
-                    {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} usage(s) · ACL: usages {}:{}",
-                                view.rows.len(),
-                                view.kind.name(),
-                                view.id
-                            ))
-                            .small()
-                            .color(MUTED),
-                        );
+                                    .monospace()
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                        });
+                });
+            // Find Usages: its own column left of the details (virtualized rows).
+            if let Some(view) = b
+                .usages
+                .as_ref()
+                .filter(|u| u.kind == entry.kind && u.id == entry.id)
+            {
+                egui::SidePanel::right("asset_usages")
+                    .resizable(true)
+                    .default_width(380.0)
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} usage(s) · ACL: usages {}:{}",
+                                    view.rows.len(),
+                                    view.kind.name(),
+                                    view.id
+                                ))
+                                .small()
+                                .color(MUTED),
+                            );
+                            if ui.small_button("Close").clicked() {
+                                intents.push(Intent::CloseUsages);
+                            }
+                        });
                         let height = ui.text_style_height(&egui::TextStyle::Small) + 6.0;
                         egui::ScrollArea::vertical()
-                            .id_salt("asset_usages")
-                            .auto_shrink([false, true])
+                            .id_salt("asset_usages_scroll")
+                            .auto_shrink([false, false])
                             .show_rows(ui, height, view.rows.len(), |ui, range| {
                                 for n in range {
                                     let r = ui.add(
@@ -791,18 +820,25 @@ impl Editor {
                                     }
                                 }
                             });
-                    }
-                });
+                    });
+            }
         }
         // Cells: the filtered entries, virtualized (only visible rows are laid out).
-        let key = (rows.version, b.filter.clone(), b.query.to_lowercase());
-        if b.shown.as_ref().is_none_or(|(k, _)| *k != key) {
-            let tokens: Vec<&str> = key.2.split_whitespace().collect();
+        // Compared in place: nothing is built unless the version, filter or query changed.
+        let stale = b
+            .shown
+            .as_ref()
+            .is_none_or(|((version, filter, query), _)| {
+                *version != rows.version || *filter != b.filter || *query != b.query
+            });
+        if stale {
+            let lower = b.query.to_lowercase();
+            let tokens: Vec<&str> = lower.split_whitespace().collect();
             let shown = (0..rows.entries.len())
                 .filter(|&i| rows.matches(i, &b.filter, &tokens))
                 .map(|i| i as u32)
                 .collect();
-            b.shown = Some((key, shown));
+            b.shown = Some(((rows.version, b.filter.clone(), b.query.clone()), shown));
             b.filters += 1;
         }
         let shown = &b.shown.as_ref().expect("filled above").1;
@@ -1003,6 +1039,11 @@ impl Editor {
             match intent {
                 Intent::Open(kind, id) => self.open_asset(kind, &id),
                 Intent::Place(kind, id) => actions.extend(self.place_asset(kind, &id, None)),
+                Intent::Relist(kind, id) => {
+                    if let Err(e) = self.list_usages(kind, &id, false) {
+                        self.set_error(format!("{e:#}"));
+                    }
+                }
                 Intent::Usages(kind, id) => {
                     if let Err(e) = self.find_usages(kind, &id) {
                         self.set_error(format!("{e:#}"));
@@ -1011,6 +1052,7 @@ impl Editor {
                 Intent::Rename(kind, id, new) => actions.extend(self.rename_asset(kind, &id, &new)),
                 Intent::Jump(owner) => self.jump(owner),
                 Intent::CancelRename => self.assets.rename = None,
+                Intent::CloseUsages => self.assets.usages = None,
                 Intent::Command(id) => self.invoke(id, actions),
             }
         }

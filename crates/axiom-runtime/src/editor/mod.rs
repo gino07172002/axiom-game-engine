@@ -2146,7 +2146,7 @@ impl Editor {
             "locked":self.prefs.locked.get(&self.world.id),
             "selection":self.selection(),
             "jobs":self.jobs_observation(),
-        "last_job":self.last_job,
+            "last_job":self.last_job,
             "thumbnails":self.assets.thumbs.observation(),
             "pending_commits":self.saving,
             "last_commit_ms":self.writes.get("last_commit_ms"),

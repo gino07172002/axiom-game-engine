@@ -1,11 +1,11 @@
 //! Asset thumbnails for the Assets browser: a bounded, cancellable background job (one at a
-//! time, `jobs::Job`) hashes each source, reuses `<db>.thumbs/<hash>.png` when present and
+//! time, `jobs::Job`) hashes each source, reuses `<db stem>.thumbs/<hash>.png` when present and
 //! otherwise produces the image: PNGs are decoded and fitted on the CPU, models (bind pose,
 //! material colours) and materials (a sphere in the material tint) are rendered off-screen on
 //! the editor's GPU device from the worker thread and read back. The main thread only uploads
-//! finished pixels as egui textures, a few per frame, and keeps at most [`TEXTURE_BUDGET`] of
-//! them (least recently drawn evicted; they come back from the disk cache). Nothing here is
-//! ever written to a world revision.
+//! finished pixels as egui textures, a few per frame, and keeps at most [`TEXTURE_BUDGET`]
+//! (more only while more cells are visible; the least recently drawn are evicted and come back
+//! from the disk cache). Nothing here is ever written to a world revision.
 use crate::jobs::{Job, Outcome, Progress};
 use axiom_core::assets::{AssetEntry, AssetKind};
 use serde_json::{json, Value};
@@ -44,6 +44,10 @@ fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 const FNV_START: u64 = 0xcbf29ce484222325;
+
+/// Source hash cache shared by the thumbnail workers.
+type Hashes =
+    std::sync::Arc<std::sync::Mutex<HashMap<(PathBuf, u64, std::time::SystemTime, String), u64>>>;
 
 /// One thumbnail as the browser knows it: the asset plus a signature of what it points at
 /// (file path + import options, or the material value), so an edit makes a new key.
@@ -143,6 +147,8 @@ struct Running {
     job: Job<Value>,
     results: mpsc::Receiver<(ThumbKey, Result<Vec<u8>, String>)>,
     explicit: bool,
+    /// The job's keys in order (progress `done` = index of the item in flight when it stops).
+    keys: Vec<ThumbKey>,
 }
 
 /// What the browser draws for one cell.
@@ -166,6 +172,12 @@ pub(crate) struct Thumbnails {
     frame: u64,
     uploads: usize,
     textures: usize,
+    /// No lazy jobs after a cancel until the world changes or a job is asked for explicitly
+    /// (else the visible cells would restart the job at once).
+    pub lazy_paused: bool,
+    /// Source hashes by (path, length, modified, options), shared with the workers: an
+    /// evicted thumbnail comes back from disk without re-reading a large model.
+    hashes: Hashes,
     /// Counters for `observe` and tests.
     pub evicted: u64,
     pub uploaded: u64,
@@ -219,9 +231,24 @@ impl Thumbnails {
             summary["elapsed_ms"] = json!(elapsed_ms);
             // Results sent before the worker ended are still in the channel.
             let rest: Vec<_> = running.results.try_iter().collect();
+            let stuck = (state == "timed_out" || state == "abandoned")
+                .then(|| running.keys.get(done as usize).cloned())
+                .flatten();
             self.running = None;
             for (key, result) in rest {
                 self.accept(key, result);
+            }
+            // The item a timed-out / stuck worker was on is not retried by the lazy batch.
+            if let Some(key) = stuck {
+                if matches!(self.states.get(&key), Some(State::Queued)) {
+                    self.states.insert(
+                        key,
+                        State::Failed(format!("thumbnail worker {state} on this item")),
+                    );
+                }
+            }
+            if state == "cancelled" {
+                self.lazy_paused = true;
             }
             // Items the stopped job never reached are asked for again when drawn.
             self.states.retain(|_, s| !matches!(s, State::Queued));
@@ -248,7 +275,7 @@ impl Thumbnails {
 
     /// The cell of a thumbnail asset is drawn this frame: its texture (uploading pending
     /// pixels within the per-frame budget) or what to show instead. Unknown thumbnails join
-    /// the lazy batch. No allocation unless something changes state.
+    /// the lazy batch while no job runs. No allocation unless something changes state.
     pub fn shown(&mut self, ctx: &egui::Context, request: Option<&Request>) -> Shown<'_> {
         let Some(request) = request else {
             return Shown::None;
@@ -286,7 +313,8 @@ impl Thumbnails {
             );
         }
         let wanted = matches!(self.states.get(key), None | Some(State::OnDisk));
-        if wanted && self.wanted.len() < LAZY_BATCH {
+        let lazy = self.running.is_none() && !self.lazy_paused;
+        if wanted && lazy && self.wanted.len() < LAZY_BATCH {
             self.wanted.push(request.clone());
         }
         match self.states.get_mut(key) {
@@ -307,9 +335,20 @@ impl Thumbnails {
         }
     }
 
-    /// End of a drawn browser frame: evicts textures over the budget (least recently drawn
-    /// first; never one drawn this frame) and starts a lazy job for the visible missing cells.
+    /// End of a drawn browser frame: drops pixels of cells no longer drawn, evicts textures
+    /// over the budget (least recently drawn first; never one drawn this frame, so more than
+    /// the budget can be held only while that many cells are visible) and starts a lazy job
+    /// for the visible missing cells.
     pub fn end(&mut self) {
+        let frame = self.frame;
+        let last_drawn = &self.last_drawn;
+        for (key, state) in self.states.iter_mut() {
+            if matches!(state, State::Pixels(_))
+                && last_drawn.get(key).is_none_or(|f| *f + 2 < frame)
+            {
+                *state = State::OnDisk;
+            }
+        }
         if self.textures > TEXTURE_BUDGET {
             let mut drawn: Vec<(u64, ThumbKey)> = self
                 .states
@@ -337,6 +376,11 @@ impl Thumbnails {
         }
     }
 
+    /// The world changed: lazy jobs may run again.
+    pub fn resume_lazy(&mut self) {
+        self.lazy_paused = false;
+    }
+
     /// Starts a job for `requests` (an explicit one replaces a running lazy job).
     pub fn start(&mut self, requests: Vec<Request>, explicit: bool) -> anyhow::Result<()> {
         if let Some(running) = self.running.take() {
@@ -347,16 +391,15 @@ impl Thumbnails {
             running.job.detach();
             self.states.retain(|_, s| !matches!(s, State::Queued));
         }
+        if explicit {
+            self.lazy_paused = false;
+        }
         if requests.is_empty() {
             return Ok(());
         }
-        for r in &requests {
-            if let Some(State::Texture { .. }) = self.states.get(&r.key) {
-                self.textures -= 1;
-            }
-            self.states.insert(r.key.clone(), State::Queued);
-        }
+        let keys: Vec<ThumbKey> = requests.iter().map(|r| r.key.clone()).collect();
         let (tx, results) = mpsc::channel();
+        let hashes = self.hashes.clone();
         let dir = self.dir.clone();
         let gpu = self.gpu.clone();
         #[cfg(test)]
@@ -369,12 +412,27 @@ impl Thumbnails {
             requests.len()
         );
         let job = Job::spawn("thumbnails", label, JOB_TIMEOUT, move |progress| {
-            generate(&requests, dir.as_deref(), gpu, delay, progress, &tx)
+            generate(
+                &requests,
+                dir.as_deref(),
+                gpu,
+                &hashes,
+                delay,
+                progress,
+                &tx,
+            )
         })?;
+        // Queued only once the worker exists (a failed spawn leaves the cells retryable).
+        for key in &keys {
+            if let Some(State::Texture { .. }) = self.states.insert(key.clone(), State::Queued) {
+                self.textures -= 1;
+            }
+        }
         self.running = Some(Running {
             job,
             results,
             explicit,
+            keys,
         });
         Ok(())
     }
@@ -429,6 +487,7 @@ fn generate(
     requests: &[Request],
     dir: Option<&Path>,
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
+    hashes: &Hashes,
     delay: Duration,
     progress: &Progress,
     results: &mpsc::Sender<(ThumbKey, Result<Vec<u8>, String>)>,
@@ -445,7 +504,7 @@ fn generate(
             std::thread::sleep(delay);
         }
         let started = std::time::Instant::now();
-        let result = one(request, dir, &gpu, &mut renderer);
+        let result = one(request, dir, &gpu, hashes, &mut renderer);
         timings.push(started.elapsed().as_micros() as u64);
         match &result {
             Ok((_, true)) => cached += 1,
@@ -476,23 +535,42 @@ fn one(
     request: &Request,
     dir: Option<&Path>,
     gpu: &Option<(wgpu::Device, wgpu::Queue)>,
+    hashes: &Hashes,
     renderer: &mut Option<Result<ThumbGpu, String>>,
 ) -> Result<(Vec<u8>, bool), String> {
     let text = |e: anyhow::Error| format!("{e:#}");
-    let (hash, bytes) = match &request.source {
+    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+    let (hash, mut bytes) = match &request.source {
         Source::File { path, options } => {
-            let length = std::fs::metadata(path)
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .len();
-            if length > MAX_SOURCE_BYTES {
+            let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if meta.len() > MAX_SOURCE_BYTES {
                 return Err(format!("{} exceeds 128 MiB", path.display()));
             }
-            let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let hash = fnv(
-                fnv(fnv(FNV_START, VERSION.as_bytes()), options.as_bytes()),
-                &bytes,
+            // Same file (length + modified time) as hashed before: no re-read.
+            let id = (
+                path.clone(),
+                meta.len(),
+                meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                options.clone(),
             );
-            (hash, Some(bytes))
+            let known = hashes.lock().ok().and_then(|h| h.get(&id).copied());
+            match known {
+                Some(hash) => (hash, None),
+                None => {
+                    let bytes = read(path)?;
+                    let hash = fnv(
+                        fnv(fnv(FNV_START, VERSION.as_bytes()), options.as_bytes()),
+                        &bytes,
+                    );
+                    if let Ok(mut h) = hashes.lock() {
+                        if h.len() >= 1024 {
+                            h.clear();
+                        }
+                        h.insert(id, hash);
+                    }
+                    (hash, Some(bytes))
+                }
+            }
         }
         Source::Material { value, .. } => (
             fnv(fnv(FNV_START, VERSION.as_bytes()), value.as_bytes()),
@@ -508,7 +586,10 @@ fn one(
         return Err(NO_GPU.into());
     }
     let pixels = match (&request.source, request.key.kind) {
-        (Source::File { .. }, AssetKind::Image) => {
+        (Source::File { path, .. }, AssetKind::Image) => {
+            if bytes.is_none() {
+                bytes = Some(read(path)?);
+            }
             let texture = axiom_animation::import::texture(bytes.as_deref().unwrap_or_default())
                 .map_err(text)?;
             fit(texture.width, texture.height, &texture.rgba)
@@ -536,11 +617,16 @@ fn gpu_render(
     let Some((device, queue)) = gpu else {
         return Err(NO_GPU.into());
     };
-    let renderer = renderer
+    let gpu = renderer
         .get_or_insert_with(|| Ok(ThumbGpu::new(device.clone(), queue.clone())))
         .as_mut()
         .map_err(|e| e.clone())?;
-    renderer.render(mesh).map_err(|e| format!("{e:#}"))
+    let result = gpu.render(mesh).map_err(|e| format!("{e:#}"));
+    if result.is_err() {
+        // A failed readback may leave the buffer mapped: start the next item afresh.
+        *renderer = None;
+    }
+    result
 }
 
 fn read_png(path: &Path) -> Option<Vec<u8>> {
@@ -564,7 +650,10 @@ fn write_png(path: &Path, pixels: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let partial = path.with_extension(format!("{}.part", std::process::id()));
+    // Unique per write: a replaced (detached) worker may write the same content-addressed file.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let partial = path.with_extension(format!("{}-{n}.part", std::process::id()));
     {
         let mut encoder = png::Encoder::new(
             std::io::BufWriter::new(std::fs::File::create(&partial)?),
@@ -710,27 +799,41 @@ impl Mesh {
         Self { vertices, indices }
     }
 
-    fn bounds(&self) -> (glam::Vec3, f32) {
+    /// Centre and half extents of the drawn triangles.
+    fn bounds(&self) -> (glam::Vec3, glam::Vec3) {
         let mut min = glam::Vec3::splat(f32::MAX);
         let mut max = glam::Vec3::splat(f32::MIN);
-        for &i in &self.indices {
-            let p = glam::Vec3::from_array(self.vertices[i as usize].position);
+        for v in self
+            .indices
+            .iter()
+            .filter_map(|&i| self.vertices.get(i as usize))
+        {
+            let p = glam::Vec3::from_array(v.position);
             min = min.min(p);
             max = max.max(p);
         }
         if min.x > max.x {
-            return (glam::Vec3::ZERO, 1.0);
+            return (glam::Vec3::ZERO, glam::Vec3::ONE);
         }
-        let center = (min + max) * 0.5;
-        (center, ((max - min).length() * 0.5).max(1e-3))
+        (
+            (min + max) * 0.5,
+            ((max - min) * 0.5).max(glam::Vec3::splat(1e-3)),
+        )
     }
 }
 
 fn average(rgba: &[u8]) -> [f32; 3] {
     let mut sum = [0u64; 3];
     let mut n = 0u64;
-    // Every 7th texel is plenty for an average colour.
-    for px in rgba.as_chunks::<4>().0.iter().step_by(7) {
+    // Every 7th opaque texel is plenty for an average colour (transparent padding of a
+    // texture atlas would darken it).
+    for px in rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .step_by(7)
+        .filter(|p| p[3] >= 128)
+    {
         for c in 0..3 {
             sum[c] += u64::from(px[c]);
         }
@@ -903,10 +1006,14 @@ impl ThumbGpu {
     fn render(&mut self, mesh: &Mesh) -> anyhow::Result<Vec<u8>> {
         anyhow::ensure!(!mesh.indices.is_empty(), "mesh has no triangles");
         use wgpu::util::DeviceExt;
-        let (center, radius) = mesh.bounds();
+        let (center, half) = mesh.bounds();
         let fov = 30f32.to_radians();
         let direction = glam::Vec3::new(0.55, 0.35, 1.0).normalize();
-        let distance = radius / (fov * 0.5).sin() * 1.08;
+        // Fit the larger of the height and the footprint (tall characters fill the frame
+        // instead of shrinking into their bounding sphere); the depth range covers the box.
+        let fit = half.y.max(half.x.max(half.z));
+        let radius = half.length();
+        let distance = (fit / (fov * 0.5).tan() * 1.15).max(radius * 1.05);
         let eye = center + direction * distance;
         let projection = glam::Mat4::perspective_rh(
             fov,
@@ -995,16 +1102,31 @@ impl ThumbGpu {
                 depth_or_array_layers: 1,
             },
         );
-        let submission = self.queue.submit(Some(encoder.finish()));
+        self.queue.submit(Some(encoder.finish()));
         let slice = self.readback.slice(..);
         let (tx, rx) = mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device
-            .poll(wgpu::Maintain::WaitForSubmissionIndex(submission));
-        rx.recv_timeout(Duration::from_secs(10))
-            .map_err(|_| anyhow::anyhow!("thumbnail readback timed out"))??;
+        // Non-blocking polls: a waiting poll holds the device fence while it waits, which
+        // would stall the editor's own frame submissions on the main thread.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mapped = loop {
+            self.device.poll(wgpu::Maintain::Poll);
+            match rx.try_recv() {
+                Ok(result) => break result,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("thumbnail readback was dropped")
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "thumbnail readback timed out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        mapped?;
         let pixels = slice.get_mapped_range().to_vec();
         self.readback.unmap();
         Ok(pixels)

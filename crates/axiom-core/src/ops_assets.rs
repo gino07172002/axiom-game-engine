@@ -392,7 +392,9 @@ pub fn rename_asset(world: &World, kind: AssetKind, id: &str, new: &str) -> Resu
     }
     let path = asset_path(kind, new);
     check_id(&path, new)?;
-    if assets::exists(world, kind, new) {
+    if assets::exists(world, kind, new)
+        || (kind == AssetKind::Shader && assets::BUILTIN_SHADERS.contains(&new))
+    {
         return Err(Diagnostic::error(
             "id_taken",
             path,
@@ -524,6 +526,23 @@ mod tests {
             code(rename_asset(&w, AssetKind::Ui, "ui.document", "x")),
             "not_renameable"
         );
+        // A custom shader cannot take a built-in shader's name.
+        let mut shaded = w.clone();
+        shaded.resources.insert(
+            "render.shaders".into(),
+            json!({"shaders":{"glow":{"wgsl":"x"}},"materials":{"m":{"shader":"glow"}}}),
+        );
+        assert_eq!(
+            code(rename_asset(&shaded, AssetKind::Shader, "glow", "lit")),
+            "id_taken"
+        );
+        let edits = rename_asset(&shaded, AssetKind::Shader, "glow", "bloom").unwrap();
+        let after = run(&shaded, &edits);
+        assert_eq!(
+            after.resources["render.shaders"]["materials"]["m"]["shader"],
+            "bloom"
+        );
+        assert!(after.resources["render.shaders"]["shaders"]["bloom"].is_object());
     }
 
     #[test]

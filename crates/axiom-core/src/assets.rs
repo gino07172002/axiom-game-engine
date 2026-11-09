@@ -353,8 +353,17 @@ pub fn usages(world: &World, kind: AssetKind, id: &str) -> Vec<Usage> {
             .filter(|e| e.prefab.as_deref() == Some(prefab.as_str()))
         {
             // `/components/C/F`: overridden when the entity authors that field itself.
-            let own = json!({"components": e.components});
-            if own.pointer(&field).is_none() {
+            let overridden = field
+                .strip_prefix("/components/")
+                .and_then(|rest| rest.split_once('/'))
+                .and_then(|(component, pointer)| {
+                    let component = component.replace("~1", "/").replace("~0", "~");
+                    e.components
+                        .get(&component)?
+                        .pointer(&format!("/{pointer}"))
+                })
+                .is_some();
+            if !overridden {
                 out.push(Usage {
                     owner: Owner::Instance {
                         entity: e.id.clone(),
