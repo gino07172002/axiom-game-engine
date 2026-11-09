@@ -1,0 +1,6 @@
+# Demo step 6 (docs/ui-effects.zh-TW.md): the affection bar moves to the top-right region,
+# shows its number in the value style, fades in at session start and rolls when it changes.
+ui place affection top_right
+ui style affection value
+ui effect add affection.fade_in affection fade_in
+ui effect add affection.number_roll affection number_roll ticks=120

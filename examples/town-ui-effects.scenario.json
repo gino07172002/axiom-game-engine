@@ -1,0 +1,24 @@
+{"ticks":600,
+ "inputs":[
+  {"tick":0,"actions":{"move_z":1.0,"move_x":0.45}},
+  {"tick":250,"actions":{"move_z":0.0,"move_x":0.0}},
+  {"tick":300,"actions":{"interact":1.0}},
+  {"tick":302,"actions":{"interact":0.0}}
+ ],
+ "commands":[
+  {"tick":10,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/ui_effects/active/0/id","value":"affection.fade_in"}}},
+  {"tick":10,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/ui_effects/active/0/elapsed","value":10}}},
+  {"tick":100,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/ui_effects/active","value":[]}}},
+  {"tick":320,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/node","value":"lumi"}}},
+  {"tick":330,"operation":{"op":"command","command":{"kind":"choose","node":"lumi","choice":"chat"}}},
+  {"tick":340,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/ui_effects/active/0/id","value":"affection.number_roll"}}},
+  {"tick":340,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/ui_effects/active/0/elapsed","value":9}}},
+  {"tick":340,"operation":{"op":"assert","assertion":{"kind":"equals","pointer":"/gameplay/variables/affection","value":5}}}
+ ],
+ "assertions":[
+  {"kind":"equals","pointer":"/ui_effects/active","value":[]},
+  {"kind":"equals","pointer":"/ui_effects/started","value":2},
+  {"kind":"equals","pointer":"/ui_effects/dropped","value":0},
+  {"kind":"equals","pointer":"/gameplay/variables/affection","value":5},
+  {"kind":"equals","pointer":"/gameplay/bindings/affection","value":0.05}
+ ]}

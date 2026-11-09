@@ -40,6 +40,7 @@ fn column_value(column: &Column, row: usize, state: &crate::world::RuntimeState)
 impl WorldRuntime {
     pub fn checkpoint(&self) -> Result<Checkpoint> {
         self.checkpoint_supported()?;
+        self.checkpoint_ready()?;
         self.assert_valid()?;
         let mut entities = self
             .state
@@ -156,6 +157,7 @@ impl WorldRuntime {
         next.runtime_epoch = self.runtime_epoch + 1;
         next.state.next_generation = self.state.next_generation;
         next.state.sync_scenes();
+        next.restored();
         next.assert_valid()?;
         *self = next;
         Ok(())

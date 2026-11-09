@@ -275,6 +275,13 @@ pub trait RuntimeSystem: Any + Send {
     fn checkpoint_supported(&self) -> bool {
         false
     }
+    /// Whether the current state can be saved now (a supported system may still hold
+    /// transient state that checkpoints do not carry).
+    fn checkpoint_ready(&self) -> Result<()> {
+        Ok(())
+    }
+    /// A checkpoint was just loaded into this freshly built system's runtime.
+    fn restored(&mut self, _state: &RuntimeState) {}
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         None
@@ -738,6 +745,20 @@ impl WorldRuntime {
             );
         }
         Ok(())
+    }
+    /// Saving needs every system's transient state to be saveable now (`checkpoint_ready`).
+    pub(crate) fn checkpoint_ready(&self) -> Result<()> {
+        for (id, s) in &self.systems {
+            s.checkpoint_ready()
+                .map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?;
+        }
+        Ok(())
+    }
+    /// Tells every system that a checkpoint was loaded into this runtime.
+    pub(crate) fn restored(&mut self) {
+        for (_, s) in &mut self.systems {
+            s.restored(&self.state);
+        }
     }
     pub fn registry_clone(&self) -> RuntimeRegistry {
         self.registry.clone()
@@ -1216,7 +1237,10 @@ impl WorldRuntime {
             );
         }
         if let Some(g) = &self.state.gameplay {
-            actions.extend(crate::bound_ui::draw(ctx, g, ui));
+            let fx = self
+                .system::<crate::ui_effects::UiEffects>()
+                .map(|s| s as &dyn crate::ui_effects::EffectVisuals);
+            actions.extend(crate::bound_ui::draw(ctx, g, ui, fx));
         }
         if let Some(error) = &self.state.events.fault {
             egui::Window::new("Event delivery stopped")

@@ -1588,3 +1588,150 @@ fn inspector_arrays_reset_paste_and_play_on_match_acl() {
         "remove resources[id=runtime.bindings] events 0",
     );
 }
+
+/// UI Editor (`ui_editor.rs`): canvas drag / Region, Style, button Command, element fields and
+/// effects, through the editor methods the widgets call and the `ui.*` registry commands.
+#[test]
+fn ui_editor_edits_match_acl() {
+    use axiom_core::gameplay::{Region, RuntimeCommand, TextStyle, UiEffect, UiEffectKind};
+    let town = || {
+        axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world
+    };
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .ui_place("affection", Some(Region::TopRight))
+                .into_iter()
+                .collect()]
+        },
+        "ui place affection top_right",
+    );
+    assert_parity(
+        town(),
+        |e| vec![e.ui_place("quest", None).into_iter().collect()],
+        "ui place quest none",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .ui_style("affection", Some(TextStyle::Value))
+                .into_iter()
+                .collect()]
+        },
+        "ui style affection value",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            let bow = RuntimeCommand::Emit {
+                event: "emote_bow".into(),
+                fields: Default::default(),
+            };
+            vec![e
+                .ui_button_command("emote_wave", &bow)
+                .into_iter()
+                .collect()]
+        },
+        "ui button emote_wave emit emote_bow",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            let fields = [("/binding/id".to_owned(), serde_json::json!("town"))];
+            vec![e.ui_widget_fields("title", &fields).into_iter().collect()]
+        },
+        r#"set widgets[id=title] /binding/id "town""#,
+    );
+    // Effects: add (+ the ui.effects system), edit, remove; widget method and command.
+    assert_parity(
+        town(),
+        |e| {
+            let effect = UiEffect::new("affection.fade_in", "affection", UiEffectKind::FadeIn);
+            vec![e.ui_add_effect(&effect).into_iter().collect()]
+        },
+        "ui effect add affection.fade_in affection fade_in",
+    );
+    let faded = headless(&town(), "ui effect add affection.fade_in affection fade_in");
+    assert!(faded.systems.iter().any(|s| s == "ui.effects"));
+    assert_parity(
+        faded.clone(),
+        |e| {
+            let mut effect = UiEffect::new("affection.fade_in", "affection", UiEffectKind::FadeIn);
+            effect.ticks = Some(48);
+            vec![e.ui_set_effect(&effect).into_iter().collect()]
+        },
+        "ui effect set affection.fade_in ticks=48",
+    );
+    assert_parity(
+        faded.clone(),
+        |e| {
+            vec![e
+                .ui_remove_effect("affection.fade_in")
+                .into_iter()
+                .collect()]
+        },
+        "ui effect remove affection.fade_in",
+    );
+    for (command, arg, script) in [
+        (
+            "ui.place",
+            "affection top_right",
+            "ui place affection top_right",
+        ),
+        ("ui.style", "coins value", "ui style coins value"),
+        (
+            "ui.button",
+            "emote_bow locale en",
+            "ui button emote_bow locale en",
+        ),
+        (
+            "ui.effect_add",
+            "roll affection number_roll ticks=90 ease=linear",
+            "ui effect add roll affection number_roll ticks=90 ease=linear",
+        ),
+    ] {
+        assert_parity(
+            town(),
+            |e| vec![e.run_command_with(command, Some(arg)).unwrap()],
+            script,
+        );
+    }
+    assert_parity(
+        faded.clone(),
+        |e| {
+            vec![e
+                .run_command_with(
+                    "ui.effect_set",
+                    Some("affection.fade_in on=event event=thanks"),
+                )
+                .unwrap()]
+        },
+        "ui effect set affection.fade_in on=event event=thanks",
+    );
+    assert_parity(
+        faded,
+        |e| {
+            vec![e
+                .run_command_with("ui.effect_remove", Some("affection.fade_in"))
+                .unwrap()]
+        },
+        "ui effect remove affection.fade_in",
+    );
+    // A refused edit writes nothing and reports the same structured problem.
+    let mut e = Editor::new(town(), 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    assert!(e.ui_style("emote_wave", Some(TextStyle::Value)).is_none());
+    assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
+    assert!(e
+        .run_command_with("ui.place", Some("nope top"))
+        .unwrap()
+        .is_empty());
+    assert!(e.problem_codes().contains(&"not_found".to_owned()));
+}

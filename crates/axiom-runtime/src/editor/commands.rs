@@ -296,6 +296,57 @@ pub(crate) const COMMANDS: &[Command] = &[
     a("layout.load", "Load Layout…", "Window", "NAME"),
     a("layout.delete", "Delete Saved Layout…", "Window", "NAME"),
     c("layout.reset", "Reset Layout", "Window", ""),
+    c("window.ui_editor", "UI Editor", "Window", ""),
+    a("ui.select", "UI Editor: Select Widget…", "Window", "WIDGET"),
+    a(
+        "ui.locale",
+        "UI Editor: Preview Locale…",
+        "Window",
+        "LOCALE",
+    ),
+    a(
+        "ui.resolution",
+        "UI Editor: Reference Resolution…",
+        "Window",
+        "WxH",
+    ),
+    c(
+        "ui.preview_effects",
+        "UI Editor: Preview Effects of Selected Widget",
+        "Window",
+        "",
+    ),
+    a(
+        "ui.place",
+        "UI: Place Widget in Region…",
+        "World",
+        "WIDGET REGION|none",
+    ),
+    a(
+        "ui.style",
+        "UI: Widget Style…",
+        "World",
+        "WIDGET STYLE|none",
+    ),
+    a(
+        "ui.button",
+        "UI: Button Command…",
+        "World",
+        "WIDGET emit EVENT|locale L|choose NODE CHOICE|call CAP ACTION [JSON]",
+    ),
+    a(
+        "ui.effect_add",
+        "UI: Add Effect…",
+        "World",
+        "ID WIDGET KIND [key=value ..]",
+    ),
+    a(
+        "ui.effect_set",
+        "UI: Edit Effect…",
+        "World",
+        "ID key=value ..",
+    ),
+    a("ui.effect_remove", "UI: Remove Effect…", "World", "ID"),
     c("help.shortcuts", "Keyboard Shortcuts…", "Help", "F1"),
     c(
         "help.copy_discovery",
@@ -679,6 +730,15 @@ impl Editor {
             id if id.starts_with("view.bookmark.recall.") && self.bookmark(id).is_none() => {
                 Some("no camera bookmark saved in this slot")
             }
+            "ui.preview_effects" if self.ui_editor.selected.is_none() => {
+                Some("select a widget in the UI Editor")
+            }
+            "ui.place" | "ui.style" | "ui.button" | "ui.effect_add" | "ui.effect_set"
+            | "ui.effect_remove"
+                if busy =>
+            {
+                Some("apply or reload the inspector draft first")
+            }
             _ => None,
         }
     }
@@ -723,6 +783,8 @@ impl Editor {
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
+        } else if id.starts_with("ui.") {
+            return Ok(self.ui_command(id, arg));
         } else {
             return Ok(self.run_with_arg(id, arg));
         }
@@ -827,6 +889,7 @@ impl Editor {
                 });
             }
             "view.camera_preview" => self.prefs.camera_preview = !self.prefs.camera_preview,
+            "ui.preview_effects" => self.ui_preview_effects(),
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
                 self.pending_copy = Some(r#"{"op":"discover","topic":"editor"}"#.to_owned());

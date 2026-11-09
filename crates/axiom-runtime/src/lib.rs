@@ -44,6 +44,7 @@ pub mod spatial_audio;
 pub mod trigger;
 pub mod tween;
 pub mod ui;
+pub mod ui_effects;
 pub mod vfx;
 pub mod vfx_gpu;
 pub mod world;
@@ -70,6 +71,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     nav_agent::register(&mut r);
     camera_rig::register(&mut r);
     nameplate::register(&mut r);
+    ui_effects::register(&mut r);
     vfx::register(&mut r);
     postfx::register(&mut r);
     showcase::register(&mut r);

@@ -2,6 +2,7 @@
 use crate::{
     gameplay::Gameplay,
     ui::{Action, UiState},
+    ui_effects::{EffectVisuals, Visual},
 };
 use anyhow::{ensure, Result};
 use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar, TextStyle};
@@ -63,7 +64,25 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
     }
     Ok(())
 }
-pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Action> {
+/// Where the HUD regions are laid out: the whole window (`draw`), or the editor's canvas.
+struct Surface<'a> {
+    /// Rectangle the regions anchor in (`None` = the screen).
+    area: Option<egui::Rect>,
+    /// Height taken at the top by session chrome.
+    top: f32,
+    /// Area ID prefix (the editor canvas must not share the game's areas).
+    salt: &'static str,
+    fx: Option<&'a dyn EffectVisuals>,
+    /// Widget rectangles drawn (widget index, layout rect), for the editor canvas.
+    rects: Option<&'a mut Vec<(usize, egui::Rect)>>,
+}
+
+pub fn draw(
+    ctx: &egui::Context,
+    g: &Gameplay,
+    state: &mut UiState,
+    fx: Option<&dyn EffectVisuals>,
+) -> Vec<Action> {
     // Default interaction prompt when no ui.document widget binds `{kind: prompt}`.
     if let Some(prompt) = &g.prompt {
         let authored = g
@@ -100,48 +119,15 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
         .textures
         .retain(|key, _| g.images.values().any(|p| &p.key == key));
     let region_of = |w: &BoundWidget| doc.regions.get(widget_id(w)).copied();
-    // HUD regions: compact translucent panels anchored over the 3D view.
-    for region in REGIONS {
-        let visible = g
-            .compiled
-            .widgets
-            .iter()
-            .any(|w| region_of(w) == Some(region) && widget_visible(g, w));
-        let controls = region == Region::TopRight
-            && doc.session_controls
-            && !doc.regions.is_empty()
-            && g.compiled.widgets.iter().all(|w| region_of(w).is_some());
-        if !visible && !controls {
-            continue;
-        }
-        let (align, mut offset, width, flow) = anchor(region);
-        if matches!(region, Region::TopLeft | Region::Top | Region::TopRight) {
-            // Clear whatever top panel the active chrome drew (none for compact chrome).
-            offset[1] = ctx.available_rect().top() - ctx.screen_rect().top() + 10.0;
-        }
-        egui::Area::new(egui::Id::new(("bound_region", region)))
-            .anchor(align, offset)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(Color32::from_rgba_unmultiplied(12, 16, 24, 205))
-                    .corner_radius(8.0)
-                    .inner_margin(10.0)
-                    .show(ui, |ui| {
-                        ui.set_max_width(width);
-                        if controls {
-                            session_controls(ui, doc, g, state, &mut actions);
-                        }
-                        let filter = |w: &BoundWidget| region_of(w) == Some(region);
-                        if flow {
-                            ui.horizontal_wrapped(|ui| {
-                                draw_widgets(ui, g, state, &mut actions, &filter, true)
-                            });
-                        } else {
-                            draw_widgets(ui, g, state, &mut actions, &filter, false);
-                        }
-                    });
-            });
-    }
+    let mut surface = Surface {
+        area: None,
+        // Clear whatever top panel the active chrome drew (none for compact chrome).
+        top: ctx.available_rect().top() - ctx.screen_rect().top(),
+        salt: "bound_region",
+        fx,
+        rects: None,
+    };
+    draw_regions(ctx, g, state, &mut actions, &mut surface);
     let unplaced = g.compiled.widgets.iter().any(|w| region_of(w).is_none());
     if !doc.regions.is_empty() && !unplaced {
         if let Some(error) = &g.fault {
@@ -165,10 +151,10 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
                 let filter = |w: &BoundWidget| region_of(w).is_none();
                 if doc.flow {
                     ui.horizontal_wrapped(|ui| {
-                        draw_widgets(ui, g, state, &mut actions, &filter, true)
+                        draw_widgets(ui, g, state, &mut actions, &filter, true, fx, None)
                     });
                 } else {
-                    draw_widgets(ui, g, state, &mut actions, &filter, false);
+                    draw_widgets(ui, g, state, &mut actions, &filter, false, fx, None);
                 }
                 if let Some(error) = &g.fault {
                     ui.colored_label(Color32::LIGHT_RED, error.to_string());
@@ -180,6 +166,222 @@ pub fn draw(ctx: &egui::Context, g: &Gameplay, state: &mut UiState) -> Vec<Actio
             });
         });
     actions
+}
+
+/// HUD regions: compact translucent panels anchored over the 3D view (or the canvas).
+fn draw_regions(
+    ctx: &egui::Context,
+    g: &Gameplay,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+    s: &mut Surface,
+) {
+    let Some(doc) = &g.compiled.ui else {
+        return;
+    };
+    let region_of = |w: &BoundWidget| doc.regions.get(widget_id(w)).copied();
+    let fx = s.fx;
+    for region in REGIONS {
+        let visible = g.compiled.widgets.iter().enumerate().any(|(i, w)| {
+            region_of(w) == Some(region)
+                && (widget_visible(g, w) || fx.is_some_and(|f| f.visual(i).forced))
+        });
+        let controls = region == Region::TopRight
+            && doc.session_controls
+            && !doc.regions.is_empty()
+            && g.compiled.widgets.iter().all(|w| region_of(w).is_some());
+        if !visible && !controls {
+            continue;
+        }
+        let (align, mut offset, width, flow) = anchor(region);
+        if matches!(region, Region::TopLeft | Region::Top | Region::TopRight) {
+            offset[1] = s.top + 10.0;
+        }
+        let mut area = egui::Area::new(egui::Id::new((s.salt, region))).anchor(align, offset);
+        if let Some(rect) = s.area {
+            area = area.constrain_to(rect).interactable(false);
+        }
+        let rects = &mut s.rects;
+        let canvas = s.area.is_some();
+        area.show(ctx, |ui| {
+            if canvas {
+                // The editor reads the pointer itself; canvas text is not selectable.
+                ui.style_mut().interaction.selectable_labels = false;
+            }
+            egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(12, 16, 24, 205))
+                .corner_radius(8.0)
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.set_max_width(width);
+                    if controls {
+                        session_controls(ui, doc, g, state, actions);
+                    }
+                    let filter = |w: &BoundWidget| region_of(w) == Some(region);
+                    if flow {
+                        ui.horizontal_wrapped(|ui| {
+                            draw_widgets(
+                                ui,
+                                g,
+                                state,
+                                actions,
+                                &filter,
+                                true,
+                                fx,
+                                rects.as_deref_mut(),
+                            )
+                        });
+                    } else {
+                        draw_widgets(
+                            ui,
+                            g,
+                            state,
+                            actions,
+                            &filter,
+                            false,
+                            fx,
+                            rects.as_deref_mut(),
+                        );
+                    }
+                });
+        });
+    }
+}
+
+/// The editor's UI canvas: the document's regions and widgets drawn by the same code as the
+/// game HUD, laid out in a virtual `size` screen (with `top` pixels of session chrome) and
+/// scaled into `rect`. Nothing in it is interactive; button clicks never run commands.
+/// Returns each drawn widget's rectangle in screen space (widget index, rect).
+pub fn draw_canvas(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    size: Vec2,
+    top: f32,
+    g: &Gameplay,
+    state: &mut UiState,
+    fx: Option<&dyn EffectVisuals>,
+) -> Vec<(usize, egui::Rect)> {
+    let Some(doc) = &g.compiled.ui else {
+        return vec![];
+    };
+    let scale = (rect.width() / size.x)
+        .min(rect.height() / size.y)
+        .max(0.05);
+    let screen = egui::Rect::from_min_size(rect.min, size);
+    let transform = egui::emath::TSTransform::new(rect.min.to_vec2() * (1.0 - scale), scale);
+    let mut actions = vec![];
+    let mut rects = vec![];
+    state.targets.clear();
+    let mut surface = Surface {
+        area: Some(screen),
+        top,
+        salt: "ui_canvas_region",
+        fx,
+        rects: Some(&mut rects),
+    };
+    draw_regions(ctx, g, state, &mut actions, &mut surface);
+    for region in REGIONS {
+        ctx.set_transform_layer(
+            egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new(("ui_canvas_region", region)),
+            ),
+            transform,
+        );
+    }
+    // Unplaced widgets: the game draws them in a bottom panel across the window.
+    let region_of = |w: &BoundWidget| doc.regions.get(widget_id(w)).copied();
+    if doc.regions.is_empty() || g.compiled.widgets.iter().any(|w| region_of(w).is_none()) {
+        let id = egui::Id::new("ui_canvas_document");
+        egui::Area::new(id)
+            .constrain_to(screen)
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, 0.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.style_mut().interaction.selectable_labels = false;
+                egui::Frame::new()
+                    .fill(ctx.style().visuals.panel_fill)
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.set_width(size.x - 16.0);
+                        if doc.session_controls {
+                            session_controls(ui, doc, g, state, &mut actions);
+                        }
+                        let filter = |w: &BoundWidget| region_of(w).is_none();
+                        if doc.flow {
+                            ui.horizontal_wrapped(|ui| {
+                                draw_widgets(
+                                    ui,
+                                    g,
+                                    state,
+                                    &mut actions,
+                                    &filter,
+                                    true,
+                                    fx,
+                                    Some(&mut rects),
+                                )
+                            });
+                        } else {
+                            draw_widgets(
+                                ui,
+                                g,
+                                state,
+                                &mut actions,
+                                &filter,
+                                false,
+                                fx,
+                                Some(&mut rects),
+                            );
+                        }
+                    });
+            });
+        ctx.set_transform_layer(egui::LayerId::new(egui::Order::Middle, id), transform);
+    }
+    for (_, r) in &mut rects {
+        *r = transform.mul_rect(*r);
+    }
+    rects
+}
+
+/// Runs `add` with the widget's effect visuals: opacity, then offset and scale about the
+/// center of what it drew. Returns the laid-out (untransformed) rectangle.
+fn with_effects(ui: &mut egui::Ui, v: Visual, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    if v.is_identity() {
+        add(ui);
+        return ui.min_rect();
+    }
+    let layer = ui.layer_id();
+    let next = |ui: &egui::Ui| {
+        ui.ctx().graphics(|g| {
+            g.get(layer)
+                .map_or(egui::layers::ShapeIdx(0), |l| l.next_idx())
+        })
+    };
+    let start = next(ui);
+    ui.multiply_opacity(v.alpha.clamp(0.0, 1.0));
+    add(ui);
+    let rect = ui.min_rect();
+    if v.scale != 1.0 || v.offset != [0.0, 0.0] {
+        let end = next(ui);
+        let scale = v.scale.max(0.0);
+        let transform = egui::emath::TSTransform::new(
+            rect.center().to_vec2() * (1.0 - scale) + Vec2::from(v.offset),
+            scale,
+        );
+        ui.ctx()
+            .graphics_mut(|g| g.entry(layer).transform_range(start, end, transform));
+    }
+    rect
+}
+
+/// A rolled number: whole for integer variables, else up to two decimals.
+fn rolled(n: f64, integer: bool) -> String {
+    if integer {
+        format!("{}", n.round() as i64)
+    } else {
+        let text = format!("{n:.2}");
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    }
 }
 
 const REGIONS: [Region; 9] = [
@@ -221,15 +423,10 @@ fn widget_id(w: &BoundWidget) -> &str {
     }
 }
 
-/// Whether a widget would draw anything now (empty regions are not drawn at all).
+/// Whether a widget would draw anything now (empty regions are not drawn at all). The same
+/// test decides when `ui.effects` show / hide effects start.
 fn widget_visible(g: &Gameplay, w: &BoundWidget) -> bool {
-    match w {
-        BoundWidget::Text(_, binding, when) => g.test(when) && !g.bound_text(binding).is_empty(),
-        BoundWidget::Button(_, _, _, when) => g.test(when),
-        BoundWidget::Choices(_) => !g.choices().is_empty(),
-        BoundWidget::Image(_, image) => g.images.contains_key(image),
-        BoundWidget::Progress(..) => true,
-    }
+    crate::ui_effects::widget_visible(g, w)
 }
 
 fn session_controls(
@@ -269,6 +466,7 @@ fn session_controls(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_widgets(
     ui: &mut egui::Ui,
     g: &Gameplay,
@@ -276,24 +474,25 @@ fn draw_widgets(
     actions: &mut Vec<Action>,
     filter: &dyn Fn(&BoundWidget) -> bool,
     flow: bool,
+    fx: Option<&dyn EffectVisuals>,
+    mut rects: Option<&mut Vec<(usize, egui::Rect)>>,
 ) {
-    for widget in g.compiled.widgets.iter().filter(|w| filter(w)) {
+    for (index, widget) in g.compiled.widgets.iter().enumerate() {
+        if !filter(widget) {
+            continue;
+        }
+        let visual = fx.map_or(Visual::IDENTITY, |f| f.visual(index));
+        let mut drawn = None;
         match widget {
-            BoundWidget::Text(id, binding, when) if g.test(when) => {
-                let text = g.bound_text(binding);
-                let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
-                let (size, color, strong) = match style {
-                    Some(TextStyle::Title) => (42.0, Some(Color32::from_rgb(255, 214, 102)), true),
-                    Some(TextStyle::Heading) => {
-                        (17.0, Some(Color32::from_rgb(102, 245, 205)), true)
+            BoundWidget::Text(id, binding, when) if visual.forced || g.test(when) => {
+                let text = match (visual.number, binding) {
+                    (Some(n), BoundText::Variable(i)) => {
+                        rolled(n, matches!(g.compiled.initial[*i], Scalar::Int(_)))
                     }
-                    Some(TextStyle::Banner) => (20.0, Some(Color32::from_rgb(255, 118, 84)), true),
-                    Some(TextStyle::Value) => (20.0, Some(Color32::WHITE), true),
-                    Some(TextStyle::Label) => (13.0, Some(Color32::from_rgb(158, 176, 182)), false),
-                    Some(TextStyle::Muted) => (13.0, Some(Color32::from_rgb(130, 142, 148)), false),
-                    None if matches!(binding, BoundText::Speaker) => (22.0, None, false),
-                    None => (18.0, None, false),
+                    _ => g.bound_text(binding),
                 };
+                let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
+                let (size, color, strong) = text_look(style.copied(), binding);
                 if flow {
                     let width = ui
                         .painter()
@@ -311,21 +510,19 @@ fn draw_widgets(
                 if matches!(style, Some(TextStyle::Banner)) && flow {
                     ui.end_row();
                 }
-                ui.push_id(id, |ui| {
-                    let mut rich = RichText::new(text).size(size);
-                    if let Some(color) = color {
-                        rich = rich.color(color);
-                    }
-                    if strong {
-                        rich = rich.strong();
-                    }
-                    ui.add(egui::Label::new(rich).wrap());
-                });
+                drawn = Some(
+                    ui.push_id(id, |ui| {
+                        with_effects(ui, visual, |ui| {
+                            ui.add(egui::Label::new(styled(text, size, color, strong)).wrap());
+                        })
+                    })
+                    .inner,
+                );
                 if matches!(style, Some(TextStyle::Value)) && flow {
                     ui.add_space(10.0);
                 }
             }
-            BoundWidget::Button(id, text, command, when) if g.test(when) => {
+            BoundWidget::Button(id, text, command, when) if visual.forced || g.test(when) => {
                 let text = g.text(text);
                 if flow {
                     let font = egui::TextStyle::Button.resolve(ui.style());
@@ -339,47 +536,36 @@ fn draw_widgets(
                         ui.end_row();
                     }
                 }
-                ui.push_id(id, |ui| {
-                    let response = ui.add_enabled(
-                        state.playing && !state.console,
-                        egui::Button::new(text)
-                            .min_size(Vec2::new(if flow { 0.0 } else { 220.0 }, 32.0)),
-                    );
-                    state.targets.insert(format!("button/{id}"), response.rect);
-                    if response.clicked() {
-                        actions.push(Action::Gameplay(command.clone()));
-                    }
-                });
+                drawn = Some(
+                    ui.push_id(id, |ui| {
+                        with_effects(ui, visual, |ui| {
+                            let response = ui.add_enabled(
+                                state.playing && !state.console,
+                                egui::Button::new(text)
+                                    .min_size(Vec2::new(if flow { 0.0 } else { 220.0 }, 32.0)),
+                            );
+                            // Kept on screen only by an exit effect: shown, not usable.
+                            if g.test(when) {
+                                state.targets.insert(format!("button/{id}"), response.rect);
+                                if response.clicked() {
+                                    actions.push(Action::Gameplay(command.clone()));
+                                }
+                            }
+                        })
+                    })
+                    .inner,
+                );
             }
             BoundWidget::Choices(id) => {
                 if flow {
                     ui.end_row();
                 }
-                ui.push_id(id, |ui| {
-                    for choice in g.choices() {
-                        let response = ui.add_enabled(
-                            state.playing && !state.console,
-                            egui::Button::new(RichText::new(g.text(&choice.text)).size(18.0))
-                                .min_size(Vec2::new(
-                                    if flow {
-                                        0.0
-                                    } else {
-                                        ui.available_width().min(900.0)
-                                    },
-                                    38.0,
-                                )),
-                        );
-                        state
-                            .targets
-                            .insert(format!("choice/{}", choice.id), response.rect);
-                        if response.clicked() {
-                            actions.push(Action::Gameplay(RuntimeCommand::Choose {
-                                node: g.compiled.nodes[g.node.unwrap()].id.clone(),
-                                choice: choice.id.clone(),
-                            }));
-                        }
-                    }
-                });
+                drawn = Some(
+                    ui.push_id(id, |ui| {
+                        with_effects(ui, visual, |ui| choice_buttons(ui, g, state, actions, flow))
+                    })
+                    .inner,
+                );
                 if flow {
                     ui.end_row();
                 }
@@ -390,29 +576,113 @@ fn draw_widgets(
                         ui.ctx()
                             .load_texture(&p.key, p.image.clone(), egui::TextureOptions::LINEAR)
                     });
-                    ui.push_id(id, |ui| {
-                        ui.add(
-                            egui::Image::new(&*texture)
-                                .max_width(ui.available_width().min(900.0))
-                                .max_height(170.0),
-                        );
-                    });
+                    drawn = Some(
+                        ui.push_id(id, |ui| {
+                            with_effects(ui, visual, |ui| {
+                                ui.add(
+                                    egui::Image::new(&*texture)
+                                        .max_width(ui.available_width().min(900.0))
+                                        .max_height(170.0),
+                                );
+                            })
+                        })
+                        .inner,
+                    );
                 }
             }
             BoundWidget::Progress(id, i, max) => {
-                let value = match &g.values[*i] {
-                    Scalar::Int(v) => *v as f64,
-                    Scalar::Number(v) => *v,
-                    _ => 0.0,
-                };
-                ui.push_id(id, |ui| {
-                    ui.add(
-                        egui::ProgressBar::new((value / max).clamp(0.0, 1.0) as f32)
-                            .show_percentage(),
-                    );
-                });
+                let value = visual
+                    .number
+                    .unwrap_or_else(|| crate::ui_effects::number(&g.values[*i]));
+                let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
+                drawn = Some(
+                    ui.push_id(id, |ui| {
+                        with_effects(ui, visual, |ui| {
+                            // A styled progress also shows its number in that style.
+                            if let Some(style) = style {
+                                let integer = matches!(g.compiled.initial[*i], Scalar::Int(_));
+                                let (size, color, strong) =
+                                    text_look(Some(*style), &BoundText::Variable(*i));
+                                ui.label(styled(
+                                    format!(
+                                        "{} / {}",
+                                        rolled(value, integer),
+                                        rolled(*max, integer)
+                                    ),
+                                    size,
+                                    color,
+                                    strong,
+                                ));
+                            }
+                            ui.add(
+                                egui::ProgressBar::new((value / max).clamp(0.0, 1.0) as f32)
+                                    .show_percentage(),
+                            );
+                        })
+                    })
+                    .inner,
+                );
             }
             _ => {}
+        }
+        if let (Some(rects), Some(rect)) = (rects.as_deref_mut(), drawn) {
+            rects.push((index, rect));
+        }
+    }
+}
+
+/// (size, color, strong) of a text style; unstyled speaker lines are larger.
+fn text_look(style: Option<TextStyle>, binding: &BoundText) -> (f32, Option<Color32>, bool) {
+    match style {
+        Some(TextStyle::Title) => (42.0, Some(Color32::from_rgb(255, 214, 102)), true),
+        Some(TextStyle::Heading) => (17.0, Some(Color32::from_rgb(102, 245, 205)), true),
+        Some(TextStyle::Banner) => (20.0, Some(Color32::from_rgb(255, 118, 84)), true),
+        Some(TextStyle::Value) => (20.0, Some(Color32::WHITE), true),
+        Some(TextStyle::Label) => (13.0, Some(Color32::from_rgb(158, 176, 182)), false),
+        Some(TextStyle::Muted) => (13.0, Some(Color32::from_rgb(130, 142, 148)), false),
+        None if matches!(binding, BoundText::Speaker) => (22.0, None, false),
+        None => (18.0, None, false),
+    }
+}
+
+fn styled(text: String, size: f32, color: Option<Color32>, strong: bool) -> RichText {
+    let mut rich = RichText::new(text).size(size);
+    if let Some(color) = color {
+        rich = rich.color(color);
+    }
+    if strong {
+        rich = rich.strong();
+    }
+    rich
+}
+
+fn choice_buttons(
+    ui: &mut egui::Ui,
+    g: &Gameplay,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+    flow: bool,
+) {
+    for choice in g.choices() {
+        let response = ui.add_enabled(
+            state.playing && !state.console,
+            egui::Button::new(RichText::new(g.text(&choice.text)).size(18.0)).min_size(Vec2::new(
+                if flow {
+                    0.0
+                } else {
+                    ui.available_width().min(900.0)
+                },
+                38.0,
+            )),
+        );
+        state
+            .targets
+            .insert(format!("choice/{}", choice.id), response.rect);
+        if response.clicked() {
+            actions.push(Action::Gameplay(RuntimeCommand::Choose {
+                node: g.compiled.nodes[g.node.unwrap()].id.clone(),
+                choice: choice.id.clone(),
+            }));
         }
     }
 }

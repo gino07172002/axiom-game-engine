@@ -102,11 +102,12 @@ impl Gameplay {
             id: id.into(),
         });
     }
-    fn read(&self, r: &Read, payload: &[Scalar]) -> Scalar {
+    /// Borrowed, so conditions evaluate without copying text values.
+    fn read<'a>(&'a self, r: &'a Read, payload: &'a [Scalar]) -> &'a Scalar {
         match r {
-            Read::Literal(v) => v.clone(),
-            Read::Variable(i) => self.values[*i].clone(),
-            Read::Event(i) => payload[*i].clone(),
+            Read::Literal(v) => v,
+            Read::Variable(i) => &self.values[*i],
+            Read::Event(i) => &payload[*i],
         }
     }
     fn test_budget(&self, t: &Test, p: &[Scalar], b: &mut Budget) -> Result<bool> {
@@ -137,11 +138,11 @@ impl Gameplay {
         for op in ops {
             b.spend()?;
             match op {
-                Op::Set(i, r) => self.values[*i] = self.read(r, payload),
+                Op::Set(i, r) => self.values[*i] = self.read(r, payload).clone(),
                 Op::Add(i, r) => {
-                    self.values[*i] = match (self.values[*i].clone(), self.read(r, payload)) {
+                    self.values[*i] = match (&self.values[*i], self.read(r, payload)) {
                         (Scalar::Int(a), Scalar::Int(c)) => {
-                            Scalar::Int(a.checked_add(c).context("integer overflow")?)
+                            Scalar::Int(a.checked_add(*c).context("integer overflow")?)
                         }
                         (Scalar::Number(a), Scalar::Number(c)) => {
                             ensure!((a + c).is_finite(), "number overflow");
@@ -154,7 +155,7 @@ impl Gameplay {
                     let fields = self.compiled.event_fields[*event]
                         .iter()
                         .zip(values)
-                        .map(|((id, _), r)| (id.clone(), self.read(r, payload)))
+                        .map(|((id, _), r)| (id.clone(), self.read(r, payload).clone()))
                         .collect();
                     self.enqueue(PendingEvent {
                         due: tick.checked_add(*delay as u64).context("tick overflow")?,

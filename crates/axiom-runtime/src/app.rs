@@ -3281,12 +3281,15 @@ mod tests {
         let (rev, world) = app.store.current().unwrap();
         let cli = crate::scenario::run(world, rev, app.runtime.registry_clone(), scenario).unwrap();
         let short = scenario_file("same.scenario.json", 30);
+        // The 30 ms watchdog above is only for the long run; under load a 30-tick run plus
+        // its runtime build can exceed it, so the comparison run gets a normal budget.
+        app.scenario_timeout = std::time::Duration::from_secs(60);
         app.editor_action(editor::Action::RunScenario {
             path: short.clone(),
         })
         .unwrap();
         let background = wait_result(&mut app, &ctx, &short);
-        assert_eq!(background["state_hash"], cli["state_hash"]);
+        assert_eq!(background["state_hash"], cli["state_hash"], "{background}");
     }
 
     #[test]
