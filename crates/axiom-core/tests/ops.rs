@@ -1192,3 +1192,154 @@ fn tween_play_on_wires_runtime_bindings_and_remove_unwires() {
         "invalid_value"
     );
 }
+
+#[test]
+fn audio_verbs_match_the_ops_and_report_structured_errors() {
+    use axiom_core::audio::{AudioListener, AudioSource, Rolloff};
+    let mut s = store();
+    acl(
+        &mut s,
+        "create cube id=car\ncreate cube id=fountain at=4,0,2\ncreate camera id=cam2",
+    )
+    .unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| -> Result<World, Value> {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text)?;
+        Ok(t.current().unwrap().1)
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    let source = |world: &World, id: &str| -> AudioSource {
+        serde_json::from_value(world.entity(id).unwrap().components["audio.source"].clone())
+            .unwrap()
+    };
+    // No library yet: a default source creates clip `tone`, the capability and the system once.
+    let ids = ["car".to_owned(), "fountain".to_owned()];
+    let expected =
+        ops::add_audio_source(&start, &ids, &ops::AudioSourceOptions::default()).unwrap();
+    let made = after(&start, "audio entities[id=car,id=fountain] source").unwrap();
+    assert_eq!(made, applied(&start, expected));
+    assert_eq!(source(&made, "fountain").clip, "tone");
+    assert!(made.resources["audio.library"]["clips"]["tone"].is_object());
+    assert_eq!(made.capabilities.get("audio"), Some(&1));
+    assert_eq!(
+        made.systems
+            .iter()
+            .filter(|s| *s == "audio.spatial")
+            .count(),
+        1
+    );
+    // Clips from presets, then a source with every option.
+    let expected = ops::add_audio_clip(&made, "engine", "engine").unwrap();
+    let clips = after(&made, "audio clip engine engine").unwrap();
+    assert_eq!(clips, applied(&made, expected));
+    let options = ops::AudioSourceOptions {
+        clip: Some("engine".into()),
+        volume: Some(0.8),
+        looping: Some(true),
+        autoplay: Some(true),
+        spatial: Some(true),
+        min_distance: Some(2.0),
+        max_distance: Some(40.0),
+        rolloff: Some(Rolloff::Linear),
+    };
+    let expected = ops::add_audio_source(&clips, &["car".to_owned()], &options).unwrap();
+    let car = after(
+        &clips,
+        "audio car source clip=engine volume=0.8 loop=on autoplay=on spatial=on min=2 max=40 rolloff=linear",
+    )
+    .unwrap();
+    assert_eq!(car, applied(&clips, expected));
+    let s = source(&car, "car");
+    assert!(s.looping && s.autoplay && s.rolloff == Rolloff::Linear && s.max_distance == 40.0);
+    // Choosing a clip = the field edit.
+    let expected = ops::set_audio_clip(&car, &["fountain".to_owned()], "engine").unwrap();
+    assert_eq!(
+        after(&car, "set fountain audio.source/clip \"engine\"").unwrap(),
+        applied(&car, expected)
+    );
+    // One active listener: the second one switches the first off in the same revision.
+    let first = after(&car, "audio cam2 listener").unwrap();
+    let expected = ops::add_audio_listener(&first, "car").unwrap();
+    let second = after(&first, "audio car listener").unwrap();
+    assert_eq!(second, applied(&first, expected));
+    let listener = |w: &World, id: &str| -> AudioListener {
+        serde_json::from_value(w.entity(id).unwrap().components["audio.listener"].clone()).unwrap()
+    };
+    assert!(listener(&second, "car").active && !listener(&second, "cam2").active);
+    // Structured errors.
+    assert_eq!(
+        code(after(&car, "audio car source clip=nope").unwrap_err()),
+        "missing_clip"
+    );
+    assert_eq!(
+        code(after(&car, "audio clip engine tone").unwrap_err()),
+        "id_taken"
+    );
+    assert_eq!(
+        code(after(&car, "audio clip x music").unwrap_err()),
+        "unknown_preset"
+    );
+    assert_eq!(
+        code(after(&car, "audio ghost source").unwrap_err()),
+        "no_match"
+    );
+    assert_eq!(
+        code(after(&car, "audio ghost listener").unwrap_err()),
+        "not_found"
+    );
+    assert_eq!(
+        code(after(&car, "audio car source volume=9").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(after(&car, "audio car speaker").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(after(&car, "set car audio.source/clip \"nope\"").unwrap_err()),
+        "missing_clip",
+        "the compile check catches what a raw set writes"
+    );
+    // Two active listeners written directly are refused at commit.
+    assert_eq!(
+        code(after(&first, "set car audio.listener {}").unwrap_err()),
+        "audio_listener_conflict"
+    );
+    assert!(ops::add_audio_source(&car, &[], &ops::AudioSourceOptions::default()).is_err());
+    assert_eq!(ops::free_audio_clip_id(&car, "engine"), "engine2");
+    // Clip IDs that read like the selection keywords still work.
+    let keyword = after(&car, "audio clip source tone").unwrap();
+    assert!(keyword.resources["audio.library"]["clips"]["source"].is_object());
+    assert_eq!(code(after(&car, "audio clip").unwrap_err()), "acl_syntax");
+    assert_eq!(ops::free_audio_clip_id(&car, "creak"), "creak");
+}
+
+#[test]
+fn adding_an_audio_clip_keeps_the_other_library_entries_verbatim() {
+    let mut world = lab();
+    world.capabilities.insert("audio".into(), 1);
+    world.resources.insert(
+        "audio.library".into(),
+        serde_json::json!({"cues":{"pop":{"frequency":520,"duration_ms":60,"gain":0.08}},"clips":{"mini":{"seconds":1}}}),
+    );
+    let mut store = Store::memory_with(Registry::core(), world.clone()).unwrap();
+    store
+        .execute(Request::Apply {
+            expected_rev: None,
+            edits: ops::add_audio_clip(&world, "creak", "creak").unwrap(),
+        })
+        .unwrap();
+    let library = &store.current().unwrap().1.resources["audio.library"];
+    assert_eq!(library["clips"]["mini"], serde_json::json!({"seconds":1}));
+    assert_eq!(library["cues"], world.resources["audio.library"]["cues"]);
+    assert_eq!(library["clips"]["creak"]["wave"], "saw");
+}

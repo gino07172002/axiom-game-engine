@@ -93,6 +93,7 @@ impl Registry {
         let mut r = Self::default();
         for id in [
             "core", "render", "physics", "motion", "trigger", "path", "nav", "interact", "tween",
+            "audio",
         ] {
             r.capabilities.insert(id.into(), 1);
         }
@@ -172,6 +173,24 @@ impl Registry {
         r.component("tween.clips", "tween", crate::tween::clips_schema(), |v| {
             typed(v, crate::tween::TweenClips::validate)
         });
+        r.resource(
+            "audio.library",
+            "audio",
+            crate::audio::library_schema(),
+            |v| typed(v, crate::audio::AudioLibrary::validate),
+        );
+        r.component(
+            "audio.source",
+            "audio",
+            crate::audio::source_schema(),
+            |v| typed(v, crate::audio::AudioSource::validate),
+        );
+        r.component(
+            "audio.listener",
+            "audio",
+            crate::audio::listener_schema(),
+            |v| typed(v, crate::audio::AudioListener::validate),
+        );
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());
@@ -289,6 +308,24 @@ impl Registry {
                     "render.mesh".into(),
                     "runtime.events".into(),
                 ],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "audio.spatial".into(),
+            SystemDescriptor {
+                id: "audio.spatial".into(),
+                capability: "audio".into(),
+                // Last: every mover, tween, camera rig (action/fps 20) and trigger (25) has
+                // written this step's poses, and audio.events (40) its cues.
+                phase: 45,
+                reads: vec![
+                    "audio.source".into(),
+                    "audio.listener".into(),
+                    "audio.library".into(),
+                    "core.transform".into(),
+                ],
+                writes: vec!["audio.voices".into()],
                 after: vec![],
             },
         );

@@ -1,8 +1,11 @@
+// The editor discovery topic (editor/commands.rs) is one large serde_json::json! literal.
+#![recursion_limit = "256"]
 pub mod action;
 pub mod animation;
 pub mod animation_demo;
 pub mod app;
 mod audio;
+pub mod audio_mix;
 pub mod benchmark;
 pub mod bound_ui;
 pub mod branding;
@@ -36,6 +39,7 @@ pub mod scenario;
 pub mod shader;
 mod shader_gpu;
 pub mod showcase;
+pub mod spatial_audio;
 pub mod trigger;
 pub mod tween;
 pub mod ui;
@@ -51,6 +55,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     rts::register(&mut r);
     animation::register(&mut r);
     audio::register(&mut r);
+    spatial_audio::register(&mut r);
     input::register(&mut r);
     action::register(&mut r);
     combat::register(&mut r);

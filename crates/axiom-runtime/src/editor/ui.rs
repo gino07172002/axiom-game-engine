@@ -753,6 +753,9 @@ impl Editor {
         let tween = self.selected.as_deref().and_then(|id| self.tween_clips(id));
         let mut tween_ui = self.tween_ui.clone();
         let mut tween_request = None;
+        let audio = self.selected.as_deref().and_then(|id| self.audio_clips(id));
+        let mut audio_clip: Option<String> = None;
+        let mut audio_preset: Option<&'static str> = None;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -912,6 +915,43 @@ impl Editor {
                                 )
                                 .or(structural.take());
                             });
+                        if let Some((clips, current)) = &audio {
+                            egui::CollapsingHeader::new("Audio source")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.add_enabled_ui(!draft.dirty(), |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Clip");
+                                            egui::ComboBox::from_id_salt("audio_clip")
+                                                .selected_text(current.as_str())
+                                                .show_ui(ui, |ui| {
+                                                    for clip in clips {
+                                                        if ui
+                                                            .selectable_label(clip == current, clip)
+                                                            .clicked()
+                                                            && clip != current
+                                                        {
+                                                            audio_clip = Some(clip.clone());
+                                                        }
+                                                    }
+                                                });
+                                            ui.menu_button("New clip", |ui| {
+                                                caption(ui, "Procedural presets (no audio files)");
+                                                for preset in axiom_core::audio::CLIP_PRESETS {
+                                                    if ui.button(preset).clicked() {
+                                                        audio_preset = Some(preset);
+                                                        ui.close_menu();
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    });
+                                    caption(
+                                        ui,
+                                        "Edit volume, loop, distances and rolloff under Components ▸ audio.source; play with call audio.play in Play",
+                                    );
+                                });
+                        }
                         if let Some(spline) = &path {
                             egui::CollapsingHeader::new("Path points")
                                 .default_open(true)
@@ -1051,6 +1091,12 @@ impl Editor {
                 actions.extend(self.remove_tween_clip(&clip));
             }
             None => {}
+        }
+        if let Some(clip) = audio_clip {
+            actions.extend(self.set_audio_clip(&clip));
+        }
+        if let Some(preset) = audio_preset {
+            actions.extend(self.add_audio_clip(preset));
         }
         if let Some(command) = path_command {
             match self.run_command(command) {
@@ -1389,6 +1435,8 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("nav.agent", "NAV", Color32::from_rgb(110, 200, 255)),
         ("interact.target", "USE", Color32::from_rgb(255, 205, 90)),
         ("tween.clips", "TWEEN", Color32::from_rgb(240, 150, 200)),
+        ("audio.source", "SND", Color32::from_rgb(150, 230, 140)),
+        ("audio.listener", "EAR", Color32::from_rgb(190, 170, 255)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1414,6 +1462,8 @@ fn badge_meaning(text: &str) -> &'static str {
         "NAV" => "nav.agent (walks to targets around obstacles)",
         "USE" => "interact.target (talk / open with a button near it)",
         "TWEEN" => "tween.clips (keyframed property animation)",
+        "SND" => "audio.source (positional sound)",
+        "EAR" => "audio.listener (where sounds are heard from)",
         _ => "prefab instance",
     }
 }

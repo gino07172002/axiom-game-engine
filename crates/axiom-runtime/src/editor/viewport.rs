@@ -868,6 +868,9 @@ const GIZMO_NAV_ROUTE: Color32 = Color32::from_rgb(170, 240, 120);
 const GIZMO_NAV_CELL: Color32 = Color32::from_rgb(255, 110, 110);
 const GIZMO_INTERACT: Color32 = Color32::from_rgb(255, 205, 90);
 const GIZMO_INTERACT_OFF: Color32 = Color32::from_rgb(125, 110, 70);
+const GIZMO_AUDIO: Color32 = Color32::from_rgb(150, 230, 140);
+const GIZMO_AUDIO_OFF: Color32 = Color32::from_rgb(90, 120, 85);
+const GIZMO_LISTENER: Color32 = Color32::from_rgb(190, 170, 255);
 /// Grid overlay: cells around the focus point (2 * radius + 1 per side), outlines drawn at most.
 const NAV_OVERLAY_RADIUS: i32 = 40;
 const NAV_OVERLAY_SHAPES: usize = 2400;
@@ -1390,6 +1393,46 @@ fn draw_component_gizmos(
                 );
             }
             pen.label(ground + Vec3::X * target.range, "USE", color);
+        }
+        if let Some(source) = &e.audio_source {
+            // Spatial sources: full-gain sphere (min_distance, bright) and silent-beyond sphere
+            // (max_distance, dim), three world-axis circles each. 2D sources only get the label.
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if source.enabled {
+                GIZMO_AUDIO
+            } else {
+                GIZMO_AUDIO_OFF
+            };
+            if source.spatial {
+                for (radius, tint) in [
+                    (source.min_distance, color),
+                    (source.max_distance, color.gamma_multiply(0.45)),
+                ] {
+                    for (a, b) in [(Vec3::X, Vec3::Y), (Vec3::X, Vec3::Z), (Vec3::Y, Vec3::Z)] {
+                        pen.loop_through(&arc(position, a, b, radius, 0.0, TAU, 33)[..32], tint);
+                    }
+                }
+            }
+            let name = if source.spatial { "SND" } else { "SND 2D" };
+            pen.label(position + Vec3::Y * 0.3, name, color);
+        }
+        if let Some(listener) = &e.audio_listener {
+            // Ear: a small ring around the pivot and a line along the facing axis.
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if listener.active {
+                GIZMO_LISTENER
+            } else {
+                GIZMO_LISTENER.gamma_multiply(0.45)
+            };
+            let forward = match listener.forward {
+                axiom_core::audio::ListenerForward::MinusZ => -z,
+                axiom_core::audio::ListenerForward::PlusZ => z,
+            };
+            pen.loop_through(&arc(position, x, y, 0.25, 0.0, TAU, 17)[..16], color);
+            pen.line(position, position + forward * 0.6, color);
+            pen.label(position - Vec3::Y * 0.3, "EAR", color);
         }
     }
     pen.shapes
@@ -3148,6 +3191,59 @@ mod tests {
         let (plain, ring, rings) = (shapes(plain), shapes(ring), shapes(rings));
         assert!(ring > plain, "range ring: {plain} -> {ring}");
         assert!(rings > ring, "release ring: {ring} -> {rings}");
+    }
+
+    #[test]
+    fn audio_gizmos_draw_distance_spheres_and_follow_hidden_and_toggle() {
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, fixture().0).unwrap();
+        let mut acl = |text: &str| {
+            store
+                .execute(Request::Acl {
+                    text: text.into(),
+                    preview: false,
+                    expected_rev: None,
+                    propose: false,
+                })
+                .unwrap_or_else(|e| panic!("{text}: {e:#}"));
+            store.current().unwrap().1
+        };
+        let plain = acl("create cube id=car\ncreate empty id=ear at=0,1,4");
+        let sourced = acl("audio car source min=2 max=8");
+        let flat = acl("set car audio.source/spatial false");
+        let heard = acl("set car audio.source/spatial true\naudio ear listener");
+        let runtime_for = |world: &World| {
+            WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap()
+        };
+        let ctx = egui::Context::default();
+        let shapes = |editor: &mut Editor, runtime: &WorldRuntime| {
+            for _ in 0..3 {
+                frame(&ctx, editor, runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let count = |world: World| {
+            let runtime = runtime_for(&world);
+            shapes(&mut Editor::new(world, 1, None), &runtime)
+        };
+        let (plain_n, sourced_n, flat_n) = (count(plain), count(sourced), count(flat));
+        // Two spheres of three 32-segment circles, plus the label.
+        assert!(sourced_n >= plain_n + 6 * 32, "{plain_n} -> {sourced_n}");
+        assert!(
+            flat_n < sourced_n && flat_n > plain_n,
+            "2D: label only ({flat_n})"
+        );
+        let runtime = runtime_for(&heard);
+        let mut editor = Editor::new(heard, 1, None);
+        let all = shapes(&mut editor, &runtime);
+        assert!(all > sourced_n, "listener ear: {sourced_n} -> {all}");
+        editor.set_view_flag(&["car".into()], false);
+        let hidden = shapes(&mut editor, &runtime);
+        assert!(all - hidden >= 6 * 32, "{all} -> {hidden}");
+        editor.set_view_flag(&["car".into()], false);
+        assert_eq!(shapes(&mut editor, &runtime), all);
+        editor.run_command("view.gizmos").unwrap();
+        assert_eq!(shapes(&mut editor, &runtime), 0);
     }
 
     /// editor-lab plus a path `road` (8 x 6 m rectangle at the origin) followed by `car`.

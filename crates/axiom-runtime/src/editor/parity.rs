@@ -427,6 +427,104 @@ fn make_interactable_and_field_edits_match_acl() {
     assert!(e.run_command("object.interactable").is_err());
 }
 #[test]
+fn audio_sources_listeners_and_clips_match_acl() {
+    // Object ▸ Add Audio Source on the selection (selection order) = ACL audio SEL source; the
+    // lab has no library, so clip `tone` is created in the same revision.
+    let start = headless(
+        &lab(),
+        "create cube id=car\ncreate cube id=fountain at=3,0,0",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("fountain".into()));
+            e.extra.insert("car".into());
+            vec![e.run_command("object.audio_source").unwrap()]
+        },
+        "audio entities[id=fountain,id=car] source",
+    );
+    // Empty world: capability, system and library appear.
+    let blank = headless(&World::empty("blank"), "create empty id=speaker");
+    assert_parity(
+        blank,
+        |e| {
+            e.select(Some("speaker".into()));
+            vec![e.run_command("object.audio_source").unwrap()]
+        },
+        "audio speaker source",
+    );
+    // Object ▸ Make Audio Listener (primary selection) = ACL audio ID listener.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            vec![e.run_command("object.audio_listener").unwrap()]
+        },
+        "audio car listener",
+    );
+    // Inspector ▸ Audio source ▸ New clip (twice: engine, engine2), then the clip dropdown.
+    let sourced = headless(&start, "audio car source");
+    assert_parity(
+        sourced.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            let first: Vec<Action> = e.add_audio_clip("engine").into_iter().collect();
+            vec![first]
+        },
+        "audio clip engine engine",
+    );
+    let engined = headless(&sourced, "audio clip engine engine");
+    assert_parity(
+        engined.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            vec![e.add_audio_clip("engine").into_iter().collect()]
+        },
+        "audio clip engine2 engine",
+    );
+    assert_parity(
+        engined.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            let (clips, current) = e.audio_clips("car").unwrap();
+            assert_eq!(
+                (clips, current.as_str()),
+                (vec!["engine".to_owned(), "tone".to_owned()], "tone")
+            );
+            vec![e.set_audio_clip("engine").into_iter().collect()]
+        },
+        "set car audio.source/clip \"engine\"",
+    );
+    // Inspector form edit of the source fields (changed leaves only) = ACL set.
+    assert_parity(
+        engined,
+        |e| {
+            e.select(Some("car".into()));
+            let entity = e.world.entity("car").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "audio.source");
+            let form = draft.form.as_mut().unwrap();
+            form["loop"] = serde_json::json!(true);
+            form["max_distance"] = serde_json::json!(45.0);
+            form["rolloff"] = serde_json::json!("linear");
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            assert_eq!(edits.len(), 3);
+            vec![vec![e.write(edits, None)]]
+        },
+        "set car audio.source/loop true\nset car audio.source/max_distance 45.0\nset car audio.source/rolloff \"linear\"",
+    );
+    // A missing clip is a problem, not a write; nothing selected = unavailable.
+    let mut e = Editor::new(sourced.clone(), 1, None);
+    e.select(Some("car".into()));
+    assert!(e.set_audio_clip("nope").is_none());
+    let mut e = Editor::new(start, 1, None);
+    assert!(e.run_command("object.audio_source").is_err());
+    assert!(e.run_command("object.audio_listener").is_err());
+}
+
+#[test]
 fn tween_clips_keys_and_options_match_acl() {
     // Object ▸ Add Tween Clip on the selection = ACL tween SEL clip NAME (default name clip).
     let start = headless(&lab(), "create cube id=door at=3,0,0\ncreate cube id=npc");

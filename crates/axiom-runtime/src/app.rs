@@ -2190,6 +2190,8 @@ impl App {
             &self.runtime.state.audio,
             &self.runtime.runtime_session,
             self.ui.playing && !self.editing() && !self.ui.console,
+            self.runtime
+                .system::<crate::spatial_audio::AudioSpatialSystem>(),
         );
         if self.activation.is_some() {
             // Spend what is left of this frame's budget (minus a margin for extraction and

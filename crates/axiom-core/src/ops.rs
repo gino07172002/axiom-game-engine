@@ -1221,6 +1221,236 @@ pub fn make_interactable(
     Ok(edits)
 }
 
+/// Options of Object ▸ Add Audio Source / ACL `audio SEL source`; `None` = the `audio.source`
+/// default (clip: the library's first clip).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AudioSourceOptions {
+    pub clip: Option<String>,
+    pub volume: Option<f32>,
+    pub looping: Option<bool>,
+    pub autoplay: Option<bool>,
+    pub spatial: Option<bool>,
+    pub min_distance: Option<f32>,
+    pub max_distance: Option<f32>,
+    pub rolloff: Option<crate::audio::Rolloff>,
+}
+
+/// The authored `audio.library` (empty when the world has none).
+fn audio_library(world: &World) -> Result<crate::audio::AudioLibrary> {
+    world
+        .resources
+        .get("audio.library")
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|e| Diagnostic::error("invalid_value", "/resources/audio.library", format!("{e}")))
+        .map(Option::unwrap_or_default)
+}
+
+fn missing_clip(library: &crate::audio::AudioLibrary, clip: &str) -> anyhow::Error {
+    let known: Vec<&str> = library.clips.keys().map(String::as_str).collect();
+    Diagnostic::error(
+        "missing_clip",
+        format!("/resources/audio.library/clips/{}", escape(clip)),
+        format!(
+            "audio.library has no clip {clip} (clips: {}); add one with `audio clip {clip} PRESET` ({})",
+            if known.is_empty() {
+                "none".to_owned()
+            } else {
+                known.join(", ")
+            },
+            crate::audio::CLIP_PRESETS.join("|")
+        ),
+    )
+}
+
+/// `base` if no library clip uses it, else `base2`, `base3`, ...
+pub fn free_audio_clip_id(world: &World, base: &str) -> String {
+    let library = audio_library(world).unwrap_or_default();
+    if !library.clips.contains_key(base) {
+        return base.to_owned();
+    }
+    (2..)
+        .map(|n| format!("{base}{n}"))
+        .find(|id| !library.clips.contains_key(id))
+        .unwrap()
+}
+
+/// Adds clip `id` made from preset `preset` (`audio::CLIP_PRESETS`) to `audio.library`
+/// (created when missing, with the `audio` capability). An existing clip ID is refused.
+pub fn add_audio_clip(world: &World, id: &str, preset: &str) -> Result<Vec<Edit>> {
+    let path = format!("/resources/audio.library/clips/{}", escape(id));
+    check_new_id(path.clone(), id)?;
+    let clip = crate::audio::AudioClip::preset(preset).ok_or_else(|| {
+        Diagnostic::error(
+            "unknown_preset",
+            "/preset",
+            format!(
+                "unknown clip preset '{preset}' (use {})",
+                crate::audio::CLIP_PRESETS.join(", ")
+            ),
+        )
+    })?;
+    let mut library = audio_library(world)?;
+    if library.clips.contains_key(id) {
+        return Err(Diagnostic::error(
+            "id_taken",
+            path,
+            format!("audio.library already has a clip {id}"),
+        ));
+    }
+    library.clips.insert(id.to_owned(), clip.clone());
+    library.validate().map_err(|e| {
+        Diagnostic::error("audio_budget", "/resources/audio.library", format!("{e:#}"))
+    })?;
+    // Insert into the authored JSON so the other cues and clips keep their exact text.
+    let mut value = world
+        .resources
+        .get("audio.library")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    value
+        .as_object_mut()
+        .map(|l| l.entry("clips").or_insert_with(|| json!({})))
+        .and_then(Value::as_object_mut)
+        .expect("audio.library parsed as an object with a clips map")
+        .insert(id.to_owned(), json!(clip));
+    let mut edits = enable_system(world, Some("audio"), None);
+    edits.push(Edit::Core(CoreEdit::SetResource {
+        id: "audio.library".into(),
+        value,
+    }));
+    Ok(edits)
+}
+
+/// Object ▸ Add Audio Source: puts an `audio.source` (defaults plus `options`) on each entity,
+/// replacing an existing one. The clip must exist in `audio.library` (`missing_clip`); without
+/// a clip option the library's first clip is used, and a world without clips gets the `tone`
+/// preset as clip `tone`. Adds the `audio` capability and the `audio.spatial` system when
+/// missing.
+pub fn add_audio_source(
+    world: &World,
+    ids: &[String],
+    options: &AudioSourceOptions,
+) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that should play a sound",
+        ));
+    }
+    let library = audio_library(world)?;
+    let mut clip_edits = vec![];
+    let clip = match &options.clip {
+        Some(clip) if library.clips.contains_key(clip) => clip.clone(),
+        Some(clip) => return Err(missing_clip(&library, clip)),
+        None => match library.clips.keys().next() {
+            Some(first) => first.clone(),
+            None => {
+                clip_edits = add_audio_clip(world, "tone", "tone")?;
+                "tone".to_owned()
+            }
+        },
+    };
+    let mut source = crate::audio::AudioSource::new(&clip);
+    source.volume = options.volume.unwrap_or(source.volume);
+    source.looping = options.looping.unwrap_or(source.looping);
+    source.autoplay = options.autoplay.unwrap_or(source.autoplay);
+    source.spatial = options.spatial.unwrap_or(source.spatial);
+    source.min_distance = options.min_distance.unwrap_or(source.min_distance);
+    source.max_distance = options.max_distance.unwrap_or(source.max_distance);
+    source.rolloff = options.rolloff.unwrap_or(source.rolloff);
+    source.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            "/components/audio.source",
+            format!("{e:#}"),
+        )
+    })?;
+    // One /capabilities edit: add_audio_clip may already add the capability.
+    let mut edits = enable_system(
+        world,
+        clip_edits.is_empty().then_some("audio"),
+        Some("audio.spatial"),
+    );
+    edits.splice(0..0, clip_edits);
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: "audio.source".into(),
+                value: json!(source),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
+/// Inspector ▸ Audio source ▸ Clip: sets `audio.source/clip` on each entity (the same field
+/// edit as ACL `set ID audio.source/clip "CLIP"`). The clip must exist in `audio.library`.
+pub fn set_audio_clip(world: &World, ids: &[String], clip: &str) -> Result<Vec<Edit>> {
+    let library = audio_library(world)?;
+    if !library.clips.contains_key(clip) {
+        return Err(missing_clip(&library, clip));
+    }
+    let mut edits = vec![];
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        let entity = world.entity(id).unwrap();
+        if !world
+            .resolved_components(entity)
+            .contains_key("audio.source")
+        {
+            return Err(Diagnostic::error(
+                "not_an_audio_source",
+                entity_path(id),
+                format!("entity '{id}' has no audio.source component"),
+            ));
+        }
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetField {
+                target: Target::Entity { id: id.clone() },
+                field: "/components/audio.source/clip".into(),
+                value: json!(clip),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
+/// Object ▸ Make Audio Listener: puts a default `audio.listener` on `id` and sets `active`
+/// false on every other active listener in the same batch (a world has one active listener).
+/// Adds the `audio` capability and the `audio.spatial` system when missing.
+pub fn add_audio_listener(world: &World, id: &str) -> Result<Vec<Edit>> {
+    require_entity(world, id)?;
+    let mut edits = enable_system(world, Some("audio"), Some("audio.spatial"));
+    edits.push(Edit::Core(CoreEdit::SetComponent {
+        entity: id.to_owned(),
+        component: "audio.listener".into(),
+        value: json!(crate::audio::AudioListener::default()),
+    }));
+    for other in world.entities.iter().filter(|e| e.id != id) {
+        let active = world
+            .resolved_components(other)
+            .remove("audio.listener")
+            .and_then(|v| serde_json::from_value::<crate::audio::AudioListener>(v).ok())
+            .is_some_and(|l| l.active);
+        if active {
+            edits.push(Edit::Core(CoreEdit::SetField {
+                target: Target::Entity {
+                    id: other.id.clone(),
+                },
+                field: "/components/audio.listener/active".into(),
+                value: json!(false),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
 /// Clip options of `add_tween_clip` / `set_tween_clip`; `None` keeps the current value (or
 /// the default when adding). `property` / `target` only apply when adding.
 #[derive(Clone, Debug, Default, PartialEq)]

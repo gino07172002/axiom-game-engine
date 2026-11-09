@@ -804,6 +804,58 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Object ▸ Add Audio Source (`ACL: audio SEL source`): default `audio.source` on the
+    /// selection with the library's first clip (a world without clips gets clip `tone`).
+    pub(super) fn add_audio_source(&mut self) -> Option<Action> {
+        let result = ops::add_audio_source(
+            &self.world,
+            &self.selection(),
+            &ops::AudioSourceOptions::default(),
+        );
+        self.op_write(result, None)
+    }
+
+    /// Object ▸ Make Audio Listener (`ACL: audio ID listener`) on the primary selection.
+    pub(super) fn add_audio_listener(&mut self) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::add_audio_listener(&self.world, &id);
+        self.op_write(result, None)
+    }
+
+    /// Inspector ▸ Audio source ▸ Clip (`ACL: set ID audio.source/clip "CLIP"`).
+    pub(super) fn set_audio_clip(&mut self, clip: &str) -> Option<Action> {
+        let result = ops::set_audio_clip(&self.world, &self.selection(), clip);
+        self.op_write(result, None)
+    }
+
+    /// Inspector ▸ Audio source ▸ New clip (`ACL: audio clip ID PRESET`): a library clip from a
+    /// preset, named after it (`engine`, `engine2`, ...).
+    pub(super) fn add_audio_clip(&mut self, preset: &str) -> Option<Action> {
+        let id = ops::free_audio_clip_id(&self.world, preset);
+        let result = ops::add_audio_clip(&self.world, &id, preset);
+        self.op_write(result, None)
+    }
+
+    /// Clip IDs of `audio.library` and the clip of `id`'s `audio.source`, when it has one.
+    pub(super) fn audio_clips(&self, id: &str) -> Option<(Vec<String>, String)> {
+        let entity = self.world.entity(id)?;
+        let source: axiom_core::audio::AudioSource = serde_json::from_value(
+            self.world
+                .resolved_components(entity)
+                .remove("audio.source")?,
+        )
+        .ok()?;
+        let clips = self
+            .world
+            .resources
+            .get("audio.library")
+            .and_then(|l| l.get("clips"))
+            .and_then(Value::as_object)
+            .map(|c| c.keys().cloned().collect())
+            .unwrap_or_default();
+        Some((clips, source.clip))
+    }
+
     /// The `tween.clips` authored on `id`, if it has a valid one.
     pub(super) fn tween_clips(&self, id: &str) -> Option<axiom_core::tween::TweenClips> {
         serde_json::from_value(

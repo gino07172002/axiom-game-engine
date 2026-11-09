@@ -34,6 +34,11 @@ EDIT (any number, atomic):
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
   interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
                                   (defaults: event interacted declared with interactor/target, action interact -> KeyE)
+  audio clip ID tone|engine|fountain|creak|footstep   procedural clip in audio.library (no audio files)
+  audio SEL source [clip=ID] [volume=V] [loop=on|off] [autoplay=on|off] [spatial=on|off] [min=M] [max=M]
+        [rolloff=inverse|linear]  audio.source on each object (default clip: the first; none -> clip tone)
+  audio ID listener               audio.listener on ID; every other listener becomes inactive
+                                  (change the clip: set ID audio.source/clip \"ID\"; play: call audio.play)
   tween SEL clip NAME [property=P] [target=ID] [duration=S|auto] [mode=once|loop|ping_pong] [speed=X]
         [autoplay=on|off] [on_finish=E] [play_on=E]   new tween clip; first track records P (default
                                   core.transform/position) of target (default the object) at 0 and at the end (default 1 s);
@@ -295,6 +300,9 @@ enum Statement {
     NavAgent(Box<Selection>, crate::ops::NavOptions),
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
     Interact(Box<Selection>, crate::ops::InteractOptions),
+    AudioClip(String, String),
+    AudioSource(Box<Selection>, Box<crate::ops::AudioSourceOptions>),
+    AudioListener(String),
     TweenClip(Box<Selection>, String, Box<crate::ops::TweenClipOptions>),
     TweenClipSet(String, String, Box<crate::ops::TweenClipOptions>),
     TweenClipRemove(String, String),
@@ -650,6 +658,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::Interact(select, options)
         }
         "tween" => tween(tokens)?,
+        "audio" => audio(tokens)?,
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             match rest.as_slice() {
@@ -662,6 +671,65 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         }
         other => bail!("unknown statement '{other}'"),
     })
+}
+
+/// `audio clip ID PRESET` | `audio SEL source [k=v..]` | `audio ID listener`. Four tokens
+/// starting `audio clip` with a bare last token add a library clip (so clips may be named
+/// `source` or `listener`); otherwise `source` / `listener` in third place select entities
+/// (an entity named `clip` still works).
+fn audio(tokens: &[String]) -> Result<Statement> {
+    const USE: &str = "use: audio clip ID PRESET | audio SEL source [clip=..] [volume=..] [loop=..] [autoplay=..] [spatial=..] [min=..] [max=..] [rolloff=..] | audio ID listener";
+    let arg = |n: usize| tokens.get(n).map(String::as_str).context(USE);
+    if tokens.len() == 4 && tokens[1] == "clip" && !tokens[3].contains('=') {
+        return Ok(Statement::AudioClip(tokens[2].clone(), tokens[3].clone()));
+    }
+    match (arg(1)?, arg(2)?) {
+        (sel, "source") => {
+            let mut o = crate::ops::AudioSourceOptions::default();
+            let number = |k: &str, v: &str| -> Result<f32> {
+                v.parse::<f32>()
+                    .with_context(|| format!("{k} must be a number"))
+            };
+            for t in &tokens[3..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("option '{t}' must be key=value"))?;
+                match k {
+                    "clip" => {
+                        o.clip = Some(match value(v) {
+                            Value::String(s) => s,
+                            _ => v.to_owned(),
+                        })
+                    }
+                    "volume" => o.volume = Some(number(k, v)?),
+                    "loop" => o.looping = Some(on_off(v)?),
+                    "autoplay" => o.autoplay = Some(on_off(v)?),
+                    "spatial" => o.spatial = Some(on_off(v)?),
+                    "min" => o.min_distance = Some(number(k, v)?),
+                    "max" => o.max_distance = Some(number(k, v)?),
+                    "rolloff" => {
+                        o.rolloff = Some(match v {
+                            "inverse" => crate::audio::Rolloff::Inverse,
+                            "linear" => crate::audio::Rolloff::Linear,
+                            other => bail!("rolloff must be inverse or linear, got '{other}'"),
+                        })
+                    }
+                    other => bail!(
+                        "unknown option '{other}' (use clip, volume, loop, autoplay, spatial, min, max, rolloff)"
+                    ),
+                }
+            }
+            Ok(Statement::AudioSource(
+                Box::new(selector(sel)?),
+                Box::new(o),
+            ))
+        }
+        (id, "listener") => {
+            ensure!(tokens.len() == 3, "audio ID listener takes no options");
+            Ok(Statement::AudioListener(id.to_owned()))
+        }
+        _ => bail!("{USE}"),
+    }
 }
 
 /// `tween` statements (see GRAMMAR).
@@ -1057,6 +1125,10 @@ pub fn run(
                 .and_then(|ids| crate::ops::set_nav_target(w, &ids, target.as_ref())),
             Statement::Interact(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
+            Statement::AudioClip(id, preset) => crate::ops::add_audio_clip(w, &id, &preset),
+            Statement::AudioSource(select, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_audio_source(w, &ids, &options)),
+            Statement::AudioListener(id) => crate::ops::add_audio_listener(w, &id),
             Statement::TweenClip(select, name, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_tween_clip(w, &ids, &name, &options)),
             Statement::TweenClipSet(id, name, options) => {

@@ -1287,7 +1287,18 @@ impl WorldRuntime {
             metrics.insert("shader".into(), serde_json::json!({"programs": self.shaders.programs.len(), "materials": self.shaders.materials.len()}));
         }
         if !self.state.audio.waves.is_empty() {
-            metrics.insert("audio".into(), self.state.audio.observation());
+            // Cue counters join the `audio.spatial` section when both systems run.
+            let cues = self.state.audio.observation();
+            match metrics.get_mut("audio").and_then(Value::as_object_mut) {
+                Some(audio) => {
+                    if let Value::Object(cues) = cues {
+                        audio.extend(cues);
+                    }
+                }
+                None => {
+                    metrics.insert("audio".into(), cues);
+                }
+            }
         }
         Observation {
             world_id: self.state.compiled.source.id.clone(),

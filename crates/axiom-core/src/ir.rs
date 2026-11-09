@@ -196,6 +196,8 @@ impl World {
             let nav_agent = decode::<crate::navigation::NavAgent>(&c, "nav.agent")?;
             let interact = decode::<crate::interact::InteractTarget>(&c, "interact.target")?;
             let tween = decode::<crate::tween::TweenClips>(&c, "tween.clips")?;
+            let audio_source = decode::<crate::audio::AudioSource>(&c, "audio.source")?;
+            let audio_listener = decode::<crate::audio::AudioListener>(&c, "audio.listener")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -239,6 +241,8 @@ impl World {
                 nav_agent,
                 interact,
                 tween,
+                audio_source,
+                audio_listener,
                 collider,
                 health,
                 motion,
@@ -260,6 +264,27 @@ impl World {
             .filter_map(|e| Some((e.id.as_str(), e.interact.as_ref()?)))
             .collect();
         crate::interact::validate_world(self, &interactables)?;
+        let sources: Vec<_> = entities
+            .iter()
+            .filter_map(|e| {
+                Some((
+                    e.id.as_str(),
+                    e.audio_source.as_ref()?,
+                    e.transform.is_some(),
+                ))
+            })
+            .collect();
+        let listeners: Vec<_> = entities
+            .iter()
+            .filter_map(|e| {
+                Some((
+                    e.id.as_str(),
+                    e.audio_listener.as_ref()?,
+                    e.transform.is_some(),
+                ))
+            })
+            .collect();
+        crate::audio::validate_world(self, &sources, &listeners)?;
         ensure!(
             instances <= MAX_INSTANCES,
             "render instance budget exceeded"
@@ -857,6 +882,8 @@ pub struct CompiledEntity {
     pub nav_agent: Option<crate::navigation::NavAgent>,
     pub interact: Option<crate::interact::InteractTarget>,
     pub tween: Option<crate::tween::TweenClips>,
+    pub audio_source: Option<crate::audio::AudioSource>,
+    pub audio_listener: Option<crate::audio::AudioListener>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,

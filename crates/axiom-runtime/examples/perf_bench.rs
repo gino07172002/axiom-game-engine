@@ -7,6 +7,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-nav 256 [--nav-budget 4096]
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-interact 256x64``
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-tween 1024x4`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-audio 256`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -175,6 +176,43 @@ fn generated_tween(components: usize, tracks: usize) -> Result<World> {
     }))?)
 }
 
+/// `sources` looping sounds (4 procedural clips) on a 3 m grid drifting at 0.5 m/s, priorities
+/// 0..2, all within reach of a listener that circles the grid centre (it orbits on a parent
+/// that spins at 0.5 rad/s): every step attenuates, pans and ranks every source for the
+/// 32 voices, and the ranking keeps changing.
+fn generated_audio(sources: usize) -> Result<World> {
+    let mut entities = vec![
+        json!({"id":"pivot","components":{"core.transform":{},"core.motion":{"angular_velocity":[0,0.5,0]}}}),
+        json!({"id":"ear","components":{"core.transform":{"position":[12,1,0]},"audio.listener":{}}}),
+    ];
+    let clips = ["tone", "engine", "fountain", "creak"];
+    for i in 0..sources {
+        let (x, z) = ((i % 16) as f32 * 3.0 - 22.5, (i / 16) as f32 * 3.0 - 22.5);
+        entities.push(
+            json!({"id":format!("src/{i}"),"components":{"core.transform":{"position":[x,0,z]},
+            "core.motion":{"velocity":[0.5,0,0.25]},
+            "audio.source":{"clip":clips[i % 4],"loop":true,"autoplay":true,"max_distance":80,
+                "priority":(i % 3),"rolloff":if i % 2 == 0 {"inverse"} else {"linear"}}}}),
+        );
+    }
+    let library: serde_json::Map<String, Value> = clips
+        .iter()
+        .map(|c| {
+            (
+                (*c).to_owned(),
+                json!(axiom_core::audio::AudioClip::preset(c).unwrap()),
+            )
+        })
+        .collect();
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("audio-{sources}"),"title":"Audio bench",
+        "capabilities":{"core":1,"motion":1,"audio":1},"systems":["motion.integrate","audio.spatial"],
+        "entities":entities,
+        "relations":[{"kind":"parent","source":"ear","target":"pivot"}],
+        "resources":{"audio.library":{"clips":library}}
+    }))?)
+}
+
 /// `paths` closed paths 30 m apart (even: linear 20 x 10 m rectangles, odd: Catmull-Rom
 /// circles of 16 points, radius 8 m) and `followers` spread evenly over them (start fraction,
 /// speed 1.5..3 m/s, lateral offset +-1 m, every other one with a 180 deg/s turn rate).
@@ -312,6 +350,9 @@ fn main() -> Result<()> {
             .context("--generated-tween COMPONENTSxTRACKS")?;
         let world = generated_tween(components.parse()?, tracks.parse()?)?;
         (world.id.clone(), world)
+    } else if let Some(sources) = arg("--generated-audio") {
+        let world = generated_audio(sources.parse()?)?;
+        (world.id.clone(), world)
     } else if let Some(agents) = arg("--generated-nav") {
         let budget = arg("--nav-budget").map(|b| b.parse()).transpose()?;
         let world = generated_nav(agents.parse()?, budget)?;
@@ -377,6 +418,32 @@ fn main() -> Result<()> {
     let nav = runtime.observation().metrics.get("nav").map(|n| {
         json!({"grid":n["grid"],"budget":n["budget"],"moving":n["moving"],"pending":n["pending"],"failed":n["failed"],"arrived":n["arrived"],"preview":preview})
     });
+    // Audio: the audio thread's work per device buffer (512 frames = 23.2 ms of sound) with
+    // this world's voices, and the voice counters after the measured steps.
+    let audio = runtime
+        .system::<axiom_runtime::spatial_audio::AudioSpatialSystem>()
+        .map(|s| {
+            use axiom_runtime::audio_mix::Mixer;
+            let mut mixer = Mixer::default();
+            let _ = mixer.set_clips(s.clip_table().clone());
+            let mut out = vec![0i16; 1024];
+            // Pre-sized so recording a sample never allocates inside the counted window.
+            let (mut mix_ms, mut mix_allocs) = (Vec::with_capacity(2000), Vec::with_capacity(2000));
+            // The first buffer starts every voice; it stays in the distribution.
+            for _ in 0..2000 {
+                let (a, _) = counters();
+                let t = Instant::now();
+                mixer.set_params(s.voices());
+                mixer.render(&mut out);
+                mix_ms.push(ms(t));
+                mix_allocs.push((counters().0 - a) as f64);
+            }
+            std::hint::black_box(&out);
+            let o = &runtime.observation().metrics["audio"];
+            json!({"sources":o["sources"],"audible":o["audible"],"voiced":o["voiced"],"virtual":o["virtual"],
+                "steals":o["steals"],"clip_bytes":o["clips"]["bytes"],"mixed_voices":mixer.stats.voices,
+                "mix_512_frames":{"ms":dist(mix_ms),"allocs":dist(mix_allocs)}})
+        });
 
     // Render-frame extraction, the renderer's per-frame instance copy, observation building.
     let (mut frame_ms, mut frame_allocs, mut frame_bytes) = (vec![], vec![], vec![]);
@@ -502,6 +569,7 @@ fn main() -> Result<()> {
             "build_ms":pick(&|s| s.reload.build_ms),
         },
         "nav":nav,
+        "audio":audio,
         "process_memory_after_runtime":memory_runtime,
         "process_memory_end":axiom_runtime::measure::process_memory(),
     });

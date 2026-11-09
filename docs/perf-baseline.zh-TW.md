@@ -157,3 +157,17 @@ GPU 編輯器(release,隱藏視窗,MX150/Vulkan;`perf-live-edit.ps1 -EditorComma
 - **GPU 路徑的編輯→生效多約一幀**(這台機器一幀 ≈ 250 ms):舊版在處理 bridge 請求的那一幀內同步 commit、同幀啟用;本版 commit 在 present 阻塞期間於寫入器完成,幀尾收到結果才開始背景建置,下一幀才上線。60 Hz 機器上這一幀是 ≤16 ms。可再改進:幀尾收到結果後在剩餘預算內等候建置(像第 12 項),未做。
 - 經 bridge 無法造出多於 1 筆的佇列(bridge 一次處理一個連線,`editor_view` 回覆又等 commit 完成),所以「快速連續編輯依序落地」在 GPU 上驗證的是連續 10 次、每次前一次完成後立即送出;佇列深度 >1 的順序、衝突、undo、關閉 flush、watchdog 由 `app::tests` 的 7 個測試覆蓋。
 - 寫入器版的 `frame.last_slow` 例:4096 一幀 19.8 ms,其中 12.1 ms 是既有的「本幀剩餘預算內等候背景建置」(第 12 項),`writes_bridge` 0.006 ms。HEAD 的幀剖析器不含 bridge 請求處理,看不到當時的 commit 卡頓(主執行緒成本以上方 headless 數字為準)。
+## 3D 音訊(`audio.spatial`,plan-engine-components 第 7 項,2026-11-09)
+
+release,`perf_bench --generated-audio N`(N 個循環聲源、4 種程序片段、聽者繞圈、聲源移動;32 voice),每組 3 次:
+
+| N | step p50 / p95 / max | step 配置 p50 / max | `audio.spatial` 建置 | voiced / virtual / 累計 steals | 混音 512 frame(23.2 ms 聲音)p50 / max | 混音配置 |
+|---|---|---|---|---|---|---|
+| 256 | 0.029–0.030 / 0.032–0.038 / 0.07–0.12 ms | 0 / 1 | 10.1–10.4 ms(含 4 段片段合成,冷快取) | 32 / 224 / 81 | 0.100–0.104 / 0.23–0.45 ms | 0(2000 次中最大 0) |
+| 1024 | 0.102–0.104 / 0.12–0.13 / 0.19–0.33 ms | 0 / 1 | 10.0–10.2 ms | 32 / 546 / 84 | 0.100 / 0.22–0.37 ms | 0 |
+
+- step 時間含 `motion.integrate`(N 個移動聲源);1200 步中 max 1 次配置與先前各項目相同(無頭量測中既有的現象,未追查來源;`tests/audio.rs` 以本執行緒計數器量 200 步為 0)。
+- 片段 PCM 260,190 bytes(4 段,依內容 hash 共用)。
+- 原生視窗實測(debug,MX150,`editor` Play):waveOut 裝置 open,`rendered` 持續增加、`underruns` 0、`mix_us_max` 232 µs、`voices_mixed` 1。
+
+axiom-town(不用 `audio.spatial`)A/B,release,HEAD `9094f2c` 與本版交錯 5 輪:step p50 中位數 0.0178 → 0.0180 ms(各輪 0.0176–0.0178 vs 0.0178–0.0183)、p95 0.0184 → 0.0187、配置 69/82 不變、observation 0.0346 → 0.0352 ms。本版略高約 1%(+0.2 µs),未拆解;推測與 `CompiledEntity` 多兩個欄位有關。

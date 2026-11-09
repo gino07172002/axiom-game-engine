@@ -169,6 +169,8 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     c("nav.clear_target", "Nav Target: Clear", "Object", ""),
     c("object.interactable", "Make Interactable", "Object", ""),
+    c("object.audio_source", "Add Audio Source", "Object", ""),
+    c("object.audio_listener", "Make Audio Listener", "Object", ""),
     c("object.tween_clip", "Add Tween Clip", "Object", ""),
     c(
         "tween.record_key",
@@ -415,6 +417,8 @@ impl Editor {
             | "object.follow_path"
             | "object.nav_agent"
             | "object.interactable"
+            | "object.audio_source"
+            | "object.audio_listener"
             | "object.tween_clip"
                 if nothing =>
             {
@@ -469,6 +473,8 @@ impl Editor {
             | "nav.target_point"
             | "nav.clear_target"
             | "object.interactable"
+            | "object.audio_source"
+            | "object.audio_listener"
             | "object.tween_clip"
             | "tween.record_key"
             | "tween.remove_key"
@@ -586,6 +592,8 @@ impl Editor {
             }
             "nav.clear_target" => actions.extend(self.set_nav_target(None)),
             "object.interactable" => actions.extend(self.make_interactable()),
+            "object.audio_source" => actions.extend(self.add_audio_source()),
+            "object.audio_listener" => actions.extend(self.add_audio_listener()),
             "object.tween_clip" => actions.extend(self.add_tween_clip()),
             "tween.record_key" => actions.extend(self.record_tween_key()),
             "tween.remove_key" => actions.extend(self.remove_tween_key()),
@@ -977,6 +985,10 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
                 "nav.clear_target": "nav AGENTS target none",
                 "object.interactable": "interact SEL [event=] [prompt=] [range=] [action=]",
+                "object.audio_source": "audio SEL source [clip=] [volume=] [loop=] [autoplay=] [spatial=] [min=] [max=] [rolloff=]",
+                "object.audio_listener": "audio ID listener",
+                "inspector.audio_clip": "set ID audio.source/clip \"CLIP\"",
+                "inspector.new_audio_clip": "audio clip ID tone|engine|fountain|creak|footstep",
                 "object.tween_clip": "tween SEL clip NAME [property=] [target=] [duration=] [mode=] [autoplay=] [on_finish=]",
                 "tween.record_key": "tween ID key CLIP TRACK add T (no value = record the current one)",
                 "tween.remove_key": "tween ID key CLIP TRACK remove I",
