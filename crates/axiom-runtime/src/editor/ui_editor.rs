@@ -28,7 +28,10 @@ pub(super) const RESOLUTIONS: [(&str, f32, f32); 4] = [
 ];
 /// Session chrome height in the game window (full debug bar); compact chrome takes none.
 const CHROME: f32 = 30.0;
-const PANEL: f32 = 300.0;
+const PANEL: f32 = 270.0;
+/// Height the element panel needs when it sits below the canvas.
+const PANEL_BELOW: f32 = 240.0;
+const NAMEPLATES: f32 = 28.0;
 /// Regions in grid order (row by row), the drop cells of the canvas.
 const GRID: [Region; 9] = [
     Region::TopLeft,
@@ -457,15 +460,31 @@ impl Editor {
             }
         });
         let area = ui.available_rect_before_wrap();
-        let panel = Rect::from_min_max(
-            Pos2::new((area.max.x - PANEL).max(area.min.x), area.min.y),
-            area.max,
-        );
-        let room = Rect::from_min_max(area.min, Pos2::new(panel.min.x - 8.0, area.max.y));
         let (_, w, h) = RESOLUTIONS[st.resolution.min(3)];
         let size = Vec2::new(w, h);
-        let scale = (room.width() / w).min(room.height() / h).max(0.05);
-        let canvas = Rect::from_min_size(room.min, size * scale);
+        // The element panel goes beside or below the canvas, whichever leaves it larger; a
+        // strip under the canvas holds the nameplate preview.
+        let plates = if st.hide_nameplates || preview.nameplates.is_empty() {
+            0.0
+        } else {
+            NAMEPLATES
+        };
+        let fit = |room: Vec2| (room.x / w).min(room.y / h).max(0.05);
+        let beside = fit(Vec2::new(
+            area.width() - PANEL - 8.0,
+            area.height() - plates,
+        ));
+        let below = fit(Vec2::new(
+            area.width(),
+            area.height() - plates - PANEL_BELOW,
+        ));
+        let scale = beside.max(below);
+        let canvas = Rect::from_min_size(area.min, size * scale);
+        let panel = if beside >= below {
+            Rect::from_min_max(Pos2::new(canvas.max.x + 8.0, area.min.y), area.max)
+        } else {
+            Rect::from_min_max(Pos2::new(area.min.x, canvas.max.y + plates + 4.0), area.max)
+        };
         self.rects.insert("ui_editor:canvas".into(), canvas);
         // Preview locale: set on the cached state when switched (never rebuilt or copied).
         if g.locale.as_ref() != Some(&locale) {
@@ -566,16 +585,30 @@ impl Editor {
             &mut st.canvas,
             fx.as_ref().map(|f| f as &dyn EffectVisuals),
         );
-        if !st.hide_nameplates && !preview.nameplates.is_empty() {
-            let mut at = Pos2::new(canvas.min.x + 70.0, canvas.max.y - 18.0);
-            caption_at(
-                &overlay,
-                canvas.min + Vec2::new(6.0, canvas.height() - 40.0),
-                "ui.nameplate",
+        if plates > 0.0 {
+            // The game draws these over the 3D view at each entity; here they are listed in a
+            // row under the canvas, painted by the same function.
+            let strip = Rect::from_min_size(
+                Pos2::new(canvas.min.x, canvas.max.y),
+                Vec2::new(canvas.width().max(panel.min.x - canvas.min.x - 8.0), plates),
             );
+            let painter = ui.painter_at(strip);
+            caption_at(&painter, strip.min + Vec2::new(2.0, 6.0), "ui.nameplate");
+            let mut x = strip.min.x + 92.0;
             for (_, plate) in &preview.nameplates {
-                let r = crate::nameplate::paint(&overlay, at, &plate.text, plate.color);
-                at.x += r.width() + 10.0;
+                let width = painter
+                    .layout_no_wrap(
+                        plate.text.clone(),
+                        egui::FontId::proportional(14.0),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x
+                    + 10.0;
+                let at = Pos2::new(x + width / 2.0, strip.center().y);
+                let r = crate::nameplate::paint(&painter, at, &plate.text, plate.color);
+                self.rects.insert(format!("ui_nameplate:{}", plate.text), r);
+                x += width + 8.0;
             }
         }
         // Selection and drag between regions (one revision on release). Read from the raw
@@ -921,23 +954,24 @@ impl Editor {
         let mut open = None;
         for e in &mine {
             ui.horizontal(|ui| {
-                let label = format!(
-                    "{}  {}  on {}  {} steps",
-                    e.id,
-                    e.kind.name(),
-                    e.trigger().name(),
-                    e.ticks.map_or("default".to_owned(), |t| t.to_string())
-                );
-                let r = ui.selectable_label(st.effect.as_deref() == Some(&e.id), label);
-                self.rects.insert(format!("ui_effect:{}", e.id), r.rect);
-                if r.clicked() && st.effect.as_deref() != Some(&e.id) {
-                    open = Some(e.id.clone());
-                }
                 let x = ui.small_button("x").on_hover_text("Remove effect");
                 self.rects
                     .insert(format!("ui_effect_remove:{}", e.id), x.rect);
                 if x.clicked() {
                     remove = Some(e.id.clone());
+                }
+                let label = format!(
+                    "{} · on {}{}",
+                    e.kind.name(),
+                    e.trigger().name(),
+                    e.ticks.map_or(String::new(), |t| format!(" · {t}"))
+                );
+                let r = ui
+                    .selectable_label(st.effect.as_deref() == Some(&e.id), label)
+                    .on_hover_text(&e.id);
+                self.rects.insert(format!("ui_effect:{}", e.id), r.rect);
+                if r.clicked() && st.effect.as_deref() != Some(&e.id) {
+                    open = Some(e.id.clone());
                 }
             });
         }
