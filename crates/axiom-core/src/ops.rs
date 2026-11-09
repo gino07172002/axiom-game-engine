@@ -11,6 +11,7 @@ use glam::{EulerRot, Quat};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+pub use crate::ops_graph::*;
 pub use crate::ops_world::*;
 
 /// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is

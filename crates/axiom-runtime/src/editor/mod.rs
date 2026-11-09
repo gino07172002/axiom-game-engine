@@ -1,6 +1,7 @@
 mod assets;
 mod commands;
 mod form;
+mod graph;
 pub use commands::register_topics;
 mod layout;
 mod options;
@@ -13,6 +14,8 @@ mod world_panel;
 use crate::world::WorldRuntime;
 #[cfg(test)]
 mod dock_tests;
+#[cfg(test)]
+mod graph_tests;
 #[cfg(test)]
 mod hierarchy_tests;
 #[cfg(test)]
@@ -530,6 +533,8 @@ pub(crate) struct Editor {
     inspector_shown: Option<String>,
     /// Timeline Play on rows per (world version, object, clip).
     bindings_cache: Option<((u64, String, String), timeline::Bindings)>,
+    /// Graphs tab: open machine, selection, cached graph model and checks.
+    graph: graph::GraphUi,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -630,6 +635,7 @@ impl Editor {
             scroll_component: false,
             inspector_shown: None,
             bindings_cache: None,
+            graph: Default::default(),
         };
         if selected
             .as_ref()
@@ -1683,12 +1689,13 @@ impl Editor {
     }
 
     /// Remote inspector: `material:ID`, `prefab:ID`, `resource:ID`, `component:ID` (of the
-    /// selection) or `options:COMMAND` (a create command's options dialog).
+    /// selection), `options:COMMAND` (a create command's options dialog), `graph:MACHINE`
+    /// or `rules:` (Graphs tab).
     pub(crate) fn remote_open(&mut self, target: &str) -> anyhow::Result<()> {
         anyhow::ensure!(!self.dirty(), "the editor has an unsaved draft");
         let (kind, id) = target.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(
-                "open expects material:ID, prefab:ID, resource:ID, component:ID or options:COMMAND"
+                "open expects material:ID, prefab:ID, resource:ID, component:ID, options:COMMAND, graph:MACHINE or rules:"
             )
         })?;
         let missing = || {
@@ -1738,8 +1745,14 @@ impl Editor {
                         .ok_or_else(|| anyhow::anyhow!("{id} has no options dialog"))?,
                 );
             }
+            // Graphs tab on a state machine / on the rule table (view only).
+            "graph" => self.graph_open(id)?,
+            "rules" => {
+                self.graph.view = graph::View::Rules;
+                self.show_dock(Dock::Graphs);
+            }
             other => anyhow::bail!(
-                "unknown kind {other}; use material, prefab, resource, component or options"
+                "unknown kind {other}; use material, prefab, resource, component, options, graph or rules"
             ),
         }
         Ok(())
@@ -2145,7 +2158,8 @@ impl Editor {
             "last_job":self.last_job,
             "pending_commits":self.saving,
             "last_commit_ms":self.writes.get("last_commit_ms"),
-            "writes":self.writes
+            "writes":self.writes,
+            "graph":self.graph_observation()
         })
     }
 

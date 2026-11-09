@@ -1224,6 +1224,16 @@ impl Editor {
                 Some(action) => actions.push(action),
                 None => self.set_error("Nothing to play: pick a clip on the timeline"),
             },
+            Some(ComponentRequest::EditGraph) => {
+                let machine = self.world.entity(&id).and_then(|e| {
+                    component_value(&self.world, e, "fsm.agent")?["machine"]
+                        .as_str()
+                        .map(str::to_owned)
+                });
+                if let Err(e) = machine.as_deref().map_or(Ok(()), |m| self.graph_open(m)) {
+                    self.problem(&e);
+                }
+            }
             None => {}
         }
         if new_clip {
@@ -1283,8 +1293,17 @@ impl Editor {
                 self.tag_ui.input.clear();
             }
         }
-        if let Some(component) = add_component {
-            actions.extend(self.add_component(&component));
+        match add_component
+            .as_deref()
+            .map(|c| c.strip_prefix("command:").ok_or(c))
+        {
+            Some(Ok(command)) => {
+                if let Some(cmd) = super::commands::command(command) {
+                    self.invoke(cmd.id, actions);
+                }
+            }
+            Some(Err(component)) => actions.extend(self.add_component(component)),
+            None => {}
         }
         if let Some(command) = path_command {
             match self.run_command(command) {
@@ -1312,7 +1331,7 @@ impl Editor {
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
-            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World => {}
+            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World | Dock::Graphs => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -1413,7 +1432,6 @@ impl Editor {
                     }
                 });
             }
-            Dock::Graphs => self.graphs(ui),
             Dock::Scenarios => {
                 if self.scenarios.is_empty() {
                     caption(ui, "No examples/*.scenario.json found in the working directory.");
@@ -1474,6 +1492,7 @@ impl Editor {
                     if !self.problems.is_empty() && ui.button("Clear").clicked() { self.problems.clear(); }
                 });
                 if self.problems.is_empty() { caption(ui,"No problems. Failed edits and verification errors appear here with their paths."); }
+                self.graph_problem_rows(ui);
                 for p in &self.problems {
                     let path = p["path"].as_str().unwrap_or("");
                     let target = super::entity_in_path(path, &self.world);
@@ -1626,6 +1645,7 @@ impl egui_dock::TabViewer for TabHost<'_> {
                 editor.scene_tab(ui, self.runtime, actions);
             }
             Dock::World => editor.world_tab(ui, actions),
+            Dock::Graphs => editor.graph_tab(ui, self.runtime, actions),
             other => editor.dock_tab(ui, other, actions),
         }
     }
@@ -1826,6 +1846,7 @@ pub(super) enum ComponentRequest {
     },
     MainCamera,
     Play(String),
+    EditGraph,
 }
 
 /// Everything the component section reads besides the object and its draft.
@@ -1939,6 +1960,25 @@ fn component_editor(
                     }
                 }
             });
+        // Behavior ▸ templates: option dialogs (`command:ID` runs the registered command).
+        let menu = egui::ComboBox::from_id_salt("add_behavior")
+            .selected_text("Behavior…")
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for (id, title) in [
+                    ("behavior.fsm_agent", "FSM Agent…"),
+                    ("behavior.patrol", "Patrol…"),
+                    ("behavior.guard", "Guard…"),
+                    ("behavior.dialogue", "NPC Dialogue…"),
+                ] {
+                    let r = ui.selectable_label(false, title);
+                    rects.insert(format!("behavior:{id}"), r.rect);
+                    if r.clicked() {
+                        *add_component = Some(format!("command:{id}"));
+                    }
+                }
+            });
+        rects.insert("behavior:menu".into(), menu.response.rect);
     });
     if draft.component.is_empty() || draft.component == "core.transform" {
         return request;
@@ -2034,6 +2074,20 @@ fn component_editor(
                     )
                 {
                     request = Some(ComponentRequest::MainCamera);
+                }
+                if component == "fsm.agent"
+                    && button(
+                        ui,
+                        "edit_graph",
+                        "Edit Graph",
+                        "Open this agent's state machine in the Graphs tab",
+                        draft
+                            .form
+                            .as_ref()
+                            .is_some_and(|f| f["machine"].is_string()),
+                    )
+                {
+                    request = Some(ComponentRequest::EditGraph);
                 }
                 if matches!(component.as_str(), "tween.clips" | "audio.source")
                     && button(

@@ -241,6 +241,91 @@ impl Machines {
     }
 }
 
+/// Editor forms for a state's `action` and a transition's `when`: per `kind`, the value a
+/// newly picked kind starts with and the typed schema of its other fields (ranges as in
+/// [`Machines::validate`]; a test keeps every template valid).
+pub fn editor_kinds(condition: bool) -> Vec<(&'static str, Value, Value)> {
+    let tag = json!({"type":"string","description":"tag of the entities to look for (nearest enabled, living one)"});
+    let meters = |max: f64, description: &str| json!({"type":"number","minimum":0.0,"maximum":max,"x-unit":"m","description":description});
+    let speed = json!({"type":"number","minimum":0.0,"maximum":100.0,"x-unit":"m/s"});
+    let object = |properties: Value| json!({"type":"object","properties":properties});
+    if condition {
+        vec![
+            (
+                "near",
+                json!({"kind":"near","tag":"player","within":2.0}),
+                object(
+                    json!({"tag":tag,"within":meters(10000.0,"passes when the nearest one is at most this far (XZ)")}),
+                ),
+            ),
+            (
+                "far",
+                json!({"kind":"far","tag":"player","beyond":3.0}),
+                object(
+                    json!({"tag":tag,"beyond":meters(10000.0,"passes when none is within this distance")}),
+                ),
+            ),
+            (
+                "health_below",
+                json!({"kind":"health_below","value":50.0}),
+                object(
+                    json!({"value":{"type":"number","description":"own core.health value below this"}}),
+                ),
+            ),
+            (
+                "in_state_ticks",
+                json!({"kind":"in_state_ticks","ticks":120}),
+                object(
+                    json!({"ticks":{"type":"integer","minimum":0,"maximum":1000000,"x-unit":"ticks","description":"fixed ticks in the current state (120 per second)"}}),
+                ),
+            ),
+            (
+                "chance",
+                json!({"kind":"chance","per_tick":0.01}),
+                object(
+                    json!({"per_tick":{"type":"number","minimum":0.0,"maximum":1.0,"description":"probability per fixed tick (seeded)"}}),
+                ),
+            ),
+            ("always", json!({"kind":"always"}), object(json!({}))),
+        ]
+    } else {
+        vec![
+            ("stop", json!({"kind":"stop"}), object(json!({}))),
+            (
+                "move_toward",
+                json!({"kind":"move_toward","tag":"player","speed":2.0,"stop_within":1.0}),
+                object(
+                    json!({"tag":tag,"speed":speed,"stop_within":meters(1000.0,"stop this far from the target")}),
+                ),
+            ),
+            (
+                "move_away",
+                json!({"kind":"move_away","tag":"player","speed":2.0}),
+                object(json!({"tag":tag,"speed":speed})),
+            ),
+            (
+                "attack",
+                json!({"kind":"attack","tag":"player","range":1.5,"damage":10.0,"interval_ticks":60}),
+                object(
+                    json!({"tag":tag,"range":meters(1000.0,"reach"),"damage":{"type":"number","minimum":0.0,"maximum":100000.0},"interval_ticks":{"type":"integer","minimum":1,"maximum":1000000,"x-unit":"ticks"}}),
+                ),
+            ),
+            (
+                "wander",
+                json!({"kind":"wander","radius":3.0,"speed":1.0}),
+                object(
+                    json!({"radius":{"type":"number","minimum":0.1,"maximum":1000.0,"x-unit":"m","description":"around the spawn position"},"speed":speed}),
+                ),
+            ),
+            (
+                "face",
+                json!({"kind":"face","tag":"player"}),
+                object(json!({"tag":tag})),
+            ),
+        ]
+    }
+}
+
 struct Compiled {
     id: String,
     states: Vec<(String, ActionDef)>,
@@ -569,6 +654,19 @@ impl FsmSystem {
             .collect()
     }
 
+    /// Every agent's (entity ID, machine ID, current state), without allocating (editor
+    /// graph highlight during Play).
+    pub fn agent_states(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        (0..self.agents.ids.len()).map(|a| {
+            let m = &self.machines[self.agents.machine[a]];
+            (
+                self.agents.ids[a].as_str(),
+                m.id.as_str(),
+                m.states[self.agents.state[a]].0.as_str(),
+            )
+        })
+    }
+
     fn summary(&self) -> Value {
         let mut counts = BTreeMap::<String, usize>::new();
         for a in 0..self.agents.ids.len() {
@@ -882,4 +980,43 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.factories.insert("fsm.step".into(), |state| {
         Ok(Box::new(FsmSystem::new(state)?))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_kind_templates_are_valid_and_cover_every_kind() {
+        let actions = editor_kinds(false);
+        let conditions = editor_kinds(true);
+        let mut states = BTreeMap::new();
+        for (i, (kind, template, _)) in actions.iter().enumerate() {
+            assert_eq!(template["kind"], *kind);
+            states.insert(
+                format!("s{i}"),
+                serde_json::from_value::<StateDef>(json!({"action": template})).unwrap(),
+            );
+        }
+        let transitions = conditions
+            .iter()
+            .map(|(kind, when, _)| {
+                assert_eq!(when["kind"], *kind);
+                serde_json::from_value(json!({"from":"s0","to":"s1","when":when})).unwrap()
+            })
+            .collect();
+        let machines = Machines {
+            machines: BTreeMap::from([(
+                "m".to_owned(),
+                Machine {
+                    initial: "s0".into(),
+                    states,
+                    transitions,
+                },
+            )]),
+        };
+        machines.validate().unwrap();
+        // Six action kinds and six condition kinds (serde variants of ActionDef / Cond).
+        assert_eq!((actions.len(), conditions.len()), (6, 6));
+    }
 }

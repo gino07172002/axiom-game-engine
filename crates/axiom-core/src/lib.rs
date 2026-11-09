@@ -14,6 +14,7 @@ pub mod local;
 pub mod navigation;
 pub mod observe;
 pub mod ops;
+mod ops_graph;
 mod ops_world;
 pub mod package;
 pub mod path;

@@ -224,6 +224,12 @@ impl Registry {
                 Ok(())
             },
         );
+        r.resource(
+            crate::ops::LAYOUT_RESOURCE,
+            "core",
+            json!({"graphs":"graph key (fsm/MACHINE) -> node name -> [x,y] canvas position; editor metadata, never read by the runtime"}),
+            |v| typed(v, crate::ops::EditorLayout::validate),
+        );
         r.resource("input.bindings","core",json!({"axes":"action -> positive/negative key names","buttons":"action -> key name","capture_pointer":"bool"}),|v|{let b:InputBindings=serde_json::from_value(v.clone())?;ensure!(b.axes.len()+b.buttons.len()<=64,"input binding budget exceeded");ensure!(b.buttons.iter().all(|(k,v)|k.len()<=64&&v.len()<=64)&&b.axes.iter().all(|(k,v)|k.len()<=64&&v.positive.len()<=64&&v.negative.len()<=64),"invalid input binding");Ok(())});
         r.systems.insert(
             "motion.integrate".into(),

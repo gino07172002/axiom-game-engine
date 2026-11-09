@@ -71,6 +71,19 @@ EDIT (any number, atomic):
                                   resource list items are dropped)
   reset SEL COMPONENT             component back to its default (prefab instance: drop the override)
   event declare NAME [FIELD=text|number|int|bool ..]   declare a behavior.program event
+ state machines (Graphs editor; M = fsm.machines machine; graph positions live in editor.layout):
+  fsm M create [INITIAL] | fsm M remove        one stop state (default idle) | refused while used
+  fsm M state add NAME [JSON] | fsm M state remove NAME | fsm M state rename OLD NEW
+  fsm M state set NAME JSON                    whole state {\"action\":{\"kind\":..},\"emit\":E,\"clip\":C}
+  fsm M initial NAME
+  fsm M transition add FROM|* TO [JSON] | fsm M transition remove I | fsm M transition move I J
+  fsm M transition set I JSON                  whole {\"from\",\"to\",\"when\":{\"kind\":..}}; first passing wins
+                                  (state remove drops its transitions; new transitions wait 120 ticks)
+  fsm M node STATE x,y            graph position (editor metadata, ignored by the runtime)
+  fsm SEL agent MACHINE [radius=M]   fsm.agent on each object (a missing machine is created)
+  behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]
+                                  new machine from the template + fsm.agent (dialogue declares E)
+  rules: append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] when|actions|event V
  world (World panel):
   world id ID | world title TEXT
   capability add|remove ID        installed capability; remove refuses while components/resources/systems use it
@@ -347,6 +360,16 @@ enum Statement {
     Reset(Box<Selection>, String),
     EventDeclare(String, Vec<(String, crate::gameplay::ScalarType)>),
     Rotate(Box<Selection>, [f32; 3]),
+    FsmCreate(String, Option<String>),
+    FsmRemove(String),
+    FsmEdit(String, crate::ops::FsmEdit),
+    FsmNode(String, String, [f32; 2]),
+    FsmAgent(Box<Selection>, String, Option<f32>),
+    Behavior(
+        Box<Selection>,
+        crate::ops::BehaviorTemplate,
+        Box<crate::ops::BehaviorOptions>,
+    ),
 }
 
 impl Statement {
@@ -819,6 +842,8 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         }
         "tween" => tween(tokens)?,
         "audio" => audio(tokens)?,
+        "fsm" => fsm(tokens)?,
+        "behavior" => behavior(tokens)?,
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             match rest.as_slice() {
@@ -1057,6 +1082,155 @@ fn tween(tokens: &[String]) -> Result<Statement> {
         }
         other => bail!("unknown tween verb '{other}' (clip, track, key)"),
     })
+}
+
+/// `fsm` statements (see GRAMMAR).
+fn fsm(tokens: &[String]) -> Result<Statement> {
+    use crate::ops::FsmEdit;
+    const USE: &str = "use: fsm M create|remove | fsm M state add|remove|rename|set .. | fsm M initial S | fsm M transition add|remove|move|set .. | fsm M node S x,y | fsm SEL agent MACHINE";
+    let arg = |n: usize| tokens.get(n).map(String::as_str).context(USE);
+    let name = |n: usize| -> Result<String> {
+        Ok(match value(arg(n)?) {
+            Value::String(s) => s,
+            _ => arg(n)?.to_owned(),
+        })
+    };
+    let index = |n: usize| -> Result<usize> {
+        arg(n)?
+            .parse()
+            .context("transition index must be a non-negative integer")
+    };
+    let count = |n: usize| -> Result<()> {
+        ensure!(tokens.len() <= n, "unexpected '{}' ({USE})", tokens[n]);
+        Ok(())
+    };
+    if tokens.get(2).is_some_and(|t| t == "agent") {
+        let select = selector(arg(1)?)?;
+        let machine = name(3)?;
+        let mut radius = None;
+        for t in &tokens[4..] {
+            match t.split_once('=') {
+                Some(("radius", v)) => {
+                    radius = Some(v.parse::<f32>().context("radius must be a number")?)
+                }
+                _ => bail!("unexpected '{t}' (expected radius=M)"),
+            }
+        }
+        return Ok(Statement::FsmAgent(Box::new(select), machine, radius));
+    }
+    let machine = name(1)?;
+    let edit = |e: FsmEdit| Statement::FsmEdit(machine.clone(), e);
+    Ok(match arg(2)? {
+        "create" => {
+            count(4)?;
+            Statement::FsmCreate(machine.clone(), tokens.get(3).map(|_| name(3)).transpose()?)
+        }
+        "remove" => {
+            count(3)?;
+            Statement::FsmRemove(machine.clone())
+        }
+        "initial" => {
+            count(4)?;
+            edit(FsmEdit::SetInitial(name(3)?))
+        }
+        "node" => {
+            count(5)?;
+            let parts = numbers(arg(4)?)?;
+            ensure!(parts.len() == 2, "node position is x,y");
+            Statement::FsmNode(machine.clone(), name(3)?, [parts[0], parts[1]])
+        }
+        "state" => match arg(3)? {
+            "add" => {
+                count(6)?;
+                let state = tokens.get(5).map(|t| json_value(t)).transpose()?;
+                edit(FsmEdit::AddState {
+                    name: name(4)?,
+                    state,
+                })
+            }
+            "remove" => {
+                count(5)?;
+                edit(FsmEdit::RemoveState(name(4)?))
+            }
+            "rename" => {
+                count(6)?;
+                edit(FsmEdit::RenameState {
+                    from: name(4)?,
+                    to: name(5)?,
+                })
+            }
+            "set" => {
+                count(6)?;
+                edit(FsmEdit::SetState {
+                    name: name(4)?,
+                    state: json_value(arg(5)?)?,
+                })
+            }
+            other => bail!("unknown fsm state verb '{other}' (add, remove, rename, set)"),
+        },
+        "transition" => match arg(3)? {
+            "add" => {
+                count(7)?;
+                let when = tokens.get(6).map(|t| json_value(t)).transpose()?;
+                edit(FsmEdit::AddTransition {
+                    from: name(4)?,
+                    to: name(5)?,
+                    when,
+                })
+            }
+            "remove" => {
+                count(5)?;
+                edit(FsmEdit::RemoveTransition(index(4)?))
+            }
+            "move" => {
+                count(6)?;
+                edit(FsmEdit::MoveTransition(index(4)?, index(5)?))
+            }
+            "set" => {
+                count(6)?;
+                edit(FsmEdit::SetTransition(index(4)?, json_value(arg(5)?)?))
+            }
+            other => bail!("unknown fsm transition verb '{other}' (add, remove, move, set)"),
+        },
+        other => bail!("unknown fsm verb '{other}' ({USE})"),
+    })
+}
+
+/// `behavior SEL TEMPLATE [k=v ..]` (Inspector ▸ Behavior templates).
+fn behavior(tokens: &[String]) -> Result<Statement> {
+    const USE: &str = "use: behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]";
+    let (Some(select), Some(template)) = (tokens.get(1), tokens.get(2)) else {
+        bail!("{USE}");
+    };
+    let template = crate::ops::BehaviorTemplate::parse(template)
+        .with_context(|| format!("unknown behavior template '{template}' ({USE})"))?;
+    let mut o = crate::ops::BehaviorOptions::default();
+    for t in &tokens[3..] {
+        let (k, v) = t
+            .split_once('=')
+            .with_context(|| format!("option '{t}' must be key=value"))?;
+        let text = || match value(v) {
+            Value::String(s) => s,
+            _ => v.to_owned(),
+        };
+        let number = || {
+            v.parse::<f32>()
+                .with_context(|| format!("{k} must be a number"))
+        };
+        match k {
+            "machine" => o.machine = Some(text()),
+            "tag" => o.tag = Some(text()),
+            "event" => o.event = Some(text()),
+            "range" => o.range = Some(number()?),
+            "speed" => o.speed = Some(number()?),
+            other => bail!("unknown option '{other}' (use machine, tag, range, speed, event)"),
+        }
+    }
+    Ok(Statement::Behavior(
+        Box::new(selector(select)?),
+        template,
+        Box::new(o),
+    ))
 }
 
 /// A key value: `90`, `1,2,3` or `[1,2,3]`.
@@ -1372,6 +1546,18 @@ pub fn run(
             Statement::EventDeclare(name, fields) => crate::ops::declare_event(w, &name, &fields),
             Statement::Rotate(select, degrees) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_rotation(w, &ids, degrees)),
+            Statement::FsmCreate(machine, initial) => {
+                crate::ops::fsm_create_machine(w, r, &machine, initial.as_deref())
+            }
+            Statement::FsmRemove(machine) => crate::ops::fsm_remove_machine(w, &machine),
+            Statement::FsmEdit(machine, edit) => crate::ops::fsm_edit(w, &machine, &edit),
+            Statement::FsmNode(machine, state, at) => {
+                crate::ops::fsm_set_node(w, &machine, &state, at)
+            }
+            Statement::FsmAgent(select, machine, radius) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::fsm_add_agent(w, r, &ids, &machine, radius)),
+            Statement::Behavior(select, template, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_behavior(w, r, &ids, template, &options)),
             _ => unreachable!(),
         }
         .map_err(wrap)?;

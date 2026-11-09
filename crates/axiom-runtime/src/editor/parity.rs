@@ -1540,3 +1540,100 @@ fn inspector_arrays_reset_paste_and_play_on_match_acl() {
         "remove resources[id=runtime.bindings] events 0",
     );
 }
+
+#[test]
+fn state_machine_commands_and_templates_match_acl() {
+    // A world without the fsm capability: FSM Agent with a new machine adds the machine,
+    // the capability and fsm.step, like `fsm SEL agent M`.
+    let start = headless(&lab(), "create cube id=bot\ncreate cube id=pal");
+    assert!(!start.capabilities.contains_key("fsm"));
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("bot".into()));
+            e.extra.insert("pal".into());
+            vec![e
+                .run_command_with("behavior.fsm_agent", Some("sentry"))
+                .unwrap()]
+        },
+        "fsm entities[id=bot,id=pal] agent sentry",
+    );
+    let made = headless(&start, "fsm bot agent sentry");
+    assert!(made.systems.iter().any(|s| s == "fsm.step"));
+    // Templates with their defaults (shortcut / bridge path), on one and on two objects.
+    for template in ["patrol", "guard", "dialogue"] {
+        assert_parity(
+            start.clone(),
+            |e| {
+                e.select(Some("bot".into()));
+                vec![e.run_command(&format!("behavior.{template}")).unwrap()]
+            },
+            &format!("behavior bot {template}"),
+        );
+    }
+    // A second template of the same kind gets the next free machine ID.
+    let patrolled = headless(&start, "behavior bot patrol");
+    assert_parity(
+        patrolled.clone(),
+        |e| {
+            e.select(Some("pal".into()));
+            vec![e.run_command("behavior.patrol").unwrap()]
+        },
+        "behavior pal patrol machine=patrol_2",
+    );
+    // Graph toolbar commands on the open machine.
+    assert_parity(
+        patrolled.clone(),
+        |e| {
+            e.run_command_with("graph.open", Some("patrol")).unwrap();
+            vec![e.run_command("graph.add_state").unwrap()]
+        },
+        "fsm patrol state add state",
+    );
+    assert_parity(
+        patrolled.clone(),
+        |e| {
+            e.run_command_with("graph.open", Some("patrol")).unwrap();
+            e.graph.selected = Some(super::graph::Sel::State("pause".into()));
+            let initial = e.run_command("graph.set_initial").unwrap();
+            vec![initial]
+        },
+        "fsm patrol initial pause",
+    );
+    assert_parity(
+        patrolled,
+        |e| {
+            e.run_command_with("graph.open", Some("patrol")).unwrap();
+            e.graph.selected = Some(super::graph::Sel::Transition(1));
+            vec![e.run_command("graph.delete").unwrap()]
+        },
+        "fsm patrol transition remove 1",
+    );
+    // Without an open machine or selection the graph commands explain why.
+    let mut e = Editor::new(lab(), 1, None);
+    assert_eq!(
+        e.command_blocked("graph.add_state"),
+        Some("open a state machine in the Graphs tab")
+    );
+    assert!(e.run_command("behavior.patrol").is_err());
+    assert!(e.run_command_with("graph.open", Some("nope")).is_err());
+}
+
+#[test]
+fn graph_edits_made_in_one_frame_build_on_each_other() {
+    // Two whole-resource graph writes before either is shown: the second includes the
+    // first (one coalesced batch), like the two-line ACL script.
+    let start = headless(&lab(), "create cube id=bot\nbehavior bot patrol");
+    assert_parity(
+        start,
+        |e| {
+            e.run_command_with("graph.open", Some("patrol")).unwrap();
+            let mut frame = e.run_command("graph.add_state").unwrap();
+            e.graph.selected = Some(super::graph::Sel::State("pause".into()));
+            frame.extend(e.run_command("graph.set_initial").unwrap());
+            assert_eq!(frame.len(), 2);
+            vec![super::coalesce(frame)]
+        },
+        "fsm patrol state add state\nfsm patrol initial pause",
+    );
+}

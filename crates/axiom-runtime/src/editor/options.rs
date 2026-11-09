@@ -17,6 +17,8 @@ enum Input {
     Clip,
     /// A `behavior.program` event name (declared ones offered).
     Event,
+    /// An `fsm.machines` machine (dropdown; typed when the world has none).
+    Machine,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +291,49 @@ impl OptionsDialog {
                     Field::new("collide", "Stop at walls", Bool, "on"),
                 ],
             ),
+            "behavior.fsm_agent" => {
+                let first = editor
+                    .world
+                    .resources
+                    .get(ops::FSM_RESOURCE)
+                    .and_then(|r| r["machines"].as_object())
+                    .and_then(|m| m.keys().next().cloned())
+                    .unwrap_or_else(|| "agent".into());
+                (
+                    "Add Behavior: FSM Agent",
+                    vec![
+                        Field::new("", "Machine", Machine, first),
+                        Field::new("radius", "Radius (m)", Number, "0.3"),
+                    ],
+                )
+            }
+            "behavior.patrol" | "behavior.guard" | "behavior.dialogue" => {
+                let template = command.strip_prefix("behavior.").unwrap_or_default();
+                let machine = ops::free_machine_id(&editor.world, template);
+                let mut fields = vec![Field::new("machine", "Machine ID", Text, machine.clone())];
+                match template {
+                    "patrol" => fields.extend([
+                        Field::new("range", "Wander radius (m)", Number, "4"),
+                        Field::new("speed", "Speed (m/s)", Number, "1.2"),
+                    ]),
+                    "guard" => fields.extend([
+                        Field::new("tag", "Watch tag", Text, "player"),
+                        Field::new("range", "Chase range (m)", Number, "6"),
+                        Field::new("speed", "Chase speed (m/s)", Number, "2.5"),
+                    ]),
+                    _ => fields.extend([
+                        Field::new("tag", "Talk to tag", Text, "player"),
+                        Field::new("range", "Talk range (m)", Number, "2.4"),
+                        Field::new("event", "Greeting event", Event, format!("near_{machine}")),
+                    ]),
+                }
+                let title = match template {
+                    "patrol" => "Add Behavior: Patrol",
+                    "guard" => "Add Behavior: Guard",
+                    _ => "Add Behavior: NPC Dialogue",
+                };
+                (title, fields)
+            }
             _ => return None,
         };
         Some(OptionsDialog {
@@ -368,13 +413,35 @@ impl OptionsDialog {
                 }
                 None => format!("camera {sel} follow TARGET {options}"),
             },
+            "behavior.fsm_agent" => format!(
+                "fsm {sel} agent {} {options}",
+                token(self.field("Machine").value.trim())
+            ),
+            "behavior.patrol" | "behavior.guard" | "behavior.dialogue" => format!(
+                "behavior {sel} {} {options}",
+                self.command.strip_prefix("behavior.").unwrap_or_default()
+            ),
             _ => String::new(),
         };
         line.trim_end().to_owned()
     }
 
     /// New audio clip: an untouched Clip ID follows the preset (`engine`, `engine2`, ...).
+    /// NPC dialogue: an untouched greeting event follows the machine ID (`near_MACHINE`).
     fn sync(&mut self, world: &axiom_core::World) {
+        if self.command == "behavior.dialogue" {
+            let proposed = format!("near_{}", self.field("Machine ID").value.trim());
+            let event = self
+                .fields
+                .iter_mut()
+                .find(|f| f.key == "event")
+                .expect("dialog field");
+            if !event.changed() && event.default != proposed {
+                event.default = proposed.clone();
+                event.value = proposed;
+            }
+            return;
+        }
         if self.command != "audio.new_clip" {
             return;
         }
@@ -478,6 +545,26 @@ impl OptionsDialog {
                 };
                 editor.camera_follow_selection(&options)
             }
+            "behavior.fsm_agent" => {
+                let machine = self.field("Machine").value.trim().to_owned();
+                let radius = self.number("radius")?;
+                editor.add_fsm_agent(&machine, radius)
+            }
+            "behavior.patrol" | "behavior.guard" | "behavior.dialogue" => {
+                let template = self
+                    .command
+                    .strip_prefix("behavior.")
+                    .and_then(ops::BehaviorTemplate::parse)
+                    .expect("registered template");
+                let options = ops::BehaviorOptions {
+                    machine: self.text("machine"),
+                    tag: self.text("tag"),
+                    range: self.number("range")?,
+                    speed: self.number("speed")?,
+                    event: self.text("event"),
+                };
+                editor.add_behavior(template, &options)
+            }
             _ => None,
         })
     }
@@ -527,6 +614,13 @@ impl Editor {
             .and_then(serde_json::Value::as_object)
             .map(|c| c.keys().cloned().collect())
             .unwrap_or_default();
+        let machines: Vec<String> = self
+            .world
+            .resources
+            .get(ops::FSM_RESOURCE)
+            .and_then(|r| r["machines"].as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
         dialog.sync(&self.world);
         let acl = dialog.acl(self);
         let first_frame = !dialog.focused;
@@ -565,6 +659,8 @@ impl Editor {
                                 }
                                 Input::Choice(options) => choice(ui, n, &mut f.value, options.iter().copied()),
                                 Input::Clip => choice(ui, n, &mut f.value, clips.iter().map(String::as_str)),
+                                Input::Machine if !machines.is_empty() => choice(ui, n, &mut f.value, machines.iter().map(String::as_str)),
+                                Input::Machine => ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(140.0).hint_text("new machine id")),
                                 Input::Event => {
                                     ui.horizontal(|ui| {
                                         let r = ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(140.0).hint_text("(none)"));
