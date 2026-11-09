@@ -513,3 +513,32 @@ fn a_graph_edit_keeps_town_dance_passing() {
     let after = crate::scenario::run(world, 1, crate::installed_registry(), scenario()).unwrap();
     assert_eq!(after["ok"], true, "{after}");
 }
+
+#[test]
+fn a_revision_arriving_mid_drag_keeps_the_dragged_node() {
+    let mut h = Harness::new(town());
+    h.editor
+        .run_command_with("graph.open", Some("lumi"))
+        .unwrap();
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let from = h.rect("graph:node:stroll").center();
+    let at = h.editor.graph_node_at_for_test("stroll");
+    h.frame(vec![
+        Event::PointerMoved(from),
+        Harness::press(from, PointerButton::Primary, true),
+    ]);
+    h.frame(vec![Event::PointerMoved(from + vec2(10.0, 0.0))]);
+    // An agent adds a state that sorts before `stroll` (its node index shifts).
+    let external = acl(&h.store.current().unwrap().1, "fsm lumi state add aaa");
+    h.store = Store::memory_with(crate::installed_registry().authoring, external.clone()).unwrap();
+    h.expected = external.clone();
+    h.editor.update(2, external, false);
+    let to = from + vec2(40.0, 20.0);
+    h.frame(vec![Event::PointerMoved(to)]);
+    let released = h.frame(vec![Harness::press(to, PointerButton::Primary, false)]);
+    h.commit(
+        released,
+        &format!("fsm lumi node stroll {},{}", at.x + 40.0, at.y + 20.0),
+    );
+}

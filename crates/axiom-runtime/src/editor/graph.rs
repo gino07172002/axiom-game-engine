@@ -1062,8 +1062,33 @@ impl Editor {
             .as_ref()
             .is_none_or(|m| (m.version, m.edits) != key || m.machine != machine);
         if stale {
+            // A drag / link in progress follows its node by name into the new model.
+            let old = self.graph.model.as_ref().filter(|m| m.machine == machine);
+            let name = |i: usize| old.and_then(|m| m.nodes.get(i)).map(|n| n.name.clone());
+            let drag = self
+                .graph
+                .drag
+                .take()
+                .and_then(|d| Some((name(d.node)?, d)));
+            // `Some(None)` = from the Any state.
+            let link: Option<Option<String>> = match self.graph.link.take() {
+                Some(Some(i)) => name(i).map(Some),
+                Some(None) => Some(None),
+                None => None,
+            };
             let problems = &self.graph.problems.as_ref().expect("set above").1;
             let mut model = Model::build(self.graph_world(), version, &machine, problems);
+            if let Some((n, mut d)) = drag {
+                if let Some(i) = model.node(&n) {
+                    d.node = i;
+                    self.graph.drag = Some(d);
+                }
+            }
+            self.graph.link = match link {
+                Some(Some(n)) => model.node(&n).map(Some),
+                Some(None) if model.any => Some(None),
+                _ => None,
+            };
             model.edits = key.1;
             self.graph.model = Some(model);
             self.graph.builds += 1;
@@ -1080,11 +1105,8 @@ impl Editor {
             if !keep {
                 self.graph.selected = None;
             }
-            // Node / edge positions held by an interaction refer to the old model.
-            self.graph.drag = None;
-            self.graph.link = None;
+            // A context menu points at a node / edge of the old model.
             self.graph.context = None;
-            self.graph.panning = false;
         }
     }
 
@@ -1122,7 +1144,15 @@ impl Editor {
         }
         self.graph.scratch = Some((self.world_version, std::sync::Arc::new(next)));
         self.graph.edits += 1;
-        Some(self.write(edits, None))
+        // Writes still queued (a draft flushed on a selection change) go first, in one
+        // batch: these are whole-resource writes, so their order decides the result. All
+        // writes of a pass share `expected_rev`, so `coalesce` leaves exactly one action.
+        let write = self.write(edits, None);
+        self.graph.queued.push(write);
+        let mut merged = super::coalesce(std::mem::take(&mut self.graph.queued)).into_iter();
+        let first = merged.next();
+        self.graph.queued.extend(merged);
+        first
     }
 
     /// The write a dirty element draft stands for, if the element is still the one it was
@@ -2419,6 +2449,12 @@ impl Editor {
     #[cfg(test)]
     pub(super) fn graph_live_for_test(&self) -> Vec<u16> {
         self.graph.live.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn graph_node_at_for_test(&self, state: &str) -> Pos2 {
+        let model = self.graph.model.as_ref().unwrap();
+        model.nodes[model.node(state).unwrap()].at
     }
 
     #[cfg(test)]
