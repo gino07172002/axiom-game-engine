@@ -13,3 +13,6 @@ __pycache__/
 *.axrig
 *.blend
 *.blend1
+
+# Claude Code local state (agent worktrees)
+/.claude/
