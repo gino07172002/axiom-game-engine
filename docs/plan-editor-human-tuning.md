@@ -256,6 +256,57 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
   - **量測(release,MX150;基準 = M4 agent 從 b02ce69 建的 release exe;其他 agent 同時在編譯,數字雜訊大)**:無頭 Axiom Town 100,000 步 + 40 次 emote 事件、5 輪交錯、每輪一個新程序的總時間中位數:基準 10.83 s、本版 9.60 s、本版 + `town-ui-effects.acl`(2 個效果)10.70 s、本版 + 64 個脈衝效果(每次事件 16 個開始、48 個丟棄)11.04 s;各組範圍 7.5–13.8 s 重疊,**每步差異 < 0.015 ms,在雜訊內,不宣稱變快或變慢**。編輯器 UI 分項(`jobs_overlay_ui`,每格 20 個慢幀 p50,兩輪交錯):Scene 分頁 基準 1.16 / 1.21 ms vs 本版 1.21 / 1.72 ms(第二輪有 53 ms 的尖峰,雜訊);UI Editor 分頁 1.44 / 1.49 ms(Scene 不畫,extract 0.001 ms)。working set / private:基準 365.3 / 478–480 MiB,本版 365.5–366.2 / 479–480 MiB,相同。
   - **對抗式審查**:另開 context 的審查找到 6 個 bug、4 個風險、1 個小問題,已修:換世界時沿用舊 trace 序號(`on: event` 失效 → 視為新開場)、讀檔後立即存檔被拒且進場效果重播、讀檔後第一步的觸發被吞(→ 新掛勾 `restored`,開場改為「待命」而非建立時就開始)、熱重載新效果以初始狀態判斷可見(→ 用即時狀態)、退場中的按鈕仍可點、進退場效果疊加、UI 編輯器換選取 / Deselect 丟掉未提交的表單(→ 先提交)、`progress` 的 `on: hide` 永遠不會觸發(→ 編寫錯誤)、表單選 `on: when` 必失敗(→ 無條件時不列出)、長 widget ID 產生超過 128 字的效果 ID。保留並記錄:有樣式的進度條多顯示數字(刻意)、`event=default` 保留字、`on_enter` 事件不觸發。
   - **未做 / 限制**:見 ui-effects 文件的限制段;另外 Play 預覽時編輯器的 Stop Preview 浮層與右上角區域重疊(既有,M4 的 Game 視圖處理);畫布縮小時文字較糊;外部修訂會丟掉 UI 編輯器未提交的表單草稿。
+- **M5 Assets 瀏覽器(2026-11-10)**:
+  - **縮圖 spike(決策 5 補完)**:S3 說縮圖需要真正的離屏渲染與讀回。實作 `editor/thumbs.rs::ThumbGpu`:一條小 pipeline(位置 + 法線 + 頂點色,兩道方向光)、128×128 `Rgba8UnormSrgb` 色彩 + 深度目標、`copy_texture_to_buffer`(每列 512 B,已是 256 對齊)→ `map_async` 讀回。wgpu 24 的 `Device` / `Queue` 是 `Clone`,所以渲染在縮圖 job 的 **worker 執行緒**上做,主執行緒只上傳 egui 貼圖。等待讀回用 `Maintain::Poll` + 1 ms 睡眠的迴圈(上限 10 s):審查指出 `Maintain::WaitForSubmissionIndex` 會在等待期間持有裝置 fence,讓主執行緒的 `queue.submit` 一起卡住。可重跑的檢查:`cargo run -p axiom-runtime --example verify_thumbnails_gpu -- OUT MODEL.glb…`(MX150 / Vulkan,debug):pipeline 建立 23 ms;axiom-short / axiom-long / fighter / valentina 匯入 64–162 ms、渲染 + 讀回 2–38 ms(6,760 / 7,696 / 4,512 / 5,392 三角形);材質球 2 ms。PNG 已目視(`artifacts/captures/m5-thumbs/*.png`)。**結論:Game 視圖用 viewport 合成,縮圖用離屏 + 讀回,兩條路徑分開**,縮圖不需要動到主 renderer。材質縮圖是「材質 tint 的球」,**不是**材質的自訂 WGSL(要跑材質 shader 得把 `ShaderGpu` 搬到離屏目標,這次沒做)。
+  - **資產模型(core `assets.rs`,不另建資料庫)**:資產就是世界裡已有的鍵值表,包括 `animation.library/assets`(glb / gltf / pmx 模型)、`ui.document/images`、`render.shaders/materials` 與 `/shaders`、prefabs、`fsm.machines/machines`、`audio.library/clips`,以及單例 `ui.document`、`input.bindings`。參照表是 `animation.player/asset`、`animation.player/retarget/source_asset`、`render.material/id`、`fsm.agent/machine`、`audio.source/clip`、entity `/prefab`、材質的 `shader`、`ui.document` 圖片 widget。`usages`(Find Usages)與改名共用同一個走訪函式;另外列出繼承 prefab 參照的實例(`instance`)。typed schema 的 `REFS` 加上 `render.material/id`,Inspector 因此可以用下拉選單選材質,也能把材質拖進來。
+  - **Ops / ACL**(`ops_assets.rs`):
+    - `place_asset` = `asset place KIND:ID P`。模型會建立 `core.transform` + `animation.player {asset}`,prefab 等同 `instantiate`,材質會建立方塊 + `render.material`。缺的 capability / 系統會在套用前段 edits 之後的 scratch world 上計算,避免兩次寫 `/capabilities` 互相覆蓋。
+    - `create_asset` = `asset create material|prefab|machine|ui|input`。材質會補 `render` + `shader`;UI 文件連同空的 `behavior.program` + `behavior.execute` 一起建立,因為 UI 會檢查它們。
+    - `rename_asset` = `asset rename KIND:ID NEW`。新 ID 和所有參照在同一個批次修改;`ui` / `input` 不能改名;自訂 shader 不能改成內建名稱。
+    - 唯讀指令 `assets [KIND]`、`usages KIND:ID`,另有 `discover assets`。
+  - **編輯器**(`asset_browser.rs`;Assets 分頁改寫,舊的 prefab / 材質 / 資源按鈕移除,資源請從 World 視窗開):
+    - **瀏覽**:左側是類型樹(附數量)與來源資料夾,上方有搜尋與 Grid / List 切換。格子與列表都是虛擬清單。列表、每格標籤和縮圖請求依 world version 快取,篩選結果依 (version, filter, query) 快取,比對時不配置記憶體。
+    - **詳細資料**放在右側欄:Open、Place in Scene、Find Usages、Rename…;Find Usages 會再開一欄虛擬清單,點一列就跳到該物件、prefab 或資源。
+    - **拖曳**:拖到 Scene 時會建立在指標下的地面上(`drop_point`:y=0;射線打不到地面就放在 6 m 處),狀態列顯示等價 ACL。拖到型別化參照欄位時,`form.rs::reference` 只接受同類資產。
+    - **New… 對話框**沿用 `options.rs`,顯示 ACL 行。指令包括 `asset.new_*`、`asset.place|find_usages|rename`(有 arg)、`asset.thumbnails`、`asset.cancel_thumbnails`,新增 **Assets** 選單。
+  - **縮圖 job**:
+    - 一次只跑一個 `jobs::Job`,逾時 120 s,可取消,進度顯示在工具列、狀態列和 `observe` 的 `editor.jobs`。依內容雜湊(FNV,涵蓋檔案 bytes + 匯入選項 / 材質 JSON + 版本字串)存成 `<db 檔名>.thumbs/<hash>.png`,先寫暫存檔再改名,同一程序內也不會撞名。
+    - 同一個檔案(長度 + 修改時間相同)的雜湊有記憶體快取,被逐出後再載回時不必重讀模型。
+    - 看得到的格子缺縮圖時,會排一個最多 24 個項目的 lazy job;取消後在世界改變或按 Thumbnails 之前不會自動重排。逾時的項目標為失敗,不會無限重試。
+    - 每幀最多從 worker 取 16 筆結果、上傳 4 張貼圖。像素只保留給最近 2 幀內畫過的格子,其餘留在磁碟。
+    - 貼圖上限 64 張(128²,共 4 MiB),以 LRU 逐出;只有畫面上同時有超過 64 格時才會超過。
+    - 沒有 GPU 時,模型 / 材質縮圖在解析模型**之前**就標為失敗,格子上顯示橘點,滑鼠提示會說明原因。`observe editor.thumbnails` 回報貼圖數 / 上限 / 失敗數 / 上次 job。
+  - **證據**:
+    - workspace 測試 538 → 見 WORKLOG 的通過數。core 新增 4 個測試(assets 2、ops_assets 2);parity 新增 3 個(place / create / rename,`instantiate_prefab_matches_acl` 改走 `place_asset`)。
+    - egui 測試 10 個(`asset_browser_tests.rs`),全部用真實指標事件:
+      - 瀏覽、類型 / 搜尋篩選、List;600 個 prefab 時只排版看得到的格子;快取不逐幀重建。
+      - 把 `axiom-short` 拖到 Scene,寫入一次,結果等同 `asset place model:axiom-short at=…`。
+      - 把模型拖到 `animation.player/asset`,等同 `set hero animation.player/asset "axiom-long"`;拖 prefab 到同一欄則不寫入。
+      - Find Usages 列出 hero / npc/rin / pc/kiri,和 ACL `usages` 相同;點列會選取。
+      - 改名 `stroller` → `wanderer`,一筆修訂、兩個 agent 都修正,等同 ACL;改成已存在的 ID 會成為 problem。
+      - 5 個 New 對話框:欄位 → 顯示的 ACL → Create,結果等同該 ACL。
+      - 縮圖 job:進度、`observe` 內容、取消後 lazy job 不重排、每幀上傳 ≤ 4、貼圖 ≤ 64 且有逐出、100 張圖片各一個快取檔、新的 editor 全部命中快取(made 0)、沒有 GPU 時失敗但不卡住。
+    - CLI(debug,axiom-town 匯入的 DB):`asset create material glow shader=toon tint=…` → rev 2;`usages model:axiom-short` 為 3 列;`assets` 為 12 列。
+    - 真 GPU 編輯器(`editor_view {command:"asset.thumbnails"}`):4 張縮圖由 GPU 產生並寫入快取,第二次啟動全部命中快取(cached 4,58 ms);`asset.place model:axiom-short 1.5,0,2` 之後,`usages` 變成 4 列。
+    - 截圖(debug,已目視):`artifacts/captures/m5-browser.png`(模型 / 材質縮圖、PFB / FSM / UI 標記)、`m5-placed.png`(新的 axiom-short 角色與 gizmo)、`m5-usages.png`(Find Usages 欄列出 4 個參照)。
+    - 其他檢查:`editor-smoke-test.ps1` ok:true;`editor-world-parity.ps1` identical:true(1→13);`street-editor-parity.ps1` identical:true(8→16);`build-street.ps1` 之後 `content/street` 無差異;clippy `-D warnings` 與 fmt 乾淨。
+    - 截圖看出並已修正的問題:詳細資料原本放在底部,短 dock 時看不到格子,而且 SidePanel 內容會蓋到狀態列 → 改放右側欄、Find Usages 獨立一欄、加回歸斷言;格子標籤被切掉 → 格子改為 84×98。
+  - **量測(release,headless egui 整個編輯器 frame,每格 200 幀,2–3 輪交錯;base = `b02ce69` 用 `git archive` 匯出、另一個 target 目錄建置;測量時沒有其他 agent 在編譯,但數字仍有 2 倍以上的波動,只看量級)**:
+    - Axiom Town,舊 Assets 分頁(base)p50 0.39 / 0.41 / 2.41 / 1.73 ms;新瀏覽器 p50 0.43 / 0.68 / 0.61 / 0.67 ms。同一個執行檔的 Changes 分頁:base 0.37 / 0.36 / 1.42 / 1.72 ms,本版 0.38 / 0.66 / 0.84 / 0.53 ms。**沒有可量到的差異,也不宣稱變快**;base 第二輪整體變慢是機器波動。
+    - 600 個 prefab + 100 張圖片縮圖(26 張貼圖在畫面上;只有本版,base 沒有這個瀏覽器):Changes p50 0.40–1.01 ms,Assets p50 0.81–1.31 ms(同一輪比 Changes 多 0.2–0.7 ms)。
+    - 最大值兩版、兩個分頁都偶爾到 6–16 ms(無頭 egui 裡的偶發尖峰,沒有拆解)。快取在 400 幀內只建 1 次(`builds 1 filters 1`)。
+    - 量測只涵蓋 CPU / 無頭 egui;GPU 縮圖的成本在 worker 執行緒上(見上方 spike 數字),沒有量主執行緒的 submit 是否因此受影響。記憶體:縮圖貼圖最多 4 MiB(上限常數),沒有量程序記憶體的 A/B。
+  - **對抗式審查**(另開 context,只給 diff):
+    - 已修:lazy job 取消後下一幀又重排、逾時項目無限重試(改為 `lazy_paused`,在途項目標為失敗);spawn 失敗時鍵永遠停在 Queued(改為 spawn 成功後才標記);逐幀 clone `Request` 與篩選鍵(改為只在沒有 job 時收集、就地比對);`WaitForSubmissionIndex` 會卡住主執行緒的 submit(改為 Poll 迴圈);讀回失敗後重用已 mapped 的 buffer(改為丟掉 `ThumbGpu` 重建);自訂 shader 可以改名成內建名稱;沒畫的格子殘留 Pixels;每次逐出後重讀重雜湊整個模型;同一個 `.part` 暫存檔名;`usages` 為了檢查覆寫而深拷貝元件;Play 中仍可拖放;每次自動重列都發通知;mod.rs 縮排。
+    - 記錄、不修:RTS `Recipe.prefab` 等擴充型別的參照不在參照表內,改名 prefab 時會在 commit 驗證失敗(訊息不夠清楚);`.gltf` 外部 `.bin` / 貼圖變更不會讓縮圖失效;磁碟快取沒有清理;wgpu 的錯誤 scope 是整個裝置共用,worker 的驗證錯誤理論上可能被主執行緒的 scope 接到。
+  - **未做 / 限制**:
+    - 縮圖不跑材質自訂 shader;模型是靜止姿勢、每頂點取最後一個材質色、超過 20 萬三角形時均勻抽樣。
+    - 拖放模型建立的物件沒有 clip(要自己在 Inspector 選)。
+    - 沒有檔案匯入(把新的 glb 複製進 pack),也沒有資料夾改名 / 搬移。
+    - 改名只修正參照表內的欄位。
+    - Find Usages 的列在 egui 是 Label(沒有右鍵選單)。
+    - 拖曳到 Scene 的實機手感只用 egui 事件測試與 bridge 指令驗證,截圖中的物件是 `asset.place` 指令建立的,不是人手拖放。
+    - `measure_assets_tab_frame_cost` 是 `#[ignore]` 的量測,不是 CI 門檻。
 
 ## 修訂補記
 

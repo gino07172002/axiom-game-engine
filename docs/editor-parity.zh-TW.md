@@ -36,7 +36,11 @@
 | Inspector ▸ Tween timeline ▸ Record key(`tween.record_key`):選取軌的編寫值存成播放頭時間的 key | `tween ID key CLIP TRACK add T [V] [ease=]`(不寫 V = 記錄目前值) | ✅ 同上(移動物件後記錄) |
 | 時間軸拖曳 key(放開時寫入,吸附 0.01 秒)/ Delete key(`tween.remove_key`) | `tween ID key CLIP TRACK move I T` / `… remove I` | ✅ 同上;`timeline::tests::click_scrubs_and_dragging_a_key_requests_a_move`(egui 事件實際拖曳) |
 | 時間軸的模式下拉、Autoplay 勾選 / Add track / Remove clip | `tween ID clip NAME set mode=\|autoplay=…` / `tween ID track CLIP add P [target=]` / `tween ID clip NAME remove`(連同播放它的 `runtime.bindings` 呼叫) | ✅ 同上 |
-| Assets ▸ 點 prefab 實例化 | `instantiate PREFAB [id=] [at=] [parent=] [scene=]` | ✅ `instantiate_prefab_matches_acl` |
+| Assets ▸ prefab ▸ Place in Scene(或拖到 Scene) | `instantiate PREFAB [id=] [at=] [parent=] [scene=]` = `asset place prefab:ID P` | ✅ `instantiate_prefab_matches_acl`、`asset_place_matches_acl` |
+| Assets ▸ 把模型 / 材質拖到 Scene(落在指標下的地面 y=0,射線打不到地面時放在視線前 6 m;篩選場景時加入該場景)、Place in Scene、`asset.place KIND:ID [x,y,z]` | `asset place model\|prefab\|material:ID [id=] [at=x,y,z] [rot=] [parent=] [scene=]`(`ops::place_asset`:模型 = `core.transform` + `animation.player {asset}`(靜止姿勢);材質 = 1 m 方塊 + `render.material {id}`;缺的 capability / 系統同一個 revision 補上;ID 預設 = 資產 ID,再來 `ID/2`…;圖片等其他類別 = `not_placeable`) | ✅ `asset_place_matches_acl`、`dragging_a_model_onto_the_scene_creates_one_object_like_acl`(egui 事件實際拖曳 `axiom-short` 到場景) |
+| Inspector 的型別化參照欄位(`animation.player/asset`、`render.material/id`、`fsm.agent/machine`、`audio.source/clip`)接受從 Assets 拖來的同類資產(類別不符不接受) | `set ID COMPONENT/FIELD "ASSET"` | ✅ `dropping_an_asset_on_a_reference_field_sets_it_like_acl` |
+| Assets ▸ New… 對話框:Material(ID、Shader 下拉 = 內建 lit / unlit / toon + 世界自訂 shader、Tint)、Prefab(ID、可選 From object)、FSM Machine(ID、Initial state)、UI Document(Locale)、Input Map;對話框下方顯示等價 ACL;`asset.new_*` 指令從 bridge / 指令面板以預設值直接執行 | `asset create material ID [shader=] [tint=r,g,b,a]` / `asset create prefab ID [from=ENTITY]`(有 from = `prefab create ID from ENTITY`)/ `asset create machine ID [initial=STATE]` / `asset create ui [locale=L]` / `asset create input`(`ops::create_asset`;材質補 `render` + `shader` capability,缺資源時連 capability / 系統一起建立) | ✅ `new_asset_dialogs_show_and_run_their_acl`(egui 對話框 Create)、`asset_create_commands_match_acl` |
+| Assets ▸ Rename…(行內輸入、Apply / Enter)、`asset.rename "KIND:ID NEW"` | `asset rename KIND:ID NEW`(`ops::rename_asset`:新 ID + `usages` 列出的每個參照,一個 revision;繼承 prefab 的實例跟著 prefab 走;`ui` / `input` 不能改名) | ✅ `asset_rename_matches_acl`、`rename_fixes_references_in_one_revision_like_acl` |
 | 大量生成(帶 tag、label、step 間距) | `spawn PREFAB count=N …`(只有 ACL 有;編輯器只能一次一個) | — |
 | `edit.duplicate`(Ctrl+D)、Inspector 的 Duplicate | `duplicate SEL`(ID 依序為 `SRC/copy`、`/copy/2`;`entities[id=a,id=b]` 照書寫順序處理;每個複本緊接在來源**之後**,也就是同層的下一列) | ✅ `duplicate_and_paste_match_acl`(含順序檢查) |
 | `edit.paste`(Ctrl+V,複製剪貼簿裡的 ID) | `duplicate SEL` | ✅ 同上 |
@@ -147,6 +151,10 @@
 | Graphs 的狀態機檢查(節點橘框 + 「!」、Problems 的 STATE MACHINES 區段 + Open graph):`fsm_unreachable`、`fsm_dangling`、`fsm_undeclared_event`、`fsm_event_fields`、`fsm_unknown_machine` | 只是檢查(`ops::fsm_problems`,依 revision 快取);`observe` 的 `editor.graph.problems` 是數量。無頭:`select resources[id=fsm.machines]` 自己判斷,或 `verify` / 啟用時的錯誤 |
 | Graphs 畫布:平移(拖空白處 / 中鍵)、選取、`graph.open MACHINE` / `editor_view {open:"graph:M"\|"rules:"}`、Inspector fsm.agent 標頭 Edit Graph | 只是編輯器狀態 |
 | Play 中每個 agent 目前的狀態(節點綠色 + `live N`;這個分支 Play 時編輯器 UI 被遊戲 UI 取代,改由左下角唯讀小窗「FSM · M (live)」顯示,跟 Behavior overlay 開關) | 讀 `FsmSystem::agent_states`;無頭用 `call fsm.inspect {id}` / `fsm.summary` |
+| Problems、Graphs、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |
+| Assets 分頁的瀏覽:類型樹(Models / Images / Materials / Shaders / Prefabs / FSM machines / Audio clips / UI document / Input map)、來源資料夾、搜尋、Grid / List、選取、Open(在 Inspector 開 prefab / 材質 / 所屬資源) | 只是畫面;無頭 `assets [KIND]`(每列 `kind id [file=] refs=N`),`discover assets` 說明類別所在的資源與參照欄位 |
+| Assets ▸ Find Usages(詳細區列出每個參照,點列 = 選取物件 / 開 prefab / 開資源)、`asset.find_usages KIND:ID` | 只讀;無頭 `usages KIND:ID`(`assets::usages` 純函式:`entity` / `prefab` / `resource` / `instance`(繼承 prefab 的參照且未覆寫)+ JSON pointer)。參照表 = `animation.player/asset`、`animation.player/retarget/source_asset`、`render.material/id`、`fsm.agent/machine`、`audio.source/clip`、entity `/prefab`、`render.shaders` 材質的 `shader`、`ui.document` 圖片 widget;表外的擴充型別參照找不到(`find_usages_lists_every_reference_and_jumps_to_it`) |
+| Assets 縮圖(模型、圖片、材質):`asset.thumbnails`(Thumbnails 按鈕)產生全部、可見的格子缺縮圖時自動排背景 job;`asset.cancel_thumbnails` | **只是編輯器快取**:`<db>.thumbs/<內容雜湊>.png`,不進 revision。進度在狀態列與 `observe` 的 `editor.jobs`(`kind:"thumbnails"`)、`editor.thumbnails`(貼圖數 / 上限 / 失敗數 / 上次 job) |
 
 ## 刻意改變的行為
 

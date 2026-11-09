@@ -4,7 +4,8 @@
 //! passed, exactly like an ACL line that names only those options. From a shortcut or the
 //! bridge (`editor_view {command}`) these commands still run at once with the defaults.
 use super::{Action, Editor};
-use axiom_core::ops;
+use axiom_core::assets::AssetKind;
+use axiom_core::ops::{self, NewAsset};
 use egui::{Key, RichText};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,6 +20,8 @@ enum Input {
     Event,
     /// An `fsm.machines` machine (dropdown; typed when the world has none).
     Machine,
+    /// A shader for a new material (built-in and the world's custom ones offered).
+    Shader,
 }
 
 #[derive(Clone, Debug)]
@@ -334,6 +337,48 @@ impl OptionsDialog {
                 };
                 (title, fields)
             }
+            "asset.new_material" => (
+                "New Material",
+                vec![
+                    Field::new(
+                        "",
+                        "Material ID",
+                        Text,
+                        ops::free_asset_id(&editor.world, AssetKind::Material, "material"),
+                    ),
+                    Field::new("shader", "Shader", Shader, "lit"),
+                    Field::new("tint", "Tint (r,g,b,a)", Text, ""),
+                ],
+            ),
+            "asset.new_prefab" => (
+                "New Prefab",
+                vec![
+                    Field::new(
+                        "",
+                        "Prefab ID",
+                        Text,
+                        ops::free_asset_id(&editor.world, AssetKind::Prefab, "prefab"),
+                    ),
+                    Field::new("from", "From object (optional)", Text, ""),
+                ],
+            ),
+            "asset.new_machine" => (
+                "New FSM Machine",
+                vec![
+                    Field::new(
+                        "",
+                        "Machine ID",
+                        Text,
+                        ops::free_asset_id(&editor.world, AssetKind::Machine, "machine"),
+                    ),
+                    Field::new("initial", "Initial state", Text, "idle"),
+                ],
+            ),
+            "asset.new_ui_document" => (
+                "New UI Document",
+                vec![Field::new("locale", "Locale", Text, "en")],
+            ),
+            "asset.new_input_map" => ("New Input Map", vec![]),
             _ => return None,
         };
         Some(OptionsDialog {
@@ -368,9 +413,53 @@ impl OptionsDialog {
         self.get(key).map(Field::on)
     }
 
+    /// Assets ▸ New: the asset the fields describe (only changed options are passed).
+    fn new_asset(&self) -> Result<Option<NewAsset>, String> {
+        let id = |label: &str| self.field(label).value.trim().to_owned();
+        Ok(Some(match self.command {
+            "asset.new_material" => NewAsset::Material {
+                id: id("Material ID"),
+                shader: self.text("shader"),
+                tint: self
+                    .text("tint")
+                    .map(|t| {
+                        let v: Vec<f32> = t
+                            .split(',')
+                            .map(|p| p.trim().parse::<f32>())
+                            .collect::<Result<_, _>>()
+                            .map_err(|_| "tint is r,g,b or r,g,b,a numbers".to_owned())?;
+                        match v.as_slice() {
+                            [r, g, b] => Ok([*r, *g, *b, 1.0]),
+                            [r, g, b, a] => Ok([*r, *g, *b, *a]),
+                            _ => Err("tint is r,g,b or r,g,b,a numbers".to_owned()),
+                        }
+                    })
+                    .transpose()?,
+            },
+            "asset.new_prefab" => NewAsset::Prefab {
+                id: id("Prefab ID"),
+                from: self.text("from"),
+            },
+            "asset.new_machine" => NewAsset::Machine {
+                id: id("Machine ID"),
+                initial: self.text("initial"),
+            },
+            "asset.new_ui_document" => NewAsset::Ui {
+                locale: self.text("locale"),
+            },
+            "asset.new_input_map" => NewAsset::Input,
+            _ => return Ok(None),
+        }))
+    }
+
     /// The equivalent ACL statement on the editor's selection (shown under the fields; the
     /// parity tests run it).
     pub fn acl(&self, editor: &Editor) -> String {
+        match self.new_asset() {
+            Ok(Some(new)) => return new.acl(),
+            Err(e) => return e,
+            Ok(None) => {}
+        }
         let list = |ids: &[String]| match ids {
             [] => "SEL".to_owned(),
             [one] => one.clone(),
@@ -461,6 +550,9 @@ impl OptionsDialog {
     /// Runs the command with the dialog's options (same ops call as the ACL line).
     pub fn run(&mut self, editor: &mut Editor) -> Result<Option<Action>, String> {
         self.sync(&editor.world);
+        if let Some(new) = self.new_asset()? {
+            return Ok(editor.create_asset(&new));
+        }
         Ok(match self.command {
             "object.interactable" => {
                 let options = ops::InteractOptions {
@@ -621,6 +713,9 @@ impl Editor {
             .and_then(|r| r["machines"].as_object())
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
+        let shaders: Vec<String> = axiom_core::assets::map(&self.world, AssetKind::Shader)
+            .map(|s| s.keys().cloned().collect())
+            .unwrap_or_default();
         dialog.sync(&self.world);
         let acl = dialog.acl(self);
         let first_frame = !dialog.focused;
@@ -661,6 +756,7 @@ impl Editor {
                                 Input::Clip => choice(ui, n, &mut f.value, clips.iter().map(String::as_str)),
                                 Input::Machine if !machines.is_empty() => choice(ui, n, &mut f.value, machines.iter().map(String::as_str)),
                                 Input::Machine => ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(140.0).hint_text("new machine id")),
+                                Input::Shader => choice(ui, n, &mut f.value, axiom_core::assets::BUILTIN_SHADERS.into_iter().chain(shaders.iter().map(String::as_str))),
                                 Input::Event => {
                                     ui.horizontal(|ui| {
                                         let r = ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(140.0).hint_text("(none)"));
@@ -689,6 +785,8 @@ impl Editor {
                             ui.end_row();
                         }
                     });
+                // A dialog without fields (New Input Map) has nothing to focus.
+                dialog.focused |= dialog.fields.is_empty();
                 if dialog.command == "object.tween_clip" {
                     ui.label(RichText::new("Play on event: the clip plays whenever the event fires (runtime.bindings)").small().weak());
                 }

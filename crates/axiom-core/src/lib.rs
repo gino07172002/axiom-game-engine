@@ -1,5 +1,6 @@
 //! AI authoring is a transactional database; the runtime only consumes validated IR.
 pub mod acl;
+pub mod assets;
 pub mod audio;
 pub mod blocker;
 pub mod camera;
@@ -14,6 +15,7 @@ pub mod local;
 pub mod navigation;
 pub mod observe;
 pub mod ops;
+mod ops_assets;
 mod ops_graph;
 mod ops_ui;
 mod ops_world;

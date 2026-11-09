@@ -15,6 +15,8 @@ READ (alone in a script):
   select SEL [where F OP V [and ...]] [fields F,F] [limit N] [cursor C]
   inspect ID                      full compiled record of one entity
   history [N] | diff REV REV | undo REV
+  assets [KIND]                   models, images, materials, shaders, prefabs, machines, audio, ui, input
+  usages KIND:ID                  every field that names the asset (Find Usages; e.g. usages model:hero)
 EDIT (any number, atomic):
   set SEL F VALUE [where F OP V [and ...]]
   spawn PREFAB [count=N] [id=enemy/{i}] [from=0] [at=x,y,z] [step=x,y,z] [tag=a,b] [label=TEXT]
@@ -92,6 +94,11 @@ EDIT (any number, atomic):
   behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]
                                   new machine from the template + fsm.agent (dialogue declares E)
   rules: append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] when|actions|event V
+ assets (Assets browser):
+  asset place model|prefab|material:ID P   new object: model -> animation.player, material -> cube
+  asset create material ID [shader=lit|unlit|toon|ID] [tint=r,g,b,a] | asset create prefab ID [from=ENTITY]
+  asset create machine ID [initial=STATE] | asset create ui [locale=L] | asset create input
+  asset rename KIND:ID NEW        new ID + every reference `usages` lists, one revision
  world (World panel):
   world id ID | world title TEXT
   capability add|remove ID        installed capability; remove refuses while components/resources/systems use it
@@ -368,6 +375,11 @@ enum Statement {
     Reset(Box<Selection>, String),
     EventDeclare(String, Vec<(String, crate::gameplay::ScalarType)>),
     Rotate(Box<Selection>, [f32; 3]),
+    Assets(Option<crate::assets::AssetKind>),
+    Usages(crate::assets::AssetKind, String),
+    AssetPlace(crate::assets::AssetKind, String, Box<crate::ops::Placement>),
+    AssetCreate(crate::ops::NewAsset),
+    AssetRename(crate::assets::AssetKind, String, String),
     FsmCreate(String, Option<String>),
     FsmRemove(String),
     FsmEdit(String, crate::ops::FsmEdit),
@@ -517,7 +529,13 @@ impl Statement {
     fn is_edit(&self) -> bool {
         !matches!(
             self,
-            Self::Select(..) | Self::Inspect(_) | Self::History(_) | Self::Diff(..) | Self::Undo(_)
+            Self::Select(..)
+                | Self::Inspect(_)
+                | Self::History(_)
+                | Self::Diff(..)
+                | Self::Undo(_)
+                | Self::Assets(_)
+                | Self::Usages(..)
         )
     }
 }
@@ -996,8 +1014,116 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 _ => bail!("use: prefab create [PREFAB_ID] from ENTITY"),
             }
         }
+        "assets" => {
+            ensure!(tokens.len() <= 2, "use: assets [KIND]");
+            Statement::Assets(
+                tokens
+                    .get(1)
+                    .map(|k| {
+                        crate::assets::AssetKind::parse(k)
+                            .with_context(|| format!("unknown asset kind '{k}'"))
+                    })
+                    .transpose()?,
+            )
+        }
+        "usages" => {
+            ensure!(tokens.len() == 2, "use: usages KIND:ID");
+            let (kind, id) = crate::assets::parse_reference(&tokens[1])?;
+            Statement::Usages(kind, id)
+        }
+        "asset" => asset(tokens)?,
         other => bail!("unknown statement '{other}'"),
     })
+}
+
+/// `asset place KIND:ID P` | `asset create KIND ..` | `asset rename KIND:ID NEW`.
+fn asset(tokens: &[String]) -> Result<Statement> {
+    use crate::ops::NewAsset;
+    const USE: &str = "use: asset place KIND:ID [id=] [at=x,y,z] [rot=] [parent=] [scene=] | asset create material|prefab|machine ID [..] | asset create ui|input | asset rename KIND:ID NEW";
+    let text = |t: &str| match value(t) {
+        Value::String(s) => s,
+        _ => t.to_owned(),
+    };
+    match tokens.get(1).map(String::as_str) {
+        Some("place") => {
+            let (kind, id) = crate::assets::parse_reference(tokens.get(2).context(USE)?)?;
+            Ok(Statement::AssetPlace(
+                kind,
+                id,
+                Box::new(placement(&tokens[3..])?),
+            ))
+        }
+        Some("rename") => {
+            ensure!(tokens.len() == 4, "use: asset rename KIND:ID NEW");
+            let (kind, id) = crate::assets::parse_reference(&tokens[2])?;
+            Ok(Statement::AssetRename(kind, id, text(&tokens[3])))
+        }
+        Some("create") => {
+            let kind = tokens.get(2).context(USE)?.as_str();
+            let keyed = matches!(kind, "material" | "prefab" | "machine");
+            let id = if keyed {
+                Some(text(tokens.get(3).with_context(|| {
+                    format!("asset create {kind} needs an ID")
+                })?))
+            } else {
+                None
+            };
+            let mut options = std::collections::BTreeMap::new();
+            for t in &tokens[if keyed { 4 } else { 3 }..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("option '{t}' must be key=value"))?;
+                options.insert(k.to_owned(), text(v));
+            }
+            let allowed: &[&str] = match kind {
+                "material" => &["shader", "tint"],
+                "prefab" => &["from"],
+                "machine" => &["initial"],
+                "ui" => &["locale"],
+                "input" => &[],
+                other => bail!(
+                    "unknown asset kind to create '{other}' (material, prefab, machine, ui, input)"
+                ),
+            };
+            if let Some(k) = options.keys().find(|k| !allowed.contains(&k.as_str())) {
+                bail!(
+                    "unknown option '{k}' for asset create {kind} (use {})",
+                    allowed.join(", ")
+                );
+            }
+            let id = id.unwrap_or_default();
+            let mut take = |k: &str| options.remove(k);
+            Ok(Statement::AssetCreate(match kind {
+                "material" => NewAsset::Material {
+                    id,
+                    shader: take("shader"),
+                    tint: take("tint")
+                        .map(|t| {
+                            let v = numbers(&t)?;
+                            ensure!(
+                                v.len() == 3 || v.len() == 4,
+                                "tint must be r,g,b or r,g,b,a"
+                            );
+                            Ok([v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0)])
+                        })
+                        .transpose()?,
+                },
+                "prefab" => NewAsset::Prefab {
+                    id,
+                    from: take("from"),
+                },
+                "machine" => NewAsset::Machine {
+                    id,
+                    initial: take("initial"),
+                },
+                "ui" => NewAsset::Ui {
+                    locale: take("locale"),
+                },
+                _ => NewAsset::Input,
+            }))
+        }
+        _ => bail!("{USE}"),
+    }
 }
 
 /// `camera SEL follow TARGET [k=v..]` (`camera main ID` is matched before this).
@@ -1551,7 +1677,7 @@ pub fn run(
         if statements.len() != 1 {
             return Err(diag(
                 statements[0].0,
-                "read statements (select/inspect/history/diff/undo) must be alone in a script",
+                "read statements (select/inspect/history/diff/undo/assets/usages) must be alone in a script",
             ));
         }
         let (line, stmt) = statements.pop().unwrap();
@@ -1701,6 +1827,11 @@ pub fn run(
                 .and_then(|ids| crate::ops::fsm_add_agent(w, r, &ids, &machine, radius)),
             Statement::Behavior(select, template, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_behavior(w, r, &ids, template, &options)),
+            Statement::AssetPlace(kind, id, place) => {
+                crate::ops::place_asset(w, r, kind, &id, &place).map(|c| c.edits)
+            }
+            Statement::AssetCreate(new) => crate::ops::create_asset(w, r, &new),
+            Statement::AssetRename(kind, id, new) => crate::ops::rename_asset(w, kind, &id, &new),
             _ => unreachable!(),
         }
         .map_err(wrap)?;
@@ -1962,6 +2093,53 @@ fn read(store: &mut Store, stmt: Statement, expected_rev: Option<i64>) -> Result
                 "ok rev={} restored_from={}",
                 out["rev"], out["restored_from"]
             ))
+        }
+        Statement::Assets(kind) => {
+            let (rev, world) = store.current()?;
+            let counts = crate::assets::reference_counts(&world);
+            let rows: Vec<String> = crate::assets::list(&world)
+                .into_iter()
+                .filter(|a| kind.is_none_or(|k| k == a.kind))
+                .map(|a| {
+                    let refs = counts.get(&(a.kind, a.id.clone())).copied().unwrap_or(0);
+                    match &a.path {
+                        Some(p) => format!(
+                            "{} {} file={} refs={refs}",
+                            a.kind.name(),
+                            a.id,
+                            crate::assets::file_name(p)
+                        ),
+                        None => format!("{} {} refs={refs}", a.kind.name(), a.id),
+                    }
+                })
+                .collect();
+            let mut text = format!("assets={} rev={rev}", rows.len());
+            for row in rows {
+                text.push('\n');
+                text.push_str(&row);
+            }
+            lines(text)
+        }
+        Statement::Usages(kind, id) => {
+            let (rev, world) = store.current()?;
+            if !crate::assets::exists(&world, kind, &id) {
+                return Err(Diagnostic::error(
+                    "not_found",
+                    "/asset",
+                    format!(
+                        "no {} asset '{id}' (list them: assets {})",
+                        kind.name(),
+                        kind.name()
+                    ),
+                ));
+            }
+            let found = crate::assets::usages(&world, kind, &id);
+            let mut text = format!("usages {}:{id}={} rev={rev}", kind.name(), found.len());
+            for usage in &found {
+                text.push('\n');
+                text.push_str(&usage.line());
+            }
+            lines(text)
         }
         _ => unreachable!(),
     })

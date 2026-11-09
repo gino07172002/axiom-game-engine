@@ -1853,6 +1853,26 @@ impl Editor {
             self.scene_input.nav_pick = false;
             self.notice("Nav target pick cancelled");
         }
+        // Assets browser: a model, prefab or material dropped here becomes an object on the
+        // ground under the pointer.
+        if response
+            .dnd_hover_payload::<super::asset_browser::AssetDrag>()
+            .is_some()
+        {
+            ui.painter_at(rect).rect_stroke(
+                rect.shrink(1.5),
+                0.0,
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(105, 222, 195)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if let Some(drag) = response.dnd_release_payload::<super::asset_browser::AssetDrag>() {
+            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                let (origin, direction) = view.ray(pos);
+                let at = super::asset_browser::drop_point(origin, direction);
+                actions.extend(self.drop_asset(&drag, at));
+            }
+        }
         if let Some(drag) = &self.drag {
             let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
             if cancel {

@@ -2686,6 +2686,10 @@ impl ApplicationHandler for App {
             );
             let mut renderer = pollster::block_on(Renderer::new(window.clone()))?;
             renderer.prepare_shaders(self.runtime.shaders())?;
+            if let Some(editor) = &mut self.editor {
+                // Asset thumbnails render off-screen on this device (from their worker).
+                editor.set_gpu(renderer.device.clone(), renderer.queue.clone());
+            }
             // Interactive window: revisions activate in the background from now on.
             self.background_activation = true;
             self.ui.gpu = renderer.gpu.clone();
