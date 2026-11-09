@@ -1126,6 +1126,54 @@ fn camera_follow_and_main_camera_match_acl() {
 }
 
 #[test]
+fn game_view_main_camera_matches_acl_and_play_view_commands_never_write() {
+    let start = headless(&lab(), "create camera id=cam2 at=3,2,6");
+    // Game tab ▸ camera dropdown (view only) + Set as Main Camera = camera main ID.
+    assert_parity(
+        start.clone(),
+        |e| {
+            assert!(e
+                .run_command_with("game.camera", Some("cam2"))
+                .unwrap()
+                .is_empty());
+            vec![e.run_command("game.main_camera").unwrap()]
+        },
+        "camera main cam2",
+    );
+    // With the ID as argument (bridge), no dropdown choice needed.
+    assert_parity(
+        start.clone(),
+        |e| {
+            vec![e
+                .run_command_with("game.main_camera", Some("cam2"))
+                .unwrap()]
+        },
+        "camera main cam2",
+    );
+    // Not a camera: a problem, not a write.
+    let mut e = Editor::new(start.clone(), 1, None);
+    assert!(e
+        .run_command_with("game.main_camera", Some("stage/crate"))
+        .unwrap()
+        .is_empty());
+    assert_eq!(e.problem_codes()[0], "not_a_camera");
+    // View state only: aspect, camera choice, time scale, maximized, camera preview.
+    let mut e = Editor::new(start.clone(), 1, Some("cam2".into()));
+    for (cmd, arg) in [
+        ("game.aspect", Some("4:3")),
+        ("game.camera", Some("cam2")),
+        ("game.camera", Some("active")),
+        ("play.time_scale", Some("0.5")),
+        ("play.maximize", None),
+        ("view.camera_preview", None),
+        ("window.game", None),
+    ] {
+        assert!(e.run_command_with(cmd, arg).unwrap().is_empty(), "{cmd}");
+    }
+    assert_eq!(*e.world, start);
+}
+
+#[test]
 fn tags_match_acl() {
     // Multi-selection: Object ▸ Edit Tags (editor_view {command, arg}) on both objects.
     assert_parity(

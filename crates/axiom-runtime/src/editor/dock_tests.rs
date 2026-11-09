@@ -203,13 +203,21 @@ fn tabs_close_and_reopen_through_commands_and_bridge_names_and_the_scene_stops_r
     h.editor.run_command("window.problems").unwrap();
     h.editor.run_command("window.close").unwrap();
     assert!(!layout::is_open(h.state(), Dock::Problems));
-    // Closing the Scene: no view, no world pass, nothing acts on its old rectangle.
+    // Closing the Scene: no editor view, nothing acts on its old rectangle. The Game tab that
+    // shared its leaf comes to the front and shows only the game camera.
     h.editor
         .run_command_with("window.close", Some("scene"))
         .unwrap();
     h.frame(vec![]);
     assert!(!h.editor.scene_visible);
     assert_eq!(h.editor.viewport, Rect::NOTHING);
+    let frame = h.editor.render_frame(&mut h.runtime, screen);
+    assert!(frame.views.iter().all(|v| v.id != "editor.orbit"));
+    // Game closed too: no view and no world pass.
+    h.editor
+        .run_command_with("window.close", Some("game"))
+        .unwrap();
+    h.frame(vec![]);
     let frame = h.editor.render_frame(&mut h.runtime, screen);
     assert!(!frame.draw_world && frame.views.is_empty() && frame.instances.is_empty());
     let observed = h.editor.observation();
@@ -218,9 +226,12 @@ fn tabs_close_and_reopen_through_commands_and_bridge_names_and_the_scene_stops_r
     // Old and new dock names over the bridge: open/focus, unknown names list the choices.
     h.editor.remote_view(&[], false, Some("assets")).unwrap();
     assert!(h.editor.dock_shows(Dock::Assets));
-    let error = h.editor.remote_view(&[], false, Some("game")).unwrap_err();
+    let error = h
+        .editor
+        .remote_view(&[], false, Some("console"))
+        .unwrap_err();
     assert!(
-        error.to_string().contains("hierarchy|scene|inspector"),
+        error.to_string().contains("hierarchy|scene|game|inspector"),
         "{error}"
     );
     h.editor.remote_view(&[], false, Some("scene")).unwrap();
@@ -327,8 +338,8 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
         (json!("garbage"), "Saved layout ignored"),
         (json!({"v":7}), "Saved layout ignored"),
         (
-            json!({"v":1,"main":{"tabs":["game","scene"]}}),
-            "unknown panel(s) ignored: game",
+            json!({"v":1,"main":{"tabs":["console","scene"]}}),
+            "unknown panel(s) ignored: console",
         ),
     ] {
         std::fs::write(
@@ -381,6 +392,6 @@ fn steady_state_frames_do_not_grow_or_resync_the_dock() {
     assert_eq!(layout::fingerprint(h.state()), print);
     // The open-tab list for observe is cached, not rebuilt per call.
     let a = h.editor.observation()["tabs"].clone();
-    assert_eq!(a.as_array().unwrap().len(), 11, "every tab but World");
+    assert_eq!(a.as_array().unwrap().len(), 12, "every tab but World");
     assert_eq!(h.editor.observation()["tabs"], a);
 }

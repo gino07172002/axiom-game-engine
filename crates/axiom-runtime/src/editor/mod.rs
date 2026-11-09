@@ -1,6 +1,7 @@
 mod assets;
 mod commands;
 mod form;
+pub(crate) mod game;
 pub use commands::register_topics;
 mod layout;
 mod options;
@@ -13,6 +14,8 @@ mod world_panel;
 use crate::world::WorldRuntime;
 #[cfg(test)]
 mod dock_tests;
+#[cfg(test)]
+mod game_tests;
 #[cfg(test)]
 mod hierarchy_tests;
 #[cfg(test)]
@@ -36,6 +39,12 @@ pub(crate) enum Action {
         redo: bool,
     },
     Play,
+    /// Play ▸ Stop: back to editing (the simulation is discarded).
+    PlayStop,
+    /// Play ▸ Pause / Resume: stops or resumes the fixed-step simulation (UI keeps drawing).
+    PlayPause,
+    /// Play ▸ Step: pauses, then advances exactly one fixed step.
+    PlayStep,
     /// Load the before/after diff of one revision against its predecessor.
     LoadDiff {
         rev: i64,
@@ -405,6 +414,7 @@ fn multi_object_edits(world: &World, draft: &Draft, others: &BTreeSet<String>) -
 enum Dock {
     Hierarchy,
     Scene,
+    Game,
     Inspector,
     World,
     Changes,
@@ -530,6 +540,14 @@ pub(crate) struct Editor {
     inspector_shown: Option<String>,
     /// Timeline Play on rows per (world version, object, clip).
     bindings_cache: Option<((u64, String, String), timeline::Bindings)>,
+    /// Game tab: composed area, view-only camera choice, input routing flags.
+    pub(crate) game: game::GameState,
+    /// Play toolbar state (paused / time scale / tick), kept current by the host.
+    pub(crate) play: game::PlayView,
+    /// Inspector preview hole of the selected camera this frame.
+    pub(crate) camera_preview: game::CameraPreview,
+    /// Read-only runtime state of the selection during Play (host refreshes it).
+    pub(crate) live: game::LiveInspect,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -630,6 +648,10 @@ impl Editor {
             scroll_component: false,
             inspector_shown: None,
             bindings_cache: None,
+            game: Default::default(),
+            play: Default::default(),
+            camera_preview: Default::default(),
+            live: Default::default(),
         };
         if selected
             .as_ref()
@@ -711,6 +733,15 @@ impl Editor {
             .is_some_and(|id| !world.scenes.iter().any(|s| &s.id == id))
         {
             self.scene = None;
+        }
+        // The Game tab's camera choice falls back to the active camera(s).
+        if self
+            .game
+            .camera
+            .as_ref()
+            .is_some_and(|id| world.entity(id).is_none())
+        {
+            self.game.camera = None;
         }
     }
 
@@ -2124,7 +2155,10 @@ impl Editor {
     }
 
     pub fn observation(&self) -> Value {
+        let (play, game) = self.play_observation();
         json!({
+            "play":play,
+            "game":game,
             "mode":if self.previewing {"play"} else {"edit"},
             "authoring_rev":self.rev,
             "selected":self.selected,
@@ -2213,15 +2247,18 @@ impl Editor {
         runtime: &mut WorldRuntime,
         screen: egui::Rect,
     ) -> crate::presentation::RenderFrame {
-        // Scene tab closed, behind another tab or collapsed: nothing shows the editor view, so
-        // skip extraction and the world passes (the renderer only draws the interface).
-        if !self.scene_visible {
+        // Scene and Game tabs closed, behind other tabs or collapsed, and no camera preview:
+        // nothing shows a world view, so skip extraction and the world passes (the renderer
+        // only draws the interface).
+        if !self.world_visible() {
+            self.game.views.set(0);
+            self.game.dropped.set(0);
             return runtime.interface_frame();
         }
         // While the runtime for the editor's newest revision is still being built in the
         // background, show the selected object where that revision put it (no snap-back
-        // after a gizmo commit).
-        let draft = self.shown_draft(runtime);
+        // after a gizmo commit). Play shows the simulation as it is.
+        let draft = self.shown_draft(runtime).filter(|_| !self.previewing);
         // The override only lives during extraction, so all descendants and native mesh
         // extractors see the draft, while the simulation retains the committed transform.
         let original = draft.and_then(|d| {
@@ -2230,12 +2267,24 @@ impl Editor {
             transform.validate().ok()?;
             Some((slot, runtime.state.transforms[slot].replace(transform)))
         });
-        // Gameplay may choose a different scene during its initial entry actions.
-        let mut visibility = runtime.authored_visibility.clone();
+        // Gameplay may choose a different scene during its initial entry actions. While playing,
+        // the game's own (scene-switched) visibility is what the views show.
+        let mut visibility = if self.previewing {
+            runtime.state.compiled.enabled.clone()
+        } else {
+            runtime.authored_visibility.clone()
+        };
         visibility.resize(runtime.state.compiled.len(), false);
-        // Editor-view "hidden" objects (and their descendants) are not drawn; play is unaffected.
-        for id in self.view_flagged(false) {
-            if let Some(&slot) = runtime.state.compiled.indices.get(&id) {
+        // Editor-view "hidden" objects (and their descendants) are not drawn in the Scene view;
+        // play is unaffected. The views share one extraction, so a Game view shown at the same
+        // time as the Scene view hides them too.
+        let hidden = if self.scene_visible {
+            self.view_flagged(false)
+        } else {
+            BTreeSet::new()
+        };
+        for id in &hidden {
+            if let Some(&slot) = runtime.state.compiled.indices.get(id) {
                 visibility[slot] = false;
             }
         }
@@ -2259,7 +2308,11 @@ impl Editor {
             });
         // A light / mesh / camera field being dragged or typed in the Inspector: its draft
         // value is drawn for this frame only (other components show once committed).
-        let component = self.draft_component_preview(runtime);
+        let component = if self.previewing {
+            None
+        } else {
+            self.draft_component_preview(runtime)
+        };
         let mut frame = runtime.render_frame();
         if let Some(restore) = component {
             restore(runtime);
@@ -2270,7 +2323,6 @@ impl Editor {
         runtime.state.compiled.enabled = original_visibility;
         // VFX live in a resource, not on entities: drop the emitters attached to hidden objects.
         // (Meshes, procedural geometry and skinned models already skip disabled slots.)
-        let hidden = self.view_flagged(false);
         if !hidden.is_empty() {
             let gone = |a: &Option<String>| a.as_ref().is_some_and(|id| hidden.contains(id));
             frame.vfx.batches.retain(|b| !gone(&b.emitter.attachment));
@@ -2280,8 +2332,17 @@ impl Editor {
         if let Some((slot, transform)) = original {
             runtime.state.transforms[slot] = transform;
         }
-        frame.views.clear();
-        frame.views.push(self.orbit.view(self.viewport, screen));
+        // The runtime's camera views go to the Game tab; the Scene tab gets the editor camera.
+        let game = std::mem::take(&mut frame.views);
+        if self.scene_visible {
+            frame.views.push(self.orbit.view(self.viewport, screen));
+        }
+        self.compose_views(&mut frame, game, runtime, screen);
+        if frame.views.is_empty() {
+            // E.g. a Game tab without an active camera: no world pass (no fallback view over
+            // the whole window).
+            frame.draw_world = false;
+        }
         frame
     }
 }

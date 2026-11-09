@@ -91,6 +91,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("view.palette", "Command Palette…", "View", "Ctrl+Shift+P"),
     c("view.gizmos", "Toggle Component Gizmos", "View", ""),
     c(
+        "view.camera_preview",
+        "Toggle Inspector Camera Preview",
+        "View",
+        "",
+    ),
+    c(
         "view.nav_grid",
         "Toggle Navigation Grid Overlay",
         "View",
@@ -255,8 +261,27 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     a("event.declare", "Declare Event…", "World", "NAME"),
     c("play.start", "Play", "Play", "F5"),
+    c("play.stop", "Stop", "Play", "Shift+F5"),
+    c("play.pause", "Pause / Resume", "Play", "Ctrl+Alt+P"),
+    c("play.step", "Step One Tick", "Play", "Ctrl+Alt+Period"),
+    a("play.time_scale", "Time Scale…", "Play", "0.25|0.5|1|2"),
+    c("play.maximize", "Play Maximized", "Play", ""),
+    a(
+        "game.aspect",
+        "Game View Aspect…",
+        "Play",
+        "free|16:9|4:3|1:1",
+    ),
+    a("game.camera", "Game View Camera…", "Play", "active|ID"),
+    a(
+        "game.main_camera",
+        "Set Game View Camera as Main",
+        "Play",
+        "[ID]",
+    ),
     c("window.hierarchy", "Hierarchy", "Window", ""),
     c("window.scene", "Scene", "Window", ""),
+    c("window.game", "Game", "Window", ""),
     c("window.inspector", "Inspector", "Window", ""),
     c("window.changes", "Changes", "Window", "Ctrl+1"),
     c("window.proposals", "Proposals", "Window", "Ctrl+2"),
@@ -278,6 +303,58 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Help",
         "",
     ),
+];
+/// Commands that write authoring revisions (refused during Play with the reason).
+pub(crate) const CONTENT_COMMANDS: &[&str] = &[
+    "edit.undo",
+    "edit.redo",
+    "edit.paste",
+    "edit.duplicate",
+    "edit.delete",
+    "edit.rename",
+    "object.empty",
+    "object.cube",
+    "object.camera",
+    "object.light_directional",
+    "object.light_point",
+    "object.light_spot",
+    "object.light_area",
+    "object.trigger_box",
+    "object.trigger_sphere",
+    "object.path",
+    "object.follow_path",
+    "path.add_point",
+    "path.remove_point",
+    "object.obstacle",
+    "object.nav_agent",
+    "nav.target_object",
+    "nav.target_point",
+    "nav.clear_target",
+    "object.interactable",
+    "object.audio_source",
+    "object.audio_listener",
+    "object.camera_follow",
+    "object.main_camera",
+    "object.tween_clip",
+    "tween.record_key",
+    "tween.remove_key",
+    "object.child_empty",
+    "object.child_cube",
+    "object.child_camera",
+    "object.create_prefab",
+    "object.drop_to_ground",
+    "object.tag",
+    "object.add_component",
+    "world.set_id",
+    "world.set_title",
+    "world.capability_add",
+    "world.capability_remove",
+    "world.system_add",
+    "world.system_remove",
+    "world.resource_create",
+    "world.resource_remove",
+    "event.declare",
+    "game.main_camera",
 ];
 pub(crate) fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
@@ -354,6 +431,12 @@ pub(crate) struct Prefs {
     /// Inspector edits commit when a drag is released, Enter is pressed or a field loses
     /// focus (one revision per interaction); off = draft + Apply (batch mode).
     pub live_inspector: bool,
+    /// Game tab aspect preset (`free`, `16:9`, `4:3`, `1:1`), letterboxed inside the tab.
+    pub game_aspect: String,
+    /// Inspector preview of a selected `render.camera` (one extra view while visible).
+    pub camera_preview: bool,
+    /// Play in the whole window (editor panels hidden) instead of the Game tab.
+    pub play_maximized: bool,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -375,6 +458,9 @@ impl Default for Prefs {
             nav_grid: false,
             bookmarks: BTreeMap::new(),
             live_inspector: true,
+            game_aspect: "free".into(),
+            camera_preview: true,
+            play_maximized: false,
         }
     }
 }
@@ -391,6 +477,9 @@ impl Prefs {
         self.snap_rotate_degrees = clamp(self.snap_rotate_degrees, 0.1, 180.0, 15.0);
         self.snap_scale = clamp(self.snap_scale, 0.001, 10.0, 0.1);
         self.fly_speed = clamp(self.fly_speed, FLY_MIN, FLY_MAX, 6.0);
+        if super::game::Aspect::from_name(&self.game_aspect).is_none() {
+            self.game_aspect = "free".into();
+        }
         self.bookmarks.retain(|world, slots| {
             slots.retain(|slot, b| matches!(slot.as_str(), "1" | "2" | "3" | "4") && b.valid());
             world.len() <= 128 && !slots.is_empty()
@@ -458,6 +547,13 @@ impl Editor {
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
         match id {
+            // Play runs a pinned revision: authoring edits from the editor wait for Stop.
+            id if self.previewing && CONTENT_COMMANDS.contains(&id) => {
+                Some("stop Play first (Play runs a pinned revision; edits would not show in it)")
+            }
+            "play.stop" | "play.pause" | "play.step" if !self.previewing => Some("not playing"),
+            "play.maximize" if self.previewing => Some("stop Play first"),
+            "game.main_camera" if busy => Some("apply or reload the inspector draft first"),
             "edit.undo" if self.undo.is_empty() && self.saving == 0 => Some("nothing to undo"),
             "edit.redo" if self.redo.is_empty() && self.saving == 0 => Some("nothing to redo"),
             "edit.paste" if self.clipboard.is_empty() => Some("nothing copied"),
@@ -619,6 +715,12 @@ impl Editor {
             self.layout_command(id, arg)?;
             return Ok(vec![]);
         }
+        if matches!(
+            id,
+            "play.time_scale" | "game.aspect" | "game.camera" | "game.main_camera"
+        ) {
+            return self.play_command(id, arg);
+        }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
         } else {
@@ -713,6 +815,18 @@ impl Editor {
             "tween.remove_key" => actions.extend(self.remove_tween_key()),
             "view.nav_grid" => self.prefs.nav_grid = !self.prefs.nav_grid,
             "play.start" => actions.push(Action::Play),
+            "play.stop" => actions.push(Action::PlayStop),
+            "play.pause" => actions.push(Action::PlayPause),
+            "play.step" => actions.push(Action::PlayStep),
+            "play.maximize" => {
+                self.prefs.play_maximized = !self.prefs.play_maximized;
+                self.notice(if self.prefs.play_maximized {
+                    "Play uses the whole window (F8 stops)"
+                } else {
+                    "Play runs in the Game tab"
+                });
+            }
+            "view.camera_preview" => self.prefs.camera_preview = !self.prefs.camera_preview,
             "help.shortcuts" => self.show_shortcuts = true,
             "help.copy_discovery" => {
                 self.pending_copy = Some(r#"{"op":"discover","topic":"editor"}"#.to_owned());
@@ -869,6 +983,8 @@ impl Editor {
                             "view.space" => Some(self.prefs.local_space),
                             "view.gizmos" => Some(self.prefs.gizmos),
                             "view.nav_grid" => Some(self.prefs.nav_grid),
+                            "view.camera_preview" => Some(self.prefs.camera_preview),
+                            "play.maximize" => Some(self.prefs.play_maximized),
                             id if ViewMode::from_command(id).is_some() => {
                                 Some(ViewMode::from_command(id) == Some(self.orbit.mode))
                             }
@@ -896,6 +1012,38 @@ impl Editor {
                         if response.clicked() {
                             self.invoke(cmd.id, actions);
                             ui.close_menu();
+                        }
+                    }
+                    if menu == "Play" {
+                        ui.separator();
+                        let mut run: Option<(&str, String)> = None;
+                        ui.menu_button("Time Scale", |ui| {
+                            for s in super::game::TIME_SCALES {
+                                let on = if s == self.play.time_scale {
+                                    "✓ "
+                                } else {
+                                    ""
+                                };
+                                if ui.button(format!("{on}{s}×")).clicked() {
+                                    run = Some(("play.time_scale", s.to_string()));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.menu_button("Game View Aspect", |ui| {
+                            let aspect = self.aspect();
+                            for a in super::game::Aspect::ALL {
+                                let on = if a == aspect { "✓ " } else { "" };
+                                if ui.button(format!("{on}{}", a.name())).clicked() {
+                                    run = Some(("game.aspect", a.name().to_owned()));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        if let Some((id, arg)) = run {
+                            if let Err(e) = self.run_command_with(id, Some(&arg)) {
+                                self.set_error(format!("{e:#}"));
+                            }
                         }
                     }
                     if menu == "Window" {
@@ -1286,6 +1434,23 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
         }),
     );
     r.topics.insert(
+        "editor_game".into(),
+        serde_json::json!({
+            "show": {"op":"editor_view","dock":"game"},
+            "play": {"op":"editor_view","play":true},
+            "controls": ["play.pause","play.step","play.stop",{"command":"play.time_scale","arg":"0.25|0.5|1|2"}],
+            "view": [{"command":"game.aspect","arg":"free|16:9|4:3|1:1"},{"command":"game.camera","arg":"active|ID"},"view.camera_preview","play.maximize"],
+            "main_camera": {"op":"editor_view","command":"game.main_camera","arg":"ID"},
+            "observe": "metrics.editor.play {state,time_scale,tick,manual_steps} and editor.game {visible,aspect,camera,rect,views,dropped_views,input,camera_preview}",
+            "rules": [
+                "Play keeps the editor; the Game tab shows the active camera(s) letterboxed to the aspect and gets keyboard input only after a click (Esc releases)",
+                "pause/step/time scale are view state; one step = one fixed 1/120 s tick",
+                "editor edits are refused during Play (play_read_only); the Inspector shows live runtime state read-only",
+                "aspect, camera choice, time scale and preview are never written to revisions; game.main_camera = camera main ID"
+            ]
+        }),
+    );
+    r.topics.insert(
         "editor_inspector".into(),
         serde_json::json!({
             "forms": "typed fields from discover typed:COMPONENT_OR_RESOURCE (enum, range+unit, colour, Euler for quaternions, entity / event / resource-key references, arrays)",
@@ -1332,6 +1497,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.audio_listener": "audio ID listener",
                 "object.camera_follow": "camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=] [zoom=] [radius=] [collide=]",
                 "object.main_camera": "camera main ID",
+                "game.main_camera": "camera main ID",
                 "inspector.audio_clip": "set ID audio.source/clip \"CLIP\"",
                 "inspector.new_audio_clip": "audio clip ID tone|engine|fountain|creak|footstep",
                 "object.tween_clip": "tween SEL clip NAME [property=] [target=] [duration=] [mode=] [autoplay=] [on_finish=]",
@@ -1361,7 +1527,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
                 "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
                 "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",
-                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.bookmark.save|recall.N, RMB+WASD fly, box select (editor view state, never content)",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",

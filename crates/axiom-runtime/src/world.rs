@@ -682,6 +682,46 @@ impl WorldRuntime {
             serde_json::json!({"ok":true,"rev":self.rev,"tick":self.state.tick,"gameplay":self.state.gameplay.as_ref().unwrap().observation()}),
         )
     }
+    /// Read-only runtime state of entity `id`: the result of every installed
+    /// `CAPABILITY.inspect {"id": id}` action enabled in this world that answers for it
+    /// (actions that do not know the entity or take other arguments are skipped).
+    pub fn inspect_entity(&mut self, id: &str) -> Vec<(String, Value)> {
+        let actions: Vec<(String, String)> = self
+            .registry
+            .authoring
+            .actions
+            .iter()
+            .filter(|(name, d)| {
+                name.ends_with(".inspect")
+                    && self
+                        .state
+                        .compiled
+                        .source
+                        .capabilities
+                        .contains_key(&d.capability)
+            })
+            .filter_map(|(name, d)| {
+                let action = name
+                    .strip_prefix(d.capability.as_str())?
+                    .strip_prefix('.')?;
+                Some((d.capability.clone(), action.to_owned()))
+            })
+            .collect();
+        let args = serde_json::json!({ "id": id });
+        let mut out = vec![];
+        for (capability, action) in actions {
+            let name = format!("{capability}.{action}");
+            let command = axiom_core::gameplay::RuntimeCommand::Call {
+                capability,
+                action,
+                args: args.clone(),
+            };
+            if let Ok(mut response) = self.command(&command) {
+                out.push((name, response["result"].take()));
+            }
+        }
+        out
+    }
     pub(crate) fn checkpoint_supported(&self) -> Result<()> {
         ensure!(
             self.state.contexts.is_none(),

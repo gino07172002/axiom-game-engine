@@ -32,9 +32,10 @@ const MAX_NAMED: usize = 32;
 const WORLD_WINDOW: [f32; 4] = [300.0, 50.0, 400.0, 560.0];
 
 impl Dock {
-    pub(crate) const ALL: [Dock; 12] = [
+    pub(crate) const ALL: [Dock; 13] = [
         Dock::Hierarchy,
         Dock::Scene,
+        Dock::Game,
         Dock::Inspector,
         Dock::Changes,
         Dock::Proposals,
@@ -51,6 +52,7 @@ impl Dock {
         match self {
             Dock::Hierarchy => "hierarchy",
             Dock::Scene => "scene",
+            Dock::Game => "game",
             Dock::Inspector => "inspector",
             Dock::Changes => "changes",
             Dock::Proposals => "proposals",
@@ -70,6 +72,7 @@ impl Dock {
         match self {
             Dock::Hierarchy => "Hierarchy",
             Dock::Scene => "Scene",
+            Dock::Game => "Game",
             Dock::Inspector => "Inspector",
             Dock::Changes => "Changes",
             Dock::Proposals => "Proposals",
@@ -394,13 +397,13 @@ pub(crate) fn builtin(name: &str) -> Option<Value> {
             "split":"v","fraction":0.72,
             "a":{"split":"h","fraction":0.18,
                 "a":{"tabs":["hierarchy"]},
-                "b":{"split":"h","fraction":0.71,"a":{"tabs":["scene"]},"b":{"tabs":["inspector"]}}},
+                "b":{"split":"h","fraction":0.71,"a":{"tabs":["scene","game"]},"b":{"tabs":["inspector"]}}},
             "b":{"tabs":bottom,"active":0}},"windows":[]})),
         // The inspector gets the full window height (long component forms on 1080p screens).
         "Tall Inspector" => Some(json!({"v":1,"main":{
             "split":"h","fraction":0.75,
             "a":{"split":"v","fraction":0.7,
-                "a":{"split":"h","fraction":0.24,"a":{"tabs":["hierarchy"]},"b":{"tabs":["scene"]}},
+                "a":{"split":"h","fraction":0.24,"a":{"tabs":["hierarchy"]},"b":{"tabs":["scene","game"]}},
                 "b":{"tabs":bottom,"active":0}},
             "b":{"tabs":["inspector"]}},"windows":[]})),
         _ => None,
@@ -438,6 +441,20 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
         }
     }
     let main = SurfaceIndex::main();
+    // Game and Scene share a leaf (as in the built-in layouts) when the other one is open.
+    let partner = match tab {
+        Dock::Game => Some(Dock::Scene),
+        Dock::Scene => Some(Dock::Game),
+        _ => None,
+    };
+    if let Some((surface, node, _)) = partner.and_then(|p| state.find_tab(&p)) {
+        if let Node::Leaf { tabs, active, .. } = &mut state[surface][node] {
+            tabs.push(tab);
+            *active = TabIndex(tabs.len() - 1);
+        }
+        state.set_focused_node_and_surface((surface, node));
+        return;
+    }
     if tab == Dock::World {
         let surface = state.add_window(vec![tab]);
         let [x, y, w, h] = WORLD_WINDOW;
@@ -460,7 +477,7 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
     let [_, new] = match tab {
         Dock::Hierarchy => tree.split_left(root, 0.18, vec![tab]),
         Dock::Inspector => tree.split_right(root, 0.76, vec![tab]),
-        Dock::Scene => tree.split_above(root, 0.7, vec![tab]),
+        Dock::Scene | Dock::Game => tree.split_above(root, 0.7, vec![tab]),
         _ => tree.split_below(root, 0.72, vec![tab]),
     };
     state.set_focused_node_and_surface((main, new));
@@ -619,11 +636,11 @@ mod tests {
     #[test]
     fn unknown_repeated_and_empty_entries_are_dropped_and_bad_specs_rejected() {
         let spec = json!({"v":1,"main":{"split":"h","fraction":7.0,
-            "a":{"tabs":["game","scene","scene"],"active":1},
+            "a":{"tabs":["console","scene","scene"],"active":1},
             "b":{"split":"v","fraction":null,"a":{"tabs":["nope"]},"b":{"tabs":["inspector"]}}},
             "windows":[{"rect":[1,2,"x",4],"node":{"tabs":["world"]}}]});
         let (state, dropped) = from_spec(&spec).unwrap();
-        assert_eq!(dropped, ["game", "scene", "nope"]);
+        assert_eq!(dropped, ["console", "scene", "nope"]);
         // The empty leaf collapsed its split; the fraction was clamped.
         assert_eq!(
             to_spec(&state)["main"],

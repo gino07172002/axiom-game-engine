@@ -1706,7 +1706,9 @@ impl Editor {
         });
         let handles = display
             .filter(|_| {
+                // Play shows the running game: no gizmo handles (edits wait for Stop).
                 self.tool != Tool::Select
+                    && !self.previewing
                     && ready
                     && selected.is_some_and(visible)
                     && !selected_locked
@@ -1720,6 +1722,7 @@ impl Editor {
         let path_frame = selected
             .filter(|&i| {
                 self.prefs.gizmos
+                    && !self.previewing
                     && ready
                     && visible(i)
                     && !selected_locked

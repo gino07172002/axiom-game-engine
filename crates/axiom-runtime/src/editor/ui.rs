@@ -6,20 +6,20 @@ use axiom_core::{
 use egui::{Color32, Frame, Layout, Margin, RichText, ScrollArea, Ui};
 use serde_json::{json, Value};
 
-const SURFACE: Color32 = Color32::from_rgb(23, 28, 37);
+pub(super) const SURFACE: Color32 = Color32::from_rgb(23, 28, 37);
 const HEADER: Color32 = Color32::from_rgb(18, 22, 30);
-const CARD: Color32 = Color32::from_rgb(32, 40, 52);
-const MUTED: Color32 = Color32::from_rgb(155, 174, 194);
-const ACCENT: Color32 = Color32::from_rgb(105, 222, 195);
-const WARNING: Color32 = Color32::from_rgb(255, 178, 111);
+pub(super) const CARD: Color32 = Color32::from_rgb(32, 40, 52);
+pub(super) const MUTED: Color32 = Color32::from_rgb(155, 174, 194);
+pub(super) const ACCENT: Color32 = Color32::from_rgb(105, 222, 195);
+pub(super) const WARNING: Color32 = Color32::from_rgb(255, 178, 111);
 
-fn panel(color: Color32, padding: i8) -> Frame {
+pub(super) fn panel(color: Color32, padding: i8) -> Frame {
     Frame::new().fill(color).inner_margin(Margin::same(padding))
 }
-fn heading(ui: &mut Ui, title: &str) {
+pub(super) fn heading(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).strong().size(13.0));
 }
-fn caption(ui: &mut Ui, text: impl Into<String>) {
+pub(super) fn caption(ui: &mut Ui, text: impl Into<String>) {
     ui.label(RichText::new(text.into()).size(11.0).color(MUTED));
 }
 
@@ -46,8 +46,23 @@ impl Editor {
         // tools; a box selection in progress keeps Escape for itself.
         let scene_owns_keys = self.scene_input.marquee.is_some()
             || ctx.input(|i| super::viewport::rmb_held_in(i, self.viewport));
-        // An inline rename owns the keyboard (egui drops focus on Escape before we get here).
-        if !text_focused && self.renaming.is_none() && !scene_owns_keys && self.options.is_none() {
+        // While the game has the keyboard only the Play commands stay bound; Esc gives the
+        // keyboard back to the editor (the game never sees it then).
+        if self.game.input {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.game.release_request = true;
+            }
+            let pressed = ctx.input(|i| self.shortcut_commands(i));
+            for id in pressed.into_iter().filter(|id| id.starts_with("play.")) {
+                if self.command_blocked(id).is_none() {
+                    self.run_into(id, &mut actions);
+                }
+            }
+        } else if !text_focused
+            && self.renaming.is_none()
+            && !scene_owns_keys
+            && self.options.is_none()
+        {
             // Every shortcut comes from the command registry (user overrides included).
             let pressed = ctx.input(|i| self.shortcut_commands(i));
             for id in pressed {
@@ -113,15 +128,7 @@ impl Editor {
                     ui.label(RichText::new(truncate(&self.world.title, 32)).strong())
                         .on_hover_text(&self.world.title);
                     ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                !self.dirty(),
-                                egui::Button::new(RichText::new("▶  Play  F5").color(ACCENT)),
-                            )
-                            .clicked()
-                        {
-                            actions.push(Action::Play);
-                        }
+                        self.play_toolbar(ui, &mut actions);
                         ui.label(
                             RichText::new(format!("REV  {:04}", self.rev))
                                 .monospace()
@@ -168,11 +175,23 @@ impl Editor {
             .style
             .get_or_insert_with(|| dock_style(&ctx.style()))
             .clone();
+        // Filled again by the Game tab and the Inspector camera preview if they are drawn.
+        self.game.rect = egui::Rect::NOTHING;
+        self.game.hovered = false;
+        self.camera_preview.rect = egui::Rect::NOTHING;
+        self.camera_preview.camera = None;
+        self.live.shown = false;
+        // A floating Inspector has a window frame over the preview hole: no preview there.
+        let inspector_floating = dock
+            .find_tab(&Dock::Inspector)
+            .is_some_and(|(surface, _, _)| !surface.is_main());
         let mut host = TabHost {
             editor: self,
             runtime,
             actions: &mut actions,
             scene: false,
+            game: false,
+            inspector_floating,
         };
         egui_dock::DockArea::new(&mut dock)
             .id(egui::Id::new("editor_dock_area"))
@@ -181,12 +200,25 @@ impl Editor {
             // One click must not close a whole group (e.g. all eight bottom tabs).
             .show_leaf_close_all_buttons(false)
             .show(ctx, &mut host);
-        let scene = host.scene;
+        let (scene, game) = (host.scene, host.game);
         self.layout.dock = Some(dock);
         self.layout.apply_pending();
         self.scene_visible = scene;
         if !scene {
             self.scene_hidden();
+        }
+        self.game.visible = game && self.game.rect.is_positive();
+        // A click anywhere else in the editor takes the input back from the game.
+        if self.game.input && !self.game.hovered && ctx.input(|i| i.pointer.primary_pressed()) {
+            self.game.release_request = true;
+        }
+        if !self.game.visible {
+            self.game.rect = egui::Rect::NOTHING;
+            // Hidden Game tab: the game cannot keep the keyboard.
+            self.game.capture_request = false;
+            if self.game.input {
+                self.game.release_request = true;
+            }
         }
         self.command_windows(ctx, &mut actions);
         // Not while a button is held (dragging a separator or a window would write the
@@ -760,7 +792,13 @@ impl Editor {
         }
     }
 
-    fn inspector(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+    fn inspector(
+        &mut self,
+        ui: &mut Ui,
+        runtime: &WorldRuntime,
+        actions: &mut Vec<Action>,
+        floating: bool,
+    ) {
         heading(ui, "INSPECTOR");
         if self.resource.is_some() {
             self.resource_inspector(ui, actions);
@@ -815,6 +853,11 @@ impl Editor {
             || self.options.is_some()
             || self.renaming.is_some();
         let saving = self.saving;
+        // Play runs a pinned revision: the Inspector shows the live runtime state and the
+        // authored values read-only (edits are refused until Stop).
+        let playing = self.previewing;
+        let is_camera = self.draft.as_ref().is_some_and(|d| self.is_camera(&d.id));
+        let mut preview_toggled = false;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -832,10 +875,17 @@ impl Editor {
                 ui.ctx().copy_text(id.clone());
             }
         });
-        if stale {
+        if stale && !playing {
             ui.label(RichText::new(format!("Stale draft · revision {}", draft.rev)).color(WARNING));
         }
-        ui.horizontal(|ui| {
+        if playing {
+            ui.label(
+                RichText::new("Playing · read-only (stop Play to edit)")
+                    .small()
+                    .color(WARNING),
+            );
+        }
+        ui.add_enabled_ui(!playing, |ui| ui.horizontal(|ui| {
             ui.checkbox(&mut self.prefs.live_inspector, "Live").on_hover_text(
                 "On: edits commit on release / Enter / focus loss (one revision each); Esc cancels. Off: edit a draft, then Apply.",
             );
@@ -856,7 +906,7 @@ impl Editor {
             copy = ui
                 .add_enabled(draft.dirty(), egui::Button::new("Copy JSON"))
                 .clicked();
-        });
+        }));
         ui.separator();
         let mut duplicate = false;
         let mut delete = false;
@@ -873,7 +923,21 @@ impl Editor {
                 scroll = scroll.vertical_scroll_offset(0.0);
             }
             scroll.show(ui, |ui| {
-                    ui.add_enabled_ui(!stale && self.drag.is_none(), |ui| {
+                    if is_camera {
+                        preview_toggled = super::game::camera_preview_hole(
+                            ui,
+                            self.prefs.camera_preview,
+                            &mut self.camera_preview,
+                            &mut self.rects,
+                            &id,
+                            floating,
+                        );
+                    }
+                    if playing {
+                        self.live.shown = true;
+                        super::game::live_panel(ui, &self.live, runtime, &id);
+                    }
+                    ui.add_enabled_ui(!stale && self.drag.is_none() && !playing, |ui| {
                         caption(ui, "DISPLAY LABEL");
                         draft.label_dirty |= ui
                             .add(
@@ -1286,6 +1350,9 @@ impl Editor {
         if let Some(component) = add_component {
             actions.extend(self.add_component(&component));
         }
+        if preview_toggled {
+            self.run_into("view.camera_preview", actions);
+        }
         if let Some(command) = path_command {
             match self.run_command(command) {
                 Ok(more) => actions.extend(more),
@@ -1312,7 +1379,7 @@ impl Editor {
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
-            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World => {}
+            Dock::Hierarchy | Dock::Scene | Dock::Game | Dock::Inspector | Dock::World => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -1590,6 +1657,10 @@ struct TabHost<'a> {
     actions: &'a mut Vec<Action>,
     /// The Scene tab body was drawn.
     scene: bool,
+    /// The Game tab body was drawn.
+    game: bool,
+    /// The Inspector is in a floating window (no camera preview hole there).
+    inspector_floating: bool,
 }
 
 impl egui_dock::TabViewer for TabHost<'_> {
@@ -1619,23 +1690,61 @@ impl egui_dock::TabViewer for TabHost<'_> {
             }
             Dock::Inspector => {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
-                editor.inspector(ui, actions);
+                // The docked Inspector paints its own background, leaving the camera
+                // preview hole (if any) transparent for the view drawn underneath.
+                let background = (!self.inspector_floating)
+                    .then(|| (ui.painter().add(egui::Shape::Noop), ui.clip_rect()));
+                editor.inspector(ui, self.runtime, actions, self.inspector_floating);
+                if let Some((index, body)) = background {
+                    let hole = editor.camera_preview.rect.intersect(body);
+                    let shapes = if hole.is_positive() {
+                        [
+                            egui::Rect::from_min_max(body.min, egui::pos2(body.max.x, hole.min.y)),
+                            egui::Rect::from_min_max(egui::pos2(body.min.x, hole.max.y), body.max),
+                            egui::Rect::from_min_max(
+                                egui::pos2(body.min.x, hole.min.y),
+                                egui::pos2(hole.min.x, hole.max.y),
+                            ),
+                            egui::Rect::from_min_max(
+                                egui::pos2(hole.max.x, hole.min.y),
+                                egui::pos2(body.max.x, hole.max.y),
+                            ),
+                        ]
+                        .into_iter()
+                        .filter(|r| r.is_positive())
+                        .map(|r| egui::Shape::rect_filled(r, 0.0, SURFACE))
+                        .collect()
+                    } else {
+                        vec![egui::Shape::rect_filled(body, 0.0, SURFACE)]
+                    };
+                    ui.painter().set(index, egui::Shape::Vec(shapes));
+                }
             }
             Dock::Scene => {
                 self.scene = true;
                 editor.scene_tab(ui, self.runtime, actions);
             }
+            Dock::Game => {
+                self.game = true;
+                editor.game_tab(ui, self.runtime, actions);
+            }
             Dock::World => editor.world_tab(ui, actions),
             other => editor.dock_tab(ui, other, actions),
         }
     }
-    /// The scene is composited by the renderer at the tab's rectangle on the main surface.
+    /// Scene and Game are composited by the renderer at the tab's rectangle on the main
+    /// surface (a floating window would draw its frame over them).
     fn allowed_in_windows(&self, tab: &mut Dock) -> bool {
-        *tab != Dock::Scene
+        !matches!(tab, Dock::Scene | Dock::Game)
     }
-    /// The scene body stays transparent so the world drawn underneath shows.
+    /// Scene and Game bodies stay transparent so the world drawn underneath shows; the docked
+    /// Inspector paints its own background around the camera preview.
     fn clear_background(&self, tab: &Dock) -> bool {
-        *tab != Dock::Scene
+        match tab {
+            Dock::Scene | Dock::Game => false,
+            Dock::Inspector => self.inspector_floating,
+            _ => true,
+        }
     }
     /// Every panel scrolls its own content (the hierarchy is a virtual list).
     fn scroll_bars(&self, _tab: &Dock) -> [bool; 2] {
@@ -1646,7 +1755,7 @@ impl egui_dock::TabViewer for TabHost<'_> {
         tab: &Dock,
         global: &egui_dock::TabStyle,
     ) -> Option<egui_dock::TabStyle> {
-        (*tab == Dock::Scene).then(|| {
+        matches!(tab, Dock::Scene | Dock::Game).then(|| {
             let mut style = global.clone();
             style.tab_body.inner_margin = Margin::ZERO;
             style
@@ -2190,7 +2299,7 @@ fn vector(
     changed
 }
 
-fn truncate(text: &str, limit: usize) -> String {
+pub(super) fn truncate(text: &str, limit: usize) -> String {
     let mut chars = text.chars();
     let mut display: String = chars.by_ref().take(limit).collect();
     if chars.next().is_some() {

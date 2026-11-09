@@ -53,6 +53,9 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     pub egui: egui_wgpu::Renderer,
+    /// Second egui renderer for the game interface drawn inside the editor's Game tab (its own
+    /// egui context, so its own textures); created on first use.
+    game_egui: Option<egui_wgpu::Renderer>,
     pub gpu: String,
     pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
@@ -344,6 +347,7 @@ impl Renderer {
             queue,
             config,
             egui,
+            game_egui: None,
             gpu,
             pipeline,
             shadow_pipeline,
@@ -384,11 +388,14 @@ impl Renderer {
         self.shaders.stats
     }
 
+    /// Draws the world views, then `game` (the game interface of the editor's Game tab, from its
+    /// own egui context) and finally the main interface on top.
     pub fn render(
         &mut self,
         snapshot: &RenderFrame,
         ctx: &egui::Context,
         output: egui::FullOutput,
+        game: Option<(&egui::Context, egui::FullOutput)>,
         screenshot: Option<&Path>,
     ) -> Result<bool> {
         self.prepare_shaders(&snapshot.shaders)?;
@@ -518,25 +525,38 @@ impl Renderer {
             self.egui
                 .update_texture(&self.device, &self.queue, *id, delta);
         }
+        if let Some((_, game)) = &game {
+            let renderer = self.game_egui.get_or_insert_with(|| {
+                egui_wgpu::Renderer::new(&self.device, self.config.format, None, 1, false)
+            });
+            for (id, delta) in &game.textures_delta.set {
+                renderer.update_texture(&self.device, &self.queue, *id, delta);
+            }
+        }
         let acquire = std::time::Instant::now();
         let current = self.surface.get_current_texture();
         self.last_acquire = acquire.elapsed();
         let frame = match current {
             Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+            Err(error) => {
+                if matches!(
+                    error,
+                    wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated
+                ) {
+                    self.surface.configure(&self.device, &self.config);
+                } else if !matches!(error, wgpu::SurfaceError::Timeout) {
+                    return Err(error.into());
+                }
                 for id in &output.textures_delta.free {
                     self.egui.free_texture(id);
                 }
-                return Ok(false);
-            }
-            Err(wgpu::SurfaceError::Timeout) => {
-                for id in &output.textures_delta.free {
-                    self.egui.free_texture(id);
+                if let (Some((_, game)), Some(renderer)) = (&game, &mut self.game_egui) {
+                    for id in &game.textures_delta.free {
+                        renderer.free_texture(id);
+                    }
                 }
                 return Ok(false);
             }
-            Err(e) => return Err(e.into()),
         };
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self
@@ -687,14 +707,57 @@ impl Renderer {
                 );
             }
         }
+        // No world pass wrote the frame: the first interface pass starts from a cleared one.
+        let mut cleared = !views.is_empty();
+        let mut extra = vec![];
+        let mut game_free = vec![];
+        if let (Some((game_ctx, game)), Some(renderer)) = (game, &mut self.game_egui) {
+            let screen = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [self.config.width, self.config.height],
+                pixels_per_point: game.pixels_per_point,
+            };
+            let jobs = game_ctx.tessellate(game.shapes, game.pixels_per_point);
+            extra.extend(renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &jobs,
+                &screen,
+            ));
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("game interface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if cleared {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            renderer.render(&mut pass.forget_lifetime(), &jobs, &screen);
+            cleared = true;
+            game_free = game.textures_delta.free;
+        }
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point: output.pixels_per_point,
         };
         let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);
-        let extra =
-            self.egui
-                .update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
+        extra.extend(self.egui.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &jobs,
+            &screen,
+        ));
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("interface"),
@@ -702,11 +765,10 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // No world pass wrote the frame: start from a cleared one.
-                        load: if views.is_empty() {
-                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
-                        } else {
+                        load: if cleared {
                             wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
                         },
                         store: wgpu::StoreOp::Store,
                     },
@@ -797,6 +859,11 @@ impl Renderer {
         }
         for id in &output.textures_delta.free {
             self.egui.free_texture(id);
+        }
+        if let Some(renderer) = &mut self.game_egui {
+            for id in &game_free {
+                renderer.free_texture(id);
+            }
         }
         Ok(true)
     }

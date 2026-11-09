@@ -110,6 +110,118 @@ struct App {
     deferred_command: Option<crate::bridge::RuntimeRequest>,
     /// Closing: pending commits are flushed, no new runtime builds start.
     closing: bool,
+    /// Game interface during Play in the editor's Game tab: its own egui context whose screen
+    /// is the tab's game area (created on first use, kept for the session).
+    game_ctx: Option<egui::Context>,
+    /// The game has keyboard (and locked mouse) input inside the Game tab.
+    game_input: bool,
+    /// The game context got pointer events last frame (a `PointerGone` follows on leaving).
+    game_pointer: bool,
+}
+
+/// Play-in-editor debug overlay, projected through the first active game view.
+#[derive(Default)]
+struct BehaviorOverlay {
+    /// Trigger zone edges, pink while something is inside.
+    zones: Vec<([f32; 2], [f32; 2], bool)>,
+    /// Navigation agents' remaining routes.
+    routes: Vec<([f32; 2], [f32; 2])>,
+    /// Interactors to their focused interactables.
+    focus: Vec<([f32; 2], [f32; 2])>,
+    /// Live FSM state above each agent.
+    labels: Vec<([f32; 2], String)>,
+}
+
+impl BehaviorOverlay {
+    fn paint(&self, ctx: &egui::Context) {
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("behavior_overlay"),
+        ));
+        for ([ax, ay], [bx, by], occupied) in &self.zones {
+            let color = if *occupied {
+                egui::Color32::from_rgb(255, 92, 140)
+            } else {
+                egui::Color32::from_rgb(120, 230, 210)
+            };
+            painter.line_segment(
+                [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                egui::Stroke::new(if *occupied { 2.0_f32 } else { 1.0 }, color),
+            );
+        }
+        for ([ax, ay], [bx, by]) in &self.routes {
+            painter.line_segment(
+                [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(170, 240, 120)),
+            );
+        }
+        for ([ax, ay], [bx, by]) in &self.focus {
+            painter.line_segment(
+                [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 205, 90)),
+            );
+        }
+        for ([x, y], text) in &self.labels {
+            let galley = painter.layout_no_wrap(
+                text.clone(),
+                egui::FontId::monospace(12.0),
+                egui::Color32::WHITE,
+            );
+            let rect = egui::Rect::from_center_size(
+                egui::pos2(*x, *y),
+                galley.size() + egui::vec2(8.0, 4.0),
+            );
+            painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(170));
+            painter.galley(
+                rect.min + egui::vec2(4.0, 2.0),
+                galley,
+                egui::Color32::WHITE,
+            );
+        }
+    }
+}
+
+/// The input the Game tab's egui context gets this frame: the window's input with the tab's
+/// game area as its screen, pointer events only while `pointer`, keyboard and text only while
+/// `keyboard` (never Esc, which gives the keyboard back to the editor). `left` adds a
+/// `PointerGone` when the pointer just left the game.
+pub(crate) fn game_raw_input(
+    mut raw: egui::RawInput,
+    rect: egui::Rect,
+    pointer: bool,
+    keyboard: bool,
+    left: bool,
+) -> egui::RawInput {
+    use egui::Event;
+    raw.screen_rect = Some(rect);
+    raw.events.retain(|event| match event {
+        Event::PointerMoved(_)
+        | Event::MouseMoved(_)
+        | Event::PointerButton { .. }
+        | Event::PointerGone
+        | Event::MouseWheel { .. }
+        | Event::Zoom(_)
+        | Event::Touch { .. } => pointer,
+        Event::Key {
+            key: egui::Key::Escape,
+            ..
+        } => false,
+        Event::Key { .. }
+        | Event::Text(_)
+        | Event::Copy
+        | Event::Cut
+        | Event::Paste(_)
+        | Event::Ime(_) => keyboard,
+        Event::WindowFocused(_) => true,
+        _ => false,
+    });
+    if !keyboard {
+        raw.modifiers = egui::Modifiers::NONE;
+    }
+    if left && !pointer {
+        raw.events.push(Event::PointerGone);
+    }
+    raw
 }
 
 /// Wall-clock phases of one main-loop frame; only frames over budget are kept.
@@ -618,6 +730,9 @@ impl App {
             deferred_command: None,
             closing: false,
             audio: crate::audio::Output::new(),
+            game_ctx: None,
+            game_input: false,
+            game_pointer: false,
         })
     }
 
@@ -1139,6 +1254,199 @@ impl App {
         self.editor.as_ref().is_some_and(|e| !e.previewing)
     }
 
+    /// Editor Play inside the Game tab (the editor panels stay; not Play Maximized).
+    fn play_in_tab(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|e| e.previewing && !e.play.maximized)
+    }
+
+    /// The editor interface is drawn (editing, or Play in the Game tab).
+    fn chrome(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|e| !e.previewing || !e.play.maximized)
+    }
+
+    /// Gives the keyboard (and a locked mouse, when the game asks for one) to the game in the
+    /// Game tab, or takes it back; held keys are released on the way back.
+    fn set_game_input(&mut self, on: bool) {
+        let on = on && self.play_in_tab();
+        if self.game_input == on {
+            return;
+        }
+        self.game_input = on;
+        if !on {
+            self.keys.clear();
+            self.mouse_down = false;
+        } else {
+            // Typing in an editor field would otherwise keep receiving keys.
+            let focused = self.ctx.memory(|m| m.focused());
+            if let Some(id) = focused {
+                self.ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
+        if let Some(editor) = &mut self.editor {
+            editor.game.input = on;
+        }
+        self.capture();
+    }
+
+    /// Whether a mouse event at the cursor belongs to the game: in the Game tab only when the
+    /// pointer is over its game area (a click elsewhere takes the input back and must not
+    /// also reach the game), otherwise when egui did not take it.
+    fn pointer_to_game(&self, consumed: bool) -> bool {
+        if self.play_in_tab() {
+            self.editor.as_ref().is_some_and(|e| e.game.hovered)
+        } else {
+            !consumed
+        }
+    }
+
+    /// The first active camera's view (authored order, input contexts respected), as the
+    /// runtime's frame lists it before system adjustments; no extraction.
+    fn first_game_view(&self) -> Option<crate::presentation::RenderView> {
+        let state = &self.runtime.state;
+        let (slot, e) = state.compiled.entities.iter().enumerate().find(|(i, e)| {
+            state.compiled.enabled.get(*i).copied().unwrap_or(false)
+                && e.camera.as_ref().is_some_and(|c| c.active)
+                && state.contexts.as_ref().is_none_or(|c| c.camera(&e.id))
+        })?;
+        let m = crate::trigger::world_matrix(state, slot);
+        Some(crate::presentation::RenderView {
+            id: e.id.clone(),
+            eye: m.transform_point3(glam::Vec3::ZERO),
+            forward: m.transform_vector3(-glam::Vec3::Z).normalize_or_zero(),
+            up: m.transform_vector3(glam::Vec3::Y).normalize_or_zero(),
+            camera: e.camera.clone()?,
+            instances: vec![],
+        })
+    }
+
+    /// Runs the fixed-step simulation for `real` seconds of wall time (scaled by the editor's
+    /// Play time scale): whole `FIXED_DT` steps, at most 12 per frame at 1× (proportionally
+    /// more when faster), the remainder carried to the next frame. Returns the steps run.
+    fn advance(&mut self, real: f32) -> u32 {
+        let scale = self
+            .editor
+            .as_ref()
+            .filter(|e| e.previewing)
+            .map_or(1.0, |e| e.play.time_scale);
+        self.accumulator += real * scale;
+        let mut keys = self
+            .keys
+            .iter()
+            .map(|k| format!("{k:?}"))
+            .collect::<std::collections::BTreeSet<_>>();
+        if self.mouse_down {
+            keys.insert("MouseLeft".into());
+        }
+        let input = ActionMap::from_bindings(&self.runtime.bindings, &keys);
+        let max = (12.0 * scale.max(1.0)).ceil() as u32;
+        let mut steps = 0;
+        while self.accumulator >= FIXED_DT && steps < max {
+            self.runtime.step(&input);
+            self.accumulator -= FIXED_DT;
+            steps += 1;
+        }
+        if steps == max {
+            self.accumulator = 0.0;
+        }
+        steps
+    }
+
+    /// Play ▸ Step: pauses, then advances exactly one fixed step (no input held).
+    fn play_step(&mut self) {
+        self.ui.playing = false;
+        self.accumulator = 0.0;
+        self.runtime.step(&ActionMap::default());
+        if let Some(editor) = &mut self.editor {
+            editor.play.manual_steps += 1;
+            editor.play.paused = true;
+            editor.play.tick = self.runtime.state.tick;
+        }
+        self.capture();
+    }
+
+    /// The live Inspector's runtime state of the object selected during Play, refreshed a
+    /// few times per second (results of the installed `*.inspect` actions).
+    fn refresh_live_inspect(&mut self) {
+        let Some(id) = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.live_target(self.runtime.state.tick))
+        else {
+            return;
+        };
+        let results = self.runtime.inspect_entity(&id);
+        let tick = self.runtime.state.tick;
+        if let Some(editor) = &mut self.editor {
+            editor.set_live(id, tick, results);
+        }
+    }
+
+    /// The Play overlay for the first active camera view inside `bounds` (x, y, w, h points).
+    fn behavior_overlay(&self, bounds: [f32; 4]) -> BehaviorOverlay {
+        let mut out = BehaviorOverlay::default();
+        let rt = &self.runtime;
+        let any = rt.system::<crate::trigger::TriggerSystem>().is_some()
+            || rt.system::<crate::nav_agent::NavSystem>().is_some()
+            || rt.system::<crate::fsm::FsmSystem>().is_some()
+            || rt.system::<crate::interact::InteractSystem>().is_some();
+        if !any {
+            return out;
+        }
+        let first = self.first_game_view();
+        let view = first.as_ref();
+        if let (Some(triggers), Some(view)) =
+            (self.runtime.system::<crate::trigger::TriggerSystem>(), view)
+        {
+            out.zones = triggers
+                .wireframes(&self.runtime.state)
+                .into_iter()
+                .filter_map(|(a, b, occupied)| {
+                    Some((view.project(a, bounds)?, view.project(b, bounds)?, occupied))
+                })
+                .collect();
+        }
+        if let (Some(nav), Some(view)) =
+            (self.runtime.system::<crate::nav_agent::NavSystem>(), view)
+        {
+            for (at, rest) in nav.routes(&self.runtime.state) {
+                let mut from = at;
+                for to in rest {
+                    if let (Some(a), Some(b)) =
+                        (view.project(from, bounds), view.project(to, bounds))
+                    {
+                        out.routes.push((a, b));
+                    }
+                    from = to;
+                }
+            }
+        }
+        if let (Some(fsm), Some(view)) = (self.runtime.system::<crate::fsm::FsmSystem>(), view) {
+            out.labels = fsm
+                .labels(&self.runtime.state)
+                .into_iter()
+                .filter_map(|(p, text)| {
+                    view.project(glam::Vec3::from_array(p), bounds)
+                        .map(|s| (s, text))
+                })
+                .collect();
+        }
+        if let (Some(interact), Some(view)) = (
+            self.runtime.system::<crate::interact::InteractSystem>(),
+            view,
+        ) {
+            for (a, b) in interact.focus_lines(&self.runtime.state) {
+                if let (Some(a), Some(b)) = (view.project(a, bounds), view.project(b, bounds)) {
+                    out.focus.push((a, b));
+                }
+            }
+        }
+        out
+    }
+
     fn observation(&self) -> Observation {
         let mut observation = self.runtime.observation();
         if observation.metrics.contains_key("audio") {
@@ -1173,13 +1481,33 @@ impl App {
     fn screen_pointer(&mut self, kind: crate::world::PointerKind) {
         if let Some(window) = &self.window {
             let size = window.inner_size();
-            let aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
+            let mut aspect = size.width.max(1) as f32 / size.height.max(1) as f32;
+            let mut cursor = self.cursor;
+            if self.play_in_tab() {
+                // The game's screen is the Game tab's game area. A view-only camera choice is
+                // not what the game's pointer rays use, so it gets no pointer then.
+                let editor = self.editor.as_ref().unwrap();
+                let rect = editor.game.rect;
+                if !rect.is_positive() || editor.game.camera.is_some() {
+                    return;
+                }
+                let screen = self.ctx.screen_rect();
+                let x = screen.min.x + cursor[0] * screen.width();
+                let y = screen.min.y + cursor[1] * screen.height();
+                cursor = [
+                    (x - rect.min.x) / rect.width(),
+                    (y - rect.min.y) / rect.height(),
+                ];
+                let inside = cursor.iter().all(|v| (0.0..=1.0).contains(v));
+                if !inside && !matches!(kind, crate::world::PointerKind::PrimaryUp) {
+                    return;
+                }
+                cursor = cursor.map(|v| v.clamp(0.0, 1.0));
+                aspect = rect.width() / rect.height();
+            }
             let additive =
                 self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
-            if let Err(e) = self
-                .runtime
-                .screen_pointer(kind, self.cursor, aspect, additive)
-            {
+            if let Err(e) = self.runtime.screen_pointer(kind, cursor, aspect, additive) {
                 self.ui.output.push(format!("{e:#}"));
             }
         }
@@ -1306,8 +1634,10 @@ impl App {
         }
     }
     fn capture(&mut self) {
+        // In the Game tab the mouse is locked only after a click gave the game the input.
         let should = self.ui.playing
             && !self.ui.console
+            && (self.game_input || !self.play_in_tab())
             && self.runtime.pointer_allowed()
             && self.focused
             && self.options.smoke_frames.is_none();
@@ -1583,6 +1913,21 @@ impl App {
     }
 
     fn editor_action(&mut self, action: editor::Action) -> Result<()> {
+        let write = matches!(
+            action,
+            editor::Action::Write { .. }
+                | editor::Action::Restore { .. }
+                | editor::Action::RestoreTo { .. }
+                | editor::Action::ResolveProposal { .. }
+        );
+        if write && self.editor.as_ref().is_some_and(|e| e.previewing) {
+            // Play runs a pinned revision; an edit made now would not show until Stop.
+            return Err(axiom_core::Diagnostic::error(
+                "play_read_only",
+                "/play",
+                "the editor is read-only during Play; stop Play to edit (agents can still apply revisions)",
+            ));
+        }
         if self.writes.is_some() {
             // Every editor commit goes to the background writer, in order.
             let kind = match action {
@@ -1610,6 +1955,22 @@ impl App {
         let editor = self.editor.as_mut().unwrap();
         match action {
             editor::Action::Play => self.editor_play(true),
+            editor::Action::PlayStop => self.editor_play(false),
+            editor::Action::PlayPause => {
+                if editor.previewing {
+                    self.ui.playing = !self.ui.playing;
+                    self.ui.console = false;
+                    editor.play.paused = !self.ui.playing;
+                    self.capture();
+                }
+                Ok(())
+            }
+            editor::Action::PlayStep => {
+                if editor.previewing {
+                    self.play_step();
+                }
+                Ok(())
+            }
             editor::Action::Quit => {
                 self.quit = true;
                 Ok(())
@@ -1815,11 +2176,16 @@ impl App {
             }
             self.runtime = edit;
         }
-        self.editor.as_mut().unwrap().previewing = play;
+        self.set_game_input(false);
+        self.editor.as_mut().unwrap().set_playing(play);
         self.ui.playing = play;
         self.ui.console = false;
+        // Interface textures belong to the egui context that loaded them (the window's, or the
+        // Game tab's own during Play in the tab).
+        self.ui.textures.clear();
         self.keys.clear();
         self.mouse_down = false;
+        self.game_pointer = false;
         self.accumulator = 0.0;
         self.capture();
         Ok(())
@@ -1936,117 +2302,72 @@ impl App {
             && !self.ui.console
             && (self.focused || self.options.smoke_frames.is_some())
         {
-            self.accumulator += if self.options.smoke_frames.is_some() {
+            self.advance(if self.options.smoke_frames.is_some() {
                 1.0 / 60.0
             } else {
                 elapsed
-            };
-            let mut keys = self
-                .keys
-                .iter()
-                .map(|k| format!("{k:?}"))
-                .collect::<std::collections::BTreeSet<_>>();
-            if self.mouse_down {
-                keys.insert("MouseLeft".into());
-            }
-            let input = ActionMap::from_bindings(&self.runtime.bindings, &keys);
-            let mut steps = 0;
-            while self.accumulator >= FIXED_DT && steps < 12 {
-                self.runtime.step(&input);
-                self.accumulator -= FIXED_DT;
-                steps += 1;
-            }
-            if steps == 12 {
-                self.accumulator = 0.0;
-            }
+            });
         } else {
             self.accumulator = 0.0;
         }
+        self.refresh_live_inspect();
         if let Some(editor) = &mut self.editor {
             // Background jobs deliver results here; never waited for on this thread.
             editor.poll_jobs();
+            editor.play.paused = !self.ui.playing;
+            editor.play.tick = self.runtime.state.tick;
+            editor.game.input = self.game_input;
         }
         self.poll_activation()?;
         self.poll_changes();
         phases.mark("simulate");
         let window = self.window.as_ref().unwrap().clone();
-        let raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);
+        let mut raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let ctx = self.ctx.clone();
-        let editing = self.editing();
+        let chrome = self.chrome();
+        let in_tab = self.play_in_tab();
+        // Play in the Game tab: the game's interface gets its own copy of this frame's input.
+        let game_raw = in_tab.then(|| raw.clone());
+        if in_tab && self.game_input {
+            // The game has the keyboard: the editor keeps key presses for the Play shortcuts
+            // and Esc, but no text and none of the keys egui uses to move focus to a widget or
+            // press it (Tab, Space, Enter, arrows); nothing in the editor keeps focus meanwhile.
+            raw.events.retain(|e| match e {
+                egui::Event::Key { key, .. } => !matches!(
+                    key,
+                    egui::Key::Tab
+                        | egui::Key::Space
+                        | egui::Key::Enter
+                        | egui::Key::ArrowUp
+                        | egui::Key::ArrowDown
+                        | egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight
+                ),
+                egui::Event::Text(_)
+                | egui::Event::Paste(_)
+                | egui::Event::Copy
+                | egui::Event::Cut
+                | egui::Event::Ime(_) => false,
+                _ => true,
+            });
+            if let Some(id) = self.ctx.memory(|m| m.focused()) {
+                self.ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
         let mut actions = vec![];
         let mut editor_actions = vec![];
         let mut stop = false;
         let mut toggle = false;
         let mut step = false;
-        // Play-in-editor debug overlay: live FSM state above each agent, projected through
-        // the first game view of this frame.
-        // Trigger zones are outlined too, pink while something is inside.
-        let mut zone_lines: Vec<([f32; 2], [f32; 2], bool)> = vec![];
-        // Navigation agents' remaining routes.
-        let mut route_lines: Vec<([f32; 2], [f32; 2])> = vec![];
-        let overlay: Vec<([f32; 2], String)> =
-            if !editing && self.editor.as_ref().is_some_and(|e| e.overlay) {
-                let screen = self.ctx.screen_rect();
-                let bounds = [screen.min.x, screen.min.y, screen.width(), screen.height()];
-                let views = self.runtime.render_frame().views;
-                let view = views.iter().find(|v| v.camera.active);
-                if let (Some(triggers), Some(view)) =
-                    (self.runtime.system::<crate::trigger::TriggerSystem>(), view)
-                {
-                    zone_lines = triggers
-                        .wireframes(&self.runtime.state)
-                        .into_iter()
-                        .filter_map(|(a, b, occupied)| {
-                            Some((view.project(a, bounds)?, view.project(b, bounds)?, occupied))
-                        })
-                        .collect();
-                }
-                if let (Some(nav), Some(view)) =
-                    (self.runtime.system::<crate::nav_agent::NavSystem>(), view)
-                {
-                    for (at, rest) in nav.routes(&self.runtime.state) {
-                        let mut from = at;
-                        for to in rest {
-                            if let (Some(a), Some(b)) =
-                                (view.project(from, bounds), view.project(to, bounds))
-                            {
-                                route_lines.push((a, b));
-                            }
-                            from = to;
-                        }
-                    }
-                }
-                match (self.runtime.system::<crate::fsm::FsmSystem>(), view) {
-                    (Some(fsm), Some(view)) => fsm
-                        .labels(&self.runtime.state)
-                        .into_iter()
-                        .filter_map(|(p, text)| {
-                            view.project(glam::Vec3::from_array(p), bounds)
-                                .map(|s| (s, text))
-                        })
-                        .collect(),
-                    _ => vec![],
-                }
-            } else {
-                vec![]
-            };
-        // Interactors to their focused interactables (same overlay switch).
-        let mut focus_lines: Vec<([f32; 2], [f32; 2])> = vec![];
-        if let (true, Some(interact), Some(view)) = (
-            !editing && self.editor.as_ref().is_some_and(|e| e.overlay),
-            self.runtime.system::<crate::interact::InteractSystem>(),
-            crate::nameplate::active_view(&self.runtime.state),
-        ) {
+        // Play Maximized: the debug overlay over the whole window.
+        let overlay = if !chrome && self.editor.as_ref().is_some_and(|e| e.overlay) {
             let screen = self.ctx.screen_rect();
-            let bounds = [screen.min.x, screen.min.y, screen.width(), screen.height()];
-            for (a, b) in interact.focus_lines(&self.runtime.state) {
-                if let (Some(a), Some(b)) = (view.project(a, bounds), view.project(b, bounds)) {
-                    focus_lines.push((a, b));
-                }
-            }
-        }
+            self.behavior_overlay([screen.min.x, screen.min.y, screen.width(), screen.height()])
+        } else {
+            BehaviorOverlay::default()
+        };
         let output = ctx.run(raw, |ctx| {
-            if editing {
+            if chrome {
                 let editor = self.editor.as_mut().unwrap();
                 editor.fps = self.ui.fps;
                 editor_actions = editor.draw(ctx, &self.runtime);
@@ -2072,53 +2393,55 @@ impl App {
                                 ui.checkbox(&mut editor.overlay, "Behavior overlay");
                             }
                         });
-                    let painter = ctx.layer_painter(egui::LayerId::new(
-                        egui::Order::Foreground,
-                        egui::Id::new("behavior_overlay"),
-                    ));
-                    for ([ax, ay], [bx, by], occupied) in &zone_lines {
-                        let color = if *occupied {
-                            egui::Color32::from_rgb(255, 92, 140)
-                        } else {
-                            egui::Color32::from_rgb(120, 230, 210)
-                        };
-                        painter.line_segment(
-                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
-                            egui::Stroke::new(if *occupied { 2.0_f32 } else { 1.0 }, color),
-                        );
-                    }
-                    for ([ax, ay], [bx, by]) in &route_lines {
-                        painter.line_segment(
-                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
-                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(170, 240, 120)),
-                        );
-                    }
-                    for ([ax, ay], [bx, by]) in &focus_lines {
-                        painter.line_segment(
-                            [egui::pos2(*ax, *ay), egui::pos2(*bx, *by)],
-                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 205, 90)),
-                        );
-                    }
-                    for ([x, y], text) in &overlay {
-                        let galley = painter.layout_no_wrap(
-                            text.clone(),
-                            egui::FontId::monospace(12.0),
-                            egui::Color32::WHITE,
-                        );
-                        let rect = egui::Rect::from_center_size(
-                            egui::pos2(*x, *y),
-                            galley.size() + egui::vec2(8.0, 4.0),
-                        );
-                        painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(170));
-                        painter.galley(
-                            rect.min + egui::vec2(4.0, 2.0),
-                            galley,
-                            egui::Color32::WHITE,
-                        );
-                    }
+                    overlay.paint(ctx);
                 }
             }
         });
+        // Clicking the game area gives it the keyboard; Esc or hiding the tab takes it back.
+        if let Some(editor) = &mut self.editor {
+            let capture = std::mem::take(&mut editor.game.capture_request);
+            let release = std::mem::take(&mut editor.game.release_request);
+            if release {
+                self.set_game_input(false);
+            } else if capture {
+                self.set_game_input(true);
+            }
+        }
+        // The game's interface (HUD, dialogue, prompts) inside the Game tab's game area.
+        let mut game_frame: Option<(egui::Context, egui::FullOutput)> = None;
+        if let (Some(game_raw), Some(editor)) = (game_raw, self.editor.as_ref()) {
+            let (rect, hovered, visible) =
+                (editor.game.rect, editor.game.hovered, editor.game.visible);
+            let overlay_on = editor.overlay && editor.game.camera.is_none();
+            if visible {
+                let game_ctx = self
+                    .game_ctx
+                    .get_or_insert_with(|| {
+                        let context = egui::Context::default();
+                        ui::configure(&context);
+                        context
+                    })
+                    .clone();
+                // A press that started on the game keeps reaching it until released.
+                let held = self.game_pointer && game_ctx.input(|i| i.pointer.any_down());
+                let pointer = self.game_input || hovered || held;
+                let left = self.game_pointer && !pointer;
+                self.game_pointer = pointer;
+                let input = game_raw_input(game_raw, rect, pointer, self.game_input, left);
+                let overlay = if overlay_on {
+                    self.behavior_overlay([rect.min.x, rect.min.y, rect.width(), rect.height()])
+                } else {
+                    BehaviorOverlay::default()
+                };
+                let out = game_ctx.run(input, |game| {
+                    actions = self.runtime.draw_ui(game, &mut self.ui);
+                    overlay.paint(game);
+                });
+                game_frame = Some((game_ctx, out));
+            } else {
+                self.game_pointer = false;
+            }
+        }
         phases.mark("jobs_overlay_ui");
         self.egui_state
             .as_mut()
@@ -2142,7 +2465,7 @@ impl App {
             self.capture();
         }
         if step && !self.ui.playing {
-            self.runtime.step(&ActionMap::default());
+            self.play_step();
         }
         if stop {
             self.editor_play(false)?;
@@ -2194,6 +2517,12 @@ impl App {
                         Err(error) => self.ui.output.push(format!("RESTART FAILED: {error:#}")),
                     }
                 }
+                // In the editor the game's Exit ends Play, not the editor.
+                Action::Quit if self.editor.is_some() => {
+                    // The rest of this batch was meant for the game that just ended.
+                    self.editor_play(false)?;
+                    break;
+                }
                 Action::Quit => event_loop.exit(),
                 Action::Apply(command) => {
                     let response =
@@ -2210,6 +2539,20 @@ impl App {
             self.ui.output.drain(..self.ui.output.len() - 32);
         }
         self.capture();
+        if self.captured && self.play_in_tab() {
+            // Windows has no Locked grab (Confined instead): keep the hidden cursor on the game
+            // area so it can never click an editor widget it cannot see.
+            if let (Some(window), Some(editor)) = (&self.window, &self.editor) {
+                let rect = editor.game.rect;
+                if rect.is_positive() {
+                    let at = rect.center() * self.ctx.pixels_per_point();
+                    let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
+                        at.x as f64,
+                        at.y as f64,
+                    ));
+                }
+            }
+        }
         self.audio.update(
             &self.runtime.state.audio,
             &self.runtime.runtime_session,
@@ -2233,7 +2576,7 @@ impl App {
             pending.as_deref()
         };
         phases.mark("actions_history_audio");
-        let frame = if editing {
+        let frame = if self.chrome() {
             self.editor
                 .as_ref()
                 .unwrap()
@@ -2242,11 +2585,20 @@ impl App {
             self.runtime.render_frame()
         };
         phases.mark("extract");
-        let rendered =
-            self.renderer
-                .as_mut()
-                .unwrap()
-                .render(&frame, &ctx, output, capture_path)?;
+        let (game_ctx, mut game_output) = game_frame.unzip();
+        if !self.play_in_tab() {
+            // Play stopped during this frame: upload / free its textures, draw nothing.
+            if let Some(out) = &mut game_output {
+                out.shapes.clear();
+            }
+        }
+        let rendered = self.renderer.as_mut().unwrap().render(
+            &frame,
+            &ctx,
+            output,
+            game_ctx.as_ref().zip(game_output),
+            capture_path,
+        )?;
         if !rendered {
             self.frames -= 1;
             // Keep an on-demand capture for the next frame that actually renders.
@@ -2376,7 +2728,11 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                if self.ui.playing && !self.ui.console && !self.captured && !consumed {
+                if self.ui.playing
+                    && !self.ui.console
+                    && !self.captured
+                    && self.pointer_to_game(consumed)
+                {
                     self.screen_pointer(crate::world::PointerKind::SecondaryDown);
                 }
             }
@@ -2388,12 +2744,33 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(value) => {
                 self.focused = value;
+                if !value && self.play_in_tab() {
+                    self.set_game_input(false);
+                    // A button held over the game when the window lost focus may never be
+                    // released here.
+                    self.keys.clear();
+                    self.mouse_down = false;
+                }
                 self.capture();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     let down = event.state == ElementState::Pressed;
                     if self.editing() {
+                        return;
+                    }
+                    if self.play_in_tab() {
+                        // Keys reach the game only while it has the input. Esc never does: the
+                        // editor's pass takes the input back on it (and, seeing the game had
+                        // it, does not also run Esc's own shortcut).
+                        if !self.game_input || key == KeyCode::Escape {
+                            return;
+                        }
+                        if down {
+                            self.keys.insert(key);
+                        } else {
+                            self.keys.remove(&key);
+                        }
                         return;
                     }
                     if down && !event.repeat {
@@ -2432,10 +2809,11 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
+                let to_game = self.pointer_to_game(consumed);
                 if self.ui.playing
                     && !self.ui.console
                     && !self.captured
-                    && (!consumed || state == ElementState::Released)
+                    && (to_game || state == ElementState::Released)
                 {
                     self.screen_pointer(if state == ElementState::Pressed {
                         crate::world::PointerKind::PrimaryDown
@@ -2445,7 +2823,10 @@ impl ApplicationHandler for App {
                 }
                 if state == ElementState::Released {
                     self.mouse_down = false;
-                } else if self.ui.playing && !self.ui.console && (self.captured || !consumed) {
+                } else if self.ui.playing
+                    && !self.ui.console
+                    && ((self.captured && !self.play_in_tab()) || to_game)
+                {
                     self.mouse_down = true;
                 }
             }
@@ -2540,6 +2921,215 @@ mod tests {
         assert_eq!(app.runtime.state.tick, 0);
         assert_eq!(app.runtime.state.transforms[slot], initial);
         assert_eq!(app.store.revision().unwrap(), 2);
+    }
+
+    /// Runs a registered editor command the way the menu / shortcut / bridge does.
+    fn command(app: &mut App, id: &str, arg: Option<&str>) -> Result<()> {
+        let actions = app.editor.as_mut().unwrap().run_command_with(id, arg)?;
+        for action in editor::coalesce(actions) {
+            app.editor_action(action)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn play_in_the_game_tab_pauses_steps_and_scales_time() {
+        let mut app = editor_app();
+        command(&mut app, "play.start", None).unwrap();
+        assert!(app.play_in_tab() && app.chrome(), "editor panels stay");
+        let editor = app.editor.as_ref().unwrap().observation();
+        assert_eq!(editor["play"]["state"], "playing");
+        assert!(editor["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["tab"] == "game" && t["focused"] == true));
+        // Pause: the simulation stops (the frame loop only advances while playing).
+        command(&mut app, "play.pause", None).unwrap();
+        assert!(!app.ui.playing);
+        let tick = app.runtime.state.tick;
+        // Step: exactly one fixed step per command, still paused.
+        command(&mut app, "play.step", None).unwrap();
+        assert_eq!(app.runtime.state.tick, tick + 1);
+        command(&mut app, "play.step", None).unwrap();
+        assert_eq!(app.runtime.state.tick, tick + 2);
+        assert!(!app.ui.playing);
+        let play = &app.editor.as_ref().unwrap().observation()["play"];
+        assert_eq!(play["state"], "paused");
+        assert_eq!(play["manual_steps"], 2);
+        assert_eq!(play["tick"], tick + 2);
+        // Resume, then Step while playing pauses first.
+        command(&mut app, "play.pause", None).unwrap();
+        assert!(app.ui.playing);
+        command(&mut app, "play.step", None).unwrap();
+        assert!(!app.ui.playing && app.runtime.state.tick == tick + 3);
+        // Time scale: steps per real second; every step stays FIXED_DT.
+        let run = |app: &mut App, scale: &str| {
+            command(app, "play.time_scale", Some(scale)).unwrap();
+            app.accumulator = 0.0;
+            let start = app.runtime.state.tick;
+            for _ in 0..60 {
+                app.advance(1.0 / 60.0);
+            }
+            app.runtime.state.tick - start
+        };
+        let normal = run(&mut app, "1");
+        assert!((119..=120).contains(&normal), "{normal}");
+        let half = run(&mut app, "0.5");
+        let quarter = run(&mut app, "0.25");
+        let double = run(&mut app, "2");
+        assert!((59..=60).contains(&half), "{half}");
+        assert!((29..=30).contains(&quarter), "{quarter}");
+        assert!((239..=240).contains(&double), "{double}");
+        assert!(command(&mut app, "play.time_scale", Some("3")).is_err());
+        assert_eq!(
+            app.editor.as_ref().unwrap().observation()["play"]["time_scale"],
+            2.0
+        );
+        // Bridge parity: the same command through editor_view.
+        let before = app.ui.playing;
+        app.runtime_request(Request::EditorView {
+            select: vec![],
+            focus: false,
+            dock: None,
+            capture: None,
+            play: None,
+            open: None,
+            command: Some("play.pause".into()),
+            arg: None,
+        })
+        .unwrap();
+        assert_ne!(app.ui.playing, before);
+        // Stop: back to the edit runtime; Play controls are unavailable.
+        command(&mut app, "play.stop", None).unwrap();
+        assert!(app.editing() && app.runtime.state.tick == 0);
+        assert!(command(&mut app, "play.pause", None)
+            .is_err_and(|e| e.to_string().contains("not playing")));
+    }
+
+    #[test]
+    fn editor_writes_are_refused_during_play_with_the_reason() {
+        let mut app = editor_app();
+        app.editor_action(editor::Action::Play).unwrap();
+        let rev = app.store.revision().unwrap();
+        let write = editor::Action::Write {
+            request: Request::Apply {
+                expected_rev: Some(rev),
+                edits: vec![Edit::set("title", json!("during play"))],
+            },
+            select: None,
+        };
+        let error = app.editor_action(write).unwrap_err();
+        assert_eq!(
+            axiom_core::error_response(&error)["diagnostics"][0]["code"],
+            "play_read_only"
+        );
+        assert!(app
+            .editor_action(editor::Action::Restore {
+                rev: 1,
+                redo: false
+            })
+            .is_err());
+        assert_eq!(app.store.revision().unwrap(), rev, "nothing written");
+        // An agent's own protocol write still works (it shows after Stop).
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("agent"))])
+            .unwrap();
+        app.editor_play(false).unwrap();
+        assert_eq!(app.runtime.state.compiled.source.title, "agent");
+    }
+
+    #[test]
+    fn play_maximized_keeps_the_full_window_preview() {
+        let mut app = editor_app();
+        command(&mut app, "play.maximize", None).unwrap();
+        command(&mut app, "play.start", None).unwrap();
+        assert!(
+            !app.play_in_tab() && !app.chrome(),
+            "old full-window preview"
+        );
+        assert!(command(&mut app, "play.maximize", None)
+            .is_err_and(|e| e.to_string().contains("stop Play")));
+        // The game never gets Game-tab input in this mode.
+        app.set_game_input(true);
+        assert!(!app.game_input);
+        command(&mut app, "play.stop", None).unwrap();
+        command(&mut app, "play.maximize", None).unwrap();
+        command(&mut app, "play.start", None).unwrap();
+        assert!(app.play_in_tab());
+        app.set_game_input(true);
+        assert!(app.game_input && app.editor.as_ref().unwrap().game.input);
+        command(&mut app, "play.stop", None).unwrap();
+        assert!(!app.game_input, "Stop takes the input back");
+    }
+
+    #[test]
+    fn live_inspector_reads_the_runtime_state_of_the_selection() {
+        let world: World = {
+            let mut store = Store::memory_with(
+                crate::installed_registry().authoring,
+                serde_json::from_str(include_str!("../../../content/two-cameras/world.json"))
+                    .unwrap(),
+            )
+            .unwrap();
+            store
+                .execute(Request::Acl {
+                    text:
+                        "tween box clip glow property=render.mesh/emission duration=1 autoplay=true"
+                            .into(),
+                    preview: false,
+                    expected_rev: None,
+                    propose: false,
+                })
+                .unwrap_or_else(|e| panic!("{e:#}"));
+            store.current().unwrap().1
+        };
+        let registry = crate::installed_registry();
+        let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
+        let mut app = App::new(
+            RunOptions {
+                mode: RunMode::Editor {
+                    selected: Some("box".into()),
+                },
+                load_slot: None,
+                replace_world: false,
+                db: PathBuf::new(),
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: false,
+            },
+            registry,
+            store,
+        )
+        .unwrap();
+        // Not playing: nothing is read.
+        app.refresh_live_inspect();
+        assert!(app.editor.as_ref().unwrap().live.id.is_empty());
+        app.editor_action(editor::Action::Play).unwrap();
+        for _ in 0..30 {
+            app.runtime.step(&ActionMap::default());
+        }
+        // Inspector not drawn this frame (hidden tab, Play Maximized): nothing is read.
+        app.refresh_live_inspect();
+        assert!(app.editor.as_ref().unwrap().live.id.is_empty());
+        app.editor.as_mut().unwrap().live.shown = true;
+        app.refresh_live_inspect();
+        let live = &app.editor.as_ref().unwrap().live;
+        assert_eq!(live.id, "box");
+        let (action, text) = live
+            .results
+            .iter()
+            .find(|(a, _)| a == "tween.inspect")
+            .expect("tween.inspect answered for box");
+        assert!(text.contains("glow"), "{action}: {text}");
+        // Throttled: the same tick or a fresh read is not repeated every frame.
+        assert!(app
+            .editor
+            .as_ref()
+            .unwrap()
+            .live_target(app.runtime.state.tick)
+            .is_none());
     }
 
     fn editor_app() -> App {
