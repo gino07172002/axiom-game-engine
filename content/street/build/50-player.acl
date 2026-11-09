@@ -1,0 +1,19 @@
+# Axiom Street, stage 5: the player (click-to-walk nav agent) and a follow camera that stops at walls.
+# action.actor would give WASD, but action.session owns its camera (no wall collision); see GAP-2.
+instantiate person id=hero at=-6,0,6
+rename hero "你(玩家)"
+set hero render.mesh/parts/1/color [1,0.55,0.15]
+set hero render.mesh/parts/3/color [0.95,0.85,0.2]
+# GAP-1: tags are not editable in the editor Inspector.
+set hero /tags ["player"]
+nav hero agent speed=3.2 radius=0.3
+set resources[id=nav.grid] pointer_agent "hero"
+set resources[id=input.bindings] axes {"orbit":{"positive":"KeyC","negative":"KeyZ"},"zoom":{"positive":"KeyF","negative":"KeyR"}}
+set resources[id=input.bindings] capture_pointer false
+audio hero listener
+set hero audio.listener/forward "+z"
+
+create camera id=camera at=-6,4,13
+rename camera "跟隨相機"
+camera main camera
+camera camera follow hero distance=7 min=0.5 max=12 pitch=22 height=1.5 orbit=orbit zoom=zoom radius=0.25

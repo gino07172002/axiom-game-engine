@@ -1,0 +1,88 @@
+# Axiom Street, stage 1: ground, road, sidewalks, crossing, buildings, street lights, dusk.
+# Every statement is an editor operation (+ Object presets, Inspector fields, Resource inspector);
+# the editor equivalent of each verb is listed in docs/acceptance-street.zh-TW.md.
+create cube id=street/ground at=0,-0.1,0
+rename street/ground "地面"
+set street/ground render.mesh/parts [{"transform":{"scale":[100,0.2,52]},"color":[0.16,0.19,0.15]}]
+create cube id=street/road at=0,0,0
+rename street/road "車道"
+set street/road render.mesh/parts [{"transform":{"position":[0,0.005,0],"scale":[100,0.01,8]},"color":[0.12,0.12,0.14]},{"transform":{"position":[-3,0.012,2],"scale":[0.35,0.004,3.8]},"color":[0.9,0.9,0.88]},{"transform":{"position":[3,0.012,-2],"scale":[0.35,0.004,3.8]},"color":[0.9,0.9,0.88]},{"transform":{"position":[-26,0.012,0],"scale":[44,0.004,0.12]},"color":[0.95,0.75,0.2]},{"transform":{"position":[26,0.012,0],"scale":[44,0.004,0.12]},"color":[0.95,0.75,0.2]}]
+create cube id=street/walk-n at=0,0,-5.5
+rename street/walk-n "北側人行道"
+set street/walk-n render.mesh/parts [{"transform":{"position":[0,0.01,0],"scale":[100,0.02,3]},"color":[0.4,0.39,0.38]},{"transform":{"position":[0,0.06,1.55],"scale":[100,0.12,0.12]},"color":[0.55,0.55,0.53]}]
+create cube id=street/walk-s at=0,0,5.5
+rename street/walk-s "南側人行道"
+set street/walk-s render.mesh/parts [{"transform":{"position":[0,0.01,0],"scale":[100,0.02,3]},"color":[0.4,0.39,0.38]},{"transform":{"position":[0,0.06,-1.55],"scale":[100,0.12,0.12]},"color":[0.55,0.55,0.53]}]
+create cube id=street/crossing at=0,0,0
+rename street/crossing "斑馬線"
+set street/crossing render.mesh/parts [{"transform":{"position":[0,0.014,-3.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,-2.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,-1.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,-0.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,0.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,1.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,2.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]},{"transform":{"position":[0,0.014,3.5],"scale":[3.6,0.004,0.5]},"color":[0.92,0.92,0.9]}]
+
+# Dusk: low orange sun from the west, gradient ambient, light fog (Resource inspector fields).
+create light directional id=sky/sun at=0,20,0
+rename sky/sun "夕陽"
+set sky/sun core.transform/rotation [-0.2241439,-0.4829629,-0.1294095,0.8365163]
+set sky/sun render.light/color [1,0.58,0.32]
+set sky/sun render.light/intensity 0.55
+set resources[id=render.environment] ambient {"mode":"gradient","sky":[0.2,0.17,0.3],"equator":[0.16,0.1,0.1],"ground":[0.04,0.035,0.04],"intensity":1}
+set resources[id=render.environment] fog {"color":[0.16,0.1,0.14],"density":0.012}
+
+# Buildings: obstacle preset (mesh + nav.blocker) with parts sized in the Inspector.
+create obstacle id=bld/n1 at=-22,0,-13
+rename bld/n1 "公寓"
+set bld/n1 render.mesh/parts [{"transform":{"position":[0,4.5,0],"scale":[16,9,10]},"color":[0.42,0.36,0.33]},{"transform":{"position":[0,9.15,0],"scale":[16.4,0.3,10.4]},"color":[0.24,0.21,0.21]},{"transform":{"position":[0,2,5.02],"scale":[13,1.1,0.05]},"color":[1,0.84,0.55],"emission":1.1},{"transform":{"position":[0,4.6,5.02],"scale":[13,1.1,0.05]},"color":[1,0.84,0.55],"emission":0.7},{"transform":{"position":[0,7.2,5.02],"scale":[13,1.1,0.05]},"color":[0.6,0.7,0.9],"emission":0.4}]
+set bld/n1 nav.blocker/half [8,5]
+create obstacle id=bld/n2 at=-5,0,-13
+rename bld/n2 "書店"
+set bld/n2 render.mesh/parts [{"transform":{"position":[0,3,0],"scale":[14,6,10]},"color":[0.55,0.5,0.42]},{"transform":{"position":[0,6.15,0],"scale":[14.4,0.3,10.4]},"color":[0.3,0.25,0.2]},{"transform":{"position":[0,1.6,5.02],"scale":[10,1.6,0.05]},"color":[1,0.9,0.6],"emission":1.2},{"transform":{"position":[0,4.3,5.02],"scale":[11,1,0.05]},"color":[1,0.84,0.55],"emission":0.6},{"transform":{"position":[0,2.85,5.6],"scale":[12,0.12,1.2]},"color":[0.6,0.16,0.15]}]
+set bld/n2 nav.blocker/half [7,5]
+create obstacle id=bld/n3 at=27,0,-13
+rename bld/n3 "辦公大樓"
+set bld/n3 render.mesh/parts [{"transform":{"position":[0,6,0],"scale":[14,12,10]},"color":[0.33,0.36,0.42]},{"transform":{"position":[0,12.15,0],"scale":[14.4,0.3,10.4]},"color":[0.2,0.21,0.25]},{"transform":{"position":[0,2.2,5.02],"scale":[12,1.4,0.05]},"color":[0.75,0.9,1],"emission":1},{"transform":{"position":[0,5.2,5.02],"scale":[12,1.4,0.05]},"color":[0.75,0.9,1],"emission":0.5},{"transform":{"position":[0,8.2,5.02],"scale":[12,1.4,0.05]},"color":[0.75,0.9,1],"emission":0.8}]
+set bld/n3 nav.blocker/half [7,5]
+create obstacle id=bld/s1 at=-20,0,13.5
+rename bld/s1 "老屋"
+set bld/s1 render.mesh/parts [{"transform":{"position":[0,3.5,0],"scale":[16,7,9]},"color":[0.5,0.42,0.38]},{"transform":{"position":[0,7.15,0],"scale":[16.4,0.3,9.4]},"color":[0.28,0.2,0.18]},{"transform":{"position":[0,2,-4.52],"scale":[13,1.1,0.05]},"color":[1,0.8,0.5],"emission":1},{"transform":{"position":[0,4.8,-4.52],"scale":[13,1.1,0.05]},"color":[1,0.8,0.5],"emission":0.5}]
+set bld/s1 nav.blocker/half [8,4.5]
+create obstacle id=bld/s2 at=22,0,13.5
+rename bld/s2 "便利商店"
+set bld/s2 render.mesh/parts [{"transform":{"position":[0,2.5,0],"scale":[16,5,9]},"color":[0.85,0.86,0.88]},{"transform":{"position":[0,5.15,0],"scale":[16.4,0.3,9.4]},"color":[0.15,0.55,0.35]},{"transform":{"position":[0,1.5,-4.52],"scale":[13,2,0.05]},"color":[0.9,1,0.95],"emission":1.4},{"transform":{"position":[0,3.6,-4.6],"scale":[14,0.6,0.1]},"color":[0.2,0.75,0.45],"emission":1.2}]
+set bld/s2 nav.blocker/half [8,4.5]
+
+# Park strip and bus stop on the south side (open, so the follow camera has room).
+create obstacle id=park/tree-1 at=-6,0,11
+set park/tree-1 render.mesh/parts [{"transform":{"position":[0,1,0],"scale":[0.35,2,0.35]},"color":[0.35,0.24,0.17]},{"transform":{"position":[0,2.6,0],"scale":[2.2,1.8,2.2]},"color":[0.22,0.4,0.25]}]
+set park/tree-1 nav.blocker/half [0.25,0.25]
+prefab create tree from park/tree-1
+instantiate tree id=park/tree-2 at=4,0,12
+instantiate tree id=park/tree-3 at=10,0,10.5
+create obstacle id=park/busstop at=-10,0,8.6
+rename park/busstop "公車站"
+set park/busstop render.mesh/parts [{"transform":{"position":[0,1.2,0.5],"scale":[3,2.4,0.08]},"color":[0.55,0.7,0.8]},{"transform":{"position":[0,2.45,0],"scale":[3.2,0.1,1.3]},"color":[0.2,0.22,0.26]},{"transform":{"position":[0,0.45,0.2],"scale":[2.4,0.08,0.4]},"color":[0.5,0.35,0.25]},{"transform":{"position":[1.4,1.6,-0.6],"scale":[0.5,0.5,0.05]},"color":[0.2,0.5,1],"emission":1.2}]
+set park/busstop nav.blocker/half [1.6,0.3]
+set park/busstop nav.blocker/offset [0,0.5]
+
+# Street lights: one post built in the Inspector, saved as a prefab, instantiated along the curbs.
+create obstacle id=lamp/1 at=-30,0,4.5
+set lamp/1 render.mesh/parts [{"transform":{"position":[0,2.5,0],"scale":[0.14,5,0.14]},"color":[0.15,0.16,0.18]},{"transform":{"position":[0,4.95,-0.55],"scale":[0.1,0.1,1.2]},"color":[0.15,0.16,0.18]},{"transform":{"position":[0,4.82,-1.1],"scale":[0.45,0.15,0.3]},"color":[1,0.8,0.55],"emission":2.2}]
+set lamp/1 nav.blocker/half [0.12,0.12]
+prefab create lamp-post from lamp/1
+instantiate lamp-post id=lamp/2 at=-15,0,4.5
+instantiate lamp-post id=lamp/3 at=15,0,4.5
+instantiate lamp-post id=lamp/4 at=30,0,4.5
+instantiate lamp-post id=lamp/5 at=-22,0,-4.5
+instantiate lamp-post id=lamp/6 at=-8,0,-4.5
+instantiate lamp-post id=lamp/7 at=20,0,-4.5
+instantiate lamp-post id=lamp/8 at=34,0,-4.5
+set entities[id=lamp/5,id=lamp/6,id=lamp/7,id=lamp/8] core.transform/rotation [0,1,0,0]
+create light spot id=lamp/1/light parent=lamp/1 at=0,4.7,-1.1
+create light spot id=lamp/2/light parent=lamp/2 at=0,4.7,-1.1
+create light spot id=lamp/3/light parent=lamp/3 at=0,4.7,-1.1
+create light spot id=lamp/4/light parent=lamp/4 at=0,4.7,-1.1
+create light spot id=lamp/5/light parent=lamp/5 at=0,4.7,-1.1
+create light spot id=lamp/6/light parent=lamp/6 at=0,4.7,-1.1
+create light spot id=lamp/7/light parent=lamp/7 at=0,4.7,-1.1
+create light spot id=lamp/8/light parent=lamp/8 at=0,4.7,-1.1
+set lamp/*/light render.light/color [1,0.78,0.5]
+set lamp/*/light render.light/intensity 6
+set lamp/*/light render.light/range 10
+set lamp/*/light render.light/spot {"inner_degrees":35,"outer_degrees":62}

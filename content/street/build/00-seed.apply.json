@@ -1,0 +1,11 @@
+{"op":"apply","edits":[
+ {"kind":"set","path":"/capabilities","value":{"core":1,"render":1,"physics":1,"behavior":1,"nav":1,"narrative":1,"ui":1}},
+ {"kind":"set","path":"id","value":"street"},
+ {"kind":"set","path":"title","value":"Axiom Street / 黃昏街口"},
+ {"kind":"set_systems","systems":["behavior.execute"]},
+ {"kind":"set_resource","id":"behavior.program","value":{"variables":{},"events":{},"rules":[]}},
+ {"kind":"set_resource","id":"render.environment","value":{"ambient":{"mode":"color","color":[0.2,0.2,0.2],"intensity":1}}},
+ {"kind":"set_resource","id":"nav.grid","value":{"cell_size":0.25,"bounds":{"min":[-48,-24],"max":[48,24]}}},
+ {"kind":"set_resource","id":"narrative.graph","value":{"start":"street","nodes":[{"id":"street","speaker":"street","text":"hub"}]}},
+ {"kind":"set_resource","id":"ui.document","value":{"locale":"zh-TW","catalogs":{"zh-TW":{"street":"街道","hub":"…"}},"widgets":[]}}
+]}

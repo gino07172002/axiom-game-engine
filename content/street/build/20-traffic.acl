@@ -1,0 +1,85 @@
+# Axiom Street, stage 2: cars on a closed path loop, engine sound, traffic signal, stop-line zones.
+# Car: one object built in the Inspector, saved as a prefab, instantiated twice.
+create cube id=car/a at=-40,0,2
+rename car/a "紅色轎車"
+set car/a render.mesh/parts [{"transform":{"position":[0,0.55,0],"scale":[1.8,0.6,4.2]},"color":[0.75,0.12,0.1]},{"transform":{"position":[0,1.05,-0.3],"scale":[1.6,0.5,2.2]},"color":[0.14,0.18,0.25]},{"transform":{"position":[0.85,0.33,1.35],"scale":[0.25,0.66,0.66]},"color":[0.06,0.06,0.07]},{"transform":{"position":[-0.85,0.33,1.35],"scale":[0.25,0.66,0.66]},"color":[0.06,0.06,0.07]},{"transform":{"position":[0.85,0.33,-1.35],"scale":[0.25,0.66,0.66]},"color":[0.06,0.06,0.07]},{"transform":{"position":[-0.85,0.33,-1.35],"scale":[0.25,0.66,0.66]},"color":[0.06,0.06,0.07]},{"transform":{"position":[0.6,0.6,2.11],"scale":[0.35,0.15,0.04]},"color":[1,0.97,0.88],"emission":3},{"transform":{"position":[-0.6,0.6,2.11],"scale":[0.35,0.15,0.04]},"color":[1,0.97,0.88],"emission":3},{"transform":{"position":[0.65,0.65,-2.11],"scale":[0.3,0.12,0.04]},"color":[1,0.1,0.08],"emission":1.5},{"transform":{"position":[-0.65,0.65,-2.11],"scale":[0.3,0.12,0.04]},"color":[1,0.1,0.08],"emission":1.5}]
+prefab create car from car/a
+instantiate car id=car/b at=0,0,2
+instantiate car id=car/c at=20,0,2
+rename car/b "藍色廂型車"
+rename car/c "黃色計程車"
+set car/b render.mesh/parts/0/color [0.15,0.3,0.7]
+set car/c render.mesh/parts/0/color [0.95,0.75,0.1]
+# GAP-1: the editor Inspector cannot edit entity tags; tags are written with a raw pointer.
+set car/a /tags ["car","car_a"]
+set car/b /tags ["car","car_b"]
+set car/c /tags ["car","car_c"]
+
+# Road loop: eastbound on the south lane (z=+2), U-turn, westbound on the north lane (z=-2).
+create path id=road/loop at=0,0,0
+rename road/loop "車道迴圈"
+set road/loop path.spline/points [[-40,0,2],[40,0,2],[43.5,0,1.4],[45,0,0],[43.5,0,-1.4],[40,0,-2],[-40,0,-2],[-43.5,0,-1.4],[-45,0,0],[-43.5,0,1.4]]
+follow entities[id=car/a,id=car/b,id=car/c] road/loop speed=8
+set entities[tag=car] path.follow/turn_rate 240
+
+# Headlights (lights are children of the moving car).
+create light spot id=car/a/beam parent=car/a at=0,0.7,2.2
+create light spot id=car/b/beam parent=car/b at=0,0.7,2.2
+create light spot id=car/c/beam parent=car/c at=0,0.7,2.2
+set car/*/beam core.transform/rotation [0,0.9961947,0.0871557,0]
+set car/*/beam render.light/color [1,0.95,0.85]
+set car/*/beam render.light/intensity 4
+set car/*/beam render.light/range 14
+set car/*/beam render.light/spot {"inner_degrees":18,"outer_degrees":32}
+
+# Engine sound: procedural clip + looping spatial source on every car.
+audio clip engine engine
+audio entities[tag=car] source clip=engine loop=on autoplay=on min=3 max=30 volume=0.6
+
+# Traffic signal: one root (owns the tween clips) with a pole for each direction and lamp children.
+create empty id=signal at=0,0,0
+rename signal "紅綠燈"
+create obstacle id=signal/w parent=signal at=-3.6,0,4.6
+create obstacle id=signal/e parent=signal at=3.6,0,-4.6
+set signal/w render.mesh/parts [{"transform":{"position":[0,1.6,0],"scale":[0.12,3.2,0.12]},"color":[0.15,0.16,0.18]},{"transform":{"position":[0,3.2,0],"scale":[0.3,0.95,0.3]},"color":[0.08,0.08,0.09]}]
+set signal/e render.mesh/parts [{"transform":{"position":[0,1.6,0],"scale":[0.12,3.2,0.12]},"color":[0.15,0.16,0.18]},{"transform":{"position":[0,3.2,0],"scale":[0.3,0.95,0.3]},"color":[0.08,0.08,0.09]}]
+set entities[id=signal/w,id=signal/e] nav.blocker/half [0.1,0.1]
+create cube id=signal/w/red parent=signal/w at=-0.17,3.5,0
+create cube id=signal/w/yellow parent=signal/w at=-0.17,3.2,0
+create cube id=signal/w/green parent=signal/w at=-0.17,2.9,0
+create cube id=signal/e/red parent=signal/e at=0.17,3.5,0
+create cube id=signal/e/yellow parent=signal/e at=0.17,3.2,0
+create cube id=signal/e/green parent=signal/e at=0.17,2.9,0
+set signal/*/red render.mesh/parts [{"transform":{"scale":[0.04,0.24,0.24]},"color":[0.28,0.03,0.02]}]
+set signal/*/yellow render.mesh/parts [{"transform":{"scale":[0.04,0.24,0.24]},"color":[0.28,0.2,0.03]}]
+set signal/*/green render.mesh/parts [{"transform":{"scale":[0.04,0.24,0.24]},"color":[0.04,0.28,0.1]}]
+create light point id=signal/w/glow parent=signal/w at=-0.7,3.2,0
+create light point id=signal/e/glow parent=signal/e at=0.7,3.2,0
+set signal/*/glow render.light/intensity 1.6
+set signal/*/glow render.light/range 5
+
+# Signal phases: three once-clips (Add Tween Clip), each switching all lamps; on_finish drives the cycle.
+tween signal clip green property=render.mesh/emission target=signal/w/green duration=0.25 autoplay=on on_finish=cycle_green
+tween signal clip yellow property=render.mesh/emission target=signal/w/yellow duration=0.25 on_finish=cycle_yellow
+tween signal clip red property=render.mesh/emission target=signal/w/red duration=0.25 on_finish=cycle_red
+set signal tween.clips/clips/green/tracks [{"target":"signal/w/green","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/w/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/red","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/green","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/e/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/red","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/glow","property":"render.light/color","keys":[{"t":0,"v":[0.2,1,0.4]}]},{"target":"signal/e/glow","property":"render.light/color","keys":[{"t":0,"v":[0.2,1,0.4]}]}]
+set signal tween.clips/clips/yellow/tracks [{"target":"signal/w/green","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/w/red","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/green","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/e/red","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/glow","property":"render.light/color","keys":[{"t":0,"v":[1,0.75,0.15]}]},{"target":"signal/e/glow","property":"render.light/color","keys":[{"t":0,"v":[1,0.75,0.15]}]}]
+set signal tween.clips/clips/red/tracks [{"target":"signal/w/green","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/w/red","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/e/green","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/yellow","property":"render.mesh/emission","keys":[{"t":0,"v":0}]},{"target":"signal/e/red","property":"render.mesh/emission","keys":[{"t":0,"v":9}]},{"target":"signal/w/glow","property":"render.light/color","keys":[{"t":0,"v":[1,0.15,0.1]}]},{"target":"signal/e/glow","property":"render.light/color","keys":[{"t":0,"v":[1,0.15,0.1]}]}]
+
+# Stop lines: one box trigger per car and direction (bindings cannot use the event's entity, see GAP-4).
+create trigger box id=stop/east-a at=-5,0.8,2
+create trigger box id=stop/east-b at=-5,0.8,2
+create trigger box id=stop/east-c at=-5,0.8,2
+create trigger box id=stop/west-a at=5,0.8,-2
+create trigger box id=stop/west-b at=5,0.8,-2
+create trigger box id=stop/west-c at=5,0.8,-2
+set stop/* trigger.zone/half_extents [1,1,1.6]
+set stop/*-a trigger.zone/filter {"tags":["car_a"],"components":[]}
+set stop/*-b trigger.zone/filter {"tags":["car_b"],"components":[]}
+set stop/*-c trigger.zone/filter {"tags":["car_c"],"components":[]}
+set resources[id=behavior.program] events/car_a_line {"fields":{}}
+set resources[id=behavior.program] events/car_b_line {"fields":{}}
+set resources[id=behavior.program] events/car_c_line {"fields":{}}
+set stop/*-a trigger.zone/on_enter "car_a_line"
+set stop/*-b trigger.zone/on_enter "car_b_line"
+set stop/*-c trigger.zone/on_enter "car_c_line"

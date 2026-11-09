@@ -65,6 +65,10 @@
 | Undo / Redo(Ctrl+Z / Ctrl+Y)、History 的 Restore | `undo REV`(新增一筆還原 revision) | 機制相同 |
 | Proposals 核准 / 退回 / rebase | `axiom resolve ID --approve\|--reject [--rebase]` | 同一個 `resolve_proposal` 請求 |
 
+## 反方向:AI 做得到、編輯器還做不到(街道驗收時記錄)
+
+見 `docs/acceptance-street.zh-TW.md` 的缺口報告。摘要:實體 tags(ACL `set ID /tags [...]`,編輯器沒有欄位,GAP-1);新建資源、加 capability / 系統、改世界 id / title(型別化 `apply`,GAP-3);tween 的 `play_on`(GAP-14);多物件同欄位 `set`(編輯器逐一改,GAP-10)。真 GPU 編輯器與 ACL 的 8 步對照(`scripts/street-editor-parity.ps1`)匯出結果逐位元相同。
+
 ## 唯讀或只影響畫面的功能(不改內容,不需要無頭等價)
 
 | 編輯器功能 | 說明 / 無頭替代 |

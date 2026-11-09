@@ -1,0 +1,7618 @@
+{
+  "capabilities": {
+    "audio": 1,
+    "behavior": 1,
+    "camera": 1,
+    "core": 1,
+    "interact": 1,
+    "narrative": 1,
+    "nav": 1,
+    "path": 1,
+    "physics": 1,
+    "render": 1,
+    "trigger": 1,
+    "tween": 1,
+    "ui": 1
+  },
+  "component_schemas": {},
+  "entities": [
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            -0.10000000149011612,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.19,
+                0.15
+              ],
+              "transform": {
+                "scale": [
+                  100,
+                  0.2,
+                  52
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "street/ground",
+      "label": "地面",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.12,
+                0.12,
+                0.14
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.005,
+                  0
+                ],
+                "scale": [
+                  100,
+                  0.01,
+                  8
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                0.9,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  -3,
+                  0.012,
+                  2
+                ],
+                "scale": [
+                  0.35,
+                  0.004,
+                  3.8
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                0.9,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  3,
+                  0.012,
+                  -2
+                ],
+                "scale": [
+                  0.35,
+                  0.004,
+                  3.8
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.75,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  -26,
+                  0.012,
+                  0
+                ],
+                "scale": [
+                  44,
+                  0.004,
+                  0.12
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.75,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  26,
+                  0.012,
+                  0
+                ],
+                "scale": [
+                  44,
+                  0.004,
+                  0.12
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "street/road",
+      "label": "車道",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            -5.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.4,
+                0.39,
+                0.38
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.01,
+                  0
+                ],
+                "scale": [
+                  100,
+                  0.02,
+                  3
+                ]
+              }
+            },
+            {
+              "color": [
+                0.55,
+                0.55,
+                0.53
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.06,
+                  1.55
+                ],
+                "scale": [
+                  100,
+                  0.12,
+                  0.12
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "street/walk-n",
+      "label": "北側人行道",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            5.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.4,
+                0.39,
+                0.38
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.01,
+                  0
+                ],
+                "scale": [
+                  100,
+                  0.02,
+                  3
+                ]
+              }
+            },
+            {
+              "color": [
+                0.55,
+                0.55,
+                0.53
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.06,
+                  -1.55
+                ],
+                "scale": [
+                  100,
+                  0.12,
+                  0.12
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "street/walk-s",
+      "label": "南側人行道",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  -3.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  -2.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  -1.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  -0.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  0.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  1.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  2.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.014,
+                  3.5
+                ],
+                "scale": [
+                  3.6,
+                  0.004,
+                  0.5
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "street/crossing",
+      "label": "斑馬線",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            20.0,
+            0.0
+          ],
+          "rotation": [
+            -0.2241439,
+            -0.4829629,
+            -0.1294095,
+            0.8365163
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.58,
+            0.32
+          ],
+          "enabled": true,
+          "intensity": 0.55,
+          "kind": "directional",
+          "shadows": true
+        }
+      },
+      "id": "sky/sun",
+      "label": "夕陽",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.0,
+            0.0,
+            -13.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            8,
+            5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.42,
+                0.36,
+                0.33
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  4.5,
+                  0
+                ],
+                "scale": [
+                  16,
+                  9,
+                  10
+                ]
+              }
+            },
+            {
+              "color": [
+                0.24,
+                0.21,
+                0.21
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  9.15,
+                  0
+                ],
+                "scale": [
+                  16.4,
+                  0.3,
+                  10.4
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.84,
+                0.55
+              ],
+              "emission": 1.1,
+              "transform": {
+                "position": [
+                  0,
+                  2,
+                  5.02
+                ],
+                "scale": [
+                  13,
+                  1.1,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.84,
+                0.55
+              ],
+              "emission": 0.7,
+              "transform": {
+                "position": [
+                  0,
+                  4.6,
+                  5.02
+                ],
+                "scale": [
+                  13,
+                  1.1,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.6,
+                0.7,
+                0.9
+              ],
+              "emission": 0.4,
+              "transform": {
+                "position": [
+                  0,
+                  7.2,
+                  5.02
+                ],
+                "scale": [
+                  13,
+                  1.1,
+                  0.05
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "bld/n1",
+      "label": "公寓",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.0,
+            0.0,
+            -13.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            7,
+            5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.55,
+                0.5,
+                0.42
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3,
+                  0
+                ],
+                "scale": [
+                  14,
+                  6,
+                  10
+                ]
+              }
+            },
+            {
+              "color": [
+                0.3,
+                0.25,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  6.15,
+                  0
+                ],
+                "scale": [
+                  14.4,
+                  0.3,
+                  10.4
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.9,
+                0.6
+              ],
+              "emission": 1.2,
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  5.02
+                ],
+                "scale": [
+                  10,
+                  1.6,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.84,
+                0.55
+              ],
+              "emission": 0.6,
+              "transform": {
+                "position": [
+                  0,
+                  4.3,
+                  5.02
+                ],
+                "scale": [
+                  11,
+                  1,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.6,
+                0.16,
+                0.15
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.85,
+                  5.6
+                ],
+                "scale": [
+                  12,
+                  0.12,
+                  1.2
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "bld/n2",
+      "label": "書店",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            27.0,
+            0.0,
+            -13.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            7,
+            5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.33,
+                0.36,
+                0.42
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  6,
+                  0
+                ],
+                "scale": [
+                  14,
+                  12,
+                  10
+                ]
+              }
+            },
+            {
+              "color": [
+                0.2,
+                0.21,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  12.15,
+                  0
+                ],
+                "scale": [
+                  14.4,
+                  0.3,
+                  10.4
+                ]
+              }
+            },
+            {
+              "color": [
+                0.75,
+                0.9,
+                1
+              ],
+              "emission": 1,
+              "transform": {
+                "position": [
+                  0,
+                  2.2,
+                  5.02
+                ],
+                "scale": [
+                  12,
+                  1.4,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.75,
+                0.9,
+                1
+              ],
+              "emission": 0.5,
+              "transform": {
+                "position": [
+                  0,
+                  5.2,
+                  5.02
+                ],
+                "scale": [
+                  12,
+                  1.4,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.75,
+                0.9,
+                1
+              ],
+              "emission": 0.8,
+              "transform": {
+                "position": [
+                  0,
+                  8.2,
+                  5.02
+                ],
+                "scale": [
+                  12,
+                  1.4,
+                  0.05
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "bld/n3",
+      "label": "辦公大樓",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -20.0,
+            0.0,
+            13.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            8,
+            4.5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.5,
+                0.42,
+                0.38
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3.5,
+                  0
+                ],
+                "scale": [
+                  16,
+                  7,
+                  9
+                ]
+              }
+            },
+            {
+              "color": [
+                0.28,
+                0.2,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  7.15,
+                  0
+                ],
+                "scale": [
+                  16.4,
+                  0.3,
+                  9.4
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.8,
+                0.5
+              ],
+              "emission": 1,
+              "transform": {
+                "position": [
+                  0,
+                  2,
+                  -4.52
+                ],
+                "scale": [
+                  13,
+                  1.1,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.8,
+                0.5
+              ],
+              "emission": 0.5,
+              "transform": {
+                "position": [
+                  0,
+                  4.8,
+                  -4.52
+                ],
+                "scale": [
+                  13,
+                  1.1,
+                  0.05
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "bld/s1",
+      "label": "老屋",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            22.0,
+            0.0,
+            13.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            8,
+            4.5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.85,
+                0.86,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.5,
+                  0
+                ],
+                "scale": [
+                  16,
+                  5,
+                  9
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.55,
+                0.35
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  5.15,
+                  0
+                ],
+                "scale": [
+                  16.4,
+                  0.3,
+                  9.4
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                1,
+                0.95
+              ],
+              "emission": 1.4,
+              "transform": {
+                "position": [
+                  0,
+                  1.5,
+                  -4.52
+                ],
+                "scale": [
+                  13,
+                  2,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.2,
+                0.75,
+                0.45
+              ],
+              "emission": 1.2,
+              "transform": {
+                "position": [
+                  0,
+                  3.6,
+                  -4.6
+                ],
+                "scale": [
+                  14,
+                  0.6,
+                  0.1
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "bld/s2",
+      "label": "便利商店",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -6.0,
+            0.0,
+            11.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "park/tree-1",
+      "prefab": "tree",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            4.0,
+            0.0,
+            12.0
+          ]
+        }
+      },
+      "id": "park/tree-2",
+      "prefab": "tree",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            10.0,
+            0.0,
+            10.5
+          ]
+        }
+      },
+      "id": "park/tree-3",
+      "prefab": "tree",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -10.0,
+            0.0,
+            8.600000381469727
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            1.6,
+            0.3
+          ],
+          "offset": [
+            0,
+            0.5
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.55,
+                0.7,
+                0.8
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.2,
+                  0.5
+                ],
+                "scale": [
+                  3,
+                  2.4,
+                  0.08
+                ]
+              }
+            },
+            {
+              "color": [
+                0.2,
+                0.22,
+                0.26
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.45,
+                  0
+                ],
+                "scale": [
+                  3.2,
+                  0.1,
+                  1.3
+                ]
+              }
+            },
+            {
+              "color": [
+                0.5,
+                0.35,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0.2
+                ],
+                "scale": [
+                  2.4,
+                  0.08,
+                  0.4
+                ]
+              }
+            },
+            {
+              "color": [
+                0.2,
+                0.5,
+                1
+              ],
+              "emission": 1.2,
+              "transform": {
+                "position": [
+                  1.4,
+                  1.6,
+                  -0.6
+                ],
+                "scale": [
+                  0.5,
+                  0.5,
+                  0.05
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "park/busstop",
+      "label": "公車站",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -30.0,
+            0.0,
+            4.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "lamp/1",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.0,
+            0.0,
+            4.5
+          ]
+        }
+      },
+      "id": "lamp/2",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            15.0,
+            0.0,
+            4.5
+          ]
+        }
+      },
+      "id": "lamp/3",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            30.0,
+            0.0,
+            4.5
+          ]
+        }
+      },
+      "id": "lamp/4",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -22.0,
+            0.0,
+            -4.5
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        }
+      },
+      "id": "lamp/5",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -8.0,
+            0.0,
+            -4.5
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        }
+      },
+      "id": "lamp/6",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            20.0,
+            0.0,
+            -4.5
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        }
+      },
+      "id": "lamp/7",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            34.0,
+            0.0,
+            -4.5
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        }
+      },
+      "id": "lamp/8",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/1/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/2/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/3/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/4/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/5/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/6/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/7/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.699999809265137,
+            -1.100000023841858
+          ],
+          "rotation": [
+            -0.7071068286895752,
+            0.0,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.78,
+            0.5
+          ],
+          "enabled": true,
+          "intensity": 6,
+          "kind": "spot",
+          "range": 10,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 35,
+            "outer_degrees": 62
+          }
+        }
+      },
+      "id": "lamp/8/light",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "audio.source": {
+          "autoplay": true,
+          "clip": "engine",
+          "enabled": true,
+          "loop": true,
+          "max_distance": 30.0,
+          "min_distance": 3.0,
+          "pitch": 1.0,
+          "priority": 0,
+          "rolloff": "inverse",
+          "spatial": true,
+          "volume": 0.6000000238418579
+        },
+        "core.transform": {
+          "position": [
+            -40.0,
+            0.0,
+            2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "road/loop",
+          "paused": false,
+          "speed": 8.0,
+          "start": 0.0,
+          "start_fraction": 0.0,
+          "turn_rate": 240,
+          "yaw_offset": 0.0
+        }
+      },
+      "id": "car/a",
+      "label": "紅色轎車",
+      "prefab": "car",
+      "tags": [
+        "car",
+        "car_a"
+      ]
+    },
+    {
+      "components": {
+        "audio.source": {
+          "autoplay": true,
+          "clip": "engine",
+          "enabled": true,
+          "loop": true,
+          "max_distance": 30.0,
+          "min_distance": 3.0,
+          "pitch": 1.0,
+          "priority": 0,
+          "rolloff": "inverse",
+          "spatial": true,
+          "volume": 0.6000000238418579
+        },
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            2.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "road/loop",
+          "paused": false,
+          "speed": 8.0,
+          "start": 0.0,
+          "start_fraction": 0.3333333432674408,
+          "turn_rate": 240,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.15,
+                0.3,
+                0.7
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.55,
+                  0
+                ],
+                "scale": [
+                  1.8,
+                  0.6,
+                  4.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.14,
+                0.18,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.05,
+                  -0.3
+                ],
+                "scale": [
+                  1.6,
+                  0.5,
+                  2.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  -0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  -0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "car/b",
+      "label": "藍色廂型車",
+      "prefab": "car",
+      "tags": [
+        "car",
+        "car_b"
+      ]
+    },
+    {
+      "components": {
+        "audio.source": {
+          "autoplay": true,
+          "clip": "engine",
+          "enabled": true,
+          "loop": true,
+          "max_distance": 30.0,
+          "min_distance": 3.0,
+          "pitch": 1.0,
+          "priority": 0,
+          "rolloff": "inverse",
+          "spatial": true,
+          "volume": 0.6000000238418579
+        },
+        "core.transform": {
+          "position": [
+            20.0,
+            0.0,
+            2.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "road/loop",
+          "paused": false,
+          "speed": 8.0,
+          "start": 0.0,
+          "start_fraction": 0.6666666865348816,
+          "turn_rate": 240,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.95,
+                0.75,
+                0.1
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.55,
+                  0
+                ],
+                "scale": [
+                  1.8,
+                  0.6,
+                  4.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.14,
+                0.18,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.05,
+                  -0.3
+                ],
+                "scale": [
+                  1.6,
+                  0.5,
+                  2.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  -0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  -0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "car/c",
+      "label": "黃色計程車",
+      "prefab": "car",
+      "tags": [
+        "car",
+        "car_c"
+      ]
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "path.spline": {
+          "closed": true,
+          "interpolation": "linear",
+          "points": [
+            [
+              -40,
+              0,
+              2
+            ],
+            [
+              40,
+              0,
+              2
+            ],
+            [
+              43.5,
+              0,
+              1.4
+            ],
+            [
+              45,
+              0,
+              0
+            ],
+            [
+              43.5,
+              0,
+              -1.4
+            ],
+            [
+              40,
+              0,
+              -2
+            ],
+            [
+              -40,
+              0,
+              -2
+            ],
+            [
+              -43.5,
+              0,
+              -1.4
+            ],
+            [
+              -45,
+              0,
+              0
+            ],
+            [
+              -43.5,
+              0,
+              1.4
+            ]
+          ]
+        }
+      },
+      "id": "road/loop",
+      "label": "車道迴圈",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.699999988079071,
+            2.200000047683716
+          ],
+          "rotation": [
+            0,
+            0.9961947,
+            0.0871557,
+            0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.95,
+            0.85
+          ],
+          "enabled": true,
+          "intensity": 4,
+          "kind": "spot",
+          "range": 14,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 18,
+            "outer_degrees": 32
+          }
+        }
+      },
+      "id": "car/a/beam",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.699999988079071,
+            2.200000047683716
+          ],
+          "rotation": [
+            0,
+            0.9961947,
+            0.0871557,
+            0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.95,
+            0.85
+          ],
+          "enabled": true,
+          "intensity": 4,
+          "kind": "spot",
+          "range": 14,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 18,
+            "outer_degrees": 32
+          }
+        }
+      },
+      "id": "car/b/beam",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.699999988079071,
+            2.200000047683716
+          ],
+          "rotation": [
+            0,
+            0.9961947,
+            0.0871557,
+            0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.95,
+            0.85
+          ],
+          "enabled": true,
+          "intensity": 4,
+          "kind": "spot",
+          "range": 14,
+          "shadows": false,
+          "spot": {
+            "inner_degrees": 18,
+            "outer_degrees": 32
+          }
+        }
+      },
+      "id": "car/c/beam",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "tween.clips": {
+          "clips": {
+            "green": {
+              "autoplay": true,
+              "duration": 0.25,
+              "mode": "once",
+              "on_finish": "cycle_green",
+              "speed": 1.0,
+              "tracks": [
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        0.2,
+                        1,
+                        0.4
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/w/glow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        0.2,
+                        1,
+                        0.4
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/e/glow"
+                }
+              ]
+            },
+            "red": {
+              "autoplay": false,
+              "duration": 0.25,
+              "mode": "once",
+              "on_finish": "cycle_red",
+              "speed": 1.0,
+              "tracks": [
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        1,
+                        0.15,
+                        0.1
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/w/glow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        1,
+                        0.15,
+                        0.1
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/e/glow"
+                }
+              ]
+            },
+            "yellow": {
+              "autoplay": false,
+              "duration": 0.25,
+              "mode": "once",
+              "on_finish": "cycle_yellow",
+              "speed": 1.0,
+              "tracks": [
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/w/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/green"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 9
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/yellow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0
+                    }
+                  ],
+                  "property": "render.mesh/emission",
+                  "target": "signal/e/red"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        1,
+                        0.75,
+                        0.15
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/w/glow"
+                },
+                {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": [
+                        1,
+                        0.75,
+                        0.15
+                      ]
+                    }
+                  ],
+                  "property": "render.light/color",
+                  "target": "signal/e/glow"
+                }
+              ]
+            }
+          },
+          "enabled": true
+        }
+      },
+      "id": "signal",
+      "label": "紅綠燈",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -3.5999999046325684,
+            0.0,
+            4.599999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            0.1,
+            0.1
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.15,
+                0.16,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.12,
+                  3.2,
+                  0.12
+                ]
+              }
+            },
+            {
+              "color": [
+                0.08,
+                0.08,
+                0.09
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3.2,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  0.95,
+                  0.3
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/w",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            3.5999999046325684,
+            0.0,
+            -4.599999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            0.1,
+            0.1
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.15,
+                0.16,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.12,
+                  3.2,
+                  0.12
+                ]
+              }
+            },
+            {
+              "color": [
+                0.08,
+                0.08,
+                0.09
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3.2,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  0.95,
+                  0.3
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/e",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.17000000178813934,
+            3.5,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.28,
+                0.03,
+                0.02
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/w/red",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.17000000178813934,
+            3.200000047683716,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.28,
+                0.2,
+                0.03
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/w/yellow",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.17000000178813934,
+            2.9000000953674316,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.04,
+                0.28,
+                0.1
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/w/green",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.17000000178813934,
+            3.5,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.28,
+                0.03,
+                0.02
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/e/red",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.17000000178813934,
+            3.200000047683716,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.28,
+                0.2,
+                0.03
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/e/yellow",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.17000000178813934,
+            2.9000000953674316,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.04,
+                0.28,
+                0.1
+              ],
+              "transform": {
+                "scale": [
+                  0.04,
+                  0.24,
+                  0.24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "signal/e/green",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.699999988079071,
+            3.200000047683716,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1.0,
+            0.8500000238418579,
+            0.6000000238418579
+          ],
+          "enabled": true,
+          "intensity": 1.6,
+          "kind": "point",
+          "range": 5,
+          "shadows": false
+        }
+      },
+      "id": "signal/w/glow",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.699999988079071,
+            3.200000047683716,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1.0,
+            0.8500000238418579,
+            0.6000000238418579
+          ],
+          "enabled": true,
+          "intensity": 1.6,
+          "kind": "point",
+          "range": 5,
+          "shadows": false
+        }
+      },
+      "id": "signal/e/glow",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.0,
+            0.800000011920929,
+            2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_a"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_a_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/east-a",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.0,
+            0.800000011920929,
+            2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_b"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_b_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/east-b",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.0,
+            0.800000011920929,
+            2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_c"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_c_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/east-c",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            5.0,
+            0.800000011920929,
+            -2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_a"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_a_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/west-a",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            5.0,
+            0.800000011920929,
+            -2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_b"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_b_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/west-b",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            5.0,
+            0.800000011920929,
+            -2.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "car_c"
+            ]
+          },
+          "half_extents": [
+            1,
+            1,
+            1.6
+          ],
+          "on_enter": "car_c_line",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "stop/west-c",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -20.0,
+            0.0,
+            -5.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "walk/north",
+          "paused": false,
+          "speed": 1.2999999523162842,
+          "start": 0.0,
+          "start_fraction": 0.0,
+          "turn_rate": 360,
+          "yaw_offset": 0.0
+        }
+      },
+      "id": "ped/n1",
+      "label": "行人 · 藍外套",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            -5.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "walk/north",
+          "paused": false,
+          "speed": 1.05,
+          "start": 0.0,
+          "start_fraction": 0.3333333432674408,
+          "turn_rate": 360,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.85,
+                0.35,
+                0.45
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "ped/n2",
+      "label": "行人 · 粉紅毛衣",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            15.0,
+            0.0,
+            -5.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.35,
+          "on_arrive": "",
+          "orient": true,
+          "path": "walk/north",
+          "paused": false,
+          "speed": 1.2999999523162842,
+          "start": 0.0,
+          "start_fraction": 0.6666666865348816,
+          "turn_rate": 360,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                0.8,
+                0.3
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "ped/n3",
+      "label": "行人 · 黃雨衣",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            5.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "walk/south",
+          "paused": false,
+          "speed": 1.100000023841858,
+          "start": 0.0,
+          "start_fraction": 0.0,
+          "turn_rate": 360,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.5,
+                0.4,
+                0.75
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "ped/s1",
+      "label": "行人 · 紫襯衫",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -15.0,
+            0.0,
+            5.0
+          ]
+        },
+        "path.follow": {
+          "enabled": true,
+          "end": "loop",
+          "offset": 0.0,
+          "on_arrive": "",
+          "orient": true,
+          "path": "walk/south",
+          "paused": false,
+          "speed": 1.4,
+          "start": 0.0,
+          "start_fraction": 0.5,
+          "turn_rate": 360,
+          "yaw_offset": 0.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.85,
+                0.5,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "ped/s2",
+      "label": "行人 · 橘夾克",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "path.spline": {
+          "closed": true,
+          "interpolation": "linear",
+          "points": [
+            [
+              -34,
+              0,
+              -4.9
+            ],
+            [
+              34,
+              0,
+              -4.9
+            ],
+            [
+              34,
+              0,
+              -6.4
+            ],
+            [
+              -34,
+              0,
+              -6.4
+            ]
+          ]
+        }
+      },
+      "id": "walk/north",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "path.spline": {
+          "closed": true,
+          "interpolation": "linear",
+          "points": [
+            [
+              34,
+              0,
+              4.9
+            ],
+            [
+              -34,
+              0,
+              4.9
+            ],
+            [
+              -34,
+              0,
+              6.4
+            ],
+            [
+              34,
+              0,
+              6.4
+            ]
+          ]
+        }
+      },
+      "id": "walk/south",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.6000000238418579,
+            0.0,
+            5.599999904632568
+          ]
+        },
+        "nav.agent": {
+          "acceleration": 8.0,
+          "arrive_distance": 0.20000000298023224,
+          "avoidance": true,
+          "enabled": true,
+          "follow_target": false,
+          "on_arrive": "",
+          "on_fail": "",
+          "radius": 0.30000001192092896,
+          "speed": 2.200000047683716,
+          "turn_rate": 720.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.95,
+                0.95
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "ped/x",
+      "label": "過馬路的行人",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -10.0,
+            0.0,
+            7.599999904632568
+          ],
+          "rotation": [
+            0,
+            1,
+            0,
+            0
+          ]
+        },
+        "interact.target": {
+          "action": "interact",
+          "cooldown": 0.0,
+          "enabled": true,
+          "event": "talk_ming",
+          "exit_margin": 0.0,
+          "interactor": {
+            "components": [],
+            "tags": [
+              "player"
+            ]
+          },
+          "once": false,
+          "priority": 0,
+          "prompt": "talk_ming",
+          "range": 2.4000000953674316,
+          "view_angle": 360.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.3,
+                0.65,
+                0.4
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "npc/ming",
+      "label": "阿明 · 等公車的人",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            8.149999618530273,
+            0.0,
+            -8.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            2.15,
+            0.15
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.86,
+                0.72,
+                0.55
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  4.3,
+                  3.6,
+                  0.3
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.86,
+                0.6
+              ],
+              "emission": 0.9,
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.16
+                ],
+                "scale": [
+                  3.2,
+                  1.5,
+                  0.04
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/wall-front-l",
+      "label": "咖啡廳 · 前牆(左)",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            13.850000381469728,
+            0.0,
+            -8.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            2.15,
+            0.15
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.86,
+                0.72,
+                0.55
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  4.3,
+                  3.6,
+                  0.3
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.86,
+                0.6
+              ],
+              "emission": 0.9,
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.16
+                ],
+                "scale": [
+                  3.2,
+                  1.5,
+                  0.04
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/wall-front-r",
+      "label": "咖啡廳 · 前牆(右)",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            0.0,
+            -17.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            5.15,
+            0.15
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.86,
+                0.72,
+                0.55
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  10.3,
+                  3.6,
+                  0.3
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/wall-back",
+      "label": "咖啡廳 · 後牆",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            6.0,
+            0.0,
+            -12.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            0.15,
+            4.65
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8,
+                0.66,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  3.6,
+                  9.3
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/wall-w",
+      "label": "咖啡廳 · 西牆",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            16.0,
+            0.0,
+            -12.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            0.15,
+            4.65
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.8,
+                0.66,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  3.6,
+                  9.3
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/wall-e",
+      "label": "咖啡廳 · 東牆",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            3.0,
+            -8.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "physics.collider": {
+          "shape": {
+            "half_extents": [
+              0.7,
+              0.6,
+              0.15
+            ],
+            "shape": "box"
+          }
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.86,
+                0.72,
+                0.55
+              ],
+              "transform": {
+                "scale": [
+                  1.4,
+                  1.2,
+                  0.3
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.4,
+                0.6
+              ],
+              "emission": 1.6,
+              "transform": {
+                "position": [
+                  0,
+                  0.95,
+                  0.25
+                ],
+                "scale": [
+                  3.2,
+                  0.6,
+                  0.1
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/lintel",
+      "label": "咖啡廳 · 門楣與招牌",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            3.75,
+            -12.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "physics.collider": {
+          "shape": {
+            "half_extents": [
+              5.3,
+              0.15,
+              4.8
+            ],
+            "shape": "box"
+          }
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.32,
+                0.22,
+                0.2
+              ],
+              "transform": {
+                "scale": [
+                  10.6,
+                  0.3,
+                  9.6
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/roof",
+      "label": "咖啡廳 · 屋頂",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            0.0,
+            -12.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.45,
+                0.3,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.012,
+                  0
+                ],
+                "scale": [
+                  9.4,
+                  0.02,
+                  8.7
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/floor",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            0.0,
+            -14.600000381469728
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "nav.blocker": {
+          "half": [
+            3,
+            0.4
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.38,
+                0.24,
+                0.16
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.55,
+                  0
+                ],
+                "scale": [
+                  6,
+                  1.1,
+                  0.8
+                ]
+              }
+            },
+            {
+              "color": [
+                0.85,
+                0.82,
+                0.78
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.13,
+                  0
+                ],
+                "scale": [
+                  6.2,
+                  0.06,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                0.7,
+                0.7,
+                0.72
+              ],
+              "transform": {
+                "position": [
+                  2.2,
+                  1.35,
+                  0
+                ],
+                "scale": [
+                  0.5,
+                  0.4,
+                  0.4
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/counter",
+      "label": "吧台",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            8.399999618530273,
+            0.0,
+            -11.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "cafe/table-1",
+      "prefab": "cafe-table",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            13.600000381469728,
+            0.0,
+            -11.0
+          ]
+        }
+      },
+      "id": "cafe/table-2",
+      "prefab": "cafe-table",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            3.200000047683716,
+            -11.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.74,
+            0.45
+          ],
+          "enabled": true,
+          "intensity": 4,
+          "kind": "point",
+          "range": 8,
+          "shadows": false
+        }
+      },
+      "id": "cafe/lamp-1",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            3.200000047683716,
+            -15.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.74,
+            0.45
+          ],
+          "enabled": true,
+          "intensity": 4,
+          "kind": "point",
+          "range": 8,
+          "shadows": false
+        }
+      },
+      "id": "cafe/lamp-2",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "audio.source": {
+          "autoplay": false,
+          "clip": "creak",
+          "enabled": true,
+          "loop": false,
+          "max_distance": 15.0,
+          "min_distance": 1.0,
+          "pitch": 1.0,
+          "priority": 0,
+          "rolloff": "inverse",
+          "spatial": true,
+          "volume": 1.0
+        },
+        "core.transform": {
+          "position": [
+            10.300000190734863,
+            0.0,
+            -8.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "interact.target": {
+          "action": "interact",
+          "cooldown": 0.0,
+          "enabled": true,
+          "event": "door_use",
+          "exit_margin": 0.0,
+          "interactor": {
+            "components": [],
+            "tags": [
+              "player"
+            ]
+          },
+          "once": false,
+          "priority": 0,
+          "prompt": "door_prompt",
+          "range": 2.200000047683716,
+          "view_angle": 360.0
+        },
+        "tween.clips": {
+          "clips": {
+            "open": {
+              "autoplay": false,
+              "duration": 1.2000000476837158,
+              "mode": "once",
+              "speed": 1.0,
+              "tracks": [
+                {
+                  "keys": [
+                    {
+                      "t": 0.0,
+                      "v": 0.0
+                    },
+                    {
+                      "ease": "ease_out",
+                      "t": 1.2000000476837158,
+                      "v": 95.0
+                    }
+                  ],
+                  "property": "core.transform/yaw"
+                }
+              ]
+            }
+          },
+          "enabled": true
+        }
+      },
+      "id": "cafe/door",
+      "label": "咖啡廳大門",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.36,
+                0.2,
+                0.12
+              ],
+              "transform": {
+                "position": [
+                  0.7,
+                  1.15,
+                  0
+                ],
+                "scale": [
+                  1.38,
+                  2.3,
+                  0.08
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.85,
+                0.6
+              ],
+              "emission": 0.8,
+              "transform": {
+                "position": [
+                  0.7,
+                  1.6,
+                  0.05
+                ],
+                "scale": [
+                  0.8,
+                  0.6,
+                  0.02
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                0.8,
+                0.4
+              ],
+              "transform": {
+                "position": [
+                  1.2,
+                  1.05,
+                  0.07
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.08
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cafe/door/leaf",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            1.0,
+            -8.300000190734863
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.0,
+          "filter": {
+            "components": [],
+            "tags": [
+              "player"
+            ]
+          },
+          "half_extents": [
+            0.7,
+            1.2,
+            0.25
+          ],
+          "on_enter": "doorway_enter",
+          "on_exit": "",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "cafe/doorway",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            1.0,
+            -12.600000381469728
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "trigger.zone": {
+          "enabled": true,
+          "exit_margin": 0.3,
+          "filter": {
+            "components": [],
+            "tags": [
+              "player"
+            ]
+          },
+          "half_extents": [
+            4.6,
+            1.5,
+            4.1
+          ],
+          "on_enter": "enter_cafe",
+          "on_exit": "leave_cafe",
+          "once": false,
+          "shape": "box"
+        }
+      },
+      "id": "cafe/inside",
+      "label": "咖啡廳室內觸發區",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "audio.source": {
+          "autoplay": false,
+          "clip": "cafe_hum",
+          "enabled": true,
+          "loop": true,
+          "max_distance": 10.0,
+          "min_distance": 1.0,
+          "pitch": 1.0,
+          "priority": 0,
+          "rolloff": "inverse",
+          "spatial": true,
+          "volume": 0.5
+        },
+        "core.transform": {
+          "position": [
+            14.5,
+            1.2000000476837158,
+            -16.399999618530273
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "cafe/radio",
+      "label": "咖啡廳背景音",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            11.0,
+            0.0,
+            -15.699999809265137
+          ]
+        },
+        "interact.target": {
+          "action": "interact",
+          "cooldown": 0.0,
+          "enabled": true,
+          "event": "talk_barista",
+          "exit_margin": 0.0,
+          "interactor": {
+            "components": [],
+            "tags": [
+              "player"
+            ]
+          },
+          "once": false,
+          "priority": 0,
+          "prompt": "talk_barista",
+          "range": 2.5999999046325684,
+          "view_angle": 360.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.92,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.55,
+                0.25,
+                0.15
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "npc/barista",
+      "label": "小雨 · 咖啡師",
+      "prefab": "person",
+      "tags": []
+    },
+    {
+      "components": {
+        "audio.listener": {
+          "active": true,
+          "forward": "+z",
+          "volume": 1.0
+        },
+        "core.transform": {
+          "position": [
+            -6.0,
+            0.0,
+            6.0
+          ]
+        },
+        "nav.agent": {
+          "acceleration": 8.0,
+          "arrive_distance": 0.20000000298023224,
+          "avoidance": true,
+          "enabled": true,
+          "follow_target": false,
+          "on_arrive": "",
+          "on_fail": "",
+          "radius": 0.30000001192092896,
+          "speed": 3.200000047683716,
+          "turn_rate": 720.0
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.55,
+                0.15
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.85,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "hero",
+      "label": "你(玩家)",
+      "prefab": "person",
+      "tags": [
+        "player"
+      ]
+    },
+    {
+      "components": {
+        "camera.follow": {
+          "collision": {
+            "enabled": true,
+            "radius": 0.25,
+            "recover": 0.25
+          },
+          "distance": 7.0,
+          "enabled": true,
+          "input": {
+            "pitch_axis": "",
+            "pitch_speed": 60.0,
+            "yaw_axis": "orbit",
+            "yaw_speed": 120.0,
+            "zoom_axis": "zoom",
+            "zoom_speed": 4.0
+          },
+          "look_height": 1.5,
+          "max_distance": 12.0,
+          "max_pitch": 75.0,
+          "min_distance": 0.5,
+          "min_pitch": -30.0,
+          "pitch": 22.0,
+          "position_smoothing": 0.10000000149011612,
+          "rotation_smoothing": 0.10000000149011612,
+          "target": "hero",
+          "yaw": 0.0
+        },
+        "core.transform": {
+          "position": [
+            -6.0,
+            4.0,
+            13.0
+          ],
+          "rotation": [
+            -0.13917312026023865,
+            0.0,
+            0.0,
+            0.9902681112289428
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.camera": {
+          "active": true,
+          "far": 180.0,
+          "near": 0.03999999910593033,
+          "projection": {
+            "fov_degrees": 75.0,
+            "kind": "perspective"
+          },
+          "viewport": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "camera",
+      "label": "跟隨相機",
+      "prefab": null,
+      "tags": []
+    }
+  ],
+  "id": "street",
+  "prefabs": {
+    "cafe-table": {
+      "components": {
+        "core.transform": {},
+        "nav.blocker": {
+          "half": [
+            0.5,
+            0.5
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.85,
+                0.8,
+                0.7
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.75,
+                  0
+                ],
+                "scale": [
+                  1,
+                  0.06,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                0.2,
+                0.18,
+                0.16
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.37,
+                  0
+                ],
+                "scale": [
+                  0.12,
+                  0.74,
+                  0.12
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "car": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.75,
+                0.12,
+                0.1
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.55,
+                  0
+                ],
+                "scale": [
+                  1.8,
+                  0.6,
+                  4.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.14,
+                0.18,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.05,
+                  -0.3
+                ],
+                "scale": [
+                  1.6,
+                  0.5,
+                  2.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                0.06,
+                0.06,
+                0.07
+              ],
+              "transform": {
+                "position": [
+                  -0.85,
+                  0.33,
+                  -1.35
+                ],
+                "scale": [
+                  0.25,
+                  0.66,
+                  0.66
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.97,
+                0.88
+              ],
+              "emission": 3,
+              "transform": {
+                "position": [
+                  -0.6,
+                  0.6,
+                  2.11
+                ],
+                "scale": [
+                  0.35,
+                  0.15,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.1,
+                0.08
+              ],
+              "emission": 1.5,
+              "transform": {
+                "position": [
+                  -0.65,
+                  0.65,
+                  -2.11
+                ],
+                "scale": [
+                  0.3,
+                  0.12,
+                  0.04
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "lamp-post": {
+      "components": {
+        "core.transform": {},
+        "nav.blocker": {
+          "half": [
+            0.12,
+            0.12
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.15,
+                0.16,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.5,
+                  0
+                ],
+                "scale": [
+                  0.14,
+                  5,
+                  0.14
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.16,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  4.95,
+                  -0.55
+                ],
+                "scale": [
+                  0.1,
+                  0.1,
+                  1.2
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.8,
+                0.55
+              ],
+              "emission": 2.2,
+              "transform": {
+                "position": [
+                  0,
+                  4.82,
+                  -1.1
+                ],
+                "scale": [
+                  0.45,
+                  0.15,
+                  0.3
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "person": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.16,
+                0.17,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.34,
+                  0.9,
+                  0.22
+                ]
+              }
+            },
+            {
+              "color": [
+                0.3,
+                0.55,
+                0.75
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.17,
+                  0
+                ],
+                "scale": [
+                  0.44,
+                  0.58,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.93,
+                0.78,
+                0.65
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.26,
+                  0.28,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.15,
+                0.1,
+                0.08
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.76,
+                  -0.02
+                ],
+                "scale": [
+                  0.28,
+                  0.08,
+                  0.28
+                ]
+              }
+            },
+            {
+              "color": [
+                0.8,
+                0.62,
+                0.5
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0.14
+                ],
+                "scale": [
+                  0.06,
+                  0.06,
+                  0.03
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "tree": {
+      "components": {
+        "core.transform": {},
+        "nav.blocker": {
+          "half": [
+            0.25,
+            0.25
+          ],
+          "offset": [
+            0.0,
+            0.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.35,
+                0.24,
+                0.17
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1,
+                  0
+                ],
+                "scale": [
+                  0.35,
+                  2,
+                  0.35
+                ]
+              }
+            },
+            {
+              "color": [
+                0.22,
+                0.4,
+                0.25
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.6,
+                  0
+                ],
+                "scale": [
+                  2.2,
+                  1.8,
+                  2.2
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "relations": [
+    {
+      "kind": "parent",
+      "source": "lamp/1/light",
+      "target": "lamp/1"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/2/light",
+      "target": "lamp/2"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/3/light",
+      "target": "lamp/3"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/4/light",
+      "target": "lamp/4"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/5/light",
+      "target": "lamp/5"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/6/light",
+      "target": "lamp/6"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/7/light",
+      "target": "lamp/7"
+    },
+    {
+      "kind": "parent",
+      "source": "lamp/8/light",
+      "target": "lamp/8"
+    },
+    {
+      "kind": "parent",
+      "source": "car/a/beam",
+      "target": "car/a"
+    },
+    {
+      "kind": "parent",
+      "source": "car/b/beam",
+      "target": "car/b"
+    },
+    {
+      "kind": "parent",
+      "source": "car/c/beam",
+      "target": "car/c"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/w",
+      "target": "signal"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/e",
+      "target": "signal"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/w/red",
+      "target": "signal/w"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/w/yellow",
+      "target": "signal/w"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/w/green",
+      "target": "signal/w"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/e/red",
+      "target": "signal/e"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/e/yellow",
+      "target": "signal/e"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/e/green",
+      "target": "signal/e"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/w/glow",
+      "target": "signal/w"
+    },
+    {
+      "kind": "parent",
+      "source": "signal/e/glow",
+      "target": "signal/e"
+    },
+    {
+      "kind": "parent",
+      "source": "cafe/door/leaf",
+      "target": "cafe/door"
+    }
+  ],
+  "resource_schemas": {},
+  "resources": {
+    "audio.library": {
+      "clips": {
+        "cafe_hum": {
+          "attack": 0.0,
+          "frequency": 220.0,
+          "gain": 0.44999998807907104,
+          "harmonics": 0,
+          "jitter": 0.0,
+          "lowpass_hz": 1800.0,
+          "release": 0.0,
+          "seconds": 2.0,
+          "seed": 7,
+          "tremolo_depth": 0.25,
+          "tremolo_hz": 1.5,
+          "wave": "noise"
+        },
+        "creak": {
+          "attack": 0.029999999329447743,
+          "frequency": 170.0,
+          "frequency_end": 95.0,
+          "gain": 0.5,
+          "harmonics": 0,
+          "jitter": 0.3499999940395355,
+          "lowpass_hz": 1400.0,
+          "release": 0.25,
+          "seconds": 0.8999999761581421,
+          "seed": 3,
+          "tremolo_depth": 0.6000000238418579,
+          "tremolo_hz": 23.0,
+          "wave": "saw"
+        },
+        "engine": {
+          "attack": 0.0,
+          "frequency": 55.0,
+          "gain": 0.6000000238418579,
+          "harmonics": 0,
+          "jitter": 0.0,
+          "lowpass_hz": 420.0,
+          "release": 0.0,
+          "seconds": 2.0,
+          "seed": 1,
+          "tremolo_depth": 0.3499999940395355,
+          "tremolo_hz": 6.0,
+          "wave": "saw"
+        }
+      }
+    },
+    "behavior.program": {
+      "events": {
+        "car_a_line": {
+          "fields": {}
+        },
+        "car_b_line": {
+          "fields": {}
+        },
+        "car_c_line": {
+          "fields": {}
+        },
+        "cycle_green": {
+          "fields": {
+            "clip": "text",
+            "entity": "text"
+          }
+        },
+        "cycle_red": {
+          "fields": {
+            "clip": "text",
+            "entity": "text"
+          }
+        },
+        "cycle_yellow": {
+          "fields": {
+            "clip": "text",
+            "entity": "text"
+          }
+        },
+        "door_blocked": {
+          "fields": {}
+        },
+        "door_closing": {
+          "fields": {}
+        },
+        "door_opening": {
+          "fields": {}
+        },
+        "door_use": {
+          "fields": {
+            "interactor": "text",
+            "target": "text"
+          }
+        },
+        "doorway_enter": {
+          "fields": {}
+        },
+        "enter_cafe": {
+          "fields": {}
+        },
+        "leave_cafe": {
+          "fields": {}
+        },
+        "light_green": {
+          "fields": {}
+        },
+        "light_red": {
+          "fields": {}
+        },
+        "light_yellow": {
+          "fields": {}
+        },
+        "pause_car_a": {
+          "fields": {}
+        },
+        "pause_car_b": {
+          "fields": {}
+        },
+        "pause_car_c": {
+          "fields": {}
+        },
+        "ped_go_north": {
+          "fields": {}
+        },
+        "ped_go_south": {
+          "fields": {}
+        },
+        "talk_barista": {
+          "fields": {
+            "interactor": "text",
+            "target": "text"
+          }
+        },
+        "talk_ming": {
+          "fields": {
+            "interactor": "text",
+            "target": "text"
+          }
+        }
+      },
+      "rules": [
+        {
+          "actions": [
+            {
+              "event": "light_yellow",
+              "kind": "delay",
+              "ticks": 720
+            }
+          ],
+          "event": "cycle_green",
+          "id": "signal-green-done"
+        },
+        {
+          "actions": [
+            {
+              "event": "light_red",
+              "kind": "delay",
+              "ticks": 240
+            }
+          ],
+          "event": "cycle_yellow",
+          "id": "signal-yellow-done"
+        },
+        {
+          "actions": [
+            {
+              "event": "light_green",
+              "kind": "delay",
+              "ticks": 720
+            }
+          ],
+          "event": "cycle_red",
+          "id": "signal-red-done"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": true
+              },
+              "variable": "red"
+            }
+          ],
+          "event": "light_red",
+          "id": "signal-red"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": false
+              },
+              "variable": "red"
+            }
+          ],
+          "event": "light_green",
+          "id": "signal-green"
+        },
+        {
+          "actions": [
+            {
+              "event": "pause_car_a",
+              "kind": "emit"
+            }
+          ],
+          "event": "car_a_line",
+          "id": "car-a-red",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "red",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "event": "pause_car_b",
+              "kind": "emit"
+            }
+          ],
+          "event": "car_b_line",
+          "id": "car-b-red",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "red",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "event": "pause_car_c",
+              "kind": "emit"
+            }
+          ],
+          "event": "car_c_line",
+          "id": "car-c-red",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "red",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "event": "ped_go_north",
+              "kind": "emit"
+            }
+          ],
+          "event": "light_red",
+          "id": "ped-cross-north",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "ped_side",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": "south"
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "event": "ped_go_south",
+              "kind": "emit"
+            }
+          ],
+          "event": "light_red",
+          "id": "ped-cross-south",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "ped_side",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": "north"
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": "north"
+              },
+              "variable": "ped_side"
+            }
+          ],
+          "event": "ped_go_north",
+          "id": "ped-now-north"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": "south"
+              },
+              "variable": "ped_side"
+            }
+          ],
+          "event": "ped_go_south",
+          "id": "ped-now-south"
+        },
+        {
+          "actions": [
+            {
+              "event": "door_opening",
+              "kind": "emit"
+            }
+          ],
+          "event": "door_use",
+          "id": "door-open",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "door_open",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": false
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "event": "door_closing",
+              "kind": "emit"
+            }
+          ],
+          "event": "door_use",
+          "id": "door-close",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "door_open",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": true
+              },
+              "variable": "door_open"
+            },
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": false
+              },
+              "variable": "door_hint"
+            }
+          ],
+          "event": "door_opening",
+          "id": "door-opened"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": false
+              },
+              "variable": "door_open"
+            }
+          ],
+          "event": "door_closing",
+          "id": "door-closed"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": true
+              },
+              "variable": "door_hint"
+            },
+            {
+              "event": "door_blocked",
+              "kind": "emit"
+            }
+          ],
+          "event": "doorway_enter",
+          "id": "doorway-closed",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "door_open",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": false
+            }
+          }
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": "loc_cafe"
+              },
+              "variable": "location"
+            }
+          ],
+          "event": "enter_cafe",
+          "id": "cafe-in"
+        },
+        {
+          "actions": [
+            {
+              "kind": "set",
+              "value": {
+                "kind": "literal",
+                "value": "loc_street"
+              },
+              "variable": "location"
+            },
+            {
+              "kind": "go_to",
+              "node": "street"
+            }
+          ],
+          "event": "leave_cafe",
+          "id": "cafe-out"
+        },
+        {
+          "actions": [
+            {
+              "kind": "go_to",
+              "node": "ming"
+            }
+          ],
+          "event": "talk_ming",
+          "id": "talk-ming"
+        },
+        {
+          "actions": [
+            {
+              "kind": "go_to",
+              "node": "barista"
+            }
+          ],
+          "event": "talk_barista",
+          "id": "talk-barista"
+        }
+      ],
+      "variables": {
+        "door_hint": false,
+        "door_open": false,
+        "has_coffee": false,
+        "location": "loc_street",
+        "ped_side": "south",
+        "red": false
+      }
+    },
+    "input.bindings": {
+      "axes": {
+        "orbit": {
+          "negative": "KeyZ",
+          "positive": "KeyC"
+        },
+        "zoom": {
+          "negative": "KeyR",
+          "positive": "KeyF"
+        }
+      },
+      "buttons": {
+        "interact": "KeyE"
+      },
+      "capture_pointer": false
+    },
+    "narrative.graph": {
+      "nodes": [
+        {
+          "id": "street",
+          "speaker": "street",
+          "text": "hub"
+        },
+        {
+          "choices": [
+            {
+              "id": "cafe",
+              "next": "ming_cafe",
+              "text": "ming_ask_cafe"
+            },
+            {
+              "id": "light",
+              "next": "ming_light",
+              "text": "ming_ask_light"
+            },
+            {
+              "id": "bye",
+              "next": "street",
+              "text": "bye"
+            }
+          ],
+          "id": "ming",
+          "speaker": "ming",
+          "text": "ming_hello"
+        },
+        {
+          "choices": [
+            {
+              "id": "back",
+              "next": "ming",
+              "text": "back"
+            },
+            {
+              "id": "bye",
+              "next": "street",
+              "text": "bye"
+            }
+          ],
+          "id": "ming_cafe",
+          "speaker": "ming",
+          "text": "ming_cafe"
+        },
+        {
+          "choices": [
+            {
+              "id": "back",
+              "next": "ming",
+              "text": "back"
+            },
+            {
+              "id": "bye",
+              "next": "street",
+              "text": "bye"
+            }
+          ],
+          "id": "ming_light",
+          "speaker": "ming",
+          "text": "ming_light"
+        },
+        {
+          "choices": [
+            {
+              "actions": [
+                {
+                  "kind": "set",
+                  "value": {
+                    "kind": "literal",
+                    "value": true
+                  },
+                  "variable": "has_coffee"
+                }
+              ],
+              "id": "latte",
+              "next": "barista_done",
+              "text": "barista_latte",
+              "when": {
+                "kind": "eq",
+                "left": {
+                  "id": "has_coffee",
+                  "kind": "variable"
+                },
+                "right": {
+                  "kind": "literal",
+                  "value": false
+                }
+              }
+            },
+            {
+              "id": "bye",
+              "next": "street",
+              "text": "bye"
+            }
+          ],
+          "id": "barista",
+          "speaker": "barista",
+          "text": "barista_hello"
+        },
+        {
+          "choices": [
+            {
+              "id": "thanks",
+              "next": "street",
+              "text": "thanks"
+            }
+          ],
+          "id": "barista_done",
+          "speaker": "barista",
+          "text": "barista_done"
+        }
+      ],
+      "start": "street"
+    },
+    "nav.grid": {
+      "bounds": {
+        "max": [
+          48,
+          24
+        ],
+        "min": [
+          -48,
+          -24
+        ]
+      },
+      "cell_size": 0.25,
+      "pointer_agent": "hero"
+    },
+    "render.environment": {
+      "ambient": {
+        "equator": [
+          0.16,
+          0.1,
+          0.1
+        ],
+        "ground": [
+          0.04,
+          0.035,
+          0.04
+        ],
+        "intensity": 1,
+        "mode": "gradient",
+        "sky": [
+          0.2,
+          0.17,
+          0.3
+        ]
+      },
+      "fog": {
+        "color": [
+          0.16,
+          0.1,
+          0.14
+        ],
+        "density": 0.012
+      }
+    },
+    "runtime.bindings": {
+      "events": [
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "clip": "open",
+                "id": "cafe/door"
+              },
+              "capability": "tween",
+              "kind": "call"
+            },
+            {
+              "action": "play",
+              "args": {
+                "id": "cafe/door",
+                "restart": true
+              },
+              "capability": "audio",
+              "kind": "call"
+            }
+          ],
+          "event": "door_opening"
+        },
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "clip": "open",
+                "id": "cafe/door",
+                "reverse": true
+              },
+              "capability": "tween",
+              "kind": "call"
+            },
+            {
+              "action": "play",
+              "args": {
+                "id": "cafe/door",
+                "restart": true
+              },
+              "capability": "audio",
+              "kind": "call"
+            }
+          ],
+          "event": "door_closing"
+        },
+        {
+          "calls": [
+            {
+              "action": "go",
+              "args": {
+                "id": "hero",
+                "point": [
+                  11,
+                  0,
+                  -6.4
+                ]
+              },
+              "capability": "nav",
+              "kind": "call"
+            }
+          ],
+          "event": "door_blocked"
+        },
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "id": "cafe/radio"
+              },
+              "capability": "audio",
+              "kind": "call"
+            },
+            {
+              "action": "follow.set",
+              "args": {
+                "distance": 5,
+                "id": "camera",
+                "pitch": 30
+              },
+              "capability": "camera",
+              "kind": "call"
+            }
+          ],
+          "event": "enter_cafe"
+        },
+        {
+          "calls": [
+            {
+              "action": "stop",
+              "args": {
+                "id": "cafe/radio"
+              },
+              "capability": "audio",
+              "kind": "call"
+            },
+            {
+              "action": "follow.set",
+              "args": {
+                "distance": 7,
+                "id": "camera",
+                "pitch": 22
+              },
+              "capability": "camera",
+              "kind": "call"
+            }
+          ],
+          "event": "leave_cafe"
+        },
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "clip": "yellow",
+                "id": "signal"
+              },
+              "capability": "tween",
+              "kind": "call"
+            }
+          ],
+          "event": "light_yellow"
+        },
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "clip": "red",
+                "id": "signal"
+              },
+              "capability": "tween",
+              "kind": "call"
+            }
+          ],
+          "event": "light_red"
+        },
+        {
+          "calls": [
+            {
+              "action": "play",
+              "args": {
+                "clip": "green",
+                "id": "signal"
+              },
+              "capability": "tween",
+              "kind": "call"
+            },
+            {
+              "action": "resume",
+              "args": {
+                "id": "car/a"
+              },
+              "capability": "path",
+              "kind": "call"
+            },
+            {
+              "action": "resume",
+              "args": {
+                "id": "car/b"
+              },
+              "capability": "path",
+              "kind": "call"
+            },
+            {
+              "action": "resume",
+              "args": {
+                "id": "car/c"
+              },
+              "capability": "path",
+              "kind": "call"
+            }
+          ],
+          "event": "light_green"
+        },
+        {
+          "calls": [
+            {
+              "action": "pause",
+              "args": {
+                "id": "car/a"
+              },
+              "capability": "path",
+              "kind": "call"
+            }
+          ],
+          "event": "pause_car_a"
+        },
+        {
+          "calls": [
+            {
+              "action": "pause",
+              "args": {
+                "id": "car/b"
+              },
+              "capability": "path",
+              "kind": "call"
+            }
+          ],
+          "event": "pause_car_b"
+        },
+        {
+          "calls": [
+            {
+              "action": "pause",
+              "args": {
+                "id": "car/c"
+              },
+              "capability": "path",
+              "kind": "call"
+            }
+          ],
+          "event": "pause_car_c"
+        },
+        {
+          "calls": [
+            {
+              "action": "go",
+              "args": {
+                "id": "ped/x",
+                "point": [
+                  0.6,
+                  0,
+                  -5.6
+                ]
+              },
+              "capability": "nav",
+              "kind": "call"
+            }
+          ],
+          "event": "ped_go_north"
+        },
+        {
+          "calls": [
+            {
+              "action": "go",
+              "args": {
+                "id": "ped/x",
+                "point": [
+                  -0.6,
+                  0,
+                  5.6
+                ]
+              },
+              "capability": "nav",
+              "kind": "call"
+            }
+          ],
+          "event": "ped_go_south"
+        }
+      ]
+    },
+    "ui.document": {
+      "catalogs": {
+        "zh-TW": {
+          "back": "還有別的問題",
+          "barista": "小雨 · 咖啡師",
+          "barista_again": "還想再點一杯?今天就先一杯吧~",
+          "barista_done": "拿鐵好了,小心燙!外面天快黑了,路上小心。",
+          "barista_hello": "歡迎光臨!今天想喝點什麼?",
+          "barista_latte": "一杯熱拿鐵",
+          "bye": "再見",
+          "coffee": "手上:一杯熱拿鐵",
+          "door_prompt": "開門 / 關門",
+          "hub": "左鍵點地面走路 · Z / C 轉視角 · R / F 拉近拉遠 · 靠近人或門按 E",
+          "loc_cafe": "你進入了咖啡廳",
+          "loc_street": "位置:黃昏街口",
+          "ming": "阿明 · 等公車的人",
+          "ming_ask_cafe": "附近有咖啡廳嗎?",
+          "ming_ask_light": "車子真的會等紅燈?",
+          "ming_cafe": "對街那間掛粉紅招牌的就是。門平常關著,走到門口按 E 就能打開。",
+          "ming_hello": "傍晚好!這條街的紅綠燈剛換新的,車子都會乖乖停在白線前。",
+          "ming_light": "紅燈時車子停在白線前,綠燈才走。過馬路記得走斑馬線,那位白衣服的先生每次紅燈都會過去。",
+          "notice_closed": "門關著。先按 E 開門。",
+          "street": "街道",
+          "talk_barista": "和咖啡師小雨說話",
+          "talk_ming": "和阿明說話",
+          "thanks": "謝謝",
+          "title": "AXIOM STREET · 黃昏街口"
+        }
+      },
+      "chrome": "compact",
+      "locale": "zh-TW",
+      "regions": {
+        "choices": "bottom",
+        "coffee": "top_left",
+        "line": "bottom",
+        "location": "top_left",
+        "notice": "top",
+        "prompt": "top",
+        "speaker": "bottom",
+        "title": "top_left"
+      },
+      "session_controls": false,
+      "styles": {
+        "location": "value",
+        "notice": "banner",
+        "title": "heading"
+      },
+      "widgets": [
+        {
+          "binding": {
+            "id": "title",
+            "kind": "key"
+          },
+          "id": "title",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "location",
+            "kind": "localized_variable"
+          },
+          "id": "location",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "coffee",
+            "kind": "key"
+          },
+          "id": "coffee",
+          "kind": "text",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "has_coffee",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "binding": {
+            "kind": "prompt"
+          },
+          "id": "prompt",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "id": "notice_closed",
+            "kind": "key"
+          },
+          "id": "notice",
+          "kind": "text",
+          "when": {
+            "kind": "eq",
+            "left": {
+              "id": "door_hint",
+              "kind": "variable"
+            },
+            "right": {
+              "kind": "literal",
+              "value": true
+            }
+          }
+        },
+        {
+          "binding": {
+            "kind": "speaker"
+          },
+          "id": "speaker",
+          "kind": "text"
+        },
+        {
+          "binding": {
+            "kind": "line"
+          },
+          "id": "line",
+          "kind": "text"
+        },
+        {
+          "id": "choices",
+          "kind": "choices"
+        }
+      ]
+    }
+  },
+  "scenes": [],
+  "schema_version": 2,
+  "systems": [
+    "behavior.execute",
+    "path.move",
+    "audio.spatial",
+    "tween.animate",
+    "trigger.detect",
+    "nav.steer",
+    "interact.focus",
+    "camera.rig"
+  ],
+  "title": "Axiom Street / 黃昏街口"
+}

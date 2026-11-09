@@ -1,0 +1,91 @@
+# Axiom Street, stage 4: the cafe (enterable room): walls, door that opens on E, interior, barista.
+# Walls: obstacle preset (nav.blocker + mesh, so walkers and the follow camera both stop at them).
+create obstacle id=cafe/wall-front-l at=8.15,0,-8
+create obstacle id=cafe/wall-front-r at=13.85,0,-8
+set entities[id=cafe/wall-front-l,id=cafe/wall-front-r] render.mesh/parts [{"transform":{"position":[0,1.8,0],"scale":[4.3,3.6,0.3]},"color":[0.86,0.72,0.55]},{"transform":{"position":[0,1.6,0.16],"scale":[3.2,1.5,0.04]},"color":[1,0.86,0.6],"emission":0.9}]
+set entities[id=cafe/wall-front-l,id=cafe/wall-front-r] nav.blocker/half [2.15,0.15]
+create obstacle id=cafe/wall-back at=11,0,-17
+set cafe/wall-back render.mesh/parts [{"transform":{"position":[0,1.8,0],"scale":[10.3,3.6,0.3]},"color":[0.86,0.72,0.55]}]
+set cafe/wall-back nav.blocker/half [5.15,0.15]
+create obstacle id=cafe/wall-w at=6,0,-12.5
+create obstacle id=cafe/wall-e at=16,0,-12.5
+set entities[id=cafe/wall-w,id=cafe/wall-e] render.mesh/parts [{"transform":{"position":[0,1.8,0],"scale":[0.3,3.6,9.3]},"color":[0.8,0.66,0.5]}]
+set entities[id=cafe/wall-w,id=cafe/wall-e] nav.blocker/half [0.15,4.65]
+rename cafe/wall-front-l "咖啡廳 · 前牆(左)"
+rename cafe/wall-front-r "咖啡廳 · 前牆(右)"
+rename cafe/wall-back "咖啡廳 · 後牆"
+rename cafe/wall-w "咖啡廳 · 西牆"
+rename cafe/wall-e "咖啡廳 · 東牆"
+# Lintel and roof: above walking height, so they block the camera (physics.collider) but not walkers.
+create cube id=cafe/lintel at=11,3,-8
+set cafe/lintel render.mesh/parts [{"transform":{"scale":[1.4,1.2,0.3]},"color":[0.86,0.72,0.55]},{"transform":{"position":[0,0.95,0.25],"scale":[3.2,0.6,0.1]},"color":[1,0.4,0.6],"emission":1.6}]
+set cafe/lintel physics.collider {"shape":{"shape":"box","half_extents":[0.7,0.6,0.15]}}
+rename cafe/lintel "咖啡廳 · 門楣與招牌"
+create cube id=cafe/roof at=11,3.75,-12.5
+set cafe/roof render.mesh/parts [{"transform":{"scale":[10.6,0.3,9.6]},"color":[0.32,0.22,0.2]}]
+set cafe/roof physics.collider {"shape":{"shape":"box","half_extents":[5.3,0.15,4.8]}}
+rename cafe/roof "咖啡廳 · 屋頂"
+create cube id=cafe/floor at=11,0,-12.5
+set cafe/floor render.mesh/parts [{"transform":{"position":[0,0.012,0],"scale":[9.4,0.02,8.7]},"color":[0.45,0.3,0.2]}]
+
+# Interior: counter, two tables (prefab), warm lights.
+create obstacle id=cafe/counter at=11,0,-14.6
+set cafe/counter render.mesh/parts [{"transform":{"position":[0,0.55,0],"scale":[6,1.1,0.8]},"color":[0.38,0.24,0.16]},{"transform":{"position":[0,1.13,0],"scale":[6.2,0.06,1]},"color":[0.85,0.82,0.78]},{"transform":{"position":[2.2,1.35,0],"scale":[0.5,0.4,0.4]},"color":[0.7,0.7,0.72]}]
+set cafe/counter nav.blocker/half [3,0.4]
+rename cafe/counter "吧台"
+create obstacle id=cafe/table-1 at=8.4,0,-11
+set cafe/table-1 render.mesh/parts [{"transform":{"position":[0,0.75,0],"scale":[1,0.06,1]},"color":[0.85,0.8,0.7]},{"transform":{"position":[0,0.37,0],"scale":[0.12,0.74,0.12]},"color":[0.2,0.18,0.16]}]
+set cafe/table-1 nav.blocker/half [0.5,0.5]
+prefab create cafe-table from cafe/table-1
+instantiate cafe-table id=cafe/table-2 at=13.6,0,-11
+create light point id=cafe/lamp-1 at=11,3.2,-11
+create light point id=cafe/lamp-2 at=11,3.2,-15
+set cafe/lamp-* render.light/color [1,0.74,0.45]
+set cafe/lamp-* render.light/intensity 4
+set cafe/lamp-* render.light/range 8
+
+# Door: hinge (empty) + leaf (child mesh). The hinge carries the tween clip, the creak and the interaction.
+create empty id=cafe/door at=10.3,0,-8
+rename cafe/door "咖啡廳大門"
+create cube id=cafe/door/leaf parent=cafe/door at=0,0,0
+set cafe/door/leaf render.mesh/parts [{"transform":{"position":[0.7,1.15,0],"scale":[1.38,2.3,0.08]},"color":[0.36,0.2,0.12]},{"transform":{"position":[0.7,1.6,0.05],"scale":[0.8,0.6,0.02]},"color":[1,0.85,0.6],"emission":0.8},{"transform":{"position":[1.2,1.05,0.07],"scale":[0.06,0.06,0.08]},"color":[0.9,0.8,0.4]}]
+tween cafe/door clip open property=core.transform/yaw duration=1.2 play_on=door_opening
+tween cafe/door key open 0 move 1 1.2
+tween cafe/door key open 0 remove 1
+tween cafe/door key open 0 add 1.2 95 ease=ease_out
+audio clip creak creak
+audio cafe/door source clip=creak loop=off autoplay=off min=1 max=15
+interact cafe/door event=door_use prompt=door_prompt range=2.2
+set resources[id=behavior.program] events/door_closing {"fields":{}}
+set resources[id=behavior.program] events/door_blocked {"fields":{}}
+set resources[id=behavior.program] variables/door_open false
+set resources[id=behavior.program] variables/door_hint false
+
+# Doorway guard: the leaf is animated, so it cannot be a nav.blocker (GAP-6); a trigger zone sends the
+# player back while the door is closed.
+create trigger box id=cafe/doorway at=11,1,-8.3
+set cafe/doorway trigger.zone/half_extents [0.7,1.2,0.25]
+set resources[id=behavior.program] events/doorway_enter {"fields":{}}
+set cafe/doorway trigger.zone/on_enter "doorway_enter"
+
+# Inside the room: a zone that changes the HUD text, starts the cafe ambience and pulls the camera in.
+create trigger box id=cafe/inside at=11,1,-12.6
+set cafe/inside trigger.zone/half_extents [4.6,1.5,4.1]
+set cafe/inside trigger.zone/exit_margin 0.3
+set resources[id=behavior.program] events/enter_cafe {"fields":{}}
+set resources[id=behavior.program] events/leave_cafe {"fields":{}}
+set cafe/inside trigger.zone/on_enter "enter_cafe"
+set cafe/inside trigger.zone/on_exit "leave_cafe"
+rename cafe/inside "咖啡廳室內觸發區"
+audio clip cafe_hum fountain
+create empty id=cafe/radio at=14.5,1.2,-16.4
+audio cafe/radio source clip=cafe_hum loop=on autoplay=off min=1 max=10 volume=0.5
+rename cafe/radio "咖啡廳背景音"
+
+# Barista behind the counter.
+instantiate person id=npc/barista at=11,0,-15.7
+rename npc/barista "小雨 · 咖啡師"
+set npc/barista render.mesh/parts/1/color [0.95,0.92,0.88]
+set npc/barista render.mesh/parts/3/color [0.55,0.25,0.15]
+interact npc/barista event=talk_barista prompt=talk_barista range=2.6
+set resources[id=behavior.program] variables/has_coffee false

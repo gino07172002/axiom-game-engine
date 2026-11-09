@@ -184,3 +184,18 @@ release,`perf_bench --generated-camera 8x1024`(8 台跟隨相機,目標在旋轉
 | 最後一步 | 8 台中 7 台被擋,8 台合計測 159 個形狀,`over_budget` 0 |
 
 axiom-town(不排入 `camera.rig`)A/B,release,HEAD `8a35fcd`(worktree 建置)與本版交錯共 9 輪:step p50 中位數 0.0179 → 0.0177 ms(0.0176–0.0183 vs 0.0176–0.0185)、配置 69/82 不變、observation 0.0355 → 0.0340 ms。p95 在兩個版本都是雙峰(約 0.019 或約 0.033 ms):HEAD 9 輪中 2 次高、本版 4 次高;town 不跑 `camera.rig`,視為機器雜訊,未拆解。
+
+## 街道驗收 demo(`content/street`,plan-engine-components 第 9 項,2026-11-09)
+
+release,`scripts/perf-bench.ps1 -Packs content/street,content/axiom-town -Repeats 3`(交錯,1200 步,中位數 [範圍]),`artifacts/perf-scratch/bench-release-20261109-124630.jsonl`:
+
+| 項目 | street(85 實體:3 車、6 行人、2 導航代理、8 觸發區、3 tween、5 聲源、跟隨相機) | axiom-town |
+|---|---|---|
+| step p50 / p95 / p99 / max | 0.009 / 0.010 / 0.016 [0.012–0.027] / 0.046 [0.043–0.051] ms | 0.018 / 0.019 / 0.024 / 0.056 ms |
+| step 配置 p50 / max | 18 / 158(未拆解) | 69 / 82 |
+| render_frame p50 / p95 | 0.008 / 0.009 ms | 1.30 / 1.54 ms |
+| 編輯器主執行緒每次 commit p50 / p95 | 1.26 / 1.88 ms | 1.30 / 1.69 ms |
+| 背景建置 p50 | 6.8 ms | 9.6 ms |
+| working set | 16.6 MiB | 19.3 MiB |
+
+真 GPU(release,`scripts/street-smoke-test.ps1`,smoke 模式 1/60 s 每幀):主執行緒 CPU 分項每幀 < 0.5 ms(simulate ≤ 0.08 ms),慢幀全部是 `render_present` 250–510 ms(本機 present 阻塞,見剩餘熱點 2);整個程序 working set 361–369 MiB。細節與截圖見 `docs/acceptance-street.zh-TW.md`。
