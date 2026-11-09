@@ -46,8 +46,8 @@ const fn a(
         arg,
     }
 }
-pub(crate) const MENUS: [&str; 8] = [
-    "File", "Edit", "View", "Object", "World", "Play", "Window", "Help",
+pub(crate) const MENUS: [&str; 9] = [
+    "File", "Edit", "View", "Object", "Assets", "World", "Play", "Window", "Help",
 ];
 pub(crate) const COMMANDS: &[Command] = &[
     c("file.verify", "Verify World", "File", ""),
@@ -276,6 +276,26 @@ pub(crate) const COMMANDS: &[Command] = &[
         "help.copy_discovery",
         "Copy Editor Discovery for AI",
         "Help",
+        "",
+    ),
+    c("asset.new_material", "New Material…", "Assets", ""),
+    c("asset.new_prefab", "New Prefab…", "Assets", ""),
+    c("asset.new_machine", "New FSM Machine…", "Assets", ""),
+    c("asset.new_ui_document", "New UI Document…", "Assets", ""),
+    c("asset.new_input_map", "New Input Map…", "Assets", ""),
+    a(
+        "asset.place",
+        "Place Asset in Scene…",
+        "Assets",
+        "KIND:ID [x,y,z]",
+    ),
+    a("asset.find_usages", "Find Usages…", "Assets", "KIND:ID"),
+    a("asset.rename", "Rename Asset…", "Assets", "KIND:ID NEW"),
+    c("asset.thumbnails", "Generate Thumbnails", "Assets", ""),
+    c(
+        "asset.cancel_thumbnails",
+        "Cancel Thumbnail Job",
+        "Assets",
         "",
     ),
 ];
@@ -583,6 +603,7 @@ impl Editor {
             id if id.starts_with("view.bookmark.recall.") && self.bookmark(id).is_none() => {
                 Some("no camera bookmark saved in this slot")
             }
+            id if id.starts_with("asset.") => self.asset_command_blocked(id),
             _ => None,
         }
     }
@@ -618,6 +639,9 @@ impl Editor {
             );
             self.layout_command(id, arg)?;
             return Ok(vec![]);
+        }
+        if id.starts_with("asset.") {
+            return self.asset_command(id, arg);
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
@@ -1170,6 +1194,10 @@ impl Editor {
                     );
                     ui.separator();
                 }
+                if let Some(job) = self.assets.thumbs.running() {
+                    let (done, total) = job.progress();
+                    item(ui, format!("thumbnails {done}/{total}"));
+                }
                 if let Some(job) = &self.scenario_job {
                     let (done, total) = job.progress();
                     item(
@@ -1366,6 +1394,11 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
                 "assets.prefab": "instantiate PREFAB",
+                "asset.place": "asset place KIND:ID at=x,y,z (Assets: drag onto the Scene; model -> animation.player, prefab -> instance, material -> cube)",
+                "asset.new_material": "asset create material ID [shader=] [tint=r,g,b,a] (also prefab ID [from=E], machine ID [initial=S], ui [locale=L], input)",
+                "asset.find_usages": "usages KIND:ID (list: assets [KIND])",
+                "asset.rename": "asset rename KIND:ID NEW (every reference fixed, one revision)",
+                "asset.reference_drop": "set SEL COMPONENT/FIELD \"ID\" (an asset dropped on a typed reference field)",
                 "camera.main": "camera main ID",
                 "docs": "docs/editor-parity.zh-TW.md"
             },

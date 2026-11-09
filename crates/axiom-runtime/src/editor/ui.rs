@@ -1303,16 +1303,12 @@ impl Editor {
 
     /// Body of one of the former bottom-dock tabs.
     fn dock_tab(&mut self, ui: &mut Ui, tab: Dock, actions: &mut Vec<Action>) {
-        let mut resource = None;
         let mut jump = None;
-        let mut open_prefab = None;
-        let mut instantiate: Option<String> = None;
-        let mut open_material = None;
         let mut declare: Option<String> = None;
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
-            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World => {}
+            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World | Dock::Assets => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -1498,39 +1494,6 @@ impl Editor {
                     });
                 }
             }
-            Dock::Assets => {
-                ui.horizontal(|ui| {
-                    caption(ui,"PREFABS");
-                    if self.world.prefabs.is_empty() { caption(ui,"No prefabs in this world"); }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    for id in self.world.prefabs.keys() {
-                        if ui.add_enabled(!self.dirty(),egui::Button::new(format!("◇  {id}"))).on_hover_text("Instantiate prefab").clicked() {
-                            instantiate = Some(id.clone());
-                        }
-                        if ui.add_enabled(!self.dirty(),egui::Button::new("edit").small()).on_hover_text("Edit the prefab defaults all instances inherit").clicked() {
-                            open_prefab = Some(id.clone());
-                        }
-                    }
-                });
-                let materials: Vec<String> = self.world.resources.get("render.shaders").and_then(|r| r["materials"].as_object()).map(|m| m.keys().cloned().collect()).unwrap_or_default();
-                if !materials.is_empty() { caption(ui,"MATERIALS"); }
-                ui.horizontal_wrapped(|ui| {
-                    for id in &materials {
-                        if ui.add_enabled(!self.dirty(),egui::Button::new(format!("● {id}"))).on_hover_text("Edit material parameters").clicked() {
-                            open_material = Some(id.clone());
-                        }
-                    }
-                });
-                caption(ui,"RESOURCES");
-                ui.horizontal_wrapped(|ui| {
-                    for id in self.world.resources.keys() {
-                        if ui.add_enabled(!self.dirty(),egui::Button::new(id)).on_hover_text("Inspect and edit resource").clicked() {
-                            resource=Some(id.clone());
-                        }
-                    }
-                });
-            }
             Dock::Agent => {
                 ui.horizontal(|ui| {
                     if ui.button("Copy discovery").clicked() {
@@ -1561,21 +1524,9 @@ impl Editor {
                 }
             }
         });
-        if let Some(id) = resource {
-            self.open_resource(&id);
-        }
         if let Some(id) = jump {
             self.try_select(Some(id));
             self.frame_selection = true;
-        }
-        if let Some(id) = instantiate {
-            actions.extend(self.instantiate_prefab(&id));
-        }
-        if let Some(id) = open_prefab {
-            self.open_prefab(&id);
-        }
-        if let Some(id) = open_material {
-            self.open_material(&id);
         }
         if let Some(name) = declare {
             actions.extend(self.declare_event(&name));
@@ -1626,6 +1577,7 @@ impl egui_dock::TabViewer for TabHost<'_> {
                 editor.scene_tab(ui, self.runtime, actions);
             }
             Dock::World => editor.world_tab(ui, actions),
+            Dock::Assets => editor.asset_browser(ui, actions),
             other => editor.dock_tab(ui, other, actions),
         }
     }

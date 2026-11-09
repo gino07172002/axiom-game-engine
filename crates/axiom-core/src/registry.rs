@@ -400,6 +400,7 @@ impl Registry {
             "view":{"op":"editor_view","select":["object-id"],"focus":true,"dock":"opens/focuses a tab: hierarchy|scene|inspector|world|changes|proposals|history|problems|scenarios|graphs|assets|agent (discover editor_layout)","capture":"name -> artifacts/captures/<name>.png on the next frame; refused while a human draft is dirty"},
             "review":{"propose":{"op":"propose","edits":[],"note":"why"},"list":{"op":"proposals","status":"pending"},"resolve":{"op":"resolve_proposal","id":1,"approve":true,"rebase":false}}
         }));
+        crate::assets::register(&mut r);
         r.topics.insert("execute".into(),json!({"op":"execute","request_id":"1..128 ASCII letters/digits/-_.:","runtime_session":"required for command/save/load; from observe.runtime_session","request":"one apply/undo/command/save/load; nesting prohibited","guarantees":{"apply_undo":"receipt and revision commit atomically in SQLite, durable across process restarts","runtime":"successful results cached for the host session; foreign sessions rejected; cache never silently evicts"},"failures":"failed operations do not reserve request_id; conflicting successful payloads rejected"}));
         r
     }

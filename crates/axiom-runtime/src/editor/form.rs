@@ -1041,6 +1041,24 @@ fn reference(
             }
         })
         .response;
+    // An asset of the kind this field names, dropped from the Assets browser.
+    let accepts = |d: &super::asset_browser::AssetDrag| d.kind.location() == Some((resource, at));
+    if let Some(drag) = r
+        .dnd_release_payload::<super::asset_browser::AssetDrag>()
+        .filter(|d| accepts(d))
+    {
+        picked = Some(drag.id.clone());
+    }
+    if r.dnd_hover_payload::<super::asset_browser::AssetDrag>()
+        .is_some_and(|d| accepts(&d))
+    {
+        ui.painter().rect_stroke(
+            r.rect.expand(2.0),
+            3.0,
+            egui::Stroke::new(1.5f32, Color32::from_rgb(105, 222, 195)),
+            egui::StrokeKind::Outside,
+        );
+    }
     let mut changed = picked.as_ref().is_some_and(|p| *p != current || mixed);
     if let Some(p) = picked.filter(|_| changed) {
         *v = json!(p);

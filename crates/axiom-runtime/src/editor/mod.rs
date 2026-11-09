@@ -1,16 +1,21 @@
+mod asset_browser;
 mod assets;
 mod commands;
 mod form;
 pub use commands::register_topics;
+pub use thumbs::validate_thumbnails_gpu;
 mod layout;
 mod options;
 mod resource;
+mod thumbs;
 mod timeline;
 mod ui;
 mod viewport;
 mod world_panel;
 
 use crate::world::WorldRuntime;
+#[cfg(test)]
+mod asset_browser_tests;
 #[cfg(test)]
 mod dock_tests;
 #[cfg(test)]
@@ -530,6 +535,8 @@ pub(crate) struct Editor {
     inspector_shown: Option<String>,
     /// Timeline Play on rows per (world version, object, clip).
     bindings_cache: Option<((u64, String, String), timeline::Bindings)>,
+    /// Assets tab: filters, selection, Find Usages, thumbnails.
+    assets: asset_browser::AssetBrowser,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -630,6 +637,7 @@ impl Editor {
             scroll_component: false,
             inspector_shown: None,
             bindings_cache: None,
+            assets: Default::default(),
         };
         if selected
             .as_ref()
@@ -1388,12 +1396,6 @@ impl Editor {
         action
     }
 
-    /// Assets ▸ prefab button (`ACL: instantiate PREFAB [scene=..]`).
-    pub(super) fn instantiate_prefab(&mut self, prefab: &str) -> Option<Action> {
-        let result = ops::instantiate_prefab(&self.world, prefab, &self.placement());
-        self.created(result)
-    }
-
     fn delete_selection(&mut self) -> Option<Action> {
         self.delete_ids(&self.selection())
     }
@@ -1819,6 +1821,7 @@ impl Editor {
     /// Non-blocking; called once per frame by the host. Delivers a finished result.
     pub(crate) fn poll_jobs(&mut self) {
         use crate::jobs::Outcome;
+        self.poll_assets();
         let Some(job) = &mut self.scenario_job else {
             return;
         };
@@ -1867,6 +1870,7 @@ impl Editor {
             .scenario_job
             .iter()
             .map(|job| job.observation())
+            .chain(self.asset_job_observation())
             .collect::<Vec<_>>())
     }
 
@@ -2142,7 +2146,8 @@ impl Editor {
             "locked":self.prefs.locked.get(&self.world.id),
             "selection":self.selection(),
             "jobs":self.jobs_observation(),
-            "last_job":self.last_job,
+        "last_job":self.last_job,
+            "thumbnails":self.assets.thumbs.observation(),
             "pending_commits":self.saving,
             "last_commit_ms":self.writes.get("last_commit_ms"),
             "writes":self.writes

@@ -2,6 +2,7 @@
 //! editor (command registry or the method its widget calls), must leave the same world as
 //! the equivalent ACL script run against a store with no editor at all.
 use super::{Action, Editor};
+use axiom_core::assets::AssetKind;
 use axiom_core::{Request, Store, World};
 
 fn lab() -> World {
@@ -735,14 +736,22 @@ fn repeated_creates_and_scene_filter_match_acl() {
 fn instantiate_prefab_matches_acl() {
     assert_parity(
         lab(),
-        |e| vec![e.instantiate_prefab("cargo-crate").into_iter().collect()],
+        |e| {
+            vec![e
+                .place_asset(AssetKind::Prefab, "cargo-crate", None)
+                .into_iter()
+                .collect()]
+        },
         "instantiate cargo-crate",
     );
     assert_parity(
         lab(),
         |e| {
             e.scene = Some("staging".into());
-            vec![e.instantiate_prefab("cargo-crate").into_iter().collect()]
+            vec![e
+                .place_asset(AssetKind::Prefab, "cargo-crate", None)
+                .into_iter()
+                .collect()]
         },
         "instantiate cargo-crate scene=staging",
     );
@@ -877,7 +886,9 @@ fn failed_ops_become_problems_not_writes() {
     let mut editor = Editor::new(lab(), 1, None);
     assert!(editor.scene_create("staging").is_none());
     assert_eq!(editor.problems[0]["code"], "id_taken");
-    assert!(editor.instantiate_prefab("missing").is_none());
+    assert!(editor
+        .place_asset(AssetKind::Prefab, "missing", None)
+        .is_none());
     assert_eq!(editor.problems[0]["code"], "not_found");
 }
 
@@ -1539,4 +1550,102 @@ fn inspector_arrays_reset_paste_and_play_on_match_acl() {
         },
         "remove resources[id=runtime.bindings] events 0",
     );
+}
+
+fn town() -> World {
+    serde_json::from_str(include_str!("../../../../content/axiom-town/world.json")).unwrap()
+}
+
+#[test]
+fn asset_place_matches_acl() {
+    // Model: an object with core.transform + animation.player, at the drop point.
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .place_asset(AssetKind::Model, "axiom-short", Some([1.25, 0.0, -3.5]))
+                .into_iter()
+                .collect()]
+        },
+        "asset place model:axiom-short at=1.25,0,-3.5",
+    );
+    // Bridge command form, default position, scene filter of the Hierarchy.
+    assert_parity(
+        lab(),
+        |e| {
+            e.scene = Some("staging".into());
+            vec![e
+                .run_command_with("asset.place", Some("prefab:cargo-crate 2,0,1"))
+                .unwrap()]
+        },
+        "asset place prefab:cargo-crate at=2,0,1 scene=staging",
+    );
+    // Material: a cube with render.material (the world gets render + shader on creation).
+    let glass = headless(&lab(), "asset create material glass shader=toon");
+    assert_parity(
+        glass,
+        |e| {
+            vec![e
+                .place_asset(AssetKind::Material, "glass", Some([0.0, 0.0, 0.0]))
+                .into_iter()
+                .collect()]
+        },
+        "asset place material:glass at=0,0,0",
+    );
+}
+
+#[test]
+fn asset_create_commands_match_acl() {
+    // Without the dialog (bridge / palette shortcut) the commands run with their defaults.
+    for (command, script) in [
+        ("asset.new_material", "asset create material material"),
+        ("asset.new_prefab", "asset create prefab prefab"),
+        ("asset.new_ui_document", "asset create ui"),
+        ("asset.new_input_map", "asset create input"),
+    ] {
+        assert_parity(lab(), |e| vec![e.run_command(command).unwrap()], script);
+    }
+    assert_parity(
+        town(),
+        |e| vec![e.run_command("asset.new_machine").unwrap()],
+        "asset create machine machine",
+    );
+    // Prefab from an object = `prefab create PID from ID`.
+    assert_parity(
+        lab(),
+        |e| {
+            vec![e
+                .create_asset(&axiom_core::ops::NewAsset::Prefab {
+                    id: "crate-kit".into(),
+                    from: Some("stage/crate".into()),
+                })
+                .into_iter()
+                .collect()]
+        },
+        "prefab create crate-kit from stage/crate",
+    );
+}
+
+#[test]
+fn asset_rename_matches_acl() {
+    for (arg, script) in [
+        (
+            "model:axiom-short hero-model",
+            "asset rename model:axiom-short hero-model",
+        ),
+        (
+            "machine:stroller wanderer",
+            "asset rename machine:stroller wanderer",
+        ),
+        (
+            "prefab:bench park/bench",
+            "asset rename prefab:bench park/bench",
+        ),
+    ] {
+        assert_parity(
+            town(),
+            |e| vec![e.run_command_with("asset.rename", Some(arg)).unwrap()],
+            script,
+        );
+    }
 }

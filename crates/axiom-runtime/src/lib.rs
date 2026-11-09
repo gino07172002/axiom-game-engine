@@ -49,6 +49,7 @@ pub mod vfx_gpu;
 pub mod world;
 pub mod writer;
 pub use app::{run, RunMode, RunOptions};
+pub use editor::validate_thumbnails_gpu;
 pub use world::{ActionMap, WorldRuntime};
 pub fn installed_registry() -> world::RuntimeRegistry {
     let mut r = world::RuntimeRegistry::core();

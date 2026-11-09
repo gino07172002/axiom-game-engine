@@ -24,7 +24,13 @@ const META: [&str; 12] = [
 ];
 
 /// References the description text cannot name: (type, field) -> `x-ref` (+ `x-has`).
-const REFS: [(&str, &str, &str, Option<&str>); 6] = [
+const REFS: [(&str, &str, &str, Option<&str>); 7] = [
+    (
+        "render.material",
+        "id",
+        "key:render.shaders/materials",
+        None,
+    ),
     ("audio.source", "clip", "key:audio.library/clips", None),
     ("fsm.agent", "machine", "key:fsm.machines/machines", None),
     (
