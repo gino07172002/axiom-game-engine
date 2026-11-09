@@ -22,6 +22,7 @@ cargo build -p axiom
 | Game | 和 Scene 同一格。顯示 runtime 的啟用相機(分割畫面照各相機的 viewport),上方可選長寬比 Free / 16:9 / 4:3 / 1:1(在分頁內加黑邊,存在偏好檔)、相機下拉(只改這個分頁看哪台相機,不寫入)與 **Set as Main Camera**(把下拉選的相機設為主相機,一筆修訂,等於 ACL `camera main ID`)。分頁沒顯示時不渲染。 |
 | Changes / Assets / AI | 檢視預覽、提交與外部修訂的局部差異，實例化 prefab，複製查詢或最近的交易 JSON。 |
 | UI Editor | Window ▸ UI Editor(與 Scene 同一格的分頁)。以遊戲的 HUD 程式碼在參考解析度畫出 `ui.document`(縮放進分頁);把 widget 拖到九宮格另一格(放開時一筆修訂);點選後在右側面板改 Region、Style、按鈕 Command、Fields(型別化表單)與 Effects(新增 / 編輯 / 移除 / ▶ Preview);工具列切換參考解析度與預覽語系(缺字警告),並預覽 `ui.nameplate`。詳見 [ui-effects.zh-TW.md](ui-effects.zh-TW.md)。 |
+| Graphs | **State machine**:上方下拉選 `fsm.machines` 的機器(或 New machine…),畫布上每個狀態一個節點(左側綠條 = 初始狀態,副標 = 動作 / 進入事件 / 片段,橘框加「!」= 檢查問題,滑鼠停留看說明),箭頭 = 轉移,標籤是條件,`*` 轉移從「Any state」出發。拖曳節點移動(放開時寫一筆修訂,位置存在 `editor.layout`,runtime 不讀);從節點右緣的圓點拖到另一個節點新增轉移;雙擊空白處新增狀態;拖空白處或中鍵平移;右鍵有 Set as initial state / Rename / Delete、Raise priority、Add state here。右側面板編輯選取的狀態(改名、Make initial、Action 下拉 + 型別化欄位、Emit on enter、Clip / loop)或轉移(From / To、When 下拉 + 欄位、Up / Down 優先順序),一次互動一筆修訂、Esc 取消。**Rules**:`behavior.program` 規則表,+ Rule、Up / Down、x,選取的規則可改 event、when(巢狀條件與 operand 各有 kind 下拉)、actions(+ Action)。**Overview**:舊的唯讀總覽(含 narrative)。Play 時目前狀態的節點變綠並標 `live N`。 |
 
 每個區域都是可停靠的分頁(Hierarchy、Scene、Inspector、World 與 Changes / Proposals / History / Problems / Scenarios / Graphs / Assets / AI)。拖曳分頁標題可移到其他格或放在格子上方出現的上 / 下 / 左 / 右按鈕分割;拖到外面變成浮動視窗(Scene、Game 除外,它們由 renderer 直接畫在分頁位置)。分頁的 x 或中鍵關閉,Window 選單重新開啟(回到原本的位置附近)。**Window ▸ Layouts** 有內建的 Default(舊版的固定配置)與 Tall Inspector(Inspector 佔滿右側全高,適合 1080p 筆電),**Save Layout As…** 存成自己的名稱、**Reset Layout** 回到 Default。版面存在 `*.editor-prefs.json`(只影響這台機器的畫面,不進修訂);存檔內容有問題時改用 Default,狀態列會說明。Scene 分頁關閉或被同一格的其他分頁蓋住時不渲染 3D 視圖。
 
@@ -48,6 +49,9 @@ F5 從已提交修訂啟動固定步進的 Play。編輯器的選單、Hierarchy
 Play 時工具列右側有 **■ Stop**(Shift+F5)、**Pause / Resume**(Ctrl+Alt+P)、**Step**(Ctrl+Alt+.,暫停並只前進一個 1/120 s 固定步)、時間倍率 0.25× / 0.5× / 1× / 2×(Play ▸ Time Scale;只改每秒跑幾步,每一步仍是同樣的 1/120 s,結果可重現)與 tick 數。遊戲有鍵盤時,編輯器只保留這些 Play 快捷鍵。Maximized 預覽右上角仍是 Stop(F8)、Pause / Resume(Esc)與 Step。
 
 Game 分頁與 Play 的指令也在註冊表裡:`editor_view {"dock":"game"}`、`{"play":true}`、`{"command":"play.pause"}`、`{"command":"play.step"}`、`{"command":"play.time_scale","arg":"0.5"}`、`{"command":"game.aspect","arg":"4:3"}`、`{"command":"game.camera","arg":"cam2"}`、`{"command":"game.main_camera","arg":"cam2"}`;`observe` 的 `editor.play`(state / time_scale / tick / manual_steps)與 `editor.game`(visible / aspect / camera / rect / views / dropped_views / input / camera_preview)回報狀態(`discover editor_game`)。
+Play 預覽右上角有 Stop(F8)、Pause / Resume(Esc)與 Step(暫停時前進一個固定步)。Behavior overlay 開著且 Graphs 有開啟的狀態機時,左下角顯示該機器的唯讀圖,每個 agent 目前所在的狀態變綠並標 `live N`。
+
+**行為(Inspector ▸ Behavior)**:FSM Agent…(Machine 下拉、Radius)、Patrol…、Guard…、NPC Dialogue…,都先開選項對話框並顯示等價 ACL(`fsm SEL agent M`、`behavior SEL patrol|guard|dialogue …`);`fsm.agent` 元件標頭的 **Edit Graph** 在 Graphs 開啟它的機器。Problems 分頁的 STATE MACHINES 區段列出狀態機檢查(到不了的狀態、指向不存在狀態的轉移、`behavior.program` 沒宣告的進入事件、事件欄位不合、`fsm.agent` 指向不存在的機器),Open graph 直接跳到該節點。
 
 AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以 `axiom --connect 127.0.0.1:4252 view --command edit.duplicate`(協定:`{"op":"editor_view","command":"edit.duplicate"}`)執行。有未存草稿或指令目前不可用時,會回傳原因而不是靜默略過。
 ## AI 與使用者共編

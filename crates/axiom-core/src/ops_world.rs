@@ -196,7 +196,11 @@ pub fn requirements(registry: &Registry, id: &str) -> Requirements {
 
 /// At most one `/capabilities` and one `/systems` edit that add what `needs` lists and the
 /// world lacks (systems are appended in the listed order).
-fn requirement_edits(world: &World, registry: &Registry, needs: &Requirements) -> Vec<Edit> {
+pub(crate) fn requirement_edits(
+    world: &World,
+    registry: &Registry,
+    needs: &Requirements,
+) -> Vec<Edit> {
     let mut capabilities = world.capabilities.clone();
     for c in &needs.capabilities {
         let version = registry.capabilities.get(c).copied().unwrap_or(1);

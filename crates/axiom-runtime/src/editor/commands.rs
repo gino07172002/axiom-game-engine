@@ -230,6 +230,34 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Object",
         "COMPONENT",
     ),
+    a(
+        "behavior.fsm_agent",
+        "Add Behavior: FSM Agent…",
+        "Object",
+        "MACHINE",
+    ),
+    c("behavior.patrol", "Add Behavior: Patrol", "Object", ""),
+    c("behavior.guard", "Add Behavior: Guard", "Object", ""),
+    c(
+        "behavior.dialogue",
+        "Add Behavior: NPC Dialogue",
+        "Object",
+        "",
+    ),
+    a(
+        "graph.open",
+        "Edit State Machine Graph…",
+        "Object",
+        "MACHINE",
+    ),
+    c("graph.add_state", "Graph: Add State", "Object", ""),
+    c(
+        "graph.set_initial",
+        "Graph: Set Initial State",
+        "Object",
+        "",
+    ),
+    c("graph.delete", "Graph: Delete Selection", "Object", ""),
     c("window.world", "World Settings…", "World", "Ctrl+9"),
     a("world.set_id", "Set World ID…", "World", "ID"),
     a("world.set_title", "Set World Title…", "World", "TEXT"),
@@ -595,6 +623,9 @@ impl Editor {
 
     /// Why a command cannot run right now, if it cannot.
     pub(crate) fn command_blocked(&self, id: &str) -> Option<&'static str> {
+        if let Some(reason) = self.graph_blocked(id) {
+            return reason;
+        }
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
         match id {
@@ -766,6 +797,9 @@ impl Editor {
         };
         if let Some(reason) = self.command_blocked(id) {
             anyhow::bail!("{id} is unavailable: {reason}");
+        }
+        if id.starts_with("graph.") || id.starts_with("behavior.") {
+            return self.graph_command(id, arg);
         }
         if id == "window.close" || id.starts_with("layout.") {
             anyhow::ensure!(
@@ -1596,6 +1630,10 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
                 "assets.prefab": "instantiate PREFAB",
                 "camera.main": "camera main ID",
+                "behavior.fsm_agent": "fsm SEL agent MACHINE [radius=]",
+                "behavior.patrol": "behavior SEL patrol [machine=] [range=] [speed=] (also guard [tag=], dialogue [tag=] [event=])",
+                "graph": "Graphs tab (editor_view {open: graph:MACHINE | rules:}): fsm M state add|remove|rename|set, fsm M initial S, fsm M transition add|remove|move|set, fsm M node S x,y (node drag), fsm M create|remove",
+                "graph.rules": "append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] event|when|actions VALUE",
                 "docs": "docs/editor-parity.zh-TW.md"
             },
         }),

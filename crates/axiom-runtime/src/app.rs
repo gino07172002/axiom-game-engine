@@ -2393,6 +2393,10 @@ impl App {
                                 ui.checkbox(&mut editor.overlay, "Behavior overlay");
                             }
                         });
+                    // The open state machine with each agent's live state (Graphs tab).
+                    if let Some(editor) = self.editor.as_mut() {
+                        editor.play_graph_overlay(ctx, &self.runtime);
+                    }
                     overlay.paint(ctx);
                 }
             }

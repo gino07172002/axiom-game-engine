@@ -84,6 +84,16 @@
 | Resource inspector | `set resources[id=R] field V` | 同上 |
 | Undo / Redo(Ctrl+Z / Ctrl+Y)、History 的 Restore | `undo REV`(新增一筆還原 revision) | 機制相同 |
 | Proposals 核准 / 退回 / rebase | `axiom resolve ID --approve\|--reject [--rebase]` | 同一個 `resolve_proposal` 請求 |
+| Graphs ▸ State machine:+ State / `graph.add_state`(名稱 `state`、`state_2`…)、畫布空白處雙擊(狀態 + 位置一筆 revision)、右鍵 Add state here | `fsm M state add NAME`;雙擊 = `fsm M state add S; fsm M node S x,y`(同一腳本) | ✅ `graph_tests::graph_edits_through_egui_match_the_fsm_acl_verbs`、`state_action_form_and_double_click_add_match_acl`;`parity::state_machine_commands_and_templates_match_acl` |
+| 拖曳節點(放開時寫一筆,只改 `editor.layout`;runtime 不讀) | `fsm M node STATE x,y`(四捨五入到整數畫布單位) | ✅ egui 拖曳 8 幀:按住時 0 筆、放開 1 筆 = ACL |
+| 從節點右緣的 port 拖到另一個節點 = 新轉移(放在最後 = 最低優先;預設 `in_state_ticks 120`) | `fsm M transition add FROM\|* TO [JSON]` | ✅ 同上(含 town-dance 測試) |
+| 選取轉移後的 When 表單(kind 下拉換成該 kind 的範本,其餘欄位走 M3 型別化表單:範圍 / 單位);From / To 下拉(含 Any state);Up / Down(優先順序) | `fsm M transition set I JSON`(整筆);`fsm M transition move I J` | ✅ kind 下拉 + 拖曳 `within` 一筆 revision = ACL |
+| 選取狀態後的 Action 表單、Emit on enter(宣告過的事件下拉)、Clip / loop、Make initial、Rename(Enter)、右鍵 Set as initial state / Rename / Delete state | `fsm M state set NAME JSON`(整筆);`fsm M initial S`;`fsm M state rename OLD NEW`(initial、轉移、節點位置跟著改);`fsm M state remove S`(連同進出的轉移與位置;initial 不可刪,`fsm_initial`) | ✅ egui 改名(Ctrl+A、輸入、Enter)、右鍵選單、Delete = ACL |
+| 選取轉移 ▸ Delete / 右鍵 Delete transition / Raise priority | `fsm M transition remove I` / `fsm M transition move I I-1` | ✅ |
+| Graphs ▸ New machine…(輸入 ID) | `fsm M create [INITIAL]`(沒有 `fsm.machines` 時一併建立資源、`fsm` capability 與 `fsm.step`);刪除:`fsm M remove`(仍有 `fsm.agent` 使用時拒絕,`machine_in_use`) | core `ops_graph` 單元測試;建立走同一個 `ops::fsm_create_machine` |
+| Graphs ▸ Rules(`behavior.program` 規則表):+ Rule、Up / Down、x;選取規則後 event 下拉、when(巢狀條件與 operand 各有 kind 下拉)、actions(+ Action ▸ kind、Up / Down / x、各自的型別化表單) | `append resources[id=behavior.program] rules {"id":"rule","event":E,"actions":[]}`;`reorder … rules FROM TO`;`remove … rules I`;`set rules[id=ID] event\|when\|actions VALUE`(改了幾個欄位就幾行,同一 revision) | ✅ `graph_tests::rule_table_edits_match_array_and_set_acl` |
+| Inspector ▸ Behavior ▸ FSM Agent…(Machine 下拉 + Radius;選單 `behavior.fsm_agent`) | `fsm SEL agent MACHINE [radius=M]`(機器不存在時建立一個 `idle` 狀態的機器) | ✅ `graph_tests::behavior_menu_dialogs_write_what_their_acl_line_says`(Lumi 移除後再加回 = 原本的 town) |
+| Inspector ▸ Behavior ▸ Patrol… / Guard… / NPC Dialogue…(對話框顯示 ACL 行;快捷鍵 / bridge 用預設) | `behavior SEL patrol\|guard\|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]`(新機器 + `fsm.agent`;dialogue 另宣告事件 `near_MACHINE`,欄位 `agent:text`) | ✅ 三個對話框的 Create = 顯示的 ACL 行;預設值走指令 = ACL |
 
 ## 反方向:AI 做得到、編輯器還做不到(街道驗收時記錄)
 
@@ -133,7 +143,10 @@
 | 執行期切換主相機、改跟隨目標 / 距離 / 角度 | 編輯器沒有對應按鈕(Play 預覽中由 `runtime.bindings` 或輸入驅動);無頭用 `call camera.activate\|follow.set\|inspect\|summary` 與 `observe` 的 `camera` 段(期望 / 實際距離、擋住的實體),不改編寫內容 |
 | History 的 diff 檢視 | `diff REV REV` |
 | Scenarios 分頁 | `axiom scenario FILE` |
-| Problems、Graphs、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |
+| Problems、Graphs ▸ Overview、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |
+| Graphs 的狀態機檢查(節點橘框 + 「!」、Problems 的 STATE MACHINES 區段 + Open graph):`fsm_unreachable`、`fsm_dangling`、`fsm_undeclared_event`、`fsm_event_fields`、`fsm_unknown_machine` | 只是檢查(`ops::fsm_problems`,依 revision 快取);`observe` 的 `editor.graph.problems` 是數量。無頭:`select resources[id=fsm.machines]` 自己判斷,或 `verify` / 啟用時的錯誤 |
+| Graphs 畫布:平移(拖空白處 / 中鍵)、選取、`graph.open MACHINE` / `editor_view {open:"graph:M"\|"rules:"}`、Inspector fsm.agent 標頭 Edit Graph | 只是編輯器狀態 |
+| Play 中每個 agent 目前的狀態(節點綠色 + `live N`;這個分支 Play 時編輯器 UI 被遊戲 UI 取代,改由左下角唯讀小窗「FSM · M (live)」顯示,跟 Behavior overlay 開關) | 讀 `FsmSystem::agent_states`;無頭用 `call fsm.inspect {id}` / `fsm.summary` |
 
 ## 刻意改變的行為
 
