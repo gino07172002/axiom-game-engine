@@ -68,6 +68,9 @@ impl RenderView {
     }
 }
 pub struct RenderFrame {
+    /// False: no world view is visible (editor Scene tab hidden); only the interface is drawn
+    /// over a cleared background (no shadow, world, VFX or post passes, no engine.preview).
+    pub draw_world: bool,
     pub tick: u64,
     pub settings: RenderSettings,
     pub instances: Vec<Instance>,

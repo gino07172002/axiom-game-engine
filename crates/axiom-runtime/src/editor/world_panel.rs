@@ -147,10 +147,9 @@ impl WorldRows {
     }
 }
 
-/// Window ▸ World state.
+/// Window ▸ World state (the World tab; whether it is open lives in the dock layout).
 #[derive(Default)]
 pub(crate) struct WorldPanel {
-    pub open: bool,
     rows: Option<WorldRows>,
     /// Chosen in the "add" combo boxes.
     pub(super) capability: String,
@@ -419,11 +418,11 @@ impl Editor {
                     self.notice("Pick it under Inspector ▸ Components ▸ Add component")
                 }
                 "event.declare" => {
-                    self.dock = super::Dock::Problems;
+                    self.show_dock(super::Dock::Problems);
                     self.notice("Undeclared events show a Declare button in Problems");
                 }
                 _ => {
-                    self.world_panel.open = true;
+                    self.show_dock(super::Dock::World);
                     self.notice("World settings: pick the item in the World window");
                 }
             }
@@ -470,11 +469,9 @@ impl Editor {
         action.into_iter().collect()
     }
 
-    /// Window ▸ World. Drawn only while open; its rows come from the per-revision cache.
-    pub(super) fn world_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if !self.world_panel.open {
-            return;
-        }
+    /// Window ▸ World (a dock tab, floating by default). Drawn only while shown; its rows come
+    /// from the per-revision cache.
+    pub(super) fn world_tab(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let key: WorldKey = (self.rev, self.world_version);
         let mut panel = std::mem::take(&mut self.world_panel);
         if panel.rows.as_ref().is_none_or(|r| r.key != key) {
@@ -497,26 +494,20 @@ impl Editor {
             panel.meta_key = Some(key);
         }
         let mut requests: Vec<WorldRequest> = vec![];
-        let mut open = true;
         let enabled = !self.dirty() && !self.previewing;
         let mut chose_resource = None;
         #[cfg(test)]
         let mut rects: Vec<(String, egui::Rect)> = vec![];
-        egui::Window::new("World")
-            .id(egui::Id::new("editor_world_window"))
-            .open(&mut open)
-            .default_width(400.0)
-            .default_height(560.0)
-            .default_pos([300.0, 50.0])
-            .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::from_rgb(23, 28, 37)))
-            .show(ctx, |ui| {
+        ui.vertical(|ui| {
                 let rows = panel.rows.as_ref().unwrap();
                 ui.spacing_mut().item_spacing.y = 3.0;
+                // Room for the warning line below the list.
+                let height = (ui.available_height() - 24.0).max(80.0);
                 ui.add_enabled_ui(enabled, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("editor_world_scroll")
                         .auto_shrink([false, true])
-                        .max_height(ui.ctx().screen_rect().height() * 0.78)
+                        .max_height(height)
                         .show(ui, |ui| {
                             ui.label(RichText::new("WORLD").small().color(MUTED));
                             ui.horizontal(|ui| {
@@ -676,7 +667,6 @@ impl Editor {
                 .unwrap_or_default();
             panel.resource = id;
         }
-        panel.open = open;
         self.world_panel = panel;
         #[cfg(test)]
         for (name, rect) in rects {

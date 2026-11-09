@@ -2,7 +2,7 @@
 //! shortcuts and the bridge (`editor_view {command}`), so a person and an agent trigger exactly
 //! the same operations through the same validators.
 use super::viewport::{Bookmark, Orbit, ViewMode, FLY_MAX, FLY_MIN};
-use super::{Action, Dock, Editor, Tool};
+use super::{layout, Action, Dock, Editor, Tool};
 use egui::{Key, RichText};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -255,6 +255,9 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     a("event.declare", "Declare Event…", "World", "NAME"),
     c("play.start", "Play", "Play", "F5"),
+    c("window.hierarchy", "Hierarchy", "Window", ""),
+    c("window.scene", "Scene", "Window", ""),
+    c("window.inspector", "Inspector", "Window", ""),
     c("window.changes", "Changes", "Window", "Ctrl+1"),
     c("window.proposals", "Proposals", "Window", "Ctrl+2"),
     c("window.history", "History", "Window", "Ctrl+3"),
@@ -263,6 +266,11 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("window.graphs", "Graphs", "Window", "Ctrl+6"),
     c("window.assets", "Assets", "Window", "Ctrl+7"),
     c("window.agent", "AI / Protocol", "Window", "Ctrl+8"),
+    a("window.close", "Close Tab", "Window", "TAB"),
+    a("layout.save_as", "Save Layout As…", "Window", "NAME"),
+    a("layout.load", "Load Layout…", "Window", "NAME"),
+    a("layout.delete", "Delete Saved Layout…", "Window", "NAME"),
+    c("layout.reset", "Reset Layout", "Window", ""),
     c("help.shortcuts", "Keyboard Shortcuts…", "Help", "F1"),
     c(
         "help.copy_discovery",
@@ -311,33 +319,6 @@ impl Shortcut {
     }
 }
 
-fn dock_name(dock: Dock) -> &'static str {
-    match dock {
-        Dock::Changes => "changes",
-        Dock::Proposals => "proposals",
-        Dock::History => "history",
-        Dock::Problems => "problems",
-        Dock::Scenarios => "scenarios",
-        Dock::Graphs => "graphs",
-        Dock::Assets => "assets",
-        Dock::Agent => "agent",
-    }
-}
-pub(crate) fn dock_from_name(name: &str) -> Option<Dock> {
-    [
-        Dock::Changes,
-        Dock::Proposals,
-        Dock::History,
-        Dock::Problems,
-        Dock::Scenarios,
-        Dock::Graphs,
-        Dock::Assets,
-        Dock::Agent,
-    ]
-    .into_iter()
-    .find(|d| dock_name(*d) == name)
-}
-
 /// Per-user editor preferences. Stored next to the database, never in world revisions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -348,7 +329,14 @@ pub(crate) struct Prefs {
     pub snap_scale: f32,
     pub grid: bool,
     pub local_space: bool,
+    /// Active tab of the panel holding the old bottom-dock tabs. Older builds only stored this;
+    /// without `layout` it is focused in the Default layout.
     pub dock: String,
+    /// Dock layout (`editor::layout` spec v1); null = Default. Kept as raw JSON so a bad
+    /// layout falls back on its own instead of discarding the whole preferences file.
+    pub layout: serde_json::Value,
+    /// Layouts saved with Window ▸ Save Layout As (name -> spec).
+    pub layouts: BTreeMap<String, serde_json::Value>,
     /// Command ID -> replacement shortcut(s) (`|`-separated; empty string unbinds).
     pub shortcuts: BTreeMap<String, String>,
     /// Editor-view only, per world ID: objects not drawn or picked in the scene view.
@@ -374,6 +362,8 @@ impl Default for Prefs {
             grid: false,
             local_space: false,
             dock: "changes".into(),
+            layout: serde_json::Value::Null,
+            layouts: BTreeMap::new(),
             shortcuts: BTreeMap::new(),
             hidden: BTreeMap::new(),
             locked: BTreeMap::new(),
@@ -406,6 +396,7 @@ impl Prefs {
         }
         self.shortcuts
             .retain(|id, keys| command(id).is_some() && keys.len() <= 64);
+        layout::sanitize_named(&mut self.layouts);
         for sets in [&mut self.hidden, &mut self.locked] {
             sets.retain(|world, ids| world.len() <= 128 && !ids.is_empty() && ids.len() <= 4096);
             while sets.len() > 64 {
@@ -571,7 +562,8 @@ impl Editor {
                 Some("apply or reload the inspector draft first")
             }
             "tool.select" | "tool.move" | "tool.rotate" | "tool.scale" | "view.space"
-            | "edit.toggle_hidden" | "edit.toggle_locked"
+            | "edit.toggle_hidden" | "edit.toggle_locked" | "window.close" | "window.scene"
+            | "layout.load" | "layout.reset"
                 if self.drag.is_some() =>
             {
                 Some("finish the current drag first")
@@ -615,6 +607,14 @@ impl Editor {
         if let Some(reason) = self.command_blocked(id) {
             anyhow::bail!("{id} is unavailable: {reason}");
         }
+        if id == "window.close" || id.starts_with("layout.") {
+            anyhow::ensure!(
+                !cmd.arg.is_empty() || arg.is_none(),
+                "{id} takes no argument"
+            );
+            self.layout_command(id, arg)?;
+            return Ok(vec![]);
+        }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
         } else {
@@ -622,7 +622,13 @@ impl Editor {
         }
         let mut actions = vec![];
         match id {
-            "window.world" => self.world_panel.open = !self.world_panel.open,
+            // World keeps the old window toggle; the other window.* commands open / focus.
+            "window.world" => {
+                let state = self.layout.dock.as_mut().ok_or_else(layout::busy)?;
+                if !layout::close(state, Dock::World) {
+                    layout::show(state, Dock::World);
+                }
+            }
             "file.verify" => actions.push(Action::Verify),
             "file.copy_context" => {
                 self.pending_copy = Some(self.context_text());
@@ -732,12 +738,88 @@ impl Editor {
             other => {
                 let dock = other
                     .strip_prefix("window.")
-                    .and_then(dock_from_name)
+                    .and_then(Dock::from_name)
                     .expect("every registered window command names a dock");
-                self.dock = dock;
+                self.show_dock(dock);
             }
         }
         Ok(actions)
+    }
+
+    /// `window.close` and `layout.*`. Errors (unknown tab / layout, bad name) are returned so
+    /// the bridge reports them; from the menu they show in the status line.
+    fn layout_command(&mut self, id: &str, arg: Option<&str>) -> anyhow::Result<()> {
+        let arg = arg.map(str::trim);
+        let state = self.layout.dock.as_mut().ok_or_else(layout::busy)?;
+        match (id, arg) {
+            ("window.close", None) => {
+                let tab = layout::focused(state)
+                    .ok_or_else(|| anyhow::anyhow!("no focused tab; name one, e.g. history"))?;
+                layout::close(state, tab);
+                self.notice(format!("Closed {} (Window menu reopens it)", tab.title()));
+            }
+            ("window.close", Some(name)) => {
+                let tab = Dock::from_name(name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown tab {name}; use {}",
+                        Dock::ALL.map(Dock::name).join("|")
+                    )
+                })?;
+                anyhow::ensure!(layout::close(state, tab), "{name} is not open");
+                self.notice(format!("Closed {} (Window menu reopens it)", tab.title()));
+            }
+            ("layout.reset", _) => {
+                self.layout.replace(layout::default_state(), false);
+                self.notice("Layout reset to Default");
+            }
+            ("layout.save_as", None) => self.layout.save_as = Some(String::new()),
+            ("layout.save_as", Some(name)) => {
+                layout::valid_name(name).map_err(anyhow::Error::msg)?;
+                anyhow::ensure!(
+                    !layout::BUILTIN.contains(&name),
+                    "{name} is a built-in layout; pick another name"
+                );
+                anyhow::ensure!(
+                    self.prefs.layouts.len() < 32 || self.prefs.layouts.contains_key(name),
+                    "at most 32 saved layouts; delete one first"
+                );
+                self.prefs
+                    .layouts
+                    .insert(name.to_owned(), layout::to_spec(state));
+                self.notice(format!("Saved layout {name}"));
+            }
+            ("layout.load", None) | ("layout.delete", None) => {
+                self.notice("Pick a layout under Window ▸ Layouts");
+            }
+            ("layout.load", Some(name)) => {
+                let spec = match layout::builtin(name) {
+                    Some(spec) => spec,
+                    None => self.prefs.layouts.get(name).cloned().ok_or_else(|| {
+                        anyhow::anyhow!("no layout named {name}; see Window ▸ Layouts")
+                    })?,
+                };
+                let (state, dropped) = layout::from_spec(&spec)
+                    .map_err(|e| anyhow::anyhow!("layout {name} is unusable: {e}"))?;
+                self.layout.replace(state, false);
+                if dropped.is_empty() {
+                    self.notice(format!("Layout {name}"));
+                } else {
+                    self.set_error(format!(
+                        "Layout {name}: unknown panel(s) ignored: {}",
+                        dropped.join(", ")
+                    ));
+                }
+            }
+            ("layout.delete", Some(name)) => {
+                anyhow::ensure!(
+                    self.prefs.layouts.remove(name).is_some(),
+                    "no saved layout named {name} (built-in layouts cannot be deleted)"
+                );
+                self.notice(format!("Deleted layout {name}"));
+            }
+            _ => anyhow::bail!("unknown layout command {id}"),
+        }
+        Ok(())
     }
 
     /// Keyboard dispatch for every registered shortcut (Copy/Paste arrive as events instead).
@@ -766,6 +848,8 @@ impl Editor {
                                 | "object.tag"
                                 | "world.set_id"
                                 | "world.capability_add"
+                                | "window.changes"
+                                | "window.close"
                         ) {
                             ui.separator();
                         }
@@ -776,14 +860,19 @@ impl Editor {
                             "view.space" => Some(self.prefs.local_space),
                             "view.gizmos" => Some(self.prefs.gizmos),
                             "view.nav_grid" => Some(self.prefs.nav_grid),
-                            "window.world" => Some(self.world_panel.open),
                             id if ViewMode::from_command(id).is_some() => {
                                 Some(ViewMode::from_command(id) == Some(self.orbit.mode))
                             }
+                            // ✓ = the tab is open (in the dock or a floating window).
                             id => id
                                 .strip_prefix("window.")
-                                .and_then(dock_from_name)
-                                .map(|d| d == self.dock),
+                                .and_then(Dock::from_name)
+                                .map(|d| {
+                                    self.layout
+                                        .dock
+                                        .as_ref()
+                                        .is_some_and(|s| layout::is_open(s, d))
+                                }),
                         };
                         let title = match checked {
                             Some(true) => format!("✓ {}", cmd.title),
@@ -799,6 +888,39 @@ impl Editor {
                             self.run_into(cmd.id, actions);
                             ui.close_menu();
                         }
+                    }
+                    if menu == "Window" {
+                        ui.menu_button("Layouts", |ui| {
+                            let saved: Vec<String> = self.prefs.layouts.keys().cloned().collect();
+                            for name in layout::BUILTIN
+                                .iter()
+                                .copied()
+                                .chain(saved.iter().map(String::as_str))
+                            {
+                                if ui.button(name).clicked() {
+                                    if let Err(e) = self.run_command_with("layout.load", Some(name))
+                                    {
+                                        self.set_error(format!("{e:#}"));
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                            if !saved.is_empty() {
+                                ui.separator();
+                                ui.menu_button("Delete", |ui| {
+                                    for name in &saved {
+                                        if ui.button(name).clicked() {
+                                            if let Err(e) =
+                                                self.run_command_with("layout.delete", Some(name))
+                                            {
+                                                self.set_error(format!("{e:#}"));
+                                            }
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
+                        });
                     }
                 });
             }
@@ -894,6 +1016,41 @@ impl Editor {
             }
             if keep && self.palette.is_none() {
                 self.palette = Some(palette);
+            }
+        }
+        if let Some(mut name) = self.layout.save_as.take() {
+            let mut open = true;
+            let mut save = false;
+            egui::Window::new("Save Layout As")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 90.0])
+                .show(ctx, |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut name)
+                            .hint_text("Layout name")
+                            .desired_width(240.0),
+                    );
+                    if !edit.has_focus() && name.is_empty() {
+                        edit.request_focus();
+                    }
+                    let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    let taken = self.prefs.layouts.contains_key(name.trim());
+                    if taken {
+                        ui.label(RichText::new("Replaces the saved layout with this name").small());
+                    }
+                    save = ui
+                        .add_enabled(layout::valid_name(&name).is_ok(), egui::Button::new("Save"))
+                        .clicked()
+                        || (entered && layout::valid_name(&name).is_ok());
+                });
+            if save {
+                if let Err(e) = self.run_command_with("layout.save_as", Some(&name)) {
+                    self.set_error(format!("{e:#}"));
+                }
+            } else if open && !ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.layout.save_as = Some(name);
             }
         }
         if self.show_shortcuts {
@@ -1032,9 +1189,14 @@ impl Editor {
         ]
     }
 
-    /// Persist preferences when they changed (dock tab included). Errors become a notice.
+    /// Persist preferences when they changed (dock layout included). Errors become a notice.
     pub(crate) fn save_prefs(&mut self) {
-        self.prefs.dock = dock_name(self.dock).into();
+        if let Some(spec) = self.layout.sync() {
+            self.prefs.layout = spec;
+            if let Some(tab) = self.layout.dock.as_ref().and_then(layout::active_bottom) {
+                self.prefs.dock = tab.name().into();
+            }
+        }
         let Some(path) = &self.prefs_path else {
             return;
         };
@@ -1052,8 +1214,33 @@ impl Editor {
     }
     pub fn set_prefs_path(&mut self, path: std::path::PathBuf) {
         self.prefs = Prefs::load(&path);
-        if let Some(dock) = dock_from_name(&self.prefs.dock) {
-            self.dock = dock;
+        // A bad saved layout falls back to Default with a notice; the other preferences stay.
+        let (state, problem) = if self.prefs.layout.is_null() {
+            let mut state = layout::default_state();
+            // Older preferences only stored the active bottom-dock tab.
+            if let Some(tab) = Dock::from_name(&self.prefs.dock) {
+                layout::show(&mut state, tab);
+            }
+            (state, None)
+        } else {
+            match layout::from_spec(&self.prefs.layout) {
+                Ok((state, dropped)) if dropped.is_empty() => (state, None),
+                Ok((state, dropped)) => (
+                    state,
+                    Some(format!(
+                        "Saved layout: unknown panel(s) ignored: {}",
+                        dropped.join(", ")
+                    )),
+                ),
+                Err(e) => (
+                    layout::default_state(),
+                    Some(format!("Saved layout ignored ({e}); using Default")),
+                ),
+            }
+        };
+        self.layout.replace(state, problem.is_none());
+        if let Some(problem) = problem {
+            self.set_error(problem);
         }
         self.prefs_saved = serde_json::to_string_pretty(&self.prefs).ok();
         self.prefs_path = Some(path);
@@ -1061,7 +1248,29 @@ impl Editor {
 }
 
 /// `discover editor_commands`: every command ID an agent can run with `editor_view {command}`.
+/// `discover editor_layout`: the dock tabs and how to show, close and arrange them.
 pub fn register_topics(r: &mut axiom_core::Registry) {
+    r.topics.insert(
+        "editor_layout".into(),
+        serde_json::json!({
+            "tabs": Dock::ALL.map(Dock::name),
+            "show": {"op":"editor_view","dock":"inspector"},
+            "close": {"op":"editor_view","command":"window.close","arg":"history"},
+            "layouts": {
+                "builtin": layout::BUILTIN,
+                "load": {"op":"editor_view","command":"layout.load","arg":"Tall Inspector"},
+                "save": {"op":"editor_view","command":"layout.save_as","arg":"NAME"},
+                "delete": {"op":"editor_view","command":"layout.delete","arg":"NAME"},
+                "reset": {"op":"editor_view","command":"layout.reset"}
+            },
+            "observe": "editor_view replies and observe metrics.editor list open tabs ({tab, active, focused?, floating?}) and scene_visible",
+            "rules": [
+                "dock opens a closed tab and focuses it; the old dock names are tab names",
+                "the editor view is not rendered while the scene tab is closed or behind another tab",
+                "layouts are view-only preferences in *.editor-prefs.json, never in world revisions"
+            ]
+        }),
+    );
     r.topics.insert(
         "editor_commands".into(),
         serde_json::json!({
@@ -1187,8 +1396,8 @@ mod tests {
                     panic!("{k} bound to both {other} and {}", cmd.id);
                 }
             }
-            if let Some(dock) = cmd.id.strip_prefix("window.").filter(|d| *d != "world") {
-                assert!(dock_from_name(dock).is_some(), "{}", cmd.id);
+            if let Some(dock) = cmd.id.strip_prefix("window.").filter(|d| *d != "close") {
+                assert!(Dock::from_name(dock).is_some(), "{}", cmd.id);
             }
             assert!(cmd.arg.is_empty() || cmd.keys.is_empty(), "{}", cmd.id);
         }
@@ -1233,7 +1442,7 @@ mod tests {
         editor.run_command("tool.rotate").unwrap();
         assert!(editor.tool == Tool::Rotate);
         editor.run_command("window.history").unwrap();
-        assert!(editor.dock == Dock::History);
+        assert!(editor.dock_shows(Dock::History));
         editor.run_command("view.snap").unwrap();
         assert!(editor.prefs.snap);
         editor.select(Some("stage/crate".into()));
@@ -1261,7 +1470,7 @@ mod tests {
             "Ctrl+D duplicates"
         );
         key_frame(&ctx, &mut editor, &runtime, Key::Num3, ctrl);
-        assert!(editor.dock == Dock::History, "Ctrl+3 opens History");
+        assert!(editor.dock_shows(Dock::History), "Ctrl+3 opens History");
         // Rebind duplicate to Ctrl+J: Ctrl+D stops working, Ctrl+J works.
         editor
             .prefs
@@ -1377,12 +1586,12 @@ mod tests {
         editor.set_prefs_path(path.clone());
         editor.prefs.snap = true;
         editor.prefs.snap_move = 0.5;
-        editor.dock = Dock::Assets;
+        editor.show_dock(Dock::Assets);
         editor.save_prefs();
         let (mut again, _) = fixture();
         again.set_prefs_path(path.clone());
         assert!(again.prefs.snap && again.prefs.snap_move == 0.5);
-        assert!(again.dock == Dock::Assets);
+        assert!(again.dock_shows(Dock::Assets));
         std::fs::write(
             &path,
             r#"{"snap_move":-3,"snap_rotate_degrees":1e9,"shortcuts":{"no.such":"Ctrl+Q"}}"#,

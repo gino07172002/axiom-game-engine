@@ -22,6 +22,7 @@ winit = "0.30"
 egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
+egui_dock = "=0.16.0"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.17"

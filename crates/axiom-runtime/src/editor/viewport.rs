@@ -2577,7 +2577,7 @@ mod tests {
         assert_eq!(editor.observation()["pending_proposals"], 1);
         assert_eq!(editor.proposal_focus, Some(1));
         assert!(editor.status.contains("awaiting review"));
-        editor.dock = Dock::Proposals;
+        editor.show_dock(Dock::Proposals);
         assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
     }
 
@@ -2594,7 +2594,7 @@ mod tests {
             .unwrap();
         assert_eq!(editor.selection(), ["stage/crate", "stage/beacon"]);
         assert!(editor.frame_selection);
-        assert!(matches!(editor.dock, Dock::History));
+        assert!(editor.dock_shows(Dock::History));
         assert!(editor.remote_view(&["ghost".into()], false, None).is_err());
         assert!(editor.remote_view(&[], false, Some("bogus")).is_err());
         let text = editor.context_text();
@@ -2634,7 +2634,7 @@ mod tests {
         let err = crate::scenario::run(world, 1, crate::installed_registry(), fail).unwrap_err();
         editor.set_scenario_result("b.scenario.json", axiom_core::error_response(&err));
         assert!(editor.error && editor.status.contains("failed"));
-        assert!(matches!(editor.dock, Dock::Scenarios));
+        assert!(editor.dock_shows(Dock::Scenarios));
         assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
     }
 
@@ -2731,7 +2731,7 @@ mod tests {
         let (_, runtime) = fixture();
         for name in ["behavior-lab", "adv"] {
             let mut editor = Editor::new(pack(name), 1, None);
-            editor.dock = Dock::Graphs;
+            editor.show_dock(Dock::Graphs);
             assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
         }
         assert!(super::super::form::is_color(
@@ -2800,7 +2800,7 @@ mod tests {
         assert_eq!(editor.problems[0]["code"], "revision_conflict");
         let ctx = egui::Context::default();
         for dock in [Dock::History, Dock::Problems] {
-            editor.dock = dock;
+            editor.show_dock(dock);
             // Rendering must not panic and must not emit writes on its own.
             assert!(frame(&ctx, &mut editor, &runtime, vec![]).is_empty());
         }

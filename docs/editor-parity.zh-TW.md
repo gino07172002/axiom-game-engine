@@ -95,7 +95,7 @@
 |---|---|
 | `tool.select/move/rotate/scale`、`view.space`、`view.snap`、`view.grid` | 工具與偏好設定 |
 | `view.palette`、`help.shortcuts`、`edit.preferences`、`file.exit` | 只是 UI |
-| `window.*`(dock 分頁) | 只是 UI;需要的話用 `editor_view {dock}` 遠端切換 |
+| `window.*`(dock 分頁:Hierarchy、Scene、Inspector、World 與原本的底部分頁)、拖曳分頁 / 分割 / 浮動視窗、`window.close`、`layout.save_as` / `layout.load` / `layout.delete` / `layout.reset`、Window ▸ Layouts(內建 Default、Tall Inspector) | **只是版面(和 hidden / locked 一樣是視圖偏好)**:存在 `*.editor-prefs.json` 的 `layout` / `layouts`(使用者層級,不分世界),不進 revision、不影響 Play 與內容。遠端:`editor_view {dock:"inspector"}` 開啟並聚焦分頁(舊的 dock 名稱就是分頁名稱)、`{command:"window.close", arg:"history"}`、`{command:"layout.load", arg:"Tall Inspector"}`;`editor_view` 回覆與 `observe` 的 `editor.tabs` 列出開著的分頁(active / focused / floating)與 `scene_visible`;`discover editor_layout` 說明全部。Scene 分頁關閉或被同一格的其他分頁蓋住時,編輯器視圖不渲染(只畫介面) |
 | `edit.select_none`、`edit.frame`(右鍵 ▸ Focus)、選取、聚焦 | 只是畫面;無頭查詢用 `select` / `inspect` |
 | `edit.select_children`(右鍵 ▸ Select Children) | 把所有子孫加進選取;無頭用 `select entities[parent=ID]` 逐層查 |
 | `edit.toggle_hidden`(H)、`edit.toggle_locked`(L)、Hierarchy 每列的眼睛 / 鎖頭 | **只影響編輯器視圖**:隱藏 = 場景視口不畫、不能點選;鎖定 = 照畫,但視口不能點選、gizmo 不能拖(Hierarchy 仍可選)。子孫一起生效。存在 `*.editor-prefs.json` 的 `hidden` / `locked`(以 world ID 為 key),不進 revision,Play 照常顯示。`editor_view` 的觀察結果有 `hidden` / `locked` 欄位 |

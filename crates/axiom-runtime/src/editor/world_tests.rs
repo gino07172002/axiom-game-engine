@@ -165,7 +165,7 @@ fn world_window_adds_a_capability_and_caches_rows_per_revision() {
     let start = World::empty("blank");
     let mut h = Harness::new(start.clone());
     h.editor.run_command("window.world").unwrap();
-    assert!(h.editor.world_panel.open);
+    assert!(h.editor.dock_shows(super::Dock::World));
     h.frame(vec![]);
     h.frame(vec![]);
     assert_eq!(
@@ -198,7 +198,7 @@ fn world_window_adds_a_capability_and_caches_rows_per_revision() {
     assert_eq!(h.editor.world_panel.builds, 2);
     // The command toggles the window.
     h.editor.run_command("window.world").unwrap();
-    assert!(!h.editor.world_panel.open);
+    assert!(!h.editor.dock_shows(super::Dock::World));
 }
 
 /// Measures the editor frame with the World window open vs closed on the street world
@@ -215,7 +215,9 @@ fn world_window_cost_on_the_street_world() {
     let mut h = Harness::new(world);
     h.editor.select(Some("hero".into()));
     let time = |h: &mut Harness, open: bool| {
-        h.editor.world_panel.open = open;
+        if open != h.editor.dock_shows(super::Dock::World) {
+            h.editor.run_command("window.world").unwrap();
+        }
         for _ in 0..3 {
             h.frame(vec![]);
         }

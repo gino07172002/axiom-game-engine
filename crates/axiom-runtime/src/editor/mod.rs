@@ -2,6 +2,7 @@ mod assets;
 mod commands;
 mod form;
 pub use commands::register_topics;
+mod layout;
 mod resource;
 mod timeline;
 mod ui;
@@ -9,6 +10,8 @@ mod viewport;
 mod world_panel;
 
 use crate::world::WorldRuntime;
+#[cfg(test)]
+mod dock_tests;
 #[cfg(test)]
 mod hierarchy_tests;
 #[cfg(test)]
@@ -371,8 +374,13 @@ fn multi_object_edits(world: &World, draft: &Draft, others: &BTreeSet<String>) -
     edits
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// An editor panel: one tab of the dock (names and titles in `layout`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Dock {
+    Hierarchy,
+    Scene,
+    Inspector,
+    World,
     Changes,
     Proposals,
     History,
@@ -399,7 +407,10 @@ pub(crate) struct Editor {
     scene: Option<String>,
     collapsed: BTreeSet<String>,
     new_scene: String,
-    dock: Dock,
+    /// Dock panels (tabs, splits, floating windows) and their persisted layout.
+    layout: layout::Layout,
+    /// The Scene tab was drawn this frame (else the editor view is not rendered).
+    scene_visible: bool,
     pub(crate) status: String,
     pub(crate) error: bool,
     pub(crate) changes: Vec<String>,
@@ -505,7 +516,8 @@ impl Editor {
             scene: None,
             collapsed: BTreeSet::new(),
             new_scene: String::new(),
-            dock: Dock::Changes,
+            layout: Default::default(),
+            scene_visible: true,
             status: "Ready".into(),
             error: false,
             changes: Vec::new(),
@@ -1435,11 +1447,14 @@ impl Editor {
             }
         }
         if let Some(dock) = dock {
-            self.dock = commands::dock_from_name(dock).ok_or_else(|| {
+            // Opens the tab if it was closed, then makes it the active, focused one.
+            let tab = Dock::from_name(dock).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "unknown dock {dock}; use changes|proposals|history|problems|scenarios|graphs|assets|agent"
+                    "unknown dock {dock}; use {}",
+                    Dock::ALL.map(Dock::name).join("|")
                 )
             })?;
+            self.show_dock(tab);
         }
         if let Some((first, rest)) = select.split_first() {
             self.select(Some(first.clone()));
@@ -1530,7 +1545,7 @@ impl Editor {
     pub fn set_scenario_result(&mut self, path: &str, result: Value) {
         let passed = result["ok"] == true;
         self.scenario_results.insert(path.to_owned(), result);
-        self.dock = Dock::Scenarios;
+        self.show_dock(Dock::Scenarios);
         if passed {
             self.notice(format!("Scenario passed · {path}"));
         } else {
@@ -1541,7 +1556,7 @@ impl Editor {
     /// Hands a running scenario job to the editor (progress, cancel, result delivery).
     pub(crate) fn start_scenario(&mut self, job: crate::jobs::Job<Value>) {
         self.notice(format!("Running scenario in background · {}", job.label));
-        self.dock = Dock::Scenarios;
+        self.show_dock(Dock::Scenarios);
         self.scenario_job = Some(job);
     }
 
@@ -1632,7 +1647,25 @@ impl Editor {
 
     pub fn set_history_diff(&mut self, rev: i64, diff: Value) {
         self.history_diff = Some((rev, diff));
-        self.dock = Dock::History;
+        self.show_dock(Dock::History);
+    }
+
+    /// Opens `tab` if it is closed and makes it the active, focused tab. While the dock is
+    /// being drawn (its state is borrowed) the request waits until the end of the frame.
+    fn show_dock(&mut self, tab: Dock) {
+        match &mut self.layout.dock {
+            Some(state) => layout::show(state, tab),
+            None => self.layout.pending.push(tab),
+        }
+    }
+
+    /// Whether `tab` is the active tab of its leaf (shown unless its leaf is collapsed).
+    #[cfg(test)]
+    fn dock_shows(&self, tab: Dock) -> bool {
+        self.layout
+            .dock
+            .as_ref()
+            .is_some_and(|state| layout::is_active(state, tab))
     }
 
     /// Records a failed request as a structured problem and shows it in the status line.
@@ -1834,6 +1867,8 @@ impl Editor {
             "tool":self.tool.name(),
             "view":self.orbit.mode.name(),
             "gizmos":self.prefs.gizmos,
+            "tabs":self.layout.observed(),
+            "scene_visible":self.scene_visible,
             "pending_proposals":self.proposals.len(),
             "hidden":self.prefs.hidden.get(&self.world.id),
             "locked":self.prefs.locked.get(&self.world.id),
@@ -1873,6 +1908,11 @@ impl Editor {
         runtime: &mut WorldRuntime,
         screen: egui::Rect,
     ) -> crate::presentation::RenderFrame {
+        // Scene tab closed, behind another tab or collapsed: nothing shows the editor view, so
+        // skip extraction and the world passes (the renderer only draws the interface).
+        if !self.scene_visible {
+            return runtime.interface_frame();
+        }
         // While the runtime for the editor's newest revision is still being built in the
         // background, show the selected object where that revision put it (no snap-back
         // after a gizmo commit).

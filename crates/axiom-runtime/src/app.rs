@@ -116,7 +116,7 @@ struct App {
 struct FramePhases {
     started: Instant,
     last: Instant,
-    phases: [(&'static str, f64); 8],
+    phases: [(&'static str, f64); 9],
     count: usize,
 }
 impl FramePhases {
@@ -124,7 +124,7 @@ impl FramePhases {
         Self {
             started: now,
             last: now,
-            phases: [("", 0.0); 8],
+            phases: [("", 0.0); 9],
             count: 0,
         }
     }
@@ -135,6 +135,13 @@ impl FramePhases {
             self.count += 1;
         }
         self.last = now;
+    }
+    /// A part of the phase that ends at the next `mark` (reported beside it, not subtracted).
+    fn note(&mut self, name: &'static str, ms: f64) {
+        if self.count < self.phases.len() {
+            self.phases[self.count] = (name, ms);
+            self.count += 1;
+        }
     }
     /// The phase breakdown when the frame exceeded the 16 ms budget.
     fn finish(self) -> Option<serde_json::Value> {
@@ -2233,6 +2240,11 @@ impl App {
             return Ok(());
         }
         phases.mark("render_present");
+        let acquire = self.renderer.as_ref().unwrap().last_acquire;
+        phases.note(
+            "render_present_acquire_wait",
+            acquire.as_secs_f64() * 1000.0,
+        );
         // A background build usually completes while this frame waits for the swapchain;
         // adopting here instead of next frame saves one frame of edit -> live latency.
         self.poll_activation()?;

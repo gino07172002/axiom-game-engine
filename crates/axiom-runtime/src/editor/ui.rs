@@ -84,6 +84,8 @@ impl Editor {
         if let Some(text) = self.pending_copy.take() {
             ctx.copy_text(text);
         }
+        // Filled again by whichever tabs are drawn this frame.
+        self.rects.clear();
         egui::TopBottomPanel::top("editor_menu")
             .frame(panel(HEADER, 4))
             .show(ctx, |ui| self.menu_bar(ui, &mut actions));
@@ -144,23 +146,6 @@ impl Editor {
         egui::TopBottomPanel::bottom("editor_status")
             .frame(panel(HEADER, 4))
             .show(ctx, |ui| self.status_bar(ui));
-        let dock_max = (ctx.screen_rect().height() * 0.7).max(160.0);
-        egui::TopBottomPanel::bottom("editor_dock")
-            .resizable(true)
-            .default_height(200.0)
-            .height_range(72.0..=dock_max)
-            .frame(panel(HEADER, 8))
-            .show(ctx, |ui| {
-                self.dock(ui, &mut actions);
-            });
-        egui::SidePanel::left("editor_hierarchy")
-            .default_width(224.0)
-            .width_range(178.0..=345.0)
-            .frame(panel(SURFACE, 9))
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-                self.hierarchy(ui, &mut actions);
-            });
         // Play preview: the timeline playhead follows the runtime.
         self.tween_ui.live = if self.previewing {
             self.selected
@@ -170,19 +155,65 @@ impl Editor {
         } else {
             None
         };
-        egui::SidePanel::right("editor_inspector")
-            .default_width(302.0)
-            .width_range(270.0..=440.0)
-            .frame(panel(SURFACE, 9))
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
-                self.inspector(ui, &mut actions);
-            });
-        egui::CentralPanel::default()
-            .frame(Frame::NONE)
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                panel(CARD, 6).show(ui, |ui| {
+        // Every panel is a dock tab (Window menu / `window.*` reopen closed ones). The state is
+        // lent to the dock area for the frame; `show_dock` calls made meanwhile wait in
+        // `layout.pending`.
+        let mut dock = self
+            .layout
+            .dock
+            .take()
+            .unwrap_or_else(super::layout::default_state);
+        let style = self
+            .layout
+            .style
+            .get_or_insert_with(|| dock_style(&ctx.style()))
+            .clone();
+        let mut host = TabHost {
+            editor: self,
+            runtime,
+            actions: &mut actions,
+            scene: false,
+        };
+        egui_dock::DockArea::new(&mut dock)
+            .id(egui::Id::new("editor_dock_area"))
+            .style(style)
+            .show_leaf_collapse_buttons(false)
+            // One click must not close a whole group (e.g. all eight bottom tabs).
+            .show_leaf_close_all_buttons(false)
+            .show(ctx, &mut host);
+        let scene = host.scene;
+        self.layout.dock = Some(dock);
+        self.layout.apply_pending();
+        self.scene_visible = scene;
+        if !scene {
+            self.scene_hidden();
+        }
+        self.command_windows(ctx, &mut actions);
+        // Not while a button is held (dragging a separator or a window would write the
+        // preferences file every frame); the change is saved on release.
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.save_prefs();
+        }
+        actions
+    }
+
+    /// The Scene tab is not drawn (closed, behind another tab, collapsed): nothing may keep
+    /// acting on its last rectangle.
+    fn scene_hidden(&mut self) {
+        self.viewport = egui::Rect::NOTHING;
+        self.scene_input.marquee = None;
+        self.scene_input.flying = false;
+        self.scene_input.point_drag = None;
+        if self.drag.is_some() {
+            // Same as Escape during a gizmo drag: back to the committed transform.
+            self.select(self.selected.clone());
+        }
+    }
+
+    /// Scene tab: tool strip and the viewport (composited by the renderer under the UI).
+    fn scene_tab(&mut self, ui: &mut Ui, runtime: &WorldRuntime, actions: &mut Vec<Action>) {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        panel(CARD, 6).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     // Wraps instead of widening the central panel (which would push the viewport
                     // under the inspector).
@@ -251,7 +282,7 @@ impl Editor {
                                     )
                                     .clicked()
                                 {
-                                    self.run_into(m.command(), &mut actions);
+                                    self.run_into(m.command(), actions);
                                     ui.close_menu();
                                 }
                             }
@@ -261,7 +292,7 @@ impl Editor {
                                     let save = format!("view.bookmark.save.{n}");
                                     let recall = format!("view.bookmark.recall.{n}");
                                     if ui.button(format!("Save {n}")).on_hover_text(self.shortcut_text(&save)).clicked() {
-                                        self.run_into(&save, &mut actions);
+                                        self.run_into(&save, actions);
                                         ui.close_menu();
                                     }
                                     let blocked = self.command_blocked(&recall);
@@ -270,7 +301,7 @@ impl Editor {
                                         .on_hover_text(self.shortcut_text(&recall))
                                         .clicked()
                                     {
-                                        self.run_into(&recall, &mut actions);
+                                        self.run_into(&recall, actions);
                                         ui.close_menu();
                                     }
                                 });
@@ -280,12 +311,7 @@ impl Editor {
                         .on_hover_text("Perspective / orthographic axis views and camera bookmarks");
                     });
                 });
-                self.scene_view(ui, runtime, &mut actions);
-            });
-        self.command_windows(ctx, &mut actions);
-        self.world_window(ctx, &mut actions);
-        self.save_prefs();
-        actions
+        self.scene_view(ui, runtime, actions);
     }
 
     /// Undo / redo. While writes are saving, the step they will push may not exist yet; the
@@ -701,7 +727,7 @@ impl Editor {
                 });
             }
         });
-        self.rects = rects;
+        self.rects.extend(rects);
         self.renaming = renaming;
         if let Some(done) = rename_done {
             self.renaming = None;
@@ -1144,33 +1170,9 @@ impl Editor {
         }
     }
 
-    fn dock(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+    /// Body of one of the former bottom-dock tabs.
+    fn dock_tab(&mut self, ui: &mut Ui, tab: Dock, actions: &mut Vec<Action>) {
         let mut resource = None;
-        ui.horizontal(|ui| {
-            let problems = if self.problems.is_empty() {
-                "Problems".to_owned()
-            } else {
-                format!("Problems ({})", self.problems.len())
-            };
-            let proposals = if self.proposals.is_empty() {
-                "Proposals".to_owned()
-            } else {
-                format!("Proposals ({})", self.proposals.len())
-            };
-            for (dock, title) in [
-                (Dock::Changes, "Changes"),
-                (Dock::Proposals, proposals.as_str()),
-                (Dock::History, "History"),
-                (Dock::Problems, problems.as_str()),
-                (Dock::Scenarios, "Scenarios"),
-                (Dock::Graphs, "Graphs"),
-                (Dock::Assets, "Assets"),
-                (Dock::Agent, "AI / Protocol"),
-            ] {
-                ui.selectable_value(&mut self.dock, dock, title);
-            }
-        });
-        ui.separator();
         let mut jump = None;
         let mut open_prefab = None;
         let mut instantiate: Option<String> = None;
@@ -1178,7 +1180,8 @@ impl Editor {
         let mut declare: Option<String> = None;
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
-        ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match self.dock {
+        ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
+            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -1447,6 +1450,90 @@ impl Editor {
             actions.extend(self.declare_event(&name));
         }
     }
+}
+
+/// Draws the editor's panels as dock tabs for one frame.
+struct TabHost<'a> {
+    editor: &'a mut Editor,
+    runtime: &'a WorldRuntime,
+    actions: &'a mut Vec<Action>,
+    /// The Scene tab body was drawn.
+    scene: bool,
+}
+
+impl egui_dock::TabViewer for TabHost<'_> {
+    type Tab = Dock;
+    fn title(&mut self, tab: &mut Dock) -> egui::WidgetText {
+        let count = match tab {
+            Dock::Problems => self.editor.problems.len(),
+            Dock::Proposals => self.editor.proposals.len(),
+            _ => 0,
+        };
+        if count == 0 {
+            tab.title().into()
+        } else {
+            format!("{} ({count})", tab.title()).into()
+        }
+    }
+    /// Stable per tab (the default uses the title, which changes with the counts).
+    fn id(&mut self, tab: &mut Dock) -> egui::Id {
+        egui::Id::new(("editor_tab", tab.name()))
+    }
+    fn ui(&mut self, ui: &mut Ui, tab: &mut Dock) {
+        let (editor, actions) = (&mut *self.editor, &mut *self.actions);
+        match *tab {
+            Dock::Hierarchy => {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                editor.hierarchy(ui, actions);
+            }
+            Dock::Inspector => {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
+                editor.inspector(ui, actions);
+            }
+            Dock::Scene => {
+                self.scene = true;
+                editor.scene_tab(ui, self.runtime, actions);
+            }
+            Dock::World => editor.world_tab(ui, actions),
+            other => editor.dock_tab(ui, other, actions),
+        }
+    }
+    /// The scene is composited by the renderer at the tab's rectangle on the main surface.
+    fn allowed_in_windows(&self, tab: &mut Dock) -> bool {
+        *tab != Dock::Scene
+    }
+    /// The scene body stays transparent so the world drawn underneath shows.
+    fn clear_background(&self, tab: &Dock) -> bool {
+        *tab != Dock::Scene
+    }
+    /// Every panel scrolls its own content (the hierarchy is a virtual list).
+    fn scroll_bars(&self, _tab: &Dock) -> [bool; 2] {
+        [false, false]
+    }
+    fn tab_style_override(
+        &self,
+        tab: &Dock,
+        global: &egui_dock::TabStyle,
+    ) -> Option<egui_dock::TabStyle> {
+        (*tab == Dock::Scene).then(|| {
+            let mut style = global.clone();
+            style.tab_body.inner_margin = Margin::ZERO;
+            style
+        })
+    }
+}
+
+/// The dock look: the editor's panel colors on the egui-derived defaults.
+fn dock_style(style: &egui::Style) -> egui_dock::Style {
+    let mut dock = egui_dock::Style::from_egui(style);
+    dock.tab_bar.bg_fill = HEADER;
+    dock.tab.tab_body.bg_fill = SURFACE;
+    dock.tab.tab_body.inner_margin = Margin::same(8);
+    dock.tab.active.bg_fill = SURFACE;
+    dock.tab.focused.bg_fill = SURFACE;
+    dock.tab.active.text_color = ACCENT;
+    dock.tab.focused.text_color = ACCENT;
+    dock
 }
 
 /// Hierarchy row height (also the virtualization step of `show_rows`).

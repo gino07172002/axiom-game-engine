@@ -1190,9 +1190,28 @@ impl WorldRuntime {
         }
         actions
     }
+    /// A frame that draws only the interface (no views, nothing extracted).
+    pub fn interface_frame(&self) -> RenderFrame {
+        RenderFrame {
+            draw_world: false,
+            tick: self.state.tick,
+            settings: self.settings.clone(),
+            instances: vec![],
+            views: vec![],
+            meshes: vec![],
+            shaders: self.shaders.clone(),
+            cube_materials: vec![],
+            vfx: Default::default(),
+            lights: vec![],
+            scene_lights: vec![],
+            environment: self.environment.clone(),
+            postfx: vec![],
+        }
+    }
     pub fn render_frame(&self) -> RenderFrame {
         let matrices = self.state.matrices();
         let mut frame = RenderFrame {
+            draw_world: true,
             tick: self.state.tick,
             settings: self.settings.clone(),
             instances: vec![],

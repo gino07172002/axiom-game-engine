@@ -69,6 +69,9 @@ pub struct Renderer {
     post: crate::postfx_gpu::PostGpu,
     meshes: crate::mesh_render::MeshRenderer,
     shaders: crate::shader_gpu::ShaderGpu,
+    /// Time the last `render` waited for the swapchain image (part of its wall time, not CPU
+    /// work); reported separately in slow-frame phases.
+    pub last_acquire: std::time::Duration,
 }
 
 impl Renderer {
@@ -355,6 +358,7 @@ impl Renderer {
             can_capture,
             meshes,
             shaders,
+            last_acquire: std::time::Duration::ZERO,
         })
     }
 
@@ -388,7 +392,9 @@ impl Renderer {
         screenshot: Option<&Path>,
     ) -> Result<bool> {
         self.prepare_shaders(&snapshot.shaders)?;
-        self.vfx.prepare(&self.queue, &snapshot.vfx)?;
+        if snapshot.draw_world {
+            self.vfx.prepare(&self.queue, &snapshot.vfx)?;
+        }
         let fallback = vec![RenderView {
             id: "engine.preview".into(),
             eye: Vec3::new(0.0, 3.0, 8.0),
@@ -397,7 +403,9 @@ impl Renderer {
             camera: axiom_core::Camera::perspective(),
             instances: vec![],
         }];
-        let views = if snapshot.views.is_empty() {
+        let views: &[RenderView] = if !snapshot.draw_world {
+            &[]
+        } else if snapshot.views.is_empty() {
             &fallback
         } else {
             &snapshot.views
@@ -495,18 +503,25 @@ impl Renderer {
             geometry.extend_from_slice(&v.instances);
             ranges.push(first..geometry.len() as u32);
         }
-        self.queue.write_buffer(&self.uniform, 0, &uniforms);
-        self.meshes
-            .prepare(&self.device, &self.queue, &snapshot.meshes)?;
         anyhow::ensure!(geometry.len() <= 8192, "instance budget exceeded");
-        self.queue
-            .write_buffer(&self.instances, 0, bytemuck::cast_slice(&geometry));
+        // Without a world pass the GPU mesh and buffer contents stay as they are (no re-upload
+        // when the view comes back).
+        if snapshot.draw_world {
+            self.queue.write_buffer(&self.uniform, 0, &uniforms);
+            self.meshes
+                .prepare(&self.device, &self.queue, &snapshot.meshes)?;
+            self.queue
+                .write_buffer(&self.instances, 0, bytemuck::cast_slice(&geometry));
+        }
         // Preserve font/texture uploads even if this surface frame must be skipped.
         for (id, delta) in &output.textures_delta.set {
             self.egui
                 .update_texture(&self.device, &self.queue, *id, delta);
         }
-        let frame = match self.surface.get_current_texture() {
+        let acquire = std::time::Instant::now();
+        let current = self.surface.get_current_texture();
+        self.last_acquire = acquire.elapsed();
+        let frame = match current {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.config);
@@ -529,9 +544,11 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        self.vfx.compute(&mut encoder);
+        if snapshot.draw_world {
+            self.vfx.compute(&mut encoder);
+        }
         // Sun 0 without shadows: the shadow map is not sampled, so skip its depth pass.
-        if lighting.shadow {
+        if lighting.shadow && snapshot.draw_world {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sun depth"),
                 color_attachments: &[],
@@ -685,7 +702,12 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        // No world pass wrote the frame: start from a cleared one.
+                        load: if views.is_empty() {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],

@@ -243,6 +243,7 @@ mod tests {
 
     fn frame() -> RenderFrame {
         RenderFrame {
+            draw_world: true,
             tick: 0,
             settings: RenderSettings::default(),
             instances: vec![],
