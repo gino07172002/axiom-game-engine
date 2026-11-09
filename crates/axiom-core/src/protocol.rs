@@ -124,7 +124,9 @@ pub enum Request {
         /// Start (true) or stop (false) the Play-in-editor preview.
         #[serde(default)]
         play: Option<bool>,
-        /// Open an asset inspector: `material:ID`, `prefab:ID` or `resource:ID`.
+        /// Open an asset inspector (`material:ID`, `prefab:ID`, `resource:ID`), a component of
+        /// the selection in the Inspector (`component:ID`) or a create command's options
+        /// dialog (`options:COMMAND`).
         #[serde(default)]
         open: Option<String>,
         /// Run a registered editor command (the same IDs as the menu bar and palette).

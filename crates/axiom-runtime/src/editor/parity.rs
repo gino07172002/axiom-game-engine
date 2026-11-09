@@ -470,8 +470,12 @@ fn audio_sources_listeners_and_clips_match_acl() {
         sourced.clone(),
         |e| {
             e.select(Some("car".into()));
-            let first: Vec<Action> = e.add_audio_clip("engine").into_iter().collect();
-            vec![first]
+            let mut dialog =
+                super::options::OptionsDialog::for_command(e, "audio.new_clip").unwrap();
+            dialog.set("Preset", "engine");
+            let write = dialog.run(e).unwrap();
+            assert_eq!(dialog.acl(e), "audio clip engine engine");
+            vec![write.into_iter().collect()]
         },
         "audio clip engine engine",
     );
@@ -480,7 +484,10 @@ fn audio_sources_listeners_and_clips_match_acl() {
         engined.clone(),
         |e| {
             e.select(Some("car".into()));
-            vec![e.add_audio_clip("engine").into_iter().collect()]
+            let mut dialog =
+                super::options::OptionsDialog::for_command(e, "audio.new_clip").unwrap();
+            dialog.set("Preset", "engine");
+            vec![dialog.run(e).unwrap().into_iter().collect()]
         },
         "audio clip engine2 engine",
     );
@@ -1438,5 +1445,98 @@ fn declare_event_applies_the_waiting_draft_and_multi_edits_skip_mismatched_field
             vec![vec![e.write(edits, None)]]
         },
         "set a physics.collider/shape/half_extents [1.0,0.5,0.5]",
+    );
+}
+
+#[test]
+fn inspector_arrays_reset_paste_and_play_on_match_acl() {
+    use axiom_core::ops::ArrayEdit;
+    // Form array buttons on a component = append / insert / reorder / remove.
+    let parts = lab().entity("stage/rack").unwrap().components["render.mesh"]["parts"].clone();
+    for (edit, script) in [
+        (
+            ArrayEdit::Append(parts[0].clone()),
+            format!("append stage/rack render.mesh/parts {}", parts[0]),
+        ),
+        (
+            ArrayEdit::Insert(0, parts[0].clone()),
+            format!("insert stage/rack render.mesh/parts 0 {}", parts[0]),
+        ),
+        (
+            ArrayEdit::Move(0, 1),
+            "reorder stage/rack render.mesh/parts 0 1".to_owned(),
+        ),
+        (
+            ArrayEdit::Remove(0),
+            "remove stage/rack render.mesh/parts 0".to_owned(),
+        ),
+    ] {
+        assert_parity(
+            lab(),
+            |e| {
+                e.select(Some("stage/rack".into()));
+                vec![e
+                    .edit_component_array("render.mesh", "/parts", &edit)
+                    .into_iter()
+                    .collect()]
+            },
+            &script,
+        );
+    }
+    // Component header: Reset and Copy / Paste values on the other selected light.
+    let lights = headless(
+        &lab(),
+        "create light point id=lamp\ncreate light point id=lamp2\nset lamp render.light/intensity 7",
+    );
+    assert_parity(
+        lights.clone(),
+        |e| {
+            e.select(Some("lamp".into()));
+            vec![e.reset_component("render.light").into_iter().collect()]
+        },
+        "reset lamp render.light",
+    );
+    let copied = lights.entity("lamp").unwrap().components["render.light"].clone();
+    assert_parity(
+        lights,
+        |e| {
+            e.select(Some("lamp".into()));
+            e.copy_component("render.light");
+            e.select(Some("lamp2".into()));
+            vec![e.paste_component("render.light").into_iter().collect()]
+        },
+        &format!("set lamp2 /components/render.light {copied}"),
+    );
+    // Timeline ▸ Play on: bind = `tween .. set play_on=E`; ✕ = remove the binding.
+    let door = headless(&lab(), "create cube id=door\ntween door clip open");
+    assert_parity(
+        door.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            let options = axiom_core::ops::TweenClipOptions {
+                play_on: Some("go".into()),
+                ..Default::default()
+            };
+            vec![e.set_tween_options("open", &options).into_iter().collect()]
+        },
+        "tween door clip open set play_on=go",
+    );
+    let bound = headless(&door, "tween door clip open set play_on=go");
+    assert_parity(
+        bound,
+        |e| {
+            e.select(Some("door".into()));
+            let plays = super::timeline::play_ons(&e.world, "door", "open");
+            assert_eq!(plays.len(), 1);
+            vec![e
+                .edit_resource_array(
+                    "runtime.bindings",
+                    "/events",
+                    &ArrayEdit::Remove(plays[0].binding),
+                )
+                .into_iter()
+                .collect()]
+        },
+        "remove resources[id=runtime.bindings] events 0",
     );
 }

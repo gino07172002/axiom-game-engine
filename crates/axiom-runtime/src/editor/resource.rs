@@ -48,6 +48,14 @@ impl ResourceDraft {
         self.loaded = true;
         Ok(())
     }
+    /// Live Inspector: the form values were just sent as a write and become the baseline.
+    pub(super) fn mark_committed(&mut self) {
+        if let Some(form) = &self.form {
+            self.form_base = form.clone();
+        }
+        self.dirty = false;
+    }
+
     pub(super) fn request(&self, preview: bool) -> Result<Request> {
         anyhow::ensure!(
             self.loaded,
@@ -122,7 +130,34 @@ impl Editor {
         }
         self.resource = Some(draft);
     }
+    /// Resource form array buttons (`ACL: append|insert|remove|reorder resources[id=R] F ..`).
+    pub(super) fn edit_resource_array(
+        &mut self,
+        id: &str,
+        field: &str,
+        edit: &axiom_core::ops::ArrayEdit,
+    ) -> Option<Action> {
+        let mut select =
+            axiom_core::local::Selection::all(axiom_core::local::Collection::Resources);
+        select.ids = vec![id.to_owned()];
+        let result = axiom_core::ops::edit_array(&self.world, &self.registry, &select, field, edit);
+        self.op_write(result, None)
+    }
+
     pub(super) fn resource_inspector(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let spec = self
+            .resource
+            .as_ref()
+            .map(|d| d.id.clone())
+            .map(|id| self.specs.get(&self.registry, &self.world, &id));
+        let live = self.prefs.live_inspector;
+        let esc_taken = ui.ctx().memory(|m| m.any_popup_open())
+            || self.picker.is_some()
+            || self.options.is_some();
+        let saving = self.saving;
+        let world = self.world.clone();
+        let world_version = self.world_version;
+        let mut array = None;
         let draft = self.resource.as_mut().unwrap();
         let stale = draft.rev != self.rev;
         let loaded = draft.loaded;
@@ -214,15 +249,43 @@ impl Editor {
                 });
             });
         }
-        let hints = self.registry.resources.get(&draft.id).map(|d| &d.schema);
+        if draft.form.is_some() && draft.form_mode {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.field_filter)
+                    .hint_text("Filter fields")
+                    .desired_width(160.0),
+            );
+            self.rects.insert("form:filter".into(), r.rect);
+        }
+        let needle = self.field_filter.trim().to_lowercase();
         ScrollArea::vertical()
             .id_salt("editor_resource_json")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 match draft.form.as_mut().filter(|_| draft.form_mode) {
                     Some(form) => {
+                        let fallback = super::form::Spec::compile(&serde_json::Value::Null);
+                        let spec = spec
+                            .as_deref()
+                            .and_then(|s| s.at(&draft.field))
+                            .unwrap_or(&fallback);
+                        let mixed = Default::default();
                         ui.add_enabled_ui(!stale && loaded, |ui| {
-                            draft.dirty |= super::form::edit(ui, &draft.id, form, hints);
+                            let mut ctx = super::form::Ctx {
+                                world: &world,
+                                world_version,
+                                base: &draft.form_base,
+                                mixed: &mixed,
+                                filter: &needle,
+                                structural: !draft.dirty,
+                                picker: &mut self.picker,
+                                rects: Some(&mut self.rects),
+                            };
+                            let out = super::form::show(ui, &mut ctx, spec, form, &draft.id);
+                            draft.dirty |= out.changed;
+                            if let Some((pointer, edit)) = out.array {
+                                array = Some((format!("{}{pointer}", draft.field), edit));
+                            }
                         });
                     }
                     None => {
@@ -238,11 +301,45 @@ impl Editor {
                     }
                 }
             });
+        // Live: Esc goes back to the committed values; an edited form commits once nothing
+        // is held or typed any more (one revision per interaction).
+        let mut cancel = false;
+        if draft.dirty && draft.form_mode && loaded && !stale {
+            let (escape, held) =
+                ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_down()));
+            let typing = ui
+                .ctx()
+                .memory(|m| m.focused())
+                .is_some_and(|f| egui::TextEdit::load_state(ui.ctx(), f).is_some());
+            if escape && live && !esc_taken {
+                cancel = true;
+                let ctx = ui.ctx();
+                ctx.stop_dragging();
+                if let Some(f) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(f));
+                }
+            } else if live && !held && !typing && saving == 0 {
+                match draft.request(false) {
+                    Ok(request) => {
+                        actions.push(Action::Write {
+                            request,
+                            select: None,
+                        });
+                        draft.mark_committed();
+                    }
+                    Err(_) => draft.mark_committed(),
+                }
+            }
+        }
+        let id = draft.id.clone();
         if let Some(error) = issue {
             self.set_error(error);
         }
-        if reload {
+        if reload || cancel {
             self.reset_draft();
+        }
+        if let Some((field, edit)) = array {
+            actions.extend(self.edit_resource_array(&id, &field, &edit));
         }
     }
 }

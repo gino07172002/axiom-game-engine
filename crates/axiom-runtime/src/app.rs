@@ -1614,6 +1614,22 @@ impl App {
                 self.quit = true;
                 Ok(())
             }
+            editor::Action::PlayClip {
+                capability,
+                action,
+                args,
+            } => {
+                self.editor_play(true)?;
+                let command = axiom_core::gameplay::RuntimeCommand::Call {
+                    capability,
+                    action,
+                    args,
+                };
+                if let Err(error) = self.runtime.command(&command) {
+                    self.editor.as_mut().unwrap().problem(&error);
+                }
+                Ok(())
+            }
             editor::Action::Write { request, select } => {
                 let previous = editor.rev;
                 let result = self.store.execute(request.clone())?;

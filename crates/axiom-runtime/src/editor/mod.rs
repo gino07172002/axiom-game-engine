@@ -3,6 +3,7 @@ mod commands;
 mod form;
 pub use commands::register_topics;
 mod layout;
+mod options;
 mod resource;
 mod timeline;
 mod ui;
@@ -14,6 +15,8 @@ use crate::world::WorldRuntime;
 mod dock_tests;
 #[cfg(test)]
 mod hierarchy_tests;
+#[cfg(test)]
+mod inspector_tests;
 #[cfg(test)]
 mod parity;
 #[cfg(test)]
@@ -55,6 +58,13 @@ pub(crate) enum Action {
     CancelScenario,
     /// Close the editor window (File ▸ Exit).
     Quit,
+    /// Inspector ▸ ▶ Play clip: start Play preview, then run `capability.action {args}` once
+    /// (e.g. `tween.play {id, clip}`, `audio.play {id}`).
+    PlayClip {
+        capability: String,
+        action: String,
+        args: Value,
+    },
 }
 
 /// Entity ID referenced by a diagnostic path, if any (`/entities/@a~1b/...` or
@@ -157,6 +167,22 @@ impl Draft {
         self.json_mode = self.form.is_none();
         self.form_dirty = false;
         self.component_dirty = false;
+    }
+
+    /// Live Inspector: the draft's values were just sent as a write; they become its baseline
+    /// so the same change is not sent again while the write is saving. A refused write
+    /// resets the draft from the committed world (`revert_staged` / reload).
+    fn mark_committed(&mut self) {
+        if self.label_dirty || self.transform_dirty || self.parent_dirty || self.form_dirty {
+            self.base_transform = self.transform.clone();
+            if let Some(form) = &self.form {
+                self.form_base = form.clone();
+            }
+            self.label_dirty = false;
+            self.transform_dirty = false;
+            self.parent_dirty = false;
+            self.form_dirty = false;
+        }
     }
 
     fn form_edits(&self) -> Vec<Edit> {
@@ -486,6 +512,36 @@ pub(crate) struct Editor {
     /// Bumped whenever `world` is replaced (with `rev`, the key of the per-world caches;
     /// an address could be reused after the old world is freed).
     world_version: u64,
+    /// Typed form specs per component / resource type (cleared with the registry).
+    specs: form::SpecCache,
+    /// The open entity picker of an Inspector field.
+    picker: Option<form::Picker>,
+    /// Inspector field filter (component form and resource form).
+    field_filter: String,
+    /// Fields that differ across the selection, per (world version, selection, component).
+    mixed: MixedCache,
+    /// Inspector ▸ component ▸ Copy: (component, effective value) for Paste.
+    component_clipboard: Option<(String, Value)>,
+    /// Create-command options dialog (Object menu / palette).
+    options: Option<options::OptionsDialog>,
+    /// Scroll the Inspector to the open component on the next frame (`open: component:ID`).
+    scroll_component: bool,
+    /// The object the Inspector showed last frame (a new one scrolls to the top).
+    inspector_shown: Option<String>,
+    /// Timeline Play on rows per (world version, object, clip).
+    bindings_cache: Option<((u64, String, String), timeline::Bindings)>,
+}
+
+/// Multi-object Inspector: which fields differ between the selected objects.
+#[derive(Default)]
+pub(crate) struct MixedCache {
+    key: Option<(u64, Vec<String>, String)>,
+    /// Component field pointers (`form::mixed_leaves`).
+    pub fields: std::collections::HashSet<String>,
+    /// Transform axes that differ: position, rotation (Euler degrees), scale.
+    pub transform: [[bool; 3]; 3],
+    /// Times recomputed (tests: not per frame).
+    pub builds: usize,
 }
 
 /// Inline rename state: the row being renamed, the text being typed, focus requested yet.
@@ -565,6 +621,15 @@ impl Editor {
             tag_ui: Default::default(),
             open_component_after: None,
             world_version: 0,
+            specs: Default::default(),
+            picker: None,
+            field_filter: String::new(),
+            mixed: Default::default(),
+            component_clipboard: None,
+            options: None,
+            scroll_component: false,
+            inspector_shown: None,
+            bindings_cache: None,
         };
         if selected
             .as_ref()
@@ -661,7 +726,12 @@ impl Editor {
         let previous = std::mem::replace(&mut self.world, world);
         self.world_version += 1;
         self.forget_missing();
-        self.reset_draft();
+        // Live Inspector: an edit or drag started while the earlier write was staging stays
+        // (its baseline is that write's values); it commits once the queue drains.
+        let busy = self.dirty() || self.drag.is_some() || self.scene_input.point_drag.is_some();
+        if !(self.prefs.live_inspector && busy) {
+            self.reset_draft();
+        }
         if let Some(id) = select {
             self.select(Some(id));
         }
@@ -810,6 +880,148 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Selected objects that have `component` (own or inherited), primary first.
+    fn selection_with(&self, component: &str) -> Vec<String> {
+        self.selection()
+            .into_iter()
+            .filter(|id| {
+                self.world
+                    .entity(id)
+                    .is_some_and(|e| ui::component_value(&self.world, e, component).is_some())
+            })
+            .collect()
+    }
+
+    /// Inspector ▸ component ▸ Reset (`ACL: reset SEL COMPONENT`) on every selected object
+    /// that has it.
+    pub(super) fn reset_component(&mut self, component: &str) -> Option<Action> {
+        let ids = self.selection_with(component);
+        let result = ops::reset_component(&self.world, &self.registry, &ids, component);
+        self.op_write(result, None)
+    }
+
+    /// Inspector ▸ component ▸ Copy: the effective value, kept for Paste and placed on the
+    /// system clipboard as `{"component":ID,"value":{..}}`.
+    pub(super) fn copy_component(&mut self, component: &str) {
+        let Some(value) = self
+            .selected
+            .as_deref()
+            .and_then(|id| self.world.entity(id))
+            .and_then(|e| ui::component_value(&self.world, e, component))
+        else {
+            return;
+        };
+        self.pending_copy = Some(json!({"component":component,"value":value}).to_string());
+        self.component_clipboard = Some((component.to_owned(), value));
+        self.notice(format!("Copied {component} values"));
+    }
+
+    /// Inspector ▸ component ▸ Paste values (`ACL: set SEL /components/C VALUE`) on every
+    /// selected object that has the component.
+    pub(super) fn paste_component(&mut self, component: &str) -> Option<Action> {
+        let value = self
+            .component_clipboard
+            .as_ref()
+            .filter(|(c, _)| c == component)?
+            .1
+            .clone();
+        let ids = self.selection_with(component);
+        let field = format!(
+            "/components/{}",
+            component.replace('~', "~0").replace('/', "~1")
+        );
+        let result = ops::set_fields(&self.world, &ids, &[(field, value)]);
+        self.op_write(result, None)
+    }
+
+    /// Inspector form array buttons (`ACL: append|insert|remove|reorder ID C/F ..`) on the
+    /// primary selection's authored component.
+    pub(super) fn edit_component_array(
+        &mut self,
+        component: &str,
+        pointer: &str,
+        edit: &ops::ArrayEdit,
+    ) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let mut select = axiom_core::local::Selection::all(axiom_core::local::Collection::Entities);
+        select.ids = vec![id];
+        let field = format!(
+            "/components/{}{pointer}",
+            component.replace('~', "~0").replace('/', "~1")
+        );
+        let result = ops::edit_array(&self.world, &self.registry, &select, &field, edit);
+        self.op_write(result, None)
+    }
+
+    /// Inspector ▸ ▶ Play: enters Play preview and plays the timeline clip (`tween.play`) or
+    /// the audio source (`audio.play`) of the primary selection.
+    pub(super) fn play_clip(&self, component: &str) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let (capability, args) = match component {
+            "tween.clips" => {
+                let (_, clip, _) = self.tween_target()?;
+                ("tween", json!({"id":id,"clip":clip,"restart":true}))
+            }
+            "audio.source" => ("audio", json!({"id":id})),
+            _ => return None,
+        };
+        Some(Action::PlayClip {
+            capability: capability.into(),
+            action: "play".into(),
+            args,
+        })
+    }
+
+    /// Recomputes which fields differ across the selection when the world, the selection
+    /// or the open component changed (never per frame).
+    pub(super) fn refresh_mixed(&mut self) {
+        let selection = self.selection();
+        let component = self
+            .draft
+            .as_ref()
+            .map(|d| d.component.clone())
+            .unwrap_or_default();
+        let key = (self.world_version, selection, component);
+        if self.mixed.key.as_ref() == Some(&key) {
+            return;
+        }
+        self.mixed.builds += 1;
+        self.mixed.fields.clear();
+        self.mixed.transform = Default::default();
+        if key.1.len() > 1 {
+            let world = self.world.clone();
+            let entities: Vec<&axiom_core::Entity> =
+                key.1.iter().filter_map(|id| world.entity(id)).collect();
+            let transforms: Vec<Transform> = entities
+                .iter()
+                .filter_map(|e| ui::component_value(&world, e, "core.transform"))
+                .filter_map(|v| serde_json::from_value(v).ok())
+                .collect();
+            if let Some((first, rest)) = transforms.split_first() {
+                let angles = viewport::degrees(first);
+                for t in rest {
+                    let other = viewport::degrees(t);
+                    for k in 0..3 {
+                        self.mixed.transform[0][k] |= t.position[k] != first.position[k];
+                        self.mixed.transform[1][k] |= (other[k] - angles[k]).abs() > 1e-3;
+                        self.mixed.transform[2][k] |= t.scale[k] != first.scale[k];
+                    }
+                }
+            }
+            if !key.2.is_empty() {
+                let values: Vec<Value> = entities
+                    .iter()
+                    .filter_map(|e| ui::component_value(&world, e, &key.2))
+                    .collect();
+                if let Some((first, rest)) = values.split_first() {
+                    let spec = self.specs.get(&self.registry, &world, &key.2);
+                    self.mixed.fields = form::mixed_leaves(first, rest, &spec);
+                }
+            }
+        }
+        self.mixed.key = Some(key);
+    }
+
     /// The effective `path.spline` of `id`, if it has a valid one.
     pub(super) fn path_spline(&self, id: &str) -> Option<axiom_core::path::PathSpline> {
         let entity = self.world.entity(id)?;
@@ -823,7 +1035,19 @@ impl Editor {
 
     /// Object ▸ Follow Path (`ACL: follow SEL PATH`): the selected objects follow the one
     /// selected path, or the world's only path when no path is selected.
-    pub(super) fn follow_selection(&mut self) -> Option<Action> {
+    pub(super) fn follow_selection(&mut self, options: &ops::FollowOptions) -> Option<Action> {
+        let Some((followers, path)) = self.follow_targets() else {
+            self.set_error(
+                "Select one path together with the objects that should follow it (Ctrl+click)",
+            );
+            return None;
+        };
+        let result = ops::follow_path(&self.world, &followers, &path, options);
+        self.op_write(result, None)
+    }
+
+    /// (followers, path) of Follow Path: the one selected path, else the world's only path.
+    pub(super) fn follow_targets(&self) -> Option<(Vec<String>, String)> {
         let selection = self.selection();
         let mut paths: Vec<String> = selection
             .iter()
@@ -840,19 +1064,10 @@ impl Editor {
                 .collect();
         }
         let [path] = paths.as_slice() else {
-            self.set_error(
-                "Select one path together with the objects that should follow it (Ctrl+click)",
-            );
             return None;
         };
         let followers: Vec<String> = selection.into_iter().filter(|id| id != path).collect();
-        let result = ops::follow_path(
-            &self.world,
-            &followers,
-            path,
-            &ops::FollowOptions::default(),
-        );
-        self.op_write(result, None)
+        Some((followers, path.clone()))
     }
 
     /// Path point handles and Inspector ▸ Path points (`ACL: path ID add|insert|move|remove`).
@@ -913,10 +1128,9 @@ impl Editor {
             .collect()
     }
 
-    /// Object ▸ Add Nav Agent (`ACL: nav SEL agent`).
-    pub(super) fn add_nav_agents(&mut self) -> Option<Action> {
-        let result =
-            ops::add_nav_agent(&self.world, &self.selection(), &ops::NavOptions::default());
+    /// Object ▸ Add Nav Agent (`ACL: nav SEL agent [speed=] [radius=]`).
+    pub(super) fn add_nav_agents(&mut self, options: &ops::NavOptions) -> Option<Action> {
+        let result = ops::add_nav_agent(&self.world, &self.selection(), options);
         self.op_write(result, None)
     }
 
@@ -948,14 +1162,11 @@ impl Editor {
         self.op_write(result, None)
     }
 
-    /// Object ▸ Make Interactable (`ACL: interact SEL`): default `interact.target` on the
-    /// selection, with its event declared and its button bound; edit fields in the Inspector.
-    pub(super) fn make_interactable(&mut self) -> Option<Action> {
-        let result = ops::make_interactable(
-            &self.world,
-            &self.selection(),
-            &ops::InteractOptions::default(),
-        );
+    /// Object ▸ Make Interactable (`ACL: interact SEL [event=..]`): `interact.target` with the
+    /// dialog's options (defaults from a shortcut / the bridge) on the selection, with its event
+    /// declared and its button bound.
+    pub(super) fn make_interactable(&mut self, options: &ops::InteractOptions) -> Option<Action> {
+        let result = ops::make_interactable(&self.world, &self.selection(), options);
         self.op_write(result, None)
     }
 
@@ -971,23 +1182,31 @@ impl Editor {
     /// Object ▸ Camera Follow Selected (`ACL: camera CAMERAS follow TARGET`): the selected
     /// cameras follow the one selected object that is not a camera, with default
     /// `camera.follow` fields (edit them in the Inspector).
-    pub(super) fn camera_follow_selection(&mut self) -> Option<Action> {
-        let selection = self.selection();
-        let (cameras, others): (Vec<String>, Vec<String>) =
-            selection.into_iter().partition(|id| self.is_camera(id));
-        let ([target], false) = (others.as_slice(), cameras.is_empty()) else {
+    pub(super) fn camera_follow_selection(
+        &mut self,
+        options: &ops::CameraFollowOptions,
+    ) -> Option<Action> {
+        let Some((cameras, target)) = self.camera_targets() else {
             self.set_error(
                 "Select the camera(s) together with one object to follow that is not a camera (Ctrl+click)",
             );
             return None;
         };
-        let result = ops::add_camera_follow(
-            &self.world,
-            &cameras,
-            target,
-            &ops::CameraFollowOptions::default(),
-        );
+        let result = ops::add_camera_follow(&self.world, &cameras, &target, options);
         self.op_write(result, None)
+    }
+
+    /// (cameras, target) of Camera Follow Selected: the selected cameras and the one other
+    /// selected object.
+    pub(super) fn camera_targets(&self) -> Option<(Vec<String>, String)> {
+        let (cameras, others): (Vec<String>, Vec<String>) = self
+            .selection()
+            .into_iter()
+            .partition(|id| self.is_camera(id));
+        let ([target], false) = (others.as_slice(), cameras.is_empty()) else {
+            return None;
+        };
+        Some((cameras, target.clone()))
     }
 
     /// Object ▸ Set as Main Camera (`ACL: camera main ID`) on the primary selection.
@@ -997,14 +1216,11 @@ impl Editor {
         self.op_write(result, None)
     }
 
-    /// Object ▸ Add Audio Source (`ACL: audio SEL source`): default `audio.source` on the
-    /// selection with the library's first clip (a world without clips gets clip `tone`).
-    pub(super) fn add_audio_source(&mut self) -> Option<Action> {
-        let result = ops::add_audio_source(
-            &self.world,
-            &self.selection(),
-            &ops::AudioSourceOptions::default(),
-        );
+    /// Object ▸ Add Audio Source (`ACL: audio SEL source [clip=..]`): `audio.source` with the
+    /// dialog's options on the selection (default clip: the library's first; a world without
+    /// clips gets clip `tone`).
+    pub(super) fn add_audio_source(&mut self, options: &ops::AudioSourceOptions) -> Option<Action> {
+        let result = ops::add_audio_source(&self.world, &self.selection(), options);
         self.op_write(result, None)
     }
 
@@ -1022,10 +1238,9 @@ impl Editor {
     }
 
     /// Inspector ▸ Audio source ▸ New clip (`ACL: audio clip ID PRESET`): a library clip from a
-    /// preset, named after it (`engine`, `engine2`, ...).
-    pub(super) fn add_audio_clip(&mut self, preset: &str) -> Option<Action> {
-        let id = ops::free_audio_clip_id(&self.world, preset);
-        let result = ops::add_audio_clip(&self.world, &id, preset);
+    /// preset; the dialog proposes the preset name (`engine`, `engine2`, ...) as its ID.
+    pub(super) fn add_audio_clip(&mut self, id: &str, preset: &str) -> Option<Action> {
+        let result = ops::add_audio_clip(&self.world, id, preset);
         self.op_write(result, None)
     }
 
@@ -1079,17 +1294,20 @@ impl Editor {
         Some((id, clip, track))
     }
 
-    /// Object ▸ Add Tween Clip (`ACL: tween SEL clip NAME`): a new clip (first free name of
-    /// `clip`, `clip2`, ...) on the selection; it becomes the timeline clip.
-    pub(super) fn add_tween_clip(&mut self) -> Option<Action> {
+    /// Object ▸ Add Tween Clip (`ACL: tween SEL clip NAME [..]`): clip `name` (the dialog
+    /// proposes `clip`, `clip2`, ...) with its options on the selection; it becomes the timeline
+    /// clip.
+    pub(super) fn add_tween_clip(
+        &mut self,
+        name: &str,
+        options: &ops::TweenClipOptions,
+    ) -> Option<Action> {
         let ids = self.selection();
-        let name = ops::free_clip_name(&self.world, &ids);
-        let result =
-            ops::add_tween_clip(&self.world, &ids, &name, &ops::TweenClipOptions::default());
+        let result = ops::add_tween_clip(&self.world, &ids, name, options);
         let action = self.op_write(result, None);
         if action.is_some() {
             self.tween_ui = timeline::TweenUi {
-                clip: Some(name),
+                clip: Some(name.to_owned()),
                 ..Default::default()
             };
         }
@@ -1464,12 +1682,15 @@ impl Editor {
         Ok(())
     }
 
-    /// Remote asset inspector: `material:ID`, `prefab:ID` or `resource:ID`.
+    /// Remote inspector: `material:ID`, `prefab:ID`, `resource:ID`, `component:ID` (of the
+    /// selection) or `options:COMMAND` (a create command's options dialog).
     pub(crate) fn remote_open(&mut self, target: &str) -> anyhow::Result<()> {
         anyhow::ensure!(!self.dirty(), "the editor has an unsaved draft");
-        let (kind, id) = target
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("open expects material:ID, prefab:ID or resource:ID"))?;
+        let (kind, id) = target.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "open expects material:ID, prefab:ID, resource:ID, component:ID or options:COMMAND"
+            )
+        })?;
         let missing = || {
             axiom_core::Diagnostic::error("not_found", "/open", format!("{kind} {id} not found"))
         };
@@ -1492,7 +1713,34 @@ impl Editor {
                 }
                 self.open_resource(id);
             }
-            other => anyhow::bail!("unknown asset kind {other}; use material, prefab or resource"),
+            // The selected object's component in the Inspector (view only).
+            "component" => {
+                let entity = self
+                    .selected
+                    .as_deref()
+                    .and_then(|s| self.world.entity(s))
+                    .ok_or_else(|| anyhow::anyhow!("open component:ID needs a selected object"))?;
+                if ui::component_value(&self.world, entity, id).is_none() {
+                    return Err(missing());
+                }
+                let (world, entity) = (self.world.clone(), entity.clone());
+                if let Some(draft) = self.draft.as_mut() {
+                    draft.open_component(&world, &entity, id);
+                }
+                self.scroll_component = true;
+            }
+            // A create command's options dialog, prefilled for the selection (view only;
+            // `command` + `arg`-less runs it with the defaults).
+            "options" => {
+                let command = commands::command(id).map(|c| c.id).ok_or_else(missing)?;
+                self.options = Some(
+                    options::OptionsDialog::for_command(self, command)
+                        .ok_or_else(|| anyhow::anyhow!("{id} has no options dialog"))?,
+                );
+            }
+            other => anyhow::bail!(
+                "unknown kind {other}; use material, prefab, resource, component or options"
+            ),
         }
         Ok(())
     }
@@ -1695,6 +1943,7 @@ impl Editor {
             .collect();
         self.registry = std::sync::Arc::new(registry.clone());
         self.world_panel.invalidate();
+        self.specs.clear();
     }
 
     pub fn dirty(&self) -> bool {
@@ -1728,9 +1977,17 @@ impl Editor {
         self.prefab = None;
         let entity = id.as_deref().and_then(|id| self.world.entity(id));
         let selected = entity.map(|e| e.id.clone());
+        // Reloading the same object (after a live commit, Reload, Esc) keeps its open
+        // component and Form / JSON choice.
+        let keep = self
+            .draft
+            .as_ref()
+            .filter(|d| selected.as_ref() == Some(&d.id) && !d.component.is_empty())
+            .map(|d| (d.component.clone(), d.json_mode));
         if selected != self.selected {
             self.scene_input.path_point = None;
             self.tween_ui = Default::default();
+            self.picker = None;
         }
         self.selected = selected;
         self.drag = None;
@@ -1771,8 +2028,19 @@ impl Editor {
                 json_mode: false,
             }
         });
-        if let (Some(component), Some(draft), Some(e)) = (open, self.draft.as_mut(), entity) {
+        let resolves =
+            |c: &String| entity.is_some_and(|e| ui::component_value(&self.world, e, c).is_some());
+        let reopen = open
+            .map(|c| (c, None))
+            .or_else(|| keep.map(|(c, json)| (c, Some(json))))
+            .filter(|(c, _)| resolves(c));
+        if let (Some((component, json)), Some(draft), Some(e)) =
+            (reopen, self.draft.as_mut(), entity)
+        {
             draft.open_component(&self.world, e, &component);
+            if let Some(json) = json {
+                draft.json_mode = json || draft.form.is_none();
+            }
         }
     }
 
@@ -1903,6 +2171,43 @@ impl Editor {
         })
     }
 
+    /// Swaps the Inspector draft of a `render.light` / `render.mesh` being edited into the
+    /// compiled entity for one frame; returns how to put the committed value back. Only a
+    /// valid draft on the runtime's revision is shown.
+    #[allow(clippy::type_complexity)]
+    fn draft_component_preview(
+        &self,
+        runtime: &mut WorldRuntime,
+    ) -> Option<Box<dyn FnOnce(&mut WorldRuntime)>> {
+        let d = self
+            .draft
+            .as_ref()
+            .filter(|d| d.form_dirty && d.rev == runtime.rev)?;
+        let form = d.form.as_ref()?;
+        let &slot = runtime.state.compiled.indices.get(&d.id)?;
+        let entity = &mut runtime.state.compiled.entities[slot];
+        match d.component.as_str() {
+            "render.light" => {
+                let light: axiom_core::light::RenderLight =
+                    serde_json::from_value(form.clone()).ok()?;
+                light.validate().ok()?;
+                let old = entity.light.replace(light);
+                Some(Box::new(move |rt: &mut WorldRuntime| {
+                    rt.state.compiled.entities[slot].light = old;
+                }))
+            }
+            "render.mesh" => {
+                let mesh: axiom_core::RenderMesh = serde_json::from_value(form.clone()).ok()?;
+                mesh.validate().ok()?;
+                let old = entity.mesh.replace(mesh);
+                Some(Box::new(move |rt: &mut WorldRuntime| {
+                    rt.state.compiled.entities[slot].mesh = old;
+                }))
+            }
+            _ => None,
+        }
+    }
+
     pub fn render_frame(
         &self,
         runtime: &mut WorldRuntime,
@@ -1952,7 +2257,13 @@ impl Editor {
                     &writes,
                 ))
             });
+        // A light / mesh / camera field being dragged or typed in the Inspector: its draft
+        // value is drawn for this frame only (other components show once committed).
+        let component = self.draft_component_preview(runtime);
         let mut frame = runtime.render_frame();
+        if let Some(restore) = component {
+            restore(runtime);
+        }
         if let Some(restore) = scrub {
             restore.restore(&mut runtime.state);
         }

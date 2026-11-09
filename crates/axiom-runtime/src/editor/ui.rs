@@ -47,7 +47,7 @@ impl Editor {
         let scene_owns_keys = self.scene_input.marquee.is_some()
             || ctx.input(|i| super::viewport::rmb_held_in(i, self.viewport));
         // An inline rename owns the keyboard (egui drops focus on Escape before we get here).
-        if !text_focused && self.renaming.is_none() && !scene_owns_keys {
+        if !text_focused && self.renaming.is_none() && !scene_owns_keys && self.options.is_none() {
             // Every shortcut comes from the command registry (user overrides included).
             let pressed = ctx.input(|i| self.shortcut_commands(i));
             for id in pressed {
@@ -778,14 +778,43 @@ impl Editor {
         let mut path_point = self.scene_input.path_point;
         let mut path_command = None;
         let tween = self.selected.as_deref().and_then(|id| self.tween_clips(id));
+        // Play on rows, rebuilt only when the world or the timeline clip changes (moved out
+        // for the frame and put back at the end, so drawing them allocates nothing).
+        let mut bindings_cache = self.bindings_cache.take();
+        let no_bindings = super::timeline::Bindings::default();
+        if let Some((id, clip, _)) = self.tween_target().filter(|_| tween.is_some()) {
+            let key = (self.world_version, id, clip);
+            if bindings_cache.as_ref().map(|c| &c.0) != Some(&key) {
+                let rows = super::timeline::Bindings::of(&self.world, &key.1, &key.2);
+                bindings_cache = Some((key, rows));
+            }
+        } else {
+            bindings_cache = None;
+        }
+        let bindings = bindings_cache.as_ref().map_or(&no_bindings, |c| &c.1);
         let mut tween_ui = self.tween_ui.clone();
         let mut tween_request = None;
         let audio = self.selected.as_deref().and_then(|id| self.audio_clips(id));
         let mut audio_clip: Option<String> = None;
-        let mut audio_preset: Option<&'static str> = None;
         self.refresh_tag_cache();
+        self.refresh_mixed();
         let mut tag_request = None;
         let mut add_component = None;
+        let mut component_request = None;
+        let mut new_clip = false;
+        let spec = self
+            .draft
+            .as_ref()
+            .filter(|d| !d.component.is_empty())
+            .map(|d| d.component.clone())
+            .map(|c| self.specs.get(&self.registry, &self.world, &c));
+        let live = self.prefs.live_inspector;
+        // Esc that closes a dropdown, the entity picker, a dialog or a rename is not a cancel.
+        let esc_taken = ui.ctx().memory(|m| m.any_popup_open())
+            || self.picker.is_some()
+            || self.options.is_some()
+            || self.renaming.is_some();
+        let saving = self.saving;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -807,6 +836,9 @@ impl Editor {
             ui.label(RichText::new(format!("Stale draft · revision {}", draft.rev)).color(WARNING));
         }
         ui.horizontal(|ui| {
+            ui.checkbox(&mut self.prefs.live_inspector, "Live").on_hover_text(
+                "On: edits commit on release / Enter / focus loss (one revision each); Esc cancels. Off: edit a draft, then Apply.",
+            );
             for (title, preview) in [("Apply", false), ("Preview", true)] {
                 if ui
                     .add_enabled(
@@ -830,10 +862,17 @@ impl Editor {
         let mut delete = false;
         let mut structural = None;
         let entity = self.world.entity(&id);
+        // Another object starts at the top of the Inspector (its timeline and transform).
+        let new_object = self.inspector_shown.as_deref() != Some(id.as_str());
+        if new_object {
+            self.inspector_shown = Some(id.clone());
+        }
         if let Some(entity) = entity {
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+            let mut scroll = ScrollArea::vertical().auto_shrink([false, false]);
+            if new_object {
+                scroll = scroll.vertical_scroll_offset(0.0);
+            }
+            scroll.show(ui, |ui| {
                     ui.add_enabled_ui(!stale && self.drag.is_none(), |ui| {
                         caption(ui, "DISPLAY LABEL");
                         draft.label_dirty |= ui
@@ -876,6 +915,8 @@ impl Editor {
                                         &mut tween_ui,
                                         live.as_ref().map(|(c, t)| (c.as_str(), *t)),
                                         editable,
+                                        bindings,
+                                        Some(&mut self.rects),
                                     );
                                 });
                         }
@@ -883,12 +924,25 @@ impl Editor {
                             .default_open(true)
                             .show(ui, |ui| {
                                 if let Some(t) = &mut draft.transform {
+                                    // "—" on an axis whose value differs across the selection,
+                                    // until it is edited.
+                                    let base = draft.base_transform.clone().unwrap_or_default();
+                                    let base_angles = viewport::degrees(&base);
+                                    let m = self.mixed.transform;
+                                    let unchanged = |k: usize, a: [f32; 3], b: [f32; 3]| a[k] == b[k];
+                                    let show = |row: usize, a: [f32; 3], b: [f32; 3]| {
+                                        [0, 1, 2].map(|k| m[row][k] && unchanged(k, a, b))
+                                    };
+                                    let mixed_position = show(0, t.position, base.position);
+                                    let mixed_angles = show(1, draft.angles, base_angles);
+                                    let mixed_scale = show(2, t.scale, base.scale);
                                     let position = vector(
                                         ui,
                                         "Position",
                                         &mut t.position,
                                         0.05,
                                         -100000.0..=100000.0,
+                                        mixed_position,
                                     );
                                     let rotate = vector(
                                         ui,
@@ -896,12 +950,19 @@ impl Editor {
                                         &mut draft.angles,
                                         0.5,
                                         -36000.0..=36000.0,
+                                        mixed_angles,
                                     );
                                     if rotate {
                                         t.rotation = viewport::rotation(draft.angles);
                                     }
-                                    let scale =
-                                        vector(ui, "Scale", &mut t.scale, 0.025, 0.0001..=10000.0);
+                                    let scale = vector(
+                                        ui,
+                                        "Scale",
+                                        &mut t.scale,
+                                        0.025,
+                                        0.0001..=10000.0,
+                                        mixed_scale,
+                                    );
                                     draft.transform_dirty |= position || rotate || scale;
                                 } else if ui.button("Add transform").clicked() {
                                     draft.transform = Some(Transform::default());
@@ -951,16 +1012,22 @@ impl Editor {
                         egui::CollapsingHeader::new("Components")
                             .default_open(true)
                             .show(ui, |ui| {
-                                structural = component_editor(
-                                    ui,
-                                    &self.world,
-                                    &self.component_hints,
-                                    &self.registry,
-                                    entity,
-                                    draft,
-                                    &mut add_component,
-                                )
-                                .or(structural.take());
+                                let panel = ComponentPanel {
+                                    world: &self.world,
+                                    world_version: self.world_version,
+                                    hints: &self.component_hints,
+                                    registry: &self.registry,
+                                    spec: spec.as_deref(),
+                                    mixed: &self.mixed.fields,
+                                    filter: &mut self.field_filter,
+                                    picker: &mut self.picker,
+                                    rects: &mut self.rects,
+                                    clipboard: self.component_clipboard.as_ref().map(|c| c.0.as_str()),
+                                    live,
+                                    scroll: &mut self.scroll_component,
+                                };
+                                component_request =
+                                    component_editor(ui, panel, entity, draft, &mut add_component);
                             });
                         if let Some((clips, current)) = &audio {
                             egui::CollapsingHeader::new("Audio source")
@@ -982,15 +1049,10 @@ impl Editor {
                                                         }
                                                     }
                                                 });
-                                            ui.menu_button("New clip", |ui| {
-                                                caption(ui, "Procedural presets (no audio files)");
-                                                for preset in axiom_core::audio::CLIP_PRESETS {
-                                                    if ui.button(preset).clicked() {
-                                                        audio_preset = Some(preset);
-                                                        ui.close_menu();
-                                                    }
-                                                }
-                                            });
+                                            new_clip = ui
+                                                .button("New clip…")
+                                                .on_hover_text("Procedural presets (no audio files); pick the preset and the clip ID")
+                                                .clicked();
                                         });
                                     });
                                     caption(
@@ -1061,8 +1123,36 @@ impl Editor {
                 "Object was deleted in another revision. Copy or reload the draft.",
             );
         }
+        // Live Inspector: Esc while editing goes back to the committed values; otherwise an
+        // edited draft commits once nothing is held or typed any more (drag released, Enter,
+        // focus left the field, checkbox / dropdown picked): one revision per interaction.
+        let mut cancel = false;
+        let mut live_commit = false;
+        if draft.dirty() && !stale && self.drag.is_none() && write.is_none() && !copy {
+            let (escape, held) =
+                ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.any_down()));
+            let typing = ui
+                .ctx()
+                .memory(|m| m.focused())
+                .is_some_and(|f| egui::TextEdit::load_state(ui.ctx(), f).is_some());
+            if escape && live && !esc_taken && !draft.component_dirty {
+                cancel = true;
+                // The drag or typing in progress ends with the cancel.
+                let ctx = ui.ctx();
+                ctx.stop_dragging();
+                if let Some(f) = ctx.memory(|m| m.focused()) {
+                    ctx.memory_mut(|m| m.surrender_focus(f));
+                }
+            } else if live && !draft.component_dirty && !held && !typing && saving == 0 {
+                // While an earlier edit is saving the draft waits (kept by `apply_staged`),
+                // so the writer never refuses it as "still being prepared".
+                write = Some(false);
+                live_commit = true;
+            }
+        }
         if copy || write.is_some() {
             match super::inspector_edits(&self.world, &self.registry, draft, &self.extra) {
+                Ok(edits) if edits.is_empty() && live_commit => draft.mark_committed(),
                 Ok(edits) if !edits.is_empty() => {
                     if copy {
                         ui.ctx().copy_text(
@@ -1090,6 +1180,9 @@ impl Editor {
                             request,
                             select: None,
                         });
+                        if live_commit {
+                            draft.mark_committed();
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -1099,16 +1192,42 @@ impl Editor {
         if let Some(error) = issue {
             self.set_error(error);
         }
-        if reload {
+        if reload || cancel {
             self.select(self.selected.clone());
-            self.notice("Reloaded the committed object");
+            self.notice(if cancel {
+                "Edit cancelled (Esc)"
+            } else {
+                "Reloaded the committed object"
+            });
         }
-        match structural {
-            Some(CoreEdit::RemoveComponent { entity, component }) => {
-                actions.extend(self.remove_component(&entity, &component));
+        if let Some(edit) = structural {
+            actions.push(self.write(vec![Edit::Core(edit)], None));
+        }
+        match component_request {
+            Some(ComponentRequest::Remove(component)) => {
+                actions.extend(self.remove_component(&id, &component));
             }
-            Some(edit) => actions.push(self.write(vec![Edit::Core(edit)], None)),
+            Some(ComponentRequest::Reset(component)) => {
+                actions.extend(self.reset_component(&component));
+            }
+            Some(ComponentRequest::Copy(component)) => self.copy_component(&component),
+            Some(ComponentRequest::Paste(component)) => {
+                actions.extend(self.paste_component(&component));
+            }
+            Some(ComponentRequest::Array {
+                component,
+                pointer,
+                edit,
+            }) => actions.extend(self.edit_component_array(&component, &pointer, &edit)),
+            Some(ComponentRequest::MainCamera) => actions.extend(self.make_main_camera()),
+            Some(ComponentRequest::Play(component)) => match self.play_clip(&component) {
+                Some(action) => actions.push(action),
+                None => self.set_error("Nothing to play: pick a clip on the timeline"),
+            },
             None => {}
+        }
+        if new_clip {
+            self.options = super::options::OptionsDialog::for_command(self, "audio.new_clip");
         }
         self.scene_input.path_point = path_point;
         self.tween_ui = tween_ui;
@@ -1137,6 +1256,20 @@ impl Editor {
             Some(super::timeline::TweenRequest::RemoveClip(clip)) => {
                 actions.extend(self.remove_tween_clip(&clip));
             }
+            // ACL: remove resources[id=runtime.bindings] events/B/calls C (events B when it
+            // is the binding's only call).
+            Some(super::timeline::TweenRequest::Unbind(play)) => {
+                let (field, index) = if play.calls > 1 {
+                    (format!("/events/{}/calls", play.binding), play.call)
+                } else {
+                    ("/events".to_owned(), play.binding)
+                };
+                actions.extend(self.edit_resource_array(
+                    "runtime.bindings",
+                    &field,
+                    &axiom_core::ops::ArrayEdit::Remove(index),
+                ));
+            }
             None => {}
         }
         if let Some(clip) = audio_clip {
@@ -1153,9 +1286,6 @@ impl Editor {
         if let Some(component) = add_component {
             actions.extend(self.add_component(&component));
         }
-        if let Some(preset) = audio_preset {
-            actions.extend(self.add_audio_clip(preset));
-        }
         if let Some(command) = path_command {
             match self.run_command(command) {
                 Ok(more) => actions.extend(more),
@@ -1168,6 +1298,7 @@ impl Editor {
         if delete {
             actions.extend(self.delete_ids(&[id]));
         }
+        self.bindings_cache = bindings_cache;
     }
 
     /// Body of one of the former bottom-dock tabs.
@@ -1682,15 +1813,61 @@ pub(crate) fn search_matches(world: &World, e: &Entity, term: &str) -> bool {
     })
 }
 
+/// What the component section asks the Inspector to do after drawing.
+pub(super) enum ComponentRequest {
+    Remove(String),
+    Reset(String),
+    Copy(String),
+    Paste(String),
+    Array {
+        component: String,
+        pointer: String,
+        edit: axiom_core::ops::ArrayEdit,
+    },
+    MainCamera,
+    Play(String),
+}
+
+/// Everything the component section reads besides the object and its draft.
+struct ComponentPanel<'a> {
+    world: &'a World,
+    world_version: u64,
+    hints: &'a std::collections::BTreeMap<String, Value>,
+    registry: &'a axiom_core::Registry,
+    /// Typed form spec of the open component (cached per type).
+    spec: Option<&'a super::form::Spec>,
+    mixed: &'a std::collections::HashSet<String>,
+    filter: &'a mut String,
+    picker: &'a mut Option<super::form::Picker>,
+    rects: &'a mut std::collections::HashMap<String, egui::Rect>,
+    /// Component whose values were copied (Paste is offered on the same type).
+    clipboard: Option<&'a str>,
+    live: bool,
+    /// Scroll the Inspector so the open component starts at the top (once).
+    scroll: &'a mut bool,
+}
+
 fn component_editor(
     ui: &mut Ui,
-    world: &World,
-    hints: &std::collections::BTreeMap<String, Value>,
-    registry: &axiom_core::Registry,
+    panel: ComponentPanel,
     entity: &Entity,
     draft: &mut Draft,
     add_component: &mut Option<String>,
-) -> Option<CoreEdit> {
+) -> Option<ComponentRequest> {
+    let ComponentPanel {
+        world,
+        world_version,
+        hints,
+        registry,
+        spec,
+        mixed,
+        filter,
+        picker,
+        rects,
+        clipboard,
+        live,
+        scroll,
+    } = panel;
     let inherited = entity.prefab.as_ref().and_then(|p| world.prefabs.get(p));
     let keys: std::collections::BTreeSet<_> = entity
         .components
@@ -1699,15 +1876,14 @@ fn component_editor(
         .filter(|key| key.as_str() != "core.transform")
         .cloned()
         .collect();
-    let mut remove = None;
+    let mut request = None;
     // Picking in Add component writes at once, so any unapplied draft edit blocks it.
     ui.add_enabled_ui(!draft.dirty(), |ui| {
         ui.horizontal_wrapped(|ui| {
             for key in &keys {
-                if ui
-                    .selectable_label(draft.component == *key, key.as_str())
-                    .clicked()
-                {
+                let r = ui.selectable_label(draft.component == *key, key.as_str());
+                rects.insert(format!("component:{key}"), r.rect);
+                if r.clicked() {
                     draft.open_component(world, entity, key);
                 }
             }
@@ -1764,108 +1940,228 @@ fn component_editor(
                 }
             });
     });
-    if !draft.component.is_empty() && draft.component != "core.transform" {
-        let known = hints.contains_key(&draft.component)
-            || world.component_schemas.contains_key(&draft.component);
-        if !known && !keys.contains(&draft.component) {
-            ui.label(
-                RichText::new(format!(
-                    "Unknown component '{}'. Check the ID (schema components lists them).",
-                    draft.component
-                ))
-                .color(WARNING),
-            );
-        }
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(!draft.dirty(), |ui| {
-                if ui
-                    .selectable_label(!draft.json_mode, "Form")
-                    .on_hover_text("Edit the effective value; only changed fields are written")
-                    .clicked()
-                    && draft.form.is_some()
-                {
-                    draft.json_mode = false;
+    if draft.component.is_empty() || draft.component == "core.transform" {
+        return request;
+    }
+    let own = entity.components.contains_key(&draft.component);
+    let inherits = inherited.is_some_and(|p| p.components.contains_key(&draft.component));
+    let known = hints.contains_key(&draft.component)
+        || world.component_schemas.contains_key(&draft.component);
+    if !known && !keys.contains(&draft.component) {
+        ui.label(
+            RichText::new(format!(
+                "Unknown component '{}'. Check the ID (schema components lists them).",
+                draft.component
+            ))
+            .color(WARNING),
+        );
+    }
+    if std::mem::take(scroll) {
+        ui.scroll_to_cursor(Some(egui::Align::TOP));
+    }
+    // Component header: enabled toggle (a form edit, so it is live and multi-object), then
+    // the actions that write at once.
+    if own || inherits {
+        ui.horizontal_wrapped(|ui| {
+            let base_enabled = draft.form_base.get("enabled").cloned();
+            if let Some(Value::Bool(enabled)) =
+                draft.form.as_mut().and_then(|f| f.get_mut("enabled"))
+            {
+                let shown_mixed =
+                    mixed.contains("/enabled") && base_enabled == Some(Value::Bool(*enabled));
+                let r = ui.add(egui::Checkbox::new(enabled, "Enabled").indeterminate(shown_mixed));
+                rects.insert("component:enabled".into(), r.rect);
+                if r.changed() {
+                    draft.form_dirty = true;
                 }
-                if ui
-                    .selectable_label(draft.json_mode, "JSON")
-                    .on_hover_text("Edit the authored override as raw JSON")
-                    .clicked()
+            }
+            let component = draft.component.clone();
+            ui.add_enabled_ui(!draft.dirty(), |ui| {
+                let mut button = |ui: &mut Ui, key: &str, text: &str, tip: &str, enabled: bool| {
+                    let r = ui
+                        .add_enabled(enabled, egui::Button::new(text).small())
+                        .on_hover_text(tip);
+                    rects.insert(format!("component:{key}"), r.rect);
+                    r.clicked()
+                };
+                if button(
+                    ui,
+                    "reset",
+                    "Reset",
+                    if inherits {
+                        "Drop the override: back to the prefab's values"
+                    } else {
+                        "Back to the default values (ACL: reset SEL COMPONENT)"
+                    },
+                    own && (inherits || spec.is_some_and(|s| s.resettable)),
+                ) {
+                    request = Some(ComponentRequest::Reset(component.clone()));
+                }
+                if button(
+                    ui,
+                    "copy",
+                    "Copy",
+                    "Copy the values (Paste on the same component of other objects)",
+                    true,
+                ) {
+                    request = Some(ComponentRequest::Copy(component.clone()));
+                }
+                if button(
+                    ui,
+                    "paste",
+                    "Paste",
+                    "Paste the copied values on every selected object with this component",
+                    clipboard == Some(component.as_str()),
+                ) {
+                    request = Some(ComponentRequest::Paste(component.clone()));
+                }
+                if button(
+                    ui,
+                    "remove",
+                    "Remove",
+                    "Remove the authored component (ACL: remove SEL COMPONENT)",
+                    own,
+                ) {
+                    request = Some(ComponentRequest::Remove(component.clone()));
+                }
+                if component == "render.camera"
+                    && button(
+                        ui,
+                        "main_camera",
+                        "Make Main Camera",
+                        "active=true here, false on every other camera (ACL: camera main ID)",
+                        draft.form.as_ref().is_some_and(|f| f["active"] != true),
+                    )
                 {
-                    draft.json_mode = true;
+                    request = Some(ComponentRequest::MainCamera);
+                }
+                if matches!(component.as_str(), "tween.clips" | "audio.source")
+                    && button(
+                        ui,
+                        "play",
+                        "▶ Play",
+                        "Start Play preview and play this clip / source",
+                        true,
+                    )
+                {
+                    request = Some(ComponentRequest::Play(component.clone()));
                 }
             });
         });
-        if !draft.json_mode {
-            if let Some(form) = &mut draft.form {
-                let hint = super::form::hints_for(hints, world, &draft.component);
-                draft.form_dirty |= super::form::edit(ui, &draft.component, form, hint.as_ref());
-                if draft.form_dirty {
-                    let mut leaves = vec![];
-                    super::form::changes(&draft.form_base, form, "", &mut leaves);
-                    caption(
-                        ui,
-                        format!(
-                            "{} changed field(s): {}",
-                            leaves.len(),
-                            leaves
-                                .iter()
-                                .map(|(p, _)| p.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    );
-                }
-            }
-            return remove;
-        }
     }
-    if !draft.component.is_empty() && draft.component != "core.transform" {
-        let own = entity.components.contains_key(&draft.component);
-        let inherits = inherited.is_some_and(|p| p.components.contains_key(&draft.component));
-        caption(
-            ui,
-            match (own, inherits) {
-                (true, true) => "Prefab override JSON",
-                (false, true) => "Inherited · enter an override",
-                (true, false) => "Authored JSON",
-                (false, false) => "New component JSON",
-            },
-        );
-        if !own && !inherits {
-            // Show the registry/world schema so a new component can be typed without docs.
-            if let Some(schema) = super::form::hints_for(hints, world, &draft.component) {
-                ui.label(
-                    RichText::new(format!("schema {}", schema))
-                        .small()
-                        .monospace()
-                        .color(MUTED),
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(!draft.dirty(), |ui| {
+            if ui
+                .selectable_label(!draft.json_mode, "Form")
+                .on_hover_text(
+                    "Typed fields of the effective value; only changed fields are written",
+                )
+                .clicked()
+                && draft.form.is_some()
+            {
+                draft.json_mode = false;
+            }
+            if ui
+                .selectable_label(draft.json_mode, "JSON")
+                .on_hover_text("Edit the authored override as raw JSON (Apply writes it)")
+                .clicked()
+            {
+                draft.json_mode = true;
+            }
+        });
+        if !draft.json_mode {
+            let r = ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text("Filter fields")
+                    .desired_width(110.0),
+            );
+            rects.insert("form:filter".into(), r.rect);
+        }
+    });
+    if !draft.json_mode {
+        if let (Some(form), Some(spec)) = (&mut draft.form, spec) {
+            let needle = filter.trim().to_lowercase();
+            let mut ctx = super::form::Ctx {
+                world,
+                world_version,
+                base: &draft.form_base,
+                mixed,
+                filter: &needle,
+                structural: !draft.form_dirty && own,
+                picker,
+                rects: Some(rects),
+            };
+            let out = super::form::show(ui, &mut ctx, spec, form, &draft.component);
+            draft.form_dirty |= out.changed;
+            if let Some((pointer, edit)) = out.array {
+                request = Some(ComponentRequest::Array {
+                    component: draft.component.clone(),
+                    pointer,
+                    edit,
+                });
+            }
+            if !own && inherits {
+                caption(ui, "Inherited from the prefab: add / remove items on the prefab (Assets) or override the component first");
+            }
+            if draft.form_dirty && !live {
+                let mut leaves = vec![];
+                super::form::changes(&draft.form_base, form, "", &mut leaves);
+                caption(
+                    ui,
+                    format!(
+                        "{} changed field(s): {}",
+                        leaves.len(),
+                        leaves
+                            .iter()
+                            .map(|(p, _)| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                 );
             }
         }
-        draft.component_dirty |= ui
-            .add(
-                egui::TextEdit::multiline(&mut draft.json)
-                    .code_editor()
-                    .desired_rows(5)
-                    .desired_width(f32::INFINITY),
-            )
-            .changed();
-        ui.horizontal(|ui| {
-            if !own && ui.small_button("Stage component").clicked() {
-                draft.component_dirty = true;
-            }
-            if ui
-                .add_enabled(own && !draft.dirty(), egui::Button::new("Remove component"))
-                .clicked()
-            {
-                remove = Some(CoreEdit::RemoveComponent {
-                    entity: entity.id.clone(),
-                    component: draft.component.clone(),
-                });
-            }
-        });
+        return request;
     }
-    remove
+    caption(
+        ui,
+        match (own, inherits) {
+            (true, true) => "Prefab override JSON",
+            (false, true) => "Inherited · enter an override",
+            (true, false) => "Authored JSON",
+            (false, false) => "New component JSON",
+        },
+    );
+    if !own && !inherits {
+        // Show the registry/world schema so a new component can be typed without docs.
+        if let Some(schema) = super::form::hints_for(hints, world, &draft.component) {
+            ui.label(
+                RichText::new(format!("schema {}", schema))
+                    .small()
+                    .monospace()
+                    .color(MUTED),
+            );
+        }
+    }
+    draft.component_dirty |= ui
+        .add(
+            egui::TextEdit::multiline(&mut draft.json)
+                .code_editor()
+                .desired_rows(5)
+                .desired_width(f32::INFINITY),
+        )
+        .changed();
+    ui.horizontal(|ui| {
+        if !own && ui.small_button("Stage component").clicked() {
+            draft.component_dirty = true;
+        }
+        if ui
+            .add_enabled(own && !draft.dirty(), egui::Button::new("Remove component"))
+            .clicked()
+        {
+            request = Some(ComponentRequest::Remove(draft.component.clone()));
+        }
+    });
+    request
 }
 
 fn vector(
@@ -1874,21 +2170,21 @@ fn vector(
     value: &mut [f32; 3],
     speed: f32,
     range: std::ops::RangeInclusive<f32>,
+    mixed: [bool; 3],
 ) -> bool {
     let mut changed = false;
     caption(ui, name);
     ui.horizontal(|ui| {
-        for (v, axis) in value.iter_mut().zip(["X ", "Y ", "Z "]) {
-            changed |= ui
-                .add_sized(
-                    [68.0, 20.0],
-                    egui::DragValue::new(v)
-                        .prefix(axis)
-                        .speed(speed)
-                        .range(range.clone())
-                        .max_decimals(3),
-                )
-                .changed();
+        for ((v, axis), mixed) in value.iter_mut().zip(["X ", "Y ", "Z "]).zip(mixed) {
+            let mut drag = egui::DragValue::new(v)
+                .prefix(axis)
+                .speed(speed)
+                .range(range.clone())
+                .max_decimals(3);
+            if mixed {
+                drag = drag.custom_formatter(|_, _| super::form::MIXED.to_owned());
+            }
+            changed |= ui.add_sized([68.0, 20.0], drag).changed();
         }
     });
     changed

@@ -66,8 +66,10 @@ EDIT (any number, atomic):
   rotate SEL x,y,z                core.transform rotation from Euler degrees (XYZ)
   tag SEL +TAG -TAG ..            add / remove entity tags (other tags and their order kept)
   add SEL COMPONENT [JSON]        component with JSON or its default, + the capability/systems it needs
-  append SEL F VALUE | insert SEL F INDEX VALUE | remove SEL F INDEX   one array element (set F
-                                  replaces the whole array; it warns when resource list items are dropped)
+  append SEL F VALUE | insert SEL F INDEX VALUE | remove SEL F INDEX | reorder SEL F FROM TO
+                                  one array element (set F replaces the whole array; it warns when
+                                  resource list items are dropped)
+  reset SEL COMPONENT             component back to its default (prefab instance: drop the override)
   event declare NAME [FIELD=text|number|int|bool ..]   declare a behavior.program event
  world (World panel):
   world id ID | world title TEXT
@@ -342,6 +344,7 @@ enum Statement {
     ResourceRemove(String),
     AddComponent(Box<Selection>, String, Option<Value>),
     Array(Box<Selection>, String, crate::ops::ArrayEdit),
+    Reset(Box<Selection>, String),
     EventDeclare(String, Vec<(String, crate::gameplay::ScalarType)>),
     Rotate(Box<Selection>, [f32; 3]),
 }
@@ -523,6 +526,22 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 f,
                 crate::ops::ArrayEdit::Insert(index, value(arg(4)?)),
             )
+        }
+        "reorder" => {
+            ensure!(tokens.len() == 5, "use: reorder SEL FIELD FROM TO");
+            let s = selector(arg(1)?)?;
+            let f = field(arg(2)?, s.from);
+            let index = |n: usize| -> Result<usize> {
+                arg(n)?
+                    .parse()
+                    .context("reorder indexes must be non-negative integers")
+            };
+            let edit = crate::ops::ArrayEdit::Move(index(3)?, index(4)?);
+            Statement::Array(Box::new(s), f, edit)
+        }
+        "reset" => {
+            ensure!(tokens.len() == 3, "use: reset SEL COMPONENT");
+            Statement::Reset(Box::new(selector(arg(1)?)?), arg(2)?.clone())
         }
         "tag" => {
             ensure!(tokens.len() >= 3, "use: tag SEL +TAG -TAG ...");
@@ -1348,6 +1367,8 @@ pub fn run(
             Statement::AddComponent(select, component, value) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_component(w, r, &ids, &component, value)),
             Statement::Array(select, f, edit) => crate::ops::edit_array(w, r, &select, &f, &edit),
+            Statement::Reset(select, component) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::reset_component(w, r, &ids, &component)),
             Statement::EventDeclare(name, fields) => crate::ops::declare_event(w, &name, &fields),
             Statement::Rotate(select, degrees) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_rotation(w, &ids, degrees)),

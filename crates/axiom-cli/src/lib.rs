@@ -124,7 +124,8 @@ enum Command {
         /// Start (true) or stop (false) the Play-in-editor preview.
         #[arg(long)]
         play: Option<bool>,
-        /// Open an asset inspector: material:ID, prefab:ID or resource:ID.
+        /// Open an asset inspector (material:ID, prefab:ID, resource:ID), a component of the
+        /// selection (component:ID) or a create command's options dialog (options:COMMAND).
         #[arg(long)]
         open: Option<String>,
         /// Run an editor command by ID (same as the menu bar / palette), e.g. edit.duplicate.

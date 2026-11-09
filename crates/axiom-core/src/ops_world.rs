@@ -637,17 +637,21 @@ pub fn component_requirement_edits(
     requirement_edits(world, registry, &requirements(registry, component))
 }
 
-/// An edit of one array element (ACL `append` / `insert` / `remove SEL FIELD INDEX`).
+/// An edit of one array element (ACL `append` / `insert` / `remove SEL FIELD INDEX` /
+/// `reorder SEL FIELD FROM TO`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArrayEdit {
     Append(Value),
     Insert(usize, Value),
     Remove(usize),
+    /// Moves the element at the first index so it ends up at the second (both < length).
+    Move(usize, usize),
 }
 
-/// Appends, inserts or removes one element of the array at `field` (a JSON pointer into each
-/// matched object, as for `set`) on every object `select` matches, writing each whole array
-/// back as one field edit. Missing fields, non-arrays and indexes past the end are errors.
+/// Appends, inserts, removes or moves one element of the array at `field` (a JSON pointer
+/// into each matched object, as for `set`) on every object `select` matches, writing each
+/// whole array back as one field edit. Missing fields, non-arrays and indexes past the end
+/// are errors.
 pub fn edit_array(
     world: &World,
     registry: &Registry,
@@ -690,6 +694,20 @@ pub fn edit_array(
             ArrayEdit::Insert(i, v) if *i <= len => items.insert(*i, v.clone()),
             ArrayEdit::Remove(i) if *i < len => {
                 items.remove(*i);
+            }
+            ArrayEdit::Move(from, to) if *from < len && *to < len => {
+                let item = items.remove(*from);
+                items.insert(*to, item);
+            }
+            ArrayEdit::Move(from, to) => {
+                return Err(Diagnostic::error(
+                    "index_out_of_range",
+                    &at,
+                    format!(
+                        "index {} is out of range: {field} has {len} item(s)",
+                        from.max(to)
+                    ),
+                ))
             }
             ArrayEdit::Insert(i, _) | ArrayEdit::Remove(i) => {
                 return Err(Diagnostic::error(
@@ -817,6 +835,74 @@ pub fn set_fields(world: &World, ids: &[String], fields: &[(String, Value)]) -> 
                 value: value.clone(),
             }));
         }
+    }
+    Ok(edits)
+}
+
+/// Inspector ▸ component ▸ Reset / ACL `reset SEL COMPONENT`: each entity's `component` back
+/// to its starting value. An authored component becomes the type's default (as
+/// [`add_component`] writes it); on a prefab instance that inherits the component the
+/// override is dropped, so the prefab's value shows again. Entities without the component
+/// are errors; an instance without an override is left as it is. A camera keeps its
+/// `active` flag (resetting the main camera does not leave the world without one).
+pub fn reset_component(
+    world: &World,
+    registry: &Registry,
+    ids: &[String],
+    component: &str,
+) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "nothing selected",
+        ));
+    }
+    let path = format!("/components/{}", escape(component));
+    let mut edits = vec![];
+    let mut default = None;
+    for id in unique(ids) {
+        let entity = require_entity(world, id)?;
+        let inherited = entity
+            .prefab
+            .as_ref()
+            .and_then(|p| world.prefabs.get(p))
+            .is_some_and(|p| p.components.contains_key(component));
+        let own = entity.components.contains_key(component);
+        if inherited {
+            if own {
+                edits.push(Edit::Core(CoreEdit::RemoveComponent {
+                    entity: id.clone(),
+                    component: component.to_owned(),
+                }));
+            }
+            continue;
+        }
+        if !own {
+            return Err(Diagnostic::error(
+                "not_found",
+                format!("{}{path}", entity_path(id)),
+                format!("'{id}' has no {component}"),
+            ));
+        }
+        if default.is_none() {
+            default = Some(initial_value(
+                world, registry, component, None, &path, true,
+            )?);
+        }
+        let mut value = default.clone().expect("set above");
+        // Which camera is the main one is a world choice, not a field to reset.
+        if let Some(active) = entity.components[component]
+            .get("active")
+            .filter(|_| component == "render.camera")
+        {
+            value["active"] = active.clone();
+        }
+        edits.push(Edit::Core(CoreEdit::SetComponent {
+            entity: id.clone(),
+            component: component.to_owned(),
+            value,
+        }));
     }
     Ok(edits)
 }

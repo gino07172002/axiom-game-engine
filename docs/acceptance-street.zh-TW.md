@@ -50,18 +50,18 @@
 | `set ID render.mesh/parts [...]`、`set ID nav.blocker/half […]`、`set ID render.light/…`、`set ID trigger.zone/…`、`set ID path.follow/…`、`set ID path.spline/points […]` | Inspector 元件表單或 JSON 模式(欄位層級 `set_field`,兩邊同一種 edit) | 多個物件同一欄位(`set entities[id=a,id=b] …`、`set lamp/*/light …`):Inspector 多選後改 transform / 表單欄位,套用到每個選取物件(GAP-10 已補;萬用字元選取在編輯器要用搜尋 + 框選 / Ctrl 點選) |
 | `set ID core.transform/rotation [x,y,z,w]`;現在也可 `rotate SEL x,y,z` / `create … rot=x,y,z`(歐拉角) | Inspector Transform(Rotation°)或旋轉 gizmo | GAP-11 已補;腳本裡原本手算的四元數沒有改寫(`rotation_from_degrees` 的結果與手寫值最後一位不同,改了會讓匯出檔不同) |
 | `set ID physics.collider {…}`;現在也可 `add ID physics.collider [JSON]` | Inspector ▸ Add component… ▸ physics.collider | GAP-3 已補:Add component 列出所有元件,缺的 capability / 系統同一個 revision 補上 |
-| `set resources[id=R] FIELD V`;`resource create ID [JSON]`;`append` / `insert` / `remove SEL F I` | Resource inspector(表單或 JSON pointer + Apply);World 視窗 ▸ Create resource | GAP-3 已補;陣列單一元素在 ACL 已補,編輯器仍只能整個替換(GAP-8 的編輯器半邊未做) |
+| `set resources[id=R] FIELD V`;`resource create ID [JSON]`;`append` / `insert` / `remove` / `reorder SEL F I` | Resource inspector(型別化表單,陣列 ▲ ▼ + x / + Add item;或 JSON pointer + Apply);World 視窗 ▸ Create resource | GAP-3、GAP-8 已補(M3 補上編輯器半邊) |
 | `tag SEL +TAG -TAG`(原本 `set ID /tags [...]`) | Inspector ▸ Tags(chip、輸入、建議、x 移除;多選全部套用) | GAP-1 已補;腳本那 4 行已改成 `tag` |
 | `prefab create P from ID` | 右鍵 ▸ Create Prefab From Selection | |
 | `instantiate P id= at= [parent=]` | Assets ▸ 點 prefab(之後改 ID、位置) | |
 | `set ID render.mesh/parts/1/color …`(prefab 實例覆寫) | Inspector 改實例的欄位 | |
 | `follow SEL PATH speed=` | Object ▸ Follow Path(多個跟隨者平均分散) | |
 | `nav SEL agent speed= radius=` | Object ▸ Add Nav Agent + Inspector | |
-| `interact SEL event= prompt= range=` | Object ▸ Make Interactable + Inspector | 編輯器沒有選項對話框(GAP-14);事件名稱改成未宣告的名字時,Problems 出現 Declare event 按鈕(GAP-9 已補) |
-| `audio clip ID PRESET` | Inspector ▸ Audio source ▸ New clip ▸ 預設 | 編輯器的片段 ID = 預設名稱(`fountain`),不能取 `cafe_hum`(GAP-14) |
+| `interact SEL event= prompt= range=` | Object ▸ Make Interactable(選項對話框)+ Inspector | GAP-14 已補(M3 選項對話框);事件名稱改成未宣告的名字時,Problems 出現 Declare event 按鈕(GAP-9 已補) |
+| `audio clip ID PRESET` | Inspector ▸ Audio source ▸ New clip…(對話框:preset + ID) | GAP-14 已補:ID 可自訂(`cafe_hum`) |
 | `audio SEL source clip= loop= autoplay= min= max= volume=` | Object ▸ Add Audio Source + Inspector | |
 | `audio ID listener` | Object ▸ Make Audio Listener | |
-| `tween SEL clip NAME property= target= duration= autoplay= on_finish= play_on=` | Object ▸ Add Tween Clip + 時間軸(Add track、模式、Autoplay)+ Inspector(on_finish) | `play_on` 在編輯器沒有對應 UI(GAP-14) |
+| `tween SEL clip NAME property= target= duration= autoplay= on_finish= play_on=` | Object ▸ Add Tween Clip(選項對話框,含 play_on)+ 時間軸(Add track、模式、Autoplay、Play on 綁定 / 解除)+ Inspector(on_finish) | GAP-14 已補(M3) |
 | `tween ID key CLIP T move\|remove\|add` | 時間軸拖曳 key / Delete key / Record key | |
 | `camera main ID` | Object ▸ Set as Main Camera | |
 | `camera CAM follow TARGET distance= …` | Object ▸ Camera Follow Selected + Inspector | |
@@ -92,7 +92,7 @@
 ### 對等方向的結論
 
 - **AI → 編輯器做得到的,AI 都做得到**:這次用到的每一個編輯器操作都有 ACL 對應,實測 8 步逐位元相同(上節)。沒有發現「只有編輯器做得到」的內容操作。
-- **反方向**(驗收當時不成立):AI(ACL / 型別化 `apply`)做得到、人在編輯器裡做不到的有 GAP-1(tags)、GAP-3(資源 / capability / 系統 / 世界 id 與 title)、GAP-14 的 `play_on`。GAP-1、GAP-3 已於同日補上(下節「缺口處理狀態」),種子也改成 ACL;從空世界只用編輯器指令做出 capability / 系統 / 資源、`player` tag 與可互動物件,和 ACL 匯出逐位元相同。仍然只有 AI 做得到的:`play_on`(GAP-14)、陣列單一元素編輯(GAP-8 的編輯器半邊)。
+- **反方向**(驗收當時不成立):AI(ACL / 型別化 `apply`)做得到、人在編輯器裡做不到的有 GAP-1(tags)、GAP-3(資源 / capability / 系統 / 世界 id 與 title)、GAP-14 的 `play_on`。GAP-1、GAP-3 已於同日補上(下節「缺口處理狀態」),種子也改成 ACL;從空世界只用編輯器指令做出 capability / 系統 / 資源、`player` tag 與可互動物件,和 ACL 匯出逐位元相同。M3(Inspector 2.0)補上了 `play_on` 與建立選項(GAP-14)、陣列單一元素編輯(GAP-8 的編輯器半邊);這一節列的 AI 單方向能力已全部有編輯器對應(大量 `spawn` 除外)。
 
 ### 缺口清單
 
@@ -105,13 +105,13 @@
 | GAP-5 | **沒有計時器**;`loop` 補間片段不發事件 | 權宜 | 紅綠燈:三個 `once` 片段(0.25 s)的 `on_finish` → 規則 `delay 720/240/720 ticks` → 下一個片段。規則裡的時間要換算成 tick(120 Hz) | 引擎待辦「計時器」(次優先清單) |
 | GAP-6 | **會動的門不能擋路,也不擋相機**:被 tween 的子樹不能有 `nav.blocker` / `physics.collider`(`tween_conflict`);導航格子在建立時固定 | 權宜 | 門洞永遠可走。門口放觸發區 `cafe/doorway`:門關著時規則發 `door_blocked` → 綁定 `nav.go hero` 送回門外、HUD 顯示「門關著」(scenario 驗證:被送回 z ≥ −8.1、location 仍是街道)。門扇不擋相機,相機可能看穿關著的門 | 引擎待辦:導航動態障礙(增量格子)+ 相機的移動阻擋物 |
 | GAP-7 | **prefab 不能含子物件**,`duplicate` 也不複製子物件 | 權宜 | 8 盞路燈的 spot 燈、3 輛車的車頭燈都是逐一 `create light … parent=` 再用萬用字元選擇器設定 | 編輯器 M5 / 引擎:巢狀 prefab、子樹複製 |
-| GAP-8 ◐ | **ACL `set` 與 Resource inspector 不能在陣列尾端新增元素**(`field index out of range`),只能整個替換 | 打磨(容易出錯) | `runtime.bindings.events` 整個重寫(13 個綁定、一行約 2.6 KB),**蓋掉了** `tween … play_on=door_opening` 自動加的那一筆,必須自己記得放回去;規則表同樣整個寫 | ACL `append` / `bind EVENT …` 動詞;編輯器 M6(規則表格編輯) |
+| GAP-8 ✅ | **ACL `set` 與 Resource inspector 不能在陣列尾端新增元素**(`field index out of range`),只能整個替換 | 打磨(容易出錯) | `runtime.bindings.events` 整個重寫(13 個綁定、一行約 2.6 KB),**蓋掉了** `tween … play_on=door_opening` 自動加的那一筆,必須自己記得放回去;規則表同樣整個寫 | ACL `append` / `bind EVENT …` 動詞;編輯器 M6(規則表格編輯) |
 | GAP-9 ✅ | **在 Inspector / `set` 改事件名稱不會宣告事件**(只有 ops 會:interact、tween on_finish、play_on) | 打磨 | 腳本裡 16 行 `set resources[id=behavior.program] events/NAME {"fields":{}}`;漏一行會讓整個 revision 失敗(錯誤訊息有指出事件) | 編輯器 M3 / M6:事件欄位用下拉 + 「新事件」 |
 | GAP-10 ✅ | **Inspector 不能多物件同時編輯** | 打磨 | ACL `set entities[id=a,id=b] …`、`set lamp/*/light …` 一行改多個;在編輯器要逐一改(腳本裡有 32 行是多目標 `set`) | 編輯器 M3(多物件編輯) |
 | GAP-11 ✅ | **ACL 的旋轉只收四元數**,Inspector 用歐拉角(度) | 打磨 | 夕陽方向、車頭燈俯角、北側路燈的 180° 都手算四元數寫進腳本 | ACL:`set ID core.transform/rotation_deg [x,y,z]` 或 `rotate` 動詞(`ops::rotation_from_degrees` 已存在) |
 | GAP-12 | **不同移動系統之間沒有碰撞 / 避讓**:路徑跟隨者(車、行人)不避開導航代理(玩家、過馬路的人),導航代理只避開導航代理;車不會為行人停 | 權宜(視覺) | 車只在紅燈停;行人只在紅燈時過馬路(規則)。行人會穿過站在人行道上的玩家 | 引擎待辦:碰撞層與遮罩、路徑跟隨的前方偵測 |
 | GAP-13 | **基本形狀角色沒有走路動畫**,`nav.agent` / `path.follow` 也不會切換 `animation.player` 的片段 | 打磨 | 人物是方塊組合,平移滑行 | 引擎待辦:動畫狀態機 / 混合樹;或 tween 子物件擺動(需要巢狀 prefab,GAP-7) |
-| GAP-14 | **編輯器的建立指令沒有選項**:Make Interactable(event / prompt / range)、Add Tween Clip(property / target / duration / on_finish / **play_on**)、Add Audio Source(clip / loop)、New clip(ID = 預設名稱) | 打磨;`play_on` 在編輯器完全沒有 UI | ACL 一行帶選項;編輯器要先建預設值再到 Inspector / 時間軸 / Resource inspector 改。編輯器建的音效片段 ID 只能是 `fountain` 之類 | 編輯器 M3 / M6 |
+| GAP-14 ✅ | **編輯器的建立指令沒有選項**:Make Interactable(event / prompt / range)、Add Tween Clip(property / target / duration / on_finish / **play_on**)、Add Audio Source(clip / loop)、New clip(ID = 預設名稱) | 打磨;`play_on` 在編輯器完全沒有 UI | ACL 一行帶選項;編輯器要先建預設值再到 Inspector / 時間軸 / Resource inspector 改。編輯器建的音效片段 ID 只能是 `fountain` 之類 | 編輯器 M3 / M6 |
 | GAP-15 | **`ContentPackage::load` 會補型別預設值**(`ui.document` 的 widget `when`、`images`),所以 import 後 export 和原檔逐字不同 | 打磨 | 重現性測試直接比對匯出的檔案(不經 `load` 正規化),另外檢查內容包能載入、編譯 | 核心:匯出 / 載入的正規化一致 |
 | GAP-16 | **scenario 沒有「等到條件成立」**,只能寫固定 tick | 打磨 | 斷言時間要試出來(過馬路的行人在 1500 tick 還沒到,改成 1700);路線一改就要重調 | scenario 新增 `wait_until` 或區間斷言;編輯器 M8(錄製) |
 | GAP-17 | **存檔不支援**:trigger / path / nav / tween / audio / camera 系統的 checkpoint 都會明確失敗 | 已知限制 | 街道不提供存檔;`ui.document.session_controls: false` 隱藏 SAVE / LOAD 按鈕 | 引擎待辦:各系統的 checkpoint 區段 |
@@ -124,7 +124,7 @@
 
 沒有發現需要改引擎程式才能完成的 bug(GAP-18 以內容設定繞過,未改 `ui.rs`)。
 
-### 缺口處理狀態(2026-11-09 晚,未 commit)
+### 缺口處理狀態(2026-11-09 晚;GAP-8 編輯器半邊、GAP-10 混合值、GAP-14 於同日深夜 M3 補上)
 
 表格中 ✅ = 已補、◐ = 部分補上。每個操作都是 `axiom_core::ops` 的純函式(新檔 `crates/axiom-core/src/ops_world.rs`,由 `ops` 重新匯出),編輯器與 ACL 共用;對照表見 `docs/editor-parity.zh-TW.md`。
 
@@ -132,9 +132,10 @@
 |---|---|---|
 | GAP-1 ✅ | Inspector ▸ Tags:chip(多選時「tag 2/3」)、輸入 + Enter / Add、建議(世界已用的 tag,含觸發區 / 互動的 `filter.tags`)、x 移除,作用在所有選取物件;`object.tag` 指令;ACL `tag SEL +a -b`(`ops::edit_tags`) | `parity::tags_match_acl`;egui 實際輸入 `world_tests::tag_chips_add_suggest_and_remove_on_every_selected_object`;街道腳本 4 行 `set … /tags` 改成 `tag`,匯出不變 |
 | GAP-3 ✅ | Window ▸ World(`window.world`、World 選單):ID / Title、capabilities(使用數;core 與使用中不能移除)、systems 依 phase 排序(被 `after` 依賴的不能移除)、resources(點開 = Inspector 的 schema 表單;Create 預填預設值;Remove)。Add component 列出所有元件,缺的 capability / 系統同一個 revision 補上(規則:元件 / 資源的 capability + 同 capability 且讀它的系統 + 那些系統 `after` 的系統)。ACL `world id\|title`、`capability add\|remove`、`system add\|remove`、`resource create\|remove`、`add SEL COMP [JSON]`。`00-seed.apply.json` 改寫成 `00-seed.acl` | `parity::world_panel_operations_match_acl`、`add_component_brings_its_capability_and_systems_like_acl`、`resource_form_edits_match_acl`;egui `world_tests::world_window_adds_a_capability_and_caches_rows_per_revision`;`tests/street.rs` 重現性(匯出與 `world.json` 相同)、`build-street.ps1` 重建後 `world.json` / `manifest.json` 沒有任何位元變化;真 GPU 編輯器從空世界的對照(下節) |
-| GAP-8 ◐ | ACL `append SEL F V` / `insert SEL F I V` / `remove SEL F I`(`ops::edit_array`);`set` 整個替換資源端清單而遺失現有項目(含同 id / event 的項目裡少了的清單元素,例如 binding 少了一個 call)時輸出 `warn line N: …` 與 `warnings`;`set …/99` 的錯誤提示 `append`。**編輯器表單仍不能新增 / 刪除陣列項目**(Resource inspector 只能用 JSON 整個替換) | 核心 `array_element_verbs_append_insert_and_remove`、`set_replacing_a_resource_list_warns_about_dropped_items`;街道 7 個腳本重播 0 個警告 |
+| GAP-8 ✅ | ACL `append SEL F V` / `insert SEL F I V` / `remove SEL F I`(`ops::edit_array`);`set` 整個替換資源端清單而遺失現有項目(含同 id / event 的項目裡少了的清單元素,例如 binding 少了一個 call)時輸出 `warn line N: …` 與 `warnings`;`set …/99` 的錯誤提示 `append`。**M3(編輯器半邊)**:Inspector 2.0 表單(元件與 Resource inspector,例如 `runtime.bindings.events`)每個陣列項目有 ▲ ▼ + x,尾端 + Add item,一個按鈕一個 revision;新 ACL `reorder SEL F FROM TO`(`ArrayEdit::Move`)。長陣列 32 項一頁 | 核心 `array_element_verbs_append_insert_and_remove`(含 reorder)、`set_replacing_a_resource_list_warns_about_dropped_items`;`parity::inspector_arrays_reset_paste_and_play_on_match_acl`;egui `inspector_tests::array_items_add_insert_reorder_and_remove_like_acl`、`long_arrays_page_instead_of_drawing_every_item`;街道 7 個腳本重播 0 個警告 |
 | GAP-9 ✅ | 編輯器 Problems:錯誤是「… emits NAME, which behavior.program does not declare」時出現 Declare event NAME,宣告與等著的 Inspector 草稿在同一個 revision 寫入;ACL `event declare NAME [F=TYPE]`,commit 錯誤尾端加「declare it first: event declare NAME」 | `parity::declare_event_and_rotation_match_acl`、`declare_event_applies_the_waiting_draft_and_multi_edits_skip_mismatched_fields`;核心 `undeclared_events_carry_the_fix` |
-| GAP-10 ✅(部分語意) | Inspector 多選:transform 改的軸(位置 / 縮放逐軸、旋轉逐個歐拉角)與表單改的欄位套用到每個有同型別欄位的選取物件;沒有的跳過。**不顯示混合值**(顯示主選取的值);label / parent / JSON 只改主選取 | `parity::multi_object_inspector_edits_match_acl`、`declare_event_applies_the_waiting_draft_and_multi_edits_skip_mismatched_fields`(box / capsule collider) |
+| GAP-10 ✅ | Inspector 多選:transform 改的軸(位置 / 縮放逐軸、旋轉逐個歐拉角)與表單改的欄位套用到每個有同型別欄位的選取物件;沒有的跳過。M3:值不同的欄位與 Transform 軸顯示「—」(勾選框為不確定狀態),改了就寫到全部;label / parent / JSON 仍只改主選取 | `parity::multi_object_inspector_edits_match_acl`、`declare_event_applies_the_waiting_draft_and_multi_edits_skip_mismatched_fields`(box / capsule collider);egui `inspector_tests::mixed_values_show_a_dash_and_one_edit_sets_every_selected_object` |
+| GAP-14 ✅ | M3:建立指令從選單 / 指令面板打開選項對話框(預填預設值、下方顯示等價 ACL 行、只傳改過的選項):Make Interactable、Add Tween Clip(含 play_on)、Add Audio Source、New audio clip(可自訂 ID,例如 `cafe_hum`)、Follow Path、Add Nav Agent、Camera Follow Selected;時間軸 ▸ Play on(Bind / x)。觸發區建立時的尺寸:ACL `create trigger` 也沒有這個選項,兩邊都是建好後改欄位,不算缺口 | egui `inspector_tests::options_dialogs_create_what_their_acl_line_creates`、`play_on_field_binds_and_unbinds_a_clip_like_acl`;`parity::audio_sources_listeners_and_clips_match_acl`、`inspector_arrays_reset_paste_and_play_on_match_acl` |
 | GAP-11 ✅ | ACL `rotate SEL x,y,z`、`create / instantiate … rot=x,y,z`(歐拉角,與 Inspector Rotation° 同一個 `rotation_from_degrees`)。腳本裡既有的四元數沒有改寫(會讓匯出的最後一位不同) | `parity::declare_event_and_rotation_match_acl`、核心 `world_tag_component_and_rotation_verbs_compile_to_the_shared_ops` |
 
 其他:編輯器 bridge `editor_view` 多了 `arg`(`axiom view --command world.capability_add --arg physics`),帶參數的指令(`object.tag`、`object.add_component`、`world.*`、`event.declare`)和 World 視窗 / Inspector 的按鈕呼叫同一個方法;不帶參數時(選單、指令面板)打開挑選的 UI。

@@ -603,7 +603,7 @@ impl Registry {
     pub fn schema(&self, topic: Option<&str>) -> Result<Value> {
         match topic {
             None => Ok(
-                json!({"engine":"axiom","protocol":2,"world_schema":2,"operations":["schema","discover","query","select","scene_tree","preview","apply","diff","verify","observe","observe_delta","execute","undo","history","command","save","load"],"runtime_operations":["command","save","load"],"capabilities":self.capabilities,"topics":["world","components","resources","systems","actions","events","edits","packages"],"components":self.components.keys().collect::<Vec<_>>(),"resources":self.resources.keys().collect::<Vec<_>>(),"actions":self.actions.keys().collect::<Vec<_>>(),"package_topics":self.topics.keys().collect::<Vec<_>>(),"limits":{"entities":MAX_ENTITIES,"instances":MAX_INSTANCES,"cameras":MAX_CAMERAS,"edits":256,"request_bytes":1048576}}),
+                json!({"engine":"axiom","protocol":2,"world_schema":2,"operations":["schema","discover","query","select","scene_tree","preview","apply","diff","verify","observe","observe_delta","execute","undo","history","command","save","load"],"runtime_operations":["command","save","load"],"capabilities":self.capabilities,"topics":["world","components","resources","systems","actions","events","edits","packages","typed:ID"],"components":self.components.keys().collect::<Vec<_>>(),"resources":self.resources.keys().collect::<Vec<_>>(),"actions":self.actions.keys().collect::<Vec<_>>(),"package_topics":self.topics.keys().collect::<Vec<_>>(),"limits":{"entities":MAX_ENTITIES,"instances":MAX_INSTANCES,"cameras":MAX_CAMERAS,"edits":256,"request_bytes":1048576}}),
             ),
             Some("world") => Ok(
                 json!({"example":World::empty("example"),"format":"strict schema v2; unknown fields rejected","entity":{"id":"box","prefab":null,"tags":[],"components":{"core.transform":{"position":[0,0,0]},"core.health":{"value":100,"max":100}}},"custom_schema_example":{"fields":{"active":{"ty":"bool"},"score":{"ty":"int","min":0}}},"scenes":"entities absent from scenes remain active"}),
@@ -648,6 +648,11 @@ impl Registry {
             Some("edits") => Ok(
                 json!({"kinds":["set_field","put_object","remove_object","set","put_entity","remove_entity","reparent","duplicate_entity","delete_entity","move_entity","set_scene_membership","set_component","remove_component","put_prefab","set_resource","remove_resource","define_component","define_resource","put_relation","remove_relation","put_scene","set_systems","replace_world"],"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
             ),
+            Some(name) if name.starts_with("typed:") => {
+                let id = &name["typed:".len()..];
+                crate::typed_schema::typed_schema(self, &World::empty("discover"), id)
+                    .with_context(|| format!("unknown component or resource {id}"))
+            }
             Some(name) => self
                 .topics
                 .get(name)

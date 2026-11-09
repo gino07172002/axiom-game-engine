@@ -351,6 +351,9 @@ pub(crate) struct Prefs {
     pub nav_grid: bool,
     /// Per world ID: saved scene-view cameras by slot ("1".."4").
     pub bookmarks: BTreeMap<String, BTreeMap<String, Bookmark>>,
+    /// Inspector edits commit when a drag is released, Enter is pressed or a field loses
+    /// focus (one revision per interaction); off = draft + Apply (batch mode).
+    pub live_inspector: bool,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -371,6 +374,7 @@ impl Default for Prefs {
             gizmos: true,
             nav_grid: false,
             bookmarks: BTreeMap::new(),
+            live_inspector: true,
         }
     }
 }
@@ -681,11 +685,11 @@ impl Editor {
             "object.trigger_box" => actions.extend(self.create_object("trigger.box")),
             "object.trigger_sphere" => actions.extend(self.create_object("trigger.sphere")),
             "object.path" => actions.extend(self.create_object("path")),
-            "object.follow_path" => actions.extend(self.follow_selection()),
+            "object.follow_path" => actions.extend(self.follow_selection(&Default::default())),
             "path.add_point" => actions.extend(self.add_path_point()),
             "path.remove_point" => actions.extend(self.remove_path_point()),
             "object.obstacle" => actions.extend(self.create_object("obstacle")),
-            "object.nav_agent" => actions.extend(self.add_nav_agents()),
+            "object.nav_agent" => actions.extend(self.add_nav_agents(&Default::default())),
             "nav.target_object" => actions.extend(self.nav_target_selection()),
             "nav.target_point" => {
                 self.scene_input.nav_pick = true;
@@ -694,12 +698,17 @@ impl Editor {
                 );
             }
             "nav.clear_target" => actions.extend(self.set_nav_target(None)),
-            "object.interactable" => actions.extend(self.make_interactable()),
-            "object.audio_source" => actions.extend(self.add_audio_source()),
+            "object.interactable" => actions.extend(self.make_interactable(&Default::default())),
+            "object.audio_source" => actions.extend(self.add_audio_source(&Default::default())),
             "object.audio_listener" => actions.extend(self.add_audio_listener()),
-            "object.camera_follow" => actions.extend(self.camera_follow_selection()),
+            "object.camera_follow" => {
+                actions.extend(self.camera_follow_selection(&Default::default()))
+            }
             "object.main_camera" => actions.extend(self.make_main_camera()),
-            "object.tween_clip" => actions.extend(self.add_tween_clip()),
+            "object.tween_clip" => {
+                let name = axiom_core::ops::free_clip_name(&self.world, &self.selection());
+                actions.extend(self.add_tween_clip(&name, &Default::default()))
+            }
             "tween.record_key" => actions.extend(self.record_tween_key()),
             "tween.remove_key" => actions.extend(self.remove_tween_key()),
             "view.nav_grid" => self.prefs.nav_grid = !self.prefs.nav_grid,
@@ -885,7 +894,7 @@ impl Editor {
                             )
                             .on_disabled_hover_text(blocked.unwrap_or_default());
                         if response.clicked() {
-                            self.run_into(cmd.id, actions);
+                            self.invoke(cmd.id, actions);
                             ui.close_menu();
                         }
                     }
@@ -936,6 +945,7 @@ impl Editor {
     }
 
     pub(crate) fn command_windows(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        self.options_window(ctx, actions);
         if let Some(mut palette) = self.palette.take() {
             let mut keep = true;
             let mut run = None;
@@ -1012,7 +1022,7 @@ impl Editor {
                     });
                 });
             if let Some(id) = run {
-                self.run_into(id, actions);
+                self.invoke(id, actions);
             }
             if keep && self.palette.is_none() {
                 self.palette = Some(palette);
@@ -1109,6 +1119,10 @@ impl Editor {
                         ui.end_row();
                         ui.label("Snap enabled");
                         ui.checkbox(&mut self.prefs.snap, "");
+                        ui.end_row();
+                        ui.label("Live Inspector")
+                            .on_hover_text("Commit Inspector edits on release / Enter (one revision each). Off: edit a draft, then Apply.");
+                        ui.checkbox(&mut self.prefs.live_inspector, "");
                         ui.end_row();
                         ui.label("Always show grid");
                         ui.checkbox(&mut self.prefs.grid, "");
@@ -1269,6 +1283,22 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "the editor view is not rendered while the scene tab is closed or behind another tab",
                 "layouts are view-only preferences in *.editor-prefs.json, never in world revisions"
             ]
+        }),
+    );
+    r.topics.insert(
+        "editor_inspector".into(),
+        serde_json::json!({
+            "forms": "typed fields from discover typed:COMPONENT_OR_RESOURCE (enum, range+unit, colour, Euler for quaternions, entity / event / resource-key references, arrays)",
+            "open": {"op":"editor_view","select":["lamp"],"open":"component:render.light"},
+            "options_dialog": {"op":"editor_view","select":["npc"],"open":"options:object.interactable"},
+            "live": "a person's field edit commits on release / Enter / focus loss (one revision per interaction; Esc cancels); prefs live_inspector=false = draft + Apply",
+            "headless": {
+                "field": "set SEL COMPONENT/FIELD VALUE (several objects: set entities[id=a,id=b] ...)",
+                "array": "append|insert|remove|reorder SEL COMPONENT/FIELD ..",
+                "reset": "reset SEL COMPONENT",
+                "paste": "set SEL /components/COMPONENT {..}",
+                "play_on": "tween ID clip NAME set play_on=EVENT (unbind: remove resources[id=runtime.bindings] events I)"
+            }
         }),
     );
     r.topics.insert(

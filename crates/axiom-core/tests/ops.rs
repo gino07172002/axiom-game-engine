@@ -1671,6 +1671,79 @@ fn array_element_verbs_append_insert_and_remove() {
         error["error"].as_str().unwrap().contains("append"),
         "{error}"
     );
+    // reorder FROM TO: the item ends up at TO, the others keep their order.
+    let parts = rack(&s);
+    acl(&mut s, "reorder stage/rack render.mesh/parts 0 1").unwrap();
+    let moved = rack(&s);
+    assert_eq!((&moved[0], &moved[1]), (&parts[1], &parts[0]));
+    assert_eq!(&moved[2..], &parts[2..]);
+    let rev = s.current().unwrap().0;
+    for script in [
+        "reorder stage/rack render.mesh/parts 0 99",
+        "reorder stage/rack render.mesh/parts 99 0",
+    ] {
+        assert_eq!(code(acl(&mut s, script).unwrap_err()), "index_out_of_range");
+    }
+    assert!(acl(&mut s, "reorder stage/rack render.mesh/parts 0").is_err());
+    assert_eq!(s.current().unwrap().0, rev);
+}
+
+#[test]
+fn reset_puts_the_default_back_or_drops_a_prefab_override() {
+    let mut s = store();
+    acl(
+        &mut s,
+        "create light point id=lamp\nset lamp render.light/intensity 7\nset lamp render.light/color [1,0,0]",
+    )
+    .unwrap();
+    acl(&mut s, "reset lamp render.light").unwrap();
+    let world = s.current().unwrap().1;
+    let fresh = {
+        let mut other = store();
+        acl(&mut other, "create light point id=lamp").unwrap();
+        other.current().unwrap().1
+    };
+    assert_eq!(
+        world.entity("lamp").unwrap().components["render.light"],
+        fresh.entity("lamp").unwrap().components["render.light"]
+    );
+    // The main camera stays the main camera.
+    acl(
+        &mut s,
+        "set stage/camera render.camera/near 0.5\nreset stage/camera render.camera",
+    )
+    .unwrap();
+    let world = s.current().unwrap().1;
+    let camera = &world.entity("stage/camera").unwrap().components["render.camera"];
+    assert_eq!(camera["active"], true);
+    assert_ne!(camera["near"], serde_json::json!(0.5));
+    // Without the component: an error and no revision.
+    let rev = s.current().unwrap().0;
+    assert_eq!(
+        code(acl(&mut s, "reset lamp audio.source").unwrap_err()),
+        "not_found"
+    );
+    assert_eq!(s.current().unwrap().0, rev);
+    // A prefab instance with an override goes back to the prefab's value.
+    acl(
+        &mut s,
+        "create cube id=box\nprefab create crate from box\ninstantiate crate id=c2",
+    )
+    .unwrap();
+    acl(&mut s, "set c2 render.mesh/parts/0/color [0,0,0]").unwrap();
+    assert!(s
+        .current()
+        .unwrap()
+        .1
+        .entity("c2")
+        .unwrap()
+        .components
+        .contains_key("render.mesh"));
+    acl(&mut s, "reset c2 render.mesh").unwrap();
+    let world = s.current().unwrap().1;
+    let c2 = world.entity("c2").unwrap();
+    assert!(!c2.components.contains_key("render.mesh"));
+    assert!(world.resolved_components(c2).contains_key("render.mesh"));
 }
 
 #[test]

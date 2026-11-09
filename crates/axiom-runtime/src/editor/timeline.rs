@@ -36,6 +36,75 @@ pub(crate) struct TweenUi {
     pub live: Option<(String, f32)>,
     /// Screen rect of the strip drawn last frame (tests, remote capture).
     pub strip: Option<Rect>,
+    /// Event typed into "Play on" (not yet bound).
+    pub play_on: String,
+}
+
+/// A `runtime.bindings` call that plays the timeline clip when `event` fires: binding
+/// `binding` of `/events`, call `call` of its `calls` (`calls` long).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlayOn {
+    pub event: String,
+    pub binding: usize,
+    pub call: usize,
+    pub calls: usize,
+    /// The call plays the clip backwards (`"reverse": true`).
+    pub reverse: bool,
+}
+
+/// What the Play on row shows: the events that play the timeline clip and the declared
+/// events offered for a new one.
+#[derive(Clone, Default)]
+pub(crate) struct Bindings {
+    pub plays: Vec<PlayOn>,
+    pub events: Vec<String>,
+}
+
+impl Bindings {
+    pub fn of(world: &axiom_core::World, id: &str, clip: &str) -> Self {
+        Bindings {
+            plays: play_ons(world, id, clip),
+            events: world
+                .resources
+                .get("behavior.program")
+                .and_then(|p| p.get("events"))
+                .and_then(serde_json::Value::as_object)
+                .map(|e| e.keys().cloned().collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The bindings that play `clip` on `id` (`tween.play {id, clip}` calls).
+pub(crate) fn play_ons(world: &axiom_core::World, id: &str, clip: &str) -> Vec<PlayOn> {
+    let mut out = vec![];
+    let Some(events) = world
+        .resources
+        .get("runtime.bindings")
+        .and_then(|b| b.get("events"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return out;
+    };
+    for (binding, b) in events.iter().enumerate() {
+        let calls = b["calls"].as_array().map_or(&[][..], Vec::as_slice);
+        for (call, c) in calls.iter().enumerate() {
+            if c["capability"] == "tween"
+                && c["action"] == "play"
+                && c["args"]["id"] == id
+                && c["args"]["clip"] == clip
+            {
+                out.push(PlayOn {
+                    event: b["event"].as_str().unwrap_or_default().to_owned(),
+                    binding,
+                    call,
+                    calls: calls.len(),
+                    reverse: c["args"]["reverse"] == true,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// What the timeline asks the editor to do after drawing.
@@ -56,6 +125,9 @@ pub(super) enum TweenRequest {
         property: String,
     },
     RemoveClip(String),
+    /// Stop playing the clip on an event: remove that `runtime.bindings` call (or the whole
+    /// binding when it is its only call).
+    Unbind(PlayOn),
 }
 
 fn track_label(target: &str, property: &str) -> String {
@@ -93,6 +165,8 @@ pub(super) fn timeline(
     state: &mut TweenUi,
     live: Option<(&str, f32)>,
     editable: bool,
+    bindings: &Bindings,
+    mut rects: Option<&mut std::collections::HashMap<String, Rect>>,
 ) -> Option<TweenRequest> {
     let mut request = None;
     let names: Vec<&String> = clips.clips.keys().collect();
@@ -161,6 +235,66 @@ pub(super) fn timeline(
                     .size(11.0)
                     .color(TEXT),
             );
+        });
+        // Play on event: runtime.bindings calls tween.play for this clip when it fires
+        // (ACL: tween ID clip NAME set play_on=E).
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Play on").size(11.0).color(TEXT))
+                .on_hover_text(
+                    "The clip plays whenever this behavior event fires (e.g. the interact event)",
+                );
+            for play in bindings.plays.iter() {
+                let text = if play.reverse {
+                    format!("{} (reverse)", play.event)
+                } else {
+                    play.event.clone()
+                };
+                ui.label(RichText::new(text).monospace().size(11.0).color(KEY));
+                let r = ui
+                    .small_button("x")
+                    .on_hover_text(format!("Stop playing on {}", play.event));
+                if let Some(rects) = rects.as_mut() {
+                    rects.insert(format!("tween:unbind:{}", play.event), r.rect);
+                }
+                if r.clicked() {
+                    request = Some(TweenRequest::Unbind(play.clone()));
+                }
+            }
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut state.play_on)
+                    .hint_text("event")
+                    .desired_width(90.0),
+            );
+            if let Some(rects) = rects.as_mut() {
+                rects.insert("tween:play_on".into(), r.rect);
+            }
+            ui.menu_button("…", |ui| {
+                for e in bindings.events.iter() {
+                    if ui.button(e).clicked() {
+                        state.play_on = e.clone();
+                        ui.close_menu();
+                    }
+                }
+                if bindings.events.is_empty() {
+                    ui.label("No declared events");
+                }
+            });
+            let event = state.play_on.trim().to_owned();
+            let new = !event.is_empty() && !bindings.plays.iter().any(|p| p.event == event);
+            let r = ui.add_enabled(new, egui::Button::new("Bind").small());
+            if let Some(rects) = rects.as_mut() {
+                rects.insert("tween:bind".into(), r.rect);
+            }
+            if r.clicked() {
+                request = Some(TweenRequest::Options {
+                    clip: name.clone(),
+                    options: TweenClipOptions {
+                        play_on: Some(event),
+                        ..Default::default()
+                    },
+                });
+                state.play_on.clear();
+            }
         });
     });
     let rows = clip.tracks.len();
@@ -392,7 +526,7 @@ mod tests {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    request = timeline(ui, &clips, state, None, true);
+                    request = timeline(ui, &clips, state, None, true, &Bindings::default(), None);
                 });
             },
         );

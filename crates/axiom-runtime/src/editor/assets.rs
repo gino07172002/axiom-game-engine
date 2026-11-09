@@ -195,7 +195,7 @@ impl Editor {
                             .get("tint")
                             .cloned()
                             .unwrap_or(json!([1.0, 1.0, 1.0, 1.0]));
-                        if form::color(ui, &mut tint) {
+                        if form::color(ui, &mut tint).0 {
                             draft.value["tint"] = tint;
                         }
                     });
@@ -248,7 +248,12 @@ impl Editor {
     pub(super) fn prefab_inspector(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let world_rev = self.rev;
         let world = self.world.clone();
-        let hints = self.component_hints.clone();
+        let spec = self
+            .prefab
+            .as_ref()
+            .filter(|d| !d.component.is_empty())
+            .map(|d| d.component.clone())
+            .map(|c| self.specs.get(&self.registry, &world, &c));
         let Some(draft) = self.prefab.as_mut() else {
             return;
         };
@@ -300,8 +305,9 @@ impl Editor {
         ScrollArea::vertical().id_salt("prefab_scroll").show(ui, |ui| {
             ui.add_enabled_ui(!stale, |ui| match &mut draft.value {
                 Some(value) => {
-                    let hint = form::hints_for(&hints, &world, &draft.component);
-                    form::edit(ui, &draft.component, value, hint.as_ref());
+                    if let Some(spec) = &spec {
+                        form::edit_plain(ui, &world, spec, &draft.component, value, &mut self.picker);
+                    }
                 }
                 None if !draft.component.is_empty() => {
                     ui.label(RichText::new("Non-object component; edit it as JSON from an instance or the resource view.").small().color(MUTED));

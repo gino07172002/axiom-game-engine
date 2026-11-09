@@ -1871,6 +1871,8 @@ impl Editor {
                             },
                             select: None,
                         });
+                        // Sent: the live Inspector must not send the same change again.
+                        draft.mark_committed();
                     }
                     self.drag = None;
                 } else if !ui.input(|i| i.pointer.primary_down()) {
