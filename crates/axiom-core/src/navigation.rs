@@ -391,6 +391,34 @@ pub fn authored_matrix(
     m
 }
 
+/// True when a system moves entity `slot` itself or through an ancestor (a body under an
+/// agent): `nav.agent`, `path.follow` or any `movers` component. Such colliders are not
+/// static obstacles.
+pub fn moved_by_system(
+    entities: &[CompiledEntity],
+    parents: &[Option<usize>],
+    movers: &std::collections::BTreeMap<String, String>,
+    slot: usize,
+) -> bool {
+    let moves = |e: &CompiledEntity| {
+        e.nav_agent.is_some()
+            || e.follow.is_some()
+            || e.components.keys().any(|c| movers.contains_key(c))
+    };
+    let mut moved = moves(&entities[slot]);
+    let mut cursor = parents[slot];
+    let mut depth = 0;
+    while let (Some(p), false) = (cursor, moved) {
+        moved = moves(&entities[p]);
+        cursor = parents[p];
+        depth += 1;
+        if depth > entities.len() {
+            break;
+        }
+    }
+    moved
+}
+
 /// World XZ footprint of a static collider when it overlaps the obstacle band.
 fn collider_rect(collider: &crate::Collider, m: Mat4, floor_y: f32) -> Option<Rect2> {
     let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
@@ -455,24 +483,7 @@ pub fn plan(
             let Some(collider) = &e.collider else {
                 continue;
             };
-            // Moved by a system itself or through an ancestor that is (a body under an agent).
-            let moves = |e: &CompiledEntity| {
-                e.nav_agent.is_some()
-                    || e.follow.is_some()
-                    || e.components.keys().any(|c| movers.contains_key(c))
-            };
-            let mut moved = moves(e);
-            let mut cursor = parents[i];
-            let mut depth = 0;
-            while let (Some(p), false) = (cursor, moved) {
-                moved = moves(&entities[p]);
-                cursor = parents[p];
-                depth += 1;
-                if depth > entities.len() {
-                    break;
-                }
-            }
-            if moved {
+            if moved_by_system(entities, parents, movers, i) {
                 continue;
             }
             if let Some(r) = collider_rect(

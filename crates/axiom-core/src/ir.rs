@@ -198,6 +198,7 @@ impl World {
             let tween = decode::<crate::tween::TweenClips>(&c, "tween.clips")?;
             let audio_source = decode::<crate::audio::AudioSource>(&c, "audio.source")?;
             let audio_listener = decode::<crate::audio::AudioListener>(&c, "audio.listener")?;
+            let camera_follow = decode::<crate::camera::CameraFollow>(&c, "camera.follow")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
@@ -210,6 +211,7 @@ impl World {
                     && follow.is_none()
                     && nav_agent.is_none()
                     && interact.is_none()
+                    && camera_follow.is_none()
                     && collider.is_none()
                     && motion.is_none())
                     || transform.is_some(),
@@ -243,6 +245,7 @@ impl World {
                 tween,
                 audio_source,
                 audio_listener,
+                camera_follow,
                 collider,
                 health,
                 motion,
@@ -354,6 +357,7 @@ impl World {
         crate::path::validate_world(self, r, &entities, &ids, &parents)?;
         crate::navigation::validate_world(self, r, &entities, &ids, &parents)?;
         crate::tween::validate_world(self, r, &entities, &ids, &parents)?;
+        crate::camera::validate_world(self, r, &entities, &ids, &parents)?;
         let schedule = r.schedule(self)?;
         r.validate_world(self)?;
         Ok(CompiledWorld {
@@ -884,6 +888,7 @@ pub struct CompiledEntity {
     pub tween: Option<crate::tween::TweenClips>,
     pub audio_source: Option<crate::audio::AudioSource>,
     pub audio_listener: Option<crate::audio::AudioListener>,
+    pub camera_follow: Option<crate::camera::CameraFollow>,
     pub collider: Option<Collider>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,

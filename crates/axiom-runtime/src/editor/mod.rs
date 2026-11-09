@@ -804,6 +804,44 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// True when `id` has a `render.camera` (own or inherited).
+    fn is_camera(&self, id: &str) -> bool {
+        self.world.entity(id).is_some_and(|e| {
+            self.world
+                .resolved_components(e)
+                .contains_key("render.camera")
+        })
+    }
+
+    /// Object ▸ Camera Follow Selected (`ACL: camera CAMERAS follow TARGET`): the selected
+    /// cameras follow the one selected object that is not a camera, with default
+    /// `camera.follow` fields (edit them in the Inspector).
+    pub(super) fn camera_follow_selection(&mut self) -> Option<Action> {
+        let selection = self.selection();
+        let (cameras, others): (Vec<String>, Vec<String>) =
+            selection.into_iter().partition(|id| self.is_camera(id));
+        let ([target], false) = (others.as_slice(), cameras.is_empty()) else {
+            self.set_error(
+                "Select the camera(s) together with one object to follow that is not a camera (Ctrl+click)",
+            );
+            return None;
+        };
+        let result = ops::add_camera_follow(
+            &self.world,
+            &cameras,
+            target,
+            &ops::CameraFollowOptions::default(),
+        );
+        self.op_write(result, None)
+    }
+
+    /// Object ▸ Set as Main Camera (`ACL: camera main ID`) on the primary selection.
+    pub(super) fn make_main_camera(&mut self) -> Option<Action> {
+        let id = self.selected.clone()?;
+        let result = ops::make_main_camera(&self.world, &id);
+        self.op_write(result, None)
+    }
+
     /// Object ▸ Add Audio Source (`ACL: audio SEL source`): default `audio.source` on the
     /// selection with the library's first clip (a world without clips gets clip `tone`).
     pub(super) fn add_audio_source(&mut self) -> Option<Action> {

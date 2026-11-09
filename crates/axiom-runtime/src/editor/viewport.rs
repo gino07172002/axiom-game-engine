@@ -871,6 +871,7 @@ const GIZMO_INTERACT_OFF: Color32 = Color32::from_rgb(125, 110, 70);
 const GIZMO_AUDIO: Color32 = Color32::from_rgb(150, 230, 140);
 const GIZMO_AUDIO_OFF: Color32 = Color32::from_rgb(90, 120, 85);
 const GIZMO_LISTENER: Color32 = Color32::from_rgb(190, 170, 255);
+const GIZMO_RIG: Color32 = Color32::from_rgb(255, 170, 60);
 /// Grid overlay: cells around the focus point (2 * radius + 1 per side), outlines drawn at most.
 const NAV_OVERLAY_RADIUS: i32 = 40;
 const NAV_OVERLAY_SHAPES: usize = 2400;
@@ -1433,6 +1434,49 @@ fn draw_component_gizmos(
             pen.loop_through(&arc(position, x, y, 0.25, 0.0, TAU, 17)[..16], color);
             pen.line(position, position + forward * 0.6, color);
             pen.label(position - Vec3::Y * 0.3, "EAR", color);
+        }
+        if let (Some(follow), Some(&target)) = (
+            &e.camera_follow,
+            e.camera_follow
+                .as_ref()
+                .and_then(|f| state.indices.get(&f.target)),
+        ) {
+            // The authored orbit: a line from the look point out to max_distance with ticks
+            // at min_distance (bright), the desired distance (ring) and max_distance (dim),
+            // plus a dim line from the camera's authored place to the look point.
+            let color = if selected == Some(i) {
+                Color32::WHITE
+            } else if follow.enabled {
+                GIZMO_RIG
+            } else {
+                GIZMO_RIG.gamma_multiply(0.45)
+            };
+            let pivot =
+                matrices[target].transform_point3(Vec3::ZERO) + Vec3::Y * follow.look_height;
+            let dir = axiom_core::camera::orbit_direction(
+                follow.yaw.to_radians(),
+                follow.pitch.to_radians(),
+            );
+            let side = Vec3::Y.cross(dir).normalize_or(Vec3::X);
+            let up = dir.cross(side).normalize_or(Vec3::Y);
+            pen.line(position, pivot, color.gamma_multiply(0.45));
+            pen.line(
+                pivot,
+                pivot + dir * follow.max_distance,
+                color.gamma_multiply(0.6),
+            );
+            for (d, tick) in [
+                (follow.min_distance, color),
+                (follow.max_distance, color.gamma_multiply(0.45)),
+            ] {
+                let at = pivot + dir * d;
+                pen.line(at - side * 0.25, at + side * 0.25, tick);
+                pen.line(at - up * 0.25, at + up * 0.25, tick);
+            }
+            let at = pivot + dir * follow.distance;
+            pen.loop_through(&arc(at, side, up, 0.3, 0.0, TAU, 17)[..16], color);
+            pen.line(pivot - side * 0.15, pivot + side * 0.15, color);
+            pen.label(at, "RIG", color);
         }
     }
     pen.shapes
@@ -3244,6 +3288,44 @@ mod tests {
         assert_eq!(shapes(&mut editor, &runtime), all);
         editor.run_command("view.gizmos").unwrap();
         assert_eq!(shapes(&mut editor, &runtime), 0);
+    }
+
+    #[test]
+    fn camera_follow_gizmo_draws_the_orbit_line_and_distance_marks() {
+        let mut store =
+            Store::memory_with(crate::installed_registry().authoring, fixture().0).unwrap();
+        let mut acl = |text: &str| {
+            store
+                .execute(Request::Acl {
+                    text: text.into(),
+                    preview: false,
+                    expected_rev: None,
+                    propose: false,
+                })
+                .unwrap_or_else(|e| panic!("{text}: {e:#}"));
+            store.current().unwrap().1
+        };
+        let plain = acl("create camera id=rig\ncreate cube id=hero_box at=0,0.5,-2");
+        let following = acl("camera rig follow hero_box distance=4");
+        let ctx = egui::Context::default();
+        let count = |world: &World, hide: bool| {
+            let runtime = WorldRuntime::new(world.clone(), 1, crate::installed_registry()).unwrap();
+            let mut editor = Editor::new(world.clone(), 1, None);
+            if hide {
+                editor.set_view_flag(&["rig".into()], false);
+            }
+            for _ in 0..3 {
+                frame(&ctx, &mut editor, &runtime, vec![]);
+            }
+            editor.scene_input.gizmo_shapes
+        };
+        let (before, after) = (count(&plain, false), count(&following, false));
+        // Camera-to-look-point line, orbit line, two ticks of two lines, the 16-segment ring,
+        // the pivot tick and the label.
+        assert!(after.saturating_sub(before) >= 24, "{before} -> {after}");
+        // Hiding the camera hides its follow gizmo too.
+        let hidden = count(&following, true);
+        assert!(after - hidden >= 2 + 4 + 16, "{after} -> {hidden}");
     }
 
     /// editor-lab plus a path `road` (8 x 6 m rectangle at the origin) followed by `car`.

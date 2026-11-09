@@ -718,6 +718,103 @@ pub fn make_main_camera(world: &World, id: &str) -> Result<Vec<Edit>> {
     Ok(edits)
 }
 
+/// Options of Object ▸ Camera Follow Selected / ACL `camera SEL follow TARGET`; `None` keeps
+/// the `camera.follow` default.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CameraFollowOptions {
+    pub distance: Option<f32>,
+    pub min_distance: Option<f32>,
+    pub max_distance: Option<f32>,
+    pub yaw: Option<f32>,
+    pub pitch: Option<f32>,
+    pub look_height: Option<f32>,
+    /// `input.bindings` axis that orbits (`input.yaw_axis`).
+    pub yaw_axis: Option<String>,
+    /// `input.bindings` axis that zooms (`input.zoom_axis`).
+    pub zoom_axis: Option<String>,
+    pub radius: Option<f32>,
+    pub collision: Option<bool>,
+}
+
+/// Object ▸ Camera Follow Selected: puts a `camera.follow` of `target` (defaults plus
+/// `options`) on each camera, replacing an existing one, and adds the `camera` capability
+/// and the `camera.rig` system when missing. Every camera needs `render.camera`; the target
+/// must exist and must not be one of the cameras. Input axes must already be bound and the
+/// camera must not have another mover (both checked when the batch commits:
+/// `invalid_camera` / `camera_conflict`).
+pub fn add_camera_follow(
+    world: &World,
+    cameras: &[String],
+    target: &str,
+    options: &CameraFollowOptions,
+) -> Result<Vec<Edit>> {
+    if cameras.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the camera that should follow the target",
+        ));
+    }
+    require_entity(world, target)?;
+    let mut follow = crate::camera::CameraFollow::new(target);
+    follow.min_distance = options.min_distance.unwrap_or(follow.min_distance);
+    follow.max_distance = options.max_distance.unwrap_or(follow.max_distance);
+    // Without an explicit distance the default one is kept inside the requested range.
+    follow.distance = options.distance.unwrap_or_else(|| {
+        follow.distance.clamp(
+            follow.min_distance,
+            follow.max_distance.max(follow.min_distance),
+        )
+    });
+    follow.yaw = options.yaw.unwrap_or(follow.yaw);
+    follow.pitch = options.pitch.unwrap_or(follow.pitch);
+    follow.look_height = options.look_height.unwrap_or(follow.look_height);
+    if let Some(axis) = &options.yaw_axis {
+        follow.input.yaw_axis = axis.clone();
+    }
+    if let Some(axis) = &options.zoom_axis {
+        follow.input.zoom_axis = axis.clone();
+    }
+    follow.collision.radius = options.radius.unwrap_or(follow.collision.radius);
+    follow.collision.enabled = options.collision.unwrap_or(follow.collision.enabled);
+    follow.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            "/components/camera.follow",
+            format!("{e:#}"),
+        )
+    })?;
+    let mut edits = enable_system(world, Some("camera"), Some("camera.rig"));
+    let mut seen = BTreeSet::new();
+    for id in cameras {
+        let entity = world
+            .entity(id)
+            .ok_or_else(|| not_found(entity_path(id), format!("entity '{id}' not found")))?;
+        if camera_of(world, entity).is_none() {
+            return Err(Diagnostic::error(
+                "not_a_camera",
+                entity_path(id),
+                format!("entity '{id}' has no render.camera component"),
+            ));
+        }
+        if id == target {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                format!("{}/components/camera.follow/target", entity_path(id)),
+                format!("camera '{id}' cannot follow itself"),
+            ));
+        }
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: "camera.follow".into(),
+                value: json!(follow),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
 /// Sets an entity's display label. Surrounding whitespace is trimmed; an empty label clears
 /// it (the hierarchy then shows the ID). Labels are 1..128 bytes without control characters.
 pub fn rename(world: &World, id: &str, label: &str) -> Result<Vec<Edit>> {

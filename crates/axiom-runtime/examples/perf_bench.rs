@@ -8,6 +8,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-interact 256x64``
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-tween 1024x4`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-audio 256`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-camera 8x1024`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -213,6 +214,52 @@ fn generated_audio(sources: usize) -> Result<World> {
     }))?)
 }
 
+/// `cameras` follow cameras, each orbiting a target that circles (radius 6..20 m, on a
+/// spinning parent) through a field of `colliders` static wall boxes (1.6 x 2.5 x 0.3 m,
+/// every other one turned 90 deg, a 2.5 m grid): every step casts the look point and the
+/// camera through the field, and the cameras keep hitting, pulling in and recovering.
+fn generated_camera(cameras: usize, colliders: usize) -> Result<World> {
+    let side = (colliders as f32).sqrt().ceil() as usize;
+    let half = side as f32 * 2.5 * 0.5;
+    let mut entities = vec![];
+    let mut relations = vec![];
+    for i in 0..colliders {
+        let (x, z) = (
+            (i % side) as f32 * 2.5 - half,
+            (i / side) as f32 * 2.5 - half,
+        );
+        let rotation = if i % 2 == 0 {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            [
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ]
+        };
+        entities.push(json!({"id":format!("wall/{i}"),"components":{"core.transform":{"position":[x,1.25,z],"rotation":rotation},
+            "physics.collider":{"shape":{"shape":"box","half_extents":[0.8,1.25,0.15]}}}}));
+    }
+    for c in 0..cameras {
+        let radius = 6.0 + (c as f32 * 1.75) % 14.0;
+        entities.push(json!({"id":format!("pivot/{c}"),"components":{"core.transform":{"position":[(c % 3) as f32 * 4.0 - 4.0,0,(c / 3) as f32 * 4.0 - 4.0]},
+            "core.motion":{"angular_velocity":[0,0.3 + 0.05 * c as f32,0]}}}));
+        entities.push(json!({"id":format!("target/{c}"),"components":{"core.transform":{"position":[radius,0,0]}}}));
+        relations.push(
+            json!({"kind":"parent","source":format!("target/{c}"),"target":format!("pivot/{c}")}),
+        );
+        entities.push(json!({"id":format!("cam/{c}"),"components":{"core.transform":{"position":[0,10,0]},
+            "render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.05,"far":200,"viewport":[0,0,1,1],"active":c == 0},
+            "camera.follow":{"target":format!("target/{c}"),"distance":7,"yaw":(c * 45) as f32,"pitch":15}}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("camera-{cameras}x{colliders}"),"title":"Camera bench",
+        "capabilities":{"core":1,"motion":1,"render":1,"physics":1,"camera":1},"systems":["motion.integrate","camera.rig"],
+        "entities":entities,"relations":relations
+    }))?)
+}
+
 /// `paths` closed paths 30 m apart (even: linear 20 x 10 m rectangles, odd: Catmull-Rom
 /// circles of 16 points, radius 8 m) and `followers` spread evenly over them (start fraction,
 /// speed 1.5..3 m/s, lateral offset +-1 m, every other one with a 180 deg/s turn rate).
@@ -350,6 +397,12 @@ fn main() -> Result<()> {
             .context("--generated-tween COMPONENTSxTRACKS")?;
         let world = generated_tween(components.parse()?, tracks.parse()?)?;
         (world.id.clone(), world)
+    } else if let Some(spec) = arg("--generated-camera") {
+        let (cameras, colliders) = spec
+            .split_once('x')
+            .context("--generated-camera CAMERASxCOLLIDERS")?;
+        let world = generated_camera(cameras.parse()?, colliders.parse()?)?;
+        (world.id.clone(), world)
     } else if let Some(sources) = arg("--generated-audio") {
         let world = generated_audio(sources.parse()?)?;
         (world.id.clone(), world)
@@ -417,6 +470,13 @@ fn main() -> Result<()> {
         });
     let nav = runtime.observation().metrics.get("nav").map(|n| {
         json!({"grid":n["grid"],"budget":n["budget"],"moving":n["moving"],"pending":n["pending"],"failed":n["failed"],"arrived":n["arrived"],"preview":preview})
+    });
+    // Follow cameras: what the last step's casts did.
+    let camera = runtime.observation().metrics.get("camera").map(|c| {
+        let follow = c["follow"].as_array().cloned().unwrap_or_default();
+        let hits = follow.iter().filter(|f| !f["hit"].is_null()).count();
+        let tests: u64 = follow.iter().filter_map(|f| f["tests"].as_u64()).sum();
+        json!({"cameras":follow.len(),"blocked":hits,"tests_last_step":tests,"blockers":c["blockers"],"grid":c["grid"],"over_budget":c["over_budget"]})
     });
     // Audio: the audio thread's work per device buffer (512 frames = 23.2 ms of sound) with
     // this world's voices, and the voice counters after the measured steps.
@@ -570,6 +630,7 @@ fn main() -> Result<()> {
         },
         "nav":nav,
         "audio":audio,
+        "camera":camera,
         "process_memory_after_runtime":memory_runtime,
         "process_memory_end":axiom_runtime::measure::process_memory(),
     });

@@ -171,3 +171,16 @@ release,`perf_bench --generated-audio N`(N 個循環聲源、4 種程序片段�
 - 原生視窗實測(debug,MX150,`editor` Play):waveOut 裝置 open,`rendered` 持續增加、`underruns` 0、`mix_us_max` 232 µs、`voices_mixed` 1。
 
 axiom-town(不用 `audio.spatial`)A/B,release,HEAD `9094f2c` 與本版交錯 5 輪:step p50 中位數 0.0178 → 0.0180 ms(各輪 0.0176–0.0178 vs 0.0178–0.0183)、p95 0.0184 → 0.0187、配置 69/82 不變、observation 0.0346 → 0.0352 ms。本版略高約 1%(+0.2 µs),未拆解;推測與 `CompiledEntity` 多兩個欄位有關。
+
+## 跟隨相機(`camera.rig`,plan-engine-components 第 8 項,2026-11-09)
+
+release,`perf_bench --generated-camera 8x1024`(8 台跟隨相機,目標在旋轉的 parent 上繞圈穿過 1024 個靜態牆方塊,2.5 m 格、半數轉 90°;每台每步 2 次 cast),3 次:
+
+| 項目 | 結果 |
+|---|---|
+| step p50 / p95 / max | 0.0124–0.0125 / 0.0142–0.0144 / 0.057–0.075 ms(含 8 個 `core.motion` parent) |
+| step 配置 p50 / max | 0 / 1(1200 步;max 1 與先前各項目相同的既有現象) |
+| `camera.rig` 建置 | 0.54–0.90 ms(收集 1024 形狀 + 雜湊格子 4096 桶) |
+| 最後一步 | 8 台中 7 台被擋,8 台合計測 159 個形狀,`over_budget` 0 |
+
+axiom-town(不排入 `camera.rig`)A/B,release,HEAD `8a35fcd`(worktree 建置)與本版交錯共 9 輪:step p50 中位數 0.0179 → 0.0177 ms(0.0176–0.0183 vs 0.0176–0.0185)、配置 69/82 不變、observation 0.0355 → 0.0340 ms。p95 在兩個版本都是雙峰(約 0.019 或約 0.033 ms):HEAD 9 輪中 2 次高、本版 4 次高;town 不跑 `camera.rig`,視為機器雜訊,未拆解。

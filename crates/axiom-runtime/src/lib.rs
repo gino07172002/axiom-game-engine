@@ -10,6 +10,7 @@ pub mod benchmark;
 pub mod bound_ui;
 pub mod branding;
 pub mod bridge;
+pub mod camera_rig;
 pub mod checkpoint;
 pub mod combat;
 mod editor;
@@ -67,6 +68,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     path_follow::register(&mut r);
     tween::register(&mut r);
     nav_agent::register(&mut r);
+    camera_rig::register(&mut r);
     nameplate::register(&mut r);
     vfx::register(&mut r);
     postfx::register(&mut r);

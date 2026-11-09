@@ -853,10 +853,20 @@ pub fn validate_world(
     }
     // Static obstacles are rasterized / copied once at their authored place.
     for (slot, e) in entities.iter().enumerate() {
+        // Camera blocker meshes are collected at their authored pose too (camera.rs).
         let obstacle = ["nav.blocker", "physics.collider"]
             .into_iter()
-            .find(|c| e.components.contains_key(*c));
+            .find(|c| e.components.contains_key(*c))
+            .or_else(|| {
+                (e.mesh.is_some() && e.tags.iter().any(|t| t == crate::camera::BLOCKER_TAG))
+                    .then_some("render.mesh")
+            });
         let Some(obstacle) = obstacle else { continue };
+        let what = if obstacle == "render.mesh" {
+            format!("render.mesh tagged {}", crate::camera::BLOCKER_TAG)
+        } else {
+            obstacle.to_owned()
+        };
         let mut cursor = Some(slot);
         let mut depth = 0;
         while let Some(c) = cursor {
@@ -865,7 +875,7 @@ pub fn validate_world(
                     "tween_conflict",
                     format!("/entities/@{}/components/{obstacle}", crate::local::escape(&e.id)),
                     format!(
-                        "{} has {obstacle}, a static obstacle, and a tween animates the transform of {}; obstacles do not follow runtime transforms. Keep the obstacle off the animated hierarchy (see docs/tweens.zh-TW.md)",
+                        "{} has {what}, a static obstacle, and a tween animates the transform of {}; obstacles do not follow runtime transforms. Keep the obstacle off the animated hierarchy (see docs/tweens.zh-TW.md)",
                         e.id, entities[c].id
                     ),
                 ));

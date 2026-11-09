@@ -54,6 +54,9 @@ EDIT (any number, atomic):
   scene create ID [on|off] | scene activate ID on|off | scene delete ID (objects kept)
   scene member SCENE SEL on|off
   camera main ID                  active=true on ID, false on every other camera
+  camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS]
+        [zoom=AXIS] [radius=M] [collide=on|off]   camera.follow on each camera: orbits TARGET, stops in
+                                  front of static blockers (runtime: call camera.follow.set / camera.activate)
   rename ID LABEL                 display label (\"quoted\" for spaces/CJK); \"\" clears it
   move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
   prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
@@ -291,6 +294,7 @@ enum Statement {
     SceneDelete(String),
     SceneMember(String, Box<Selection>, bool),
     CameraMain(String),
+    CameraFollow(Box<Selection>, String, Box<crate::ops::CameraFollowOptions>),
     Rename(String, String),
     Move(String, crate::ops::Order),
     PrefabCreate(Option<String>, String),
@@ -511,13 +515,10 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 _ => Statement::SceneMember(id, Box::new(selector(arg(3)?)?), on_off(arg(4)?)?),
             }
         }
-        "camera" => {
-            ensure!(
-                arg(1)? == "main" && tokens.len() == 3,
-                "use: camera main ID"
-            );
-            Statement::CameraMain(arg(2)?.clone())
+        "camera" if tokens.len() == 3 && tokens[1] == "main" => {
+            Statement::CameraMain(tokens[2].clone())
         }
+        "camera" => camera_follow(tokens)?,
         "rename" => {
             ensure!(
                 tokens.len() == 3,
@@ -671,6 +672,48 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         }
         other => bail!("unknown statement '{other}'"),
     })
+}
+
+/// `camera SEL follow TARGET [k=v..]` (`camera main ID` is matched before this).
+fn camera_follow(tokens: &[String]) -> Result<Statement> {
+    const USE: &str = "use: camera main ID | camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS] [zoom=AXIS] [radius=M] [collide=on|off]";
+    let (Some(select), Some("follow"), Some(target)) = (
+        tokens.get(1),
+        tokens.get(2).map(String::as_str),
+        tokens.get(3),
+    ) else {
+        bail!("{USE}");
+    };
+    let mut o = crate::ops::CameraFollowOptions::default();
+    for t in &tokens[4..] {
+        let (k, v) = t
+            .split_once('=')
+            .with_context(|| format!("option '{t}' must be key=value"))?;
+        let number = || {
+            v.parse::<f32>()
+                .with_context(|| format!("{k} must be a number"))
+        };
+        match k {
+            "distance" => o.distance = Some(number()?),
+            "min" => o.min_distance = Some(number()?),
+            "max" => o.max_distance = Some(number()?),
+            "yaw" => o.yaw = Some(number()?),
+            "pitch" => o.pitch = Some(number()?),
+            "height" => o.look_height = Some(number()?),
+            "orbit" => o.yaw_axis = Some(v.to_owned()),
+            "zoom" => o.zoom_axis = Some(v.to_owned()),
+            "radius" => o.radius = Some(number()?),
+            "collide" => o.collision = Some(on_off(v)?),
+            other => bail!(
+                "unknown option '{other}' (use distance, min, max, yaw, pitch, height, orbit, zoom, radius, collide)"
+            ),
+        }
+    }
+    Ok(Statement::CameraFollow(
+        Box::new(selector(select)?),
+        target.clone(),
+        Box::new(o),
+    ))
 }
 
 /// `audio clip ID PRESET` | `audio SEL source [k=v..]` | `audio ID listener`. Four tokens
@@ -1108,6 +1151,8 @@ pub fn run(
                     })
                 }),
             Statement::CameraMain(id) => crate::ops::make_main_camera(w, &id),
+            Statement::CameraFollow(select, target, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_camera_follow(w, &ids, &target, &options)),
             Statement::Rename(id, label) => crate::ops::rename(w, &id, &label),
             Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
             Statement::PrefabCreate(id, entity) => {

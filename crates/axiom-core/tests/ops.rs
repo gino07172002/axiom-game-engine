@@ -1324,6 +1324,127 @@ fn audio_verbs_match_the_ops_and_report_structured_errors() {
 }
 
 #[test]
+fn camera_follow_verb_matches_the_op_and_reports_structured_errors() {
+    use axiom_core::camera::CameraFollow;
+    let mut s = store();
+    acl(
+        &mut s,
+        "create cube id=hero\ncreate camera id=rig\ncreate camera id=rig2",
+    )
+    .unwrap();
+    let start = s.current().unwrap().1;
+    let after = |world: &World, text: &str| -> Result<World, Value> {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        acl(&mut t, text)?;
+        Ok(t.current().unwrap().1)
+    };
+    let applied = |world: &World, edits: Vec<Edit>| {
+        let mut t = Store::memory_with(Registry::core(), world.clone()).unwrap();
+        t.execute(Request::Apply {
+            expected_rev: None,
+            edits,
+        })
+        .unwrap();
+        t.current().unwrap().1
+    };
+    let follow = |world: &World, id: &str| -> CameraFollow {
+        serde_json::from_value(world.entity(id).unwrap().components["camera.follow"].clone())
+            .unwrap()
+    };
+    // Defaults on two cameras; the capability and the system are added once.
+    let ids = ["rig".to_owned(), "rig2".to_owned()];
+    let expected =
+        ops::add_camera_follow(&start, &ids, "hero", &ops::CameraFollowOptions::default()).unwrap();
+    let made = after(&start, "camera entities[id=rig,id=rig2] follow hero").unwrap();
+    assert_eq!(made, applied(&start, expected));
+    assert_eq!(follow(&made, "rig2"), CameraFollow::new("hero"));
+    assert_eq!(made.capabilities.get("camera"), Some(&1));
+    assert_eq!(
+        made.systems.iter().filter(|s| *s == "camera.rig").count(),
+        1
+    );
+    // Every option.
+    let options = ops::CameraFollowOptions {
+        distance: Some(4.0),
+        min_distance: Some(0.5),
+        max_distance: Some(9.0),
+        yaw: Some(180.0),
+        pitch: Some(10.0),
+        look_height: Some(1.2),
+        yaw_axis: None,
+        zoom_axis: None,
+        radius: Some(0.3),
+        collision: Some(false),
+    };
+    let expected = ops::add_camera_follow(&start, &["rig".to_owned()], "hero", &options).unwrap();
+    let full = after(
+        &start,
+        "camera rig follow hero distance=4 min=0.5 max=9 yaw=180 pitch=10 height=1.2 radius=0.3 collide=off",
+    )
+    .unwrap();
+    assert_eq!(full, applied(&start, expected));
+    let f = follow(&full, "rig");
+    assert!(
+        f.distance == 4.0 && f.yaw == 180.0 && !f.collision.enabled && f.collision.radius == 0.3
+    );
+    // Input axes must be bound when the batch commits.
+    assert_eq!(
+        code(after(&start, "camera rig follow hero orbit=spin").unwrap_err()),
+        "invalid_camera"
+    );
+    let mut bound = start.clone();
+    bound.resources.insert(
+        "input.bindings".into(),
+        serde_json::json!({"axes":{"spin":{"positive":"KeyC","negative":"KeyZ"}}}),
+    );
+    let orbiting = after(&bound, "camera rig follow hero orbit=spin zoom=spin").unwrap();
+    assert_eq!(follow(&orbiting, "rig").input.yaw_axis, "spin");
+    assert_eq!(follow(&orbiting, "rig").input.zoom_axis, "spin");
+    // Structured errors.
+    assert_eq!(
+        code(after(&start, "camera hero follow rig").unwrap_err()),
+        "not_a_camera"
+    );
+    assert_eq!(
+        code(after(&start, "camera rig follow ghost").unwrap_err()),
+        "not_found"
+    );
+    assert_eq!(
+        code(after(&start, "camera rig follow rig").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(after(&start, "camera rig follow hero distance=50").unwrap_err()),
+        "invalid_value"
+    );
+    assert_eq!(
+        code(after(&start, "camera ghost follow hero").unwrap_err()),
+        "no_match"
+    );
+    assert_eq!(
+        code(after(&start, "camera rig chase hero").unwrap_err()),
+        "acl_syntax"
+    );
+    assert_eq!(
+        code(after(&start, "camera rig follow hero speed=2").unwrap_err()),
+        "acl_syntax"
+    );
+    // A second mover on the camera is refused at commit.
+    let mut motion = made.clone();
+    motion.capabilities.insert("motion".into(), 1);
+    assert_eq!(
+        code(after(&motion, "set rig core.motion {\"velocity\":[1,0,0]}").unwrap_err()),
+        "camera_conflict"
+    );
+    // `camera main` still works next to the new verb, also for a camera named main.
+    let main = after(&made, "camera main rig2").unwrap();
+    assert!(main.entity("rig2").unwrap().components["render.camera"]["active"] == true);
+    let named = after(&start, "create camera id=main\ncamera main follow hero").unwrap();
+    assert_eq!(follow(&named, "main").target, "hero");
+    assert!(ops::add_camera_follow(&start, &[], "hero", &Default::default()).is_err());
+}
+
+#[test]
 fn adding_an_audio_clip_keeps_the_other_library_entries_verbatim() {
     let mut world = lab();
     world.capabilities.insert("audio".into(), 1);

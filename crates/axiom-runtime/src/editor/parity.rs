@@ -1030,3 +1030,88 @@ fn view_only_hierarchy_commands_never_write() {
     assert!(hidden.contains("stage/rack") && hidden.contains("stage/rack/cargo"));
     assert!(editor.prefs.locked["editor-lab"].contains("stage/rack"));
 }
+
+#[test]
+fn camera_follow_and_main_camera_match_acl() {
+    // Object ▸ Camera Follow Selected: the selected camera(s) follow the one selected
+    // non-camera object (selection order of the cameras is kept).
+    let start = headless(
+        &lab(),
+        "create camera id=rig\ncreate camera id=rig2\ncreate cube id=hero_box at=0,0.5,-2",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("rig".into()));
+            e.extra.insert("hero_box".into());
+            vec![e.run_command("object.camera_follow").unwrap()]
+        },
+        "camera rig follow hero_box",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("hero_box".into()));
+            e.extra.insert("rig2".into());
+            e.extra.insert("rig".into());
+            vec![e.run_command("object.camera_follow").unwrap()]
+        },
+        "camera entities[id=rig,id=rig2] follow hero_box",
+    );
+    let following = headless(&start, "camera rig follow hero_box");
+    assert_eq!(following.capabilities.get("camera"), Some(&1));
+    assert!(following.systems.iter().any(|s| s == "camera.rig"));
+    // Empty world: the camera capability and camera.rig are added once.
+    let blank = headless(
+        &World::empty("blank"),
+        "create camera id=cam\ncreate cube id=box",
+    );
+    assert_parity(
+        blank.clone(),
+        |e| {
+            e.select(Some("cam".into()));
+            e.extra.insert("box".into());
+            vec![e.run_command("object.camera_follow").unwrap()]
+        },
+        "camera cam follow box",
+    );
+    // Inspector form edit of the follow (nested collision radius too) = ACL set.
+    assert_parity(
+        following.clone(),
+        |e| {
+            e.select(Some("rig".into()));
+            let entity = e.world.entity("rig").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "camera.follow");
+            let form = draft.form.as_mut().unwrap();
+            form["distance"] = serde_json::json!(7.5);
+            form["collision"]["radius"] = serde_json::json!(0.4);
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            assert_eq!(edits.len(), 2);
+            vec![vec![e.write(edits, None)]]
+        },
+        "set rig camera.follow/distance 7.5\nset rig camera.follow/collision/radius 0.4",
+    );
+    // Set as Main Camera on the primary selection = camera main ID.
+    assert_parity(
+        following.clone(),
+        |e| {
+            e.select(Some("rig".into()));
+            vec![e.run_command("object.main_camera").unwrap()]
+        },
+        "camera main rig",
+    );
+    // No target, two targets, or no camera: a problem, not a write.
+    let mut e = Editor::new(start.clone(), 1, Some("rig".into()));
+    assert!(e.run_command("object.camera_follow").unwrap().is_empty());
+    e.extra.insert("hero_box".into());
+    e.extra.insert("stage/floor".into());
+    assert!(e.run_command("object.camera_follow").unwrap().is_empty());
+    let mut e = Editor::new(start.clone(), 1, Some("hero_box".into()));
+    e.extra.insert("stage/floor".into());
+    assert!(e.run_command("object.camera_follow").unwrap().is_empty());
+    let mut e = Editor::new(start, 1, Some("hero_box".into()));
+    assert!(e.run_command("object.main_camera").unwrap().is_empty());
+}

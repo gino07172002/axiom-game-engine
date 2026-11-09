@@ -93,7 +93,7 @@ impl Registry {
         let mut r = Self::default();
         for id in [
             "core", "render", "physics", "motion", "trigger", "path", "nav", "interact", "tween",
-            "audio",
+            "audio", "camera",
         ] {
             r.capabilities.insert(id.into(), 1);
         }
@@ -191,9 +191,16 @@ impl Registry {
             crate::audio::listener_schema(),
             |v| typed(v, crate::audio::AudioListener::validate),
         );
+        r.component(
+            "camera.follow",
+            "camera",
+            crate::camera::follow_schema(),
+            |v| typed(v, crate::camera::CameraFollow::validate),
+        );
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());
+        r.movers.insert("camera.follow".into(), "camera.rig".into());
         r.component(
             "physics.collider",
             "physics",
@@ -326,6 +333,28 @@ impl Registry {
                     "core.transform".into(),
                 ],
                 writes: vec!["audio.voices".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            "camera.rig".into(),
+            SystemDescriptor {
+                id: "camera.rig".into(),
+                capability: "camera".into(),
+                // After every mover and camera rig of gameplay controllers (action.simulate
+                // runs after animation 30 / audio.events 40), so the camera sees this step's
+                // target pose; before audio.spatial (45), whose fallback listener is the
+                // active camera.
+                phase: 44,
+                reads: vec![
+                    "camera.follow".into(),
+                    "render.camera".into(),
+                    "core.transform".into(),
+                    "physics.collider".into(),
+                    "nav.blocker".into(),
+                    "render.mesh".into(),
+                ],
+                writes: vec!["core.transform".into(), "render.camera".into()],
                 after: vec![],
             },
         );

@@ -53,7 +53,8 @@
 | Scene ▸ Activate / Deactivate | `scene activate ID on\|off` | ✅ 同上 |
 | Scene ▸ Delete scene(物件保留) | `scene delete ID` | ✅ 同上 |
 | Inspector 場景勾選(membership) | `scene member SCENE SEL on\|off` | ⚠️ 編輯器仍直接送出 `set_scene_membership`(單一 edit,跟 ops 輸出相同),還沒有編輯器端的對等測試 |
-| 設為主攝影機 | `camera main ID`(在同一批次把 ID 設為 active,其他攝影機設為 inactive) | ⚠️ 只有 op 和 ACL;**編輯器 UI 還沒做這個按鈕**(`camera_main_switches_the_active_camera_in_one_revision`) |
+| `object.main_camera`(Object ▸ Set as Main Camera,主選取) | `camera main ID`(在同一批次把 ID 設為 active,其他攝影機設為 inactive) | ✅ `camera_follow_and_main_camera_match_acl`;`camera_main_switches_the_active_camera_in_one_revision` |
+| `object.camera_follow`(Object ▸ Camera Follow Selected,指令面板):選取的相機都跟隨選取中唯一一個不是相機的物件(預設 `camera.follow`,取代既有的);沒有目標或兩個以上、沒有相機 = problem 不寫入 | `camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=AXIS] [zoom=AXIS] [radius=] [collide=on\|off]`。世界缺少時補 `camera` capability 與 `camera.rig` 系統,見 `docs/camera-follow.zh-TW.md` | ✅ `camera_follow_and_main_camera_match_acl`(選取順序、兩台相機、空世界、Inspector 表單改 distance / collision.radius = ACL `set`);`camera_follow_verb_matches_the_op_and_reports_structured_errors` |
 | Inspector:label、transform、元件表單、JSON | `set ID label "…"`、`set ID core.transform/position [x,y,z]`、`set ID comp/field V` | 欄位層級的 `set_field`,兩邊是同一種 edit |
 | 視窗內 gizmo 移動/旋轉/縮放 | `set ID core.transform/position\|rotation\|scale V` | 同上 |
 | 新增元件(元件挑選器 / Stage component) | `set ID comp.name {…}` | 同上 |
@@ -77,17 +78,18 @@
 | `view.perspective` / `view.top` / `view.front` / `view.right` / `view.bottom` / `view.back` / `view.left`(Alt+1..7、場景工具列 View 選單、右下角座標軸點 X / Y / Z,再點一次切到反面,點模式文字回 Perspective) | 只影響編輯器相機:正交軸向視圖,picking / gizmo 拖曳 / 框選都用同一個投影矩陣。在軸向視圖中按右鍵旋轉會回到 Perspective。`editor_view` 觀察結果的 `view` 欄位回報目前模式 |
 | 飛行相機:按住右鍵 + WASD(Q / E 下降 / 上升),Shift 3 倍速;按住右鍵時滾輪調整飛行速度(畫面下方短暫顯示) | 只是相機;速度存在 `*.editor-prefs.json` 的 `fly_speed`。按住右鍵期間單鍵快捷鍵(W = Move 等)暫停。沒按移動鍵的右鍵拖曳仍是環繞 |
 | 框選:左鍵在空白處(或非 gizmo 握把處)拖曳畫框,放開時選取「投影中心點落在框內」的物件(網格 / 骨架網格用包圍盒中心,其餘用 pivot);Shift 加選、Ctrl 反選(主選取保留)、空框清除選取 | 只是選取;隱藏 / 鎖定物件不會被框到。無頭用 `select` |
-| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM)、`trigger.zone` 線框(box 依軸向、sphere 三個圓,`exit_margin` 加暗色外框;停用暗綠、選取白;區內狀態不在這裡畫,見下方 Play 預覽的 Behavior overlay)、`path.spline` 折線 / 曲線(控制點十字、方向箭頭、標 PATH;選取的路徑顯示可拖曳的點把手)、`path.follow` 到起點的暗線(標 FOLLOW)、`nav.agent` 半徑圈(標 NAV)+ 到編寫目標的線與十字,選取的代理另畫預覽路徑(綠色,有上限的同步搜尋,依輸入快取)、`interact.target` 的 range 圓(黃色,標 USE;有 `exit_margin` 時外加暗色放開圓;停用暗黃、選取白)、`audio.source` 的 min / max 距離球(亮綠 / 暗綠,各三個世界軸向圓,標 SND;2D 聲源只標 SND 2D;停用暗綠、選取白)、`audio.listener` 小圓圈 + 面向線(紫,標 EAR) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
+| `view.gizmos`(場景工具列 Gizmos):相機視錐(啟用中的相機黃色、其餘灰藍,標 CAM)、`render.light`(directional 箭頭 SUN、point 三軸 range 圓、spot 內外錐、area 矩形 / 圓盤 + 法線;停用的燈畫暗色)、`nav.blocker` 矩形(XZ,位置 + offset,和 runtime 一樣用編寫位置)、`physics.collider` 方塊 / 膠囊、`fsm.agent` 身體半徑圈(標 FSM)、`trigger.zone` 線框(box 依軸向、sphere 三個圓,`exit_margin` 加暗色外框;停用暗綠、選取白;區內狀態不在這裡畫,見下方 Play 預覽的 Behavior overlay)、`path.spline` 折線 / 曲線(控制點十字、方向箭頭、標 PATH;選取的路徑顯示可拖曳的點把手)、`path.follow` 到起點的暗線(標 FOLLOW)、`nav.agent` 半徑圈(標 NAV)+ 到編寫目標的線與十字,選取的代理另畫預覽路徑(綠色,有上限的同步搜尋,依輸入快取)、`interact.target` 的 range 圓(黃色,標 USE;有 `exit_margin` 時外加暗色放開圓;停用暗黃、選取白)、`audio.source` 的 min / max 距離球(亮綠 / 暗綠,各三個世界軸向圓,標 SND;2D 聲源只標 SND 2D;停用暗綠、選取白)、`audio.listener` 小圓圈 + 面向線(紫,標 EAR)、`camera.follow` 從注視點沿編寫的 yaw / pitch 到 max_distance 的線 + min / max 十字 + 期望距離圓圈 + 相機到注視點的暗線(橘,標 RIG;停用暗橘、選取白) | 只在編輯器視圖用 egui painter 畫,不進渲染、Play 看不到;設定存在偏好檔 `gizmos` |
 | `view.bookmark.save.N`(Ctrl+F6..F9)/ `view.bookmark.recall.N`(F6..F9),N = 1..4;場景工具列 View 選單也有 | 只是相機;依 world ID 存在偏好檔 `bookmarks`。空的槽位不可用(指令回報原因) |
 | Tween 時間軸的播放頭拖曳(scrub) | 只影響這一幀的場景視口繪製(編輯模式),不寫 revision、不改模擬(`tween_scrub_previews_without_writing_or_moving_the_simulation`)。無頭用 `call tween.seek` 在執行期跳到某個時間 |
 | `view.nav_grid`(View ▸ Toggle Navigation Grid Overlay) | 只影響編輯器視圖:在選取物件(沒選時為相機注視點)周圍 81 × 81 格內,用紅色 × 標出選取代理(沒選代理時以 0.3 m 計)不能進入的格子,最多 2,400 個;存在偏好檔 `nav_grid`。無頭用 `observe` 的 `nav.grid` 或 `call nav.inspect` |
-| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `TRIG` `PATH` `FOLLOW` `NAV` `USE` `TWEEN` `SND` `EAR` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、`trigger.zone`、`path.spline`、`path.follow`、`nav.agent`、`interact.target`、`tween.clips`、`audio.source`、`audio.listener`、prefab 實例) |
+| Hierarchy 型別標籤 `CAM` `LIGHT` `MESH` `GEO` `SKIN` `FSM` `TRIG` `PATH` `FOLLOW` `NAV` `USE` `TWEEN` `SND` `EAR` `RIG` `PFB` | 只是顯示(`render.camera`、`render.light`、`render.mesh`、`render.geometry`、`animation.player`、`fsm.agent`、`trigger.zone`、`path.spline`、`path.follow`、`nav.agent`、`interact.target`、`tween.clips`、`audio.source`、`audio.listener`、`camera.follow`、prefab 實例) |
 | 點一下路徑點把手 / Inspector ▸ Path points 的列 = 選取路徑點 | 只是編輯器狀態(`path.add_point` / `path.remove_point` 作用的點);無頭直接在 `path ID insert\|remove I` 指定索引 |
 | `edit.copy`、`file.copy_context`、`help.copy_discovery` | 用 `inspect ID` / `discover` |
 | `file.verify` | `axiom verify` |
 | `play.start`(Play 預覽,不寫入 revision) | `axiom play` / `axiom scenario FILE` |
 | 聲音的播放 / 停止 / 試聽 | 編輯器沒有試聽按鈕(沒做);進 Play 後由 `autoplay`、規則與 `runtime.bindings` 播放。無頭用 `call audio.play\|stop\|inspect\|summary` 與 `observe` 的 `audio` 段(每個 voice 的增益與聲像),不需要音效裝置 |
 | Play 預覽的「Behavior overlay」:FSM 狀態標籤 + `trigger.zone` 線框(青綠 = 空、粉紅加粗 = 有實體在區內)+ 導航代理剩下的路線(綠線)+ 互動者到聚焦目標的黃線 | 只是畫面;無頭用 `observe` 的 `trigger` / `nav` / `interact` 或 `call trigger.inspect` / `nav.inspect` / `interact.inspect` |
+| 執行期切換主相機、改跟隨目標 / 距離 / 角度 | 編輯器沒有對應按鈕(Play 預覽中由 `runtime.bindings` 或輸入驅動);無頭用 `call camera.activate\|follow.set\|inspect\|summary` 與 `observe` 的 `camera` 段(期望 / 實際距離、擋住的實體),不改編寫內容 |
 | History 的 diff 檢視 | `diff REV REV` |
 | Scenarios 分頁 | `axiom scenario FILE` |
 | Problems、Graphs、AI/Protocol 分頁 | 只讀;用 `verify` 和 `discover` |

@@ -171,6 +171,13 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.interactable", "Make Interactable", "Object", ""),
     c("object.audio_source", "Add Audio Source", "Object", ""),
     c("object.audio_listener", "Make Audio Listener", "Object", ""),
+    c(
+        "object.camera_follow",
+        "Camera Follow Selected",
+        "Object",
+        "",
+    ),
+    c("object.main_camera", "Set as Main Camera", "Object", ""),
     c("object.tween_clip", "Add Tween Clip", "Object", ""),
     c(
         "tween.record_key",
@@ -419,6 +426,8 @@ impl Editor {
             | "object.interactable"
             | "object.audio_source"
             | "object.audio_listener"
+            | "object.camera_follow"
+            | "object.main_camera"
             | "object.tween_clip"
                 if nothing =>
             {
@@ -475,6 +484,8 @@ impl Editor {
             | "object.interactable"
             | "object.audio_source"
             | "object.audio_listener"
+            | "object.camera_follow"
+            | "object.main_camera"
             | "object.tween_clip"
             | "tween.record_key"
             | "tween.remove_key"
@@ -594,6 +605,8 @@ impl Editor {
             "object.interactable" => actions.extend(self.make_interactable()),
             "object.audio_source" => actions.extend(self.add_audio_source()),
             "object.audio_listener" => actions.extend(self.add_audio_listener()),
+            "object.camera_follow" => actions.extend(self.camera_follow_selection()),
+            "object.main_camera" => actions.extend(self.make_main_camera()),
             "object.tween_clip" => actions.extend(self.add_tween_clip()),
             "tween.record_key" => actions.extend(self.record_tween_key()),
             "tween.remove_key" => actions.extend(self.remove_tween_key()),
@@ -987,6 +1000,8 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.interactable": "interact SEL [event=] [prompt=] [range=] [action=]",
                 "object.audio_source": "audio SEL source [clip=] [volume=] [loop=] [autoplay=] [spatial=] [min=] [max=] [rolloff=]",
                 "object.audio_listener": "audio ID listener",
+                "object.camera_follow": "camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=] [zoom=] [radius=] [collide=]",
+                "object.main_camera": "camera main ID",
                 "inspector.audio_clip": "set ID audio.source/clip \"CLIP\"",
                 "inspector.new_audio_clip": "audio clip ID tone|engine|fountain|creak|footstep",
                 "object.tween_clip": "tween SEL clip NAME [property=] [target=] [duration=] [mode=] [autoplay=] [on_finish=]",

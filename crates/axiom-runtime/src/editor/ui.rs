@@ -1437,6 +1437,7 @@ pub(super) fn badges(world: &World, e: &Entity) -> Vec<(&'static str, Color32)> 
         ("tween.clips", "TWEEN", Color32::from_rgb(240, 150, 200)),
         ("audio.source", "SND", Color32::from_rgb(150, 230, 140)),
         ("audio.listener", "EAR", Color32::from_rgb(190, 170, 255)),
+        ("camera.follow", "RIG", Color32::from_rgb(255, 214, 92)),
     ] {
         if has_component(world, e, component) {
             out.push((text, color));
@@ -1464,6 +1465,7 @@ fn badge_meaning(text: &str) -> &'static str {
         "TWEEN" => "tween.clips (keyframed property animation)",
         "SND" => "audio.source (positional sound)",
         "EAR" => "audio.listener (where sounds are heard from)",
+        "RIG" => "camera.follow (follows a target, stops in front of walls)",
         _ => "prefab instance",
     }
 }

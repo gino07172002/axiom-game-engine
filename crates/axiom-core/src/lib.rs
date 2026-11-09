@@ -2,6 +2,7 @@
 pub mod acl;
 pub mod audio;
 pub mod blocker;
+pub mod camera;
 pub mod diff;
 pub mod discovery;
 pub mod gameplay;
@@ -16,6 +17,7 @@ pub mod ops;
 pub mod package;
 pub mod path;
 pub mod protocol;
+pub mod raycast;
 pub mod registry;
 pub mod retry;
 pub mod scene_edit;
