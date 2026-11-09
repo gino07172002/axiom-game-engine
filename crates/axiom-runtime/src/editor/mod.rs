@@ -7,6 +7,7 @@ mod options;
 mod resource;
 mod timeline;
 mod ui;
+mod ui_editor;
 mod viewport;
 mod world_panel;
 
@@ -19,6 +20,8 @@ mod hierarchy_tests;
 mod inspector_tests;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod ui_editor_tests;
 #[cfg(test)]
 mod world_tests;
 use axiom_core::{local::Target, ops, CoreEdit, Edit, Request, Transform, World};
@@ -415,6 +418,7 @@ enum Dock {
     Graphs,
     Assets,
     Agent,
+    UiEditor,
 }
 
 pub(crate) struct Editor {
@@ -530,6 +534,8 @@ pub(crate) struct Editor {
     inspector_shown: Option<String>,
     /// Timeline Play on rows per (world version, object, clip).
     bindings_cache: Option<((u64, String, String), timeline::Bindings)>,
+    /// UI Editor tab: selection, preview locale / resolution and the cached preview.
+    ui_editor: ui_editor::UiEditorState,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -630,6 +636,7 @@ impl Editor {
             scroll_component: false,
             inspector_shown: None,
             bindings_cache: None,
+            ui_editor: Default::default(),
         };
         if selected
             .as_ref()

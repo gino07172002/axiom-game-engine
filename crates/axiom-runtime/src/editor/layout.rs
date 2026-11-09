@@ -32,7 +32,7 @@ const MAX_NAMED: usize = 32;
 const WORLD_WINDOW: [f32; 4] = [300.0, 50.0, 400.0, 560.0];
 
 impl Dock {
-    pub(crate) const ALL: [Dock; 12] = [
+    pub(crate) const ALL: [Dock; 13] = [
         Dock::Hierarchy,
         Dock::Scene,
         Dock::Inspector,
@@ -45,6 +45,7 @@ impl Dock {
         Dock::Assets,
         Dock::Agent,
         Dock::World,
+        Dock::UiEditor,
     ];
     /// Stable name used by the preferences file, `window.*` commands and `editor_view {dock}`.
     pub(crate) fn name(self) -> &'static str {
@@ -61,6 +62,7 @@ impl Dock {
             Dock::Assets => "assets",
             Dock::Agent => "agent",
             Dock::World => "world",
+            Dock::UiEditor => "ui_editor",
         }
     }
     pub(crate) fn from_name(name: &str) -> Option<Dock> {
@@ -80,6 +82,7 @@ impl Dock {
             Dock::Assets => "Assets",
             Dock::Agent => "AI / Protocol",
             Dock::World => "World",
+            Dock::UiEditor => "UI Editor",
         }
     }
     fn bottom(self) -> bool {
@@ -437,6 +440,17 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
             return;
         }
     }
+    // The UI Editor is a canvas like the scene: it opens as a tab beside Scene.
+    if tab == Dock::UiEditor {
+        if let Some((surface, node, _)) = state.find_tab(&Dock::Scene) {
+            if let Node::Leaf { tabs, active, .. } = &mut state[surface][node] {
+                tabs.push(tab);
+                *active = TabIndex(tabs.len() - 1);
+            }
+            state.set_focused_node_and_surface((surface, node));
+            return;
+        }
+    }
     let main = SurfaceIndex::main();
     if tab == Dock::World {
         let surface = state.add_window(vec![tab]);
@@ -611,7 +625,12 @@ mod tests {
             );
             assert_eq!(to_spec(&from_spec(&saved).unwrap().0), saved, "{name}");
             for tab in Dock::ALL {
-                assert_eq!(is_open(&state, tab), tab != Dock::World, "{name} {tab:?}");
+                // World floats and the UI Editor opens beside Scene on demand.
+                assert_eq!(
+                    is_open(&state, tab),
+                    !matches!(tab, Dock::World | Dock::UiEditor),
+                    "{name} {tab:?}"
+                );
             }
         }
     }
@@ -678,6 +697,15 @@ mod tests {
         assert!(!state.find_tab(&Dock::World).unwrap().0.is_main());
         assert!(close(&mut state, Dock::World));
         assert_eq!(to_spec(&state)["windows"], json!([]));
+        // The UI Editor joins Scene's leaf as the active tab.
+        show(&mut state, Dock::UiEditor);
+        let (s, n, _) = state.find_tab(&Dock::UiEditor).unwrap();
+        assert_eq!(
+            state.find_tab(&Dock::Scene).map(|f| (f.0, f.1)),
+            Some((s, n))
+        );
+        assert!(is_active(&state, Dock::UiEditor) && !is_active(&state, Dock::Scene));
+        assert!(close(&mut state, Dock::UiEditor));
         // From an empty main surface every tab comes back.
         let (mut empty, _) = from_spec(&json!({"v":1,"main":null})).unwrap();
         for tab in Dock::ALL {

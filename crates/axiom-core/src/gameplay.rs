@@ -205,6 +205,10 @@ pub struct UiDocument {
     /// for content that draws its own HUD.
     #[serde(default, skip_serializing_if = "is_full")]
     pub chrome: Chrome,
+    /// Data-driven presentation effects on widgets (fade / slide / scale / pulse / shake /
+    /// number roll), run on the fixed step by the `ui.effects` system.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<UiEffect>,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +248,210 @@ pub enum Region {
     BottomLeft,
     Bottom,
     BottomRight,
+}
+/// Effect definitions per document and effects running at once (`ui.effects` drops a trigger
+/// beyond the running budget and counts it).
+pub const MAX_UI_EFFECTS: usize = 64;
+pub const MAX_ACTIVE_UI_EFFECTS: usize = 16;
+/// Longest effect: 1200 fixed steps (10 s at 120 Hz).
+pub const MAX_UI_EFFECT_TICKS: u32 = 1200;
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiEffectKind {
+    FadeIn,
+    FadeOut,
+    SlideIn,
+    SlideOut,
+    ScaleIn,
+    ScaleOut,
+    Pulse,
+    Shake,
+    /// The widget's number counts from the old (or `from`) value to the current one.
+    NumberRoll,
+}
+impl UiEffectKind {
+    pub const ALL: [UiEffectKind; 9] = [
+        Self::FadeIn,
+        Self::FadeOut,
+        Self::SlideIn,
+        Self::SlideOut,
+        Self::ScaleIn,
+        Self::ScaleOut,
+        Self::Pulse,
+        Self::Shake,
+        Self::NumberRoll,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FadeIn => "fade_in",
+            Self::FadeOut => "fade_out",
+            Self::SlideIn => "slide_in",
+            Self::SlideOut => "slide_out",
+            Self::ScaleIn => "scale_in",
+            Self::ScaleOut => "scale_out",
+            Self::Pulse => "pulse",
+            Self::Shake => "shake",
+            Self::NumberRoll => "number_roll",
+        }
+    }
+    /// Exit effects keep their widget drawn while they run, even after it became hidden.
+    pub fn exit(self) -> bool {
+        matches!(self, Self::FadeOut | Self::SlideOut | Self::ScaleOut)
+    }
+    fn default_trigger(self) -> UiTrigger {
+        match self {
+            Self::FadeIn | Self::SlideIn | Self::ScaleIn => UiTrigger::Show,
+            Self::FadeOut | Self::SlideOut | Self::ScaleOut => UiTrigger::Hide,
+            Self::Pulse | Self::Shake | Self::NumberRoll => UiTrigger::Change,
+        }
+    }
+    fn default_ease(self) -> crate::tween::Ease {
+        use crate::tween::Ease;
+        match self {
+            Self::FadeIn | Self::SlideIn | Self::ScaleIn | Self::NumberRoll => Ease::EaseOut,
+            Self::FadeOut | Self::SlideOut | Self::ScaleOut => Ease::EaseIn,
+            Self::Pulse | Self::Shake => Ease::Linear,
+        }
+    }
+    /// (default, minimum, maximum) of `amount`, or `None` when the kind takes none.
+    pub fn amount_range(self) -> Option<(f32, f32, f32)> {
+        match self {
+            // Pixels the widget travels.
+            Self::SlideIn | Self::SlideOut => Some((48.0, 0.0, 2000.0)),
+            // Scale at the start (in) / end (out).
+            Self::ScaleIn | Self::ScaleOut => Some((0.6, 0.0, 4.0)),
+            // Extra scale at the peak.
+            Self::Pulse => Some((0.15, 0.0, 2.0)),
+            // Pixels of horizontal shake.
+            Self::Shake => Some((6.0, 0.0, 200.0)),
+            Self::FadeIn | Self::FadeOut | Self::NumberRoll => None,
+        }
+    }
+}
+/// What starts an effect.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiTrigger {
+    /// The widget became visible (its `when` turned true / its text non-empty), or the
+    /// session started with it visible.
+    Show,
+    /// The widget became hidden.
+    Hide,
+    /// The variable the widget shows changed (text `variable` / `localized_variable`, progress).
+    Change,
+    /// A `behavior.program` event fired (`event`).
+    Event,
+    /// The effect's own `when` condition turned true.
+    When,
+}
+impl UiTrigger {
+    pub const ALL: [UiTrigger; 5] = [
+        Self::Show,
+        Self::Hide,
+        Self::Change,
+        Self::Event,
+        Self::When,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Hide => "hide",
+            Self::Change => "change",
+            Self::Event => "event",
+            Self::When => "when",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SlideDirection {
+    /// Slides enter from / exit to the left.
+    #[default]
+    Left,
+    Right,
+    Up,
+    Down,
+}
+/// One `ui.document.effects[]` entry. Unset options take the kind's defaults when compiled.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UiEffect {
+    pub id: String,
+    pub widget: String,
+    pub kind: UiEffectKind,
+    /// Default: show for *_in, hide for *_out, change for pulse / shake / number_roll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<UiTrigger>,
+    /// The event of `on: event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Gate checked when triggered (for `on: when`, the condition whose rising edge triggers).
+    #[serde(default, skip_serializing_if = "is_always")]
+    pub when: Condition,
+    /// Duration in fixed steps (120 per second), 1..=1200. Default 30 (60 for number_roll).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease: Option<crate::tween::Ease>,
+    /// Slides: the side the widget enters from / exits to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<SlideDirection>,
+    /// Slide / shake pixels, scale_in / scale_out scale, pulse extra scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f32>,
+    /// number_roll start value (default: the previous value for `change`, else 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<f64>,
+}
+impl UiEffect {
+    pub fn new(id: impl Into<String>, widget: impl Into<String>, kind: UiEffectKind) -> Self {
+        Self {
+            id: id.into(),
+            widget: widget.into(),
+            kind,
+            on: None,
+            event: None,
+            when: Condition::Always {},
+            ticks: None,
+            ease: None,
+            direction: None,
+            amount: None,
+            from: None,
+        }
+    }
+    pub fn trigger(&self) -> UiTrigger {
+        self.on.unwrap_or(self.kind.default_trigger())
+    }
+}
+fn is_always(c: &Condition) -> bool {
+    matches!(c, Condition::Always {})
+}
+/// Effect trigger with its event resolved to an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectTrigger {
+    Show,
+    Hide,
+    Change,
+    Event(usize),
+    When,
+}
+/// An effect resolved against the compiled document (indices, defaults applied).
+#[derive(Clone, Debug)]
+pub struct CompiledEffect {
+    pub id: String,
+    /// Index into `CompiledGameplay::widgets`.
+    pub widget: usize,
+    pub kind: UiEffectKind,
+    pub trigger: EffectTrigger,
+    pub when: Test,
+    pub ticks: u32,
+    pub ease: crate::tween::Ease,
+    pub direction: SlideDirection,
+    /// The kind's amount (0 for kinds without one).
+    pub amount: f32,
+    pub from: Option<f64>,
+    /// The behavior variable the widget shows, when it shows one.
+    pub variable: Option<usize>,
 }
 fn yes() -> bool {
     true
@@ -373,6 +581,7 @@ pub struct CompiledGameplay {
     pub inputs: Vec<(String, usize)>,
     pub ui: Option<UiDocument>,
     pub widgets: Vec<BoundWidget>,
+    pub effects: Vec<CompiledEffect>,
 }
 struct Compiler<'a> {
     p: &'a Program,
@@ -745,6 +954,7 @@ impl CompiledGameplay {
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
         let mut widgets = vec![];
+        let mut effects = vec![];
         if let Some(u) = &ui {
             ensure!(
                 u.catalogs.contains_key(&u.locale)
@@ -874,6 +1084,7 @@ impl CompiledGameplay {
                     "UI image must reference PNG"
                 );
             }
+            effects = compile_effects(u, &widgets, &c, &p)?;
         }
         Ok(Self {
             initial: c.vars.iter().map(|id| p.variables[id].clone()).collect(),
@@ -887,8 +1098,175 @@ impl CompiledGameplay {
             inputs,
             ui,
             widgets,
+            effects,
             program: p,
         })
+    }
+}
+/// The variable a widget shows (text `variable` / `localized_variable`, progress).
+pub fn widget_variable(w: &BoundWidget) -> Option<usize> {
+    match w {
+        BoundWidget::Text(_, BoundText::Variable(i) | BoundText::LocalizedVariable(i), _)
+        | BoundWidget::Progress(_, i, _) => Some(*i),
+        _ => None,
+    }
+}
+fn compile_effects(
+    u: &UiDocument,
+    widgets: &[BoundWidget],
+    c: &Compiler,
+    p: &Program,
+) -> Result<Vec<CompiledEffect>> {
+    crate::local::at(
+        "/resources/ui.document/effects",
+        (|| -> Result<()> {
+            ensure!(
+                u.effects.len() <= MAX_UI_EFFECTS,
+                "at most {MAX_UI_EFFECTS} UI effects"
+            );
+            Ok(())
+        })(),
+    )?;
+    let mut ids = BTreeSet::new();
+    let mut out = Vec::with_capacity(u.effects.len());
+    for (i, e) in u.effects.iter().enumerate() {
+        let path = format!("/resources/ui.document/effects/{i}");
+        let compiled = (|| -> Result<CompiledEffect> {
+            valid_id(&e.id)?;
+            ensure!(ids.insert(&e.id), "duplicate UI effect id {}", e.id);
+            let widget = u
+                .widgets
+                .iter()
+                .position(|w| widget_id(w) == e.widget)
+                .with_context(|| {
+                    format!("UI effect {} refers to unknown widget {}", e.id, e.widget)
+                })?;
+            let variable = widget_variable(&widgets[widget]);
+            let numeric = variable.is_some_and(|v| {
+                matches!(
+                    p.variables[&c.vars[v]].ty(),
+                    ScalarType::Int | ScalarType::Number
+                )
+            }) && !matches!(
+                widgets[widget],
+                BoundWidget::Text(_, BoundText::LocalizedVariable(_), _)
+            );
+            let trigger = e.trigger();
+            ensure!(
+                (trigger == UiTrigger::Event) == e.event.is_some(),
+                "UI effect {}: `event` goes with on: event (and only there)",
+                e.id
+            );
+            let trigger = match trigger {
+                UiTrigger::Show => EffectTrigger::Show,
+                UiTrigger::Hide => {
+                    ensure!(
+                        !matches!(widgets[widget], BoundWidget::Progress(..)),
+                        "UI effect {}: a progress widget is always visible, so on: hide never fires",
+                        e.id
+                    );
+                    EffectTrigger::Hide
+                }
+                UiTrigger::Change => {
+                    ensure!(
+                        variable.is_some(),
+                        "UI effect {}: on: change needs a widget that shows a variable (text variable / localized_variable, progress)",
+                        e.id
+                    );
+                    EffectTrigger::Change
+                }
+                UiTrigger::Event => {
+                    EffectTrigger::Event(index(&c.events, e.event.as_deref().unwrap())?)
+                }
+                UiTrigger::When => {
+                    ensure!(
+                        !is_always(&e.when),
+                        "UI effect {}: on: when needs a `when` condition",
+                        e.id
+                    );
+                    EffectTrigger::When
+                }
+            };
+            if e.kind == UiEffectKind::NumberRoll {
+                ensure!(
+                    numeric,
+                    "UI effect {}: number_roll needs a widget showing a number or integer variable (text variable, progress)",
+                    e.id
+                );
+            } else {
+                ensure!(
+                    e.from.is_none(),
+                    "UI effect {}: `from` applies to number_roll only",
+                    e.id
+                );
+            }
+            ensure!(
+                e.from.is_none_or(f64::is_finite),
+                "UI effect {}: `from` must be finite",
+                e.id
+            );
+            let ticks = e.ticks.unwrap_or(if e.kind == UiEffectKind::NumberRoll {
+                60
+            } else {
+                30
+            });
+            ensure!(
+                (1..=MAX_UI_EFFECT_TICKS).contains(&ticks),
+                "UI effect {}: ticks must be 1..{MAX_UI_EFFECT_TICKS}",
+                e.id
+            );
+            let amount = match (e.kind.amount_range(), e.amount) {
+                (Some((default, _, _)), None) => default,
+                (Some((_, lo, hi)), Some(a)) => {
+                    ensure!(
+                        a.is_finite() && (lo..=hi).contains(&a),
+                        "UI effect {}: {} amount must be {lo}..{hi}",
+                        e.id,
+                        e.kind.name()
+                    );
+                    a
+                }
+                (None, None) => 0.0,
+                (None, Some(_)) => {
+                    anyhow::bail!("UI effect {}: {} takes no amount", e.id, e.kind.name())
+                }
+            };
+            ensure!(
+                e.direction.is_none()
+                    || matches!(e.kind, UiEffectKind::SlideIn | UiEffectKind::SlideOut),
+                "UI effect {}: `direction` applies to slides only",
+                e.id
+            );
+            Ok(CompiledEffect {
+                id: e.id.clone(),
+                widget,
+                kind: e.kind,
+                trigger,
+                when: c.test(&e.when, &[], 0)?,
+                ticks,
+                ease: e.ease.unwrap_or(e.kind.default_ease()),
+                direction: e.direction.unwrap_or_default(),
+                amount,
+                from: e.from,
+                variable,
+            })
+        })();
+        out.push(crate::local::at(&path, compiled)?);
+    }
+    Ok(out)
+}
+fn widget_id(w: &Widget) -> &str {
+    match w {
+        Widget::Text { id, .. }
+        | Widget::Button { id, .. }
+        | Widget::Choices { id }
+        | Widget::Image { id, .. }
+        | Widget::Progress { id, .. } => id,
+    }
+}
+impl Widget {
+    pub fn id(&self) -> &str {
+        widget_id(self)
     }
 }
 pub fn validate_command(
@@ -949,7 +1327,7 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command / choices / image / progress","images":"asset ID -> PNG path"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command / choices / image / progress","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {

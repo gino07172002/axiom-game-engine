@@ -71,6 +71,14 @@ EDIT (any number, atomic):
                                   resource list items are dropped)
   reset SEL COMPONENT             component back to its default (prefab instance: drop the override)
   event declare NAME [FIELD=text|number|int|bool ..]   declare a behavior.program event
+ ui.document (UI Editor tab):
+  ui place WIDGET REGION|none     top_left|top|top_right|left|center|right|bottom_left|bottom|bottom_right
+  ui style WIDGET STYLE|none      title|heading|banner|value|label|muted (text and progress widgets)
+  ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}]
+  ui effect add ID WIDGET KIND [on=show|hide|change|event|when] [event=E] [when={COND}] [ticks=N]
+        [ease=E] [direction=left|right|up|down] [amount=X] [from=X]   KIND: fade_in|fade_out|slide_in|
+        slide_out|scale_in|scale_out|pulse|shake|number_roll (+ system ui.effects when missing)
+  ui effect set ID [kind=..] [widget=..] [same options; OPTION=default clears] | ui effect remove ID
  world (World panel):
   world id ID | world title TEXT
   capability add|remove ID        installed capability; remove refuses while components/resources/systems use it
@@ -347,6 +355,139 @@ enum Statement {
     Reset(Box<Selection>, String),
     EventDeclare(String, Vec<(String, crate::gameplay::ScalarType)>),
     Rotate(Box<Selection>, [f32; 3]),
+    Ui(UiStatement),
+}
+
+/// `ui ...` statements (UI Editor operations).
+enum UiStatement {
+    Place(String, Option<crate::gameplay::Region>),
+    Style(String, Option<crate::gameplay::TextStyle>),
+    Button(String, crate::gameplay::RuntimeCommand),
+    EffectAdd(Box<crate::gameplay::UiEffect>),
+    EffectSet(String, Vec<(String, String)>),
+    EffectRemove(String),
+}
+
+fn key_values(tokens: &[String]) -> Result<Vec<(String, String)>> {
+    tokens
+        .iter()
+        .map(|t| {
+            let (k, v) = t
+                .split_once('=')
+                .with_context(|| format!("option '{t}' must be key=value"))?;
+            let v = match value(v) {
+                Value::String(s) => s,
+                _ => v.to_owned(),
+            };
+            Ok((k.to_owned(), v))
+        })
+        .collect()
+}
+
+fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
+    use crate::gameplay::RuntimeCommand;
+    let arg = |n: usize| {
+        tokens
+            .get(n)
+            .with_context(|| "ui needs more arguments (see grammar: ui place|style|button|effect)")
+    };
+    Ok(match arg(1)?.as_str() {
+        "place" => {
+            ensure!(tokens.len() == 4, "use: ui place WIDGET REGION|none");
+            UiStatement::Place(arg(2)?.clone(), crate::ops::parse_region(arg(3)?)?)
+        }
+        "style" => {
+            ensure!(tokens.len() == 4, "use: ui style WIDGET STYLE|none");
+            UiStatement::Style(arg(2)?.clone(), crate::ops::parse_style(arg(3)?)?)
+        }
+        "button" => {
+            let usage = "use: ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}]";
+            let widget = arg(2)?.clone();
+            let n = tokens.len();
+            let command = match (tokens.get(3).map(String::as_str), n) {
+                (Some("emit"), 5 | 6) => RuntimeCommand::Emit {
+                    event: tokens[4].clone(),
+                    fields: match tokens.get(5) {
+                        Some(t) => serde_json::from_value(json_value(t)?)
+                            .context("emit fields must be a JSON object of scalars")?,
+                        None => Default::default(),
+                    },
+                },
+                (Some("locale"), 5) => RuntimeCommand::Locale {
+                    locale: tokens[4].clone(),
+                },
+                (Some("choose"), 6) => RuntimeCommand::Choose {
+                    node: tokens[4].clone(),
+                    choice: tokens[5].clone(),
+                },
+                (Some("call"), 6 | 7) => RuntimeCommand::Call {
+                    capability: tokens[4].clone(),
+                    action: tokens[5].clone(),
+                    args: match tokens.get(6) {
+                        Some(t) => json_value(t)?,
+                        None => json!({}),
+                    },
+                },
+                _ => bail!("{usage}"),
+            };
+            UiStatement::Button(widget, command)
+        }
+        "effect" => match arg(2)?.as_str() {
+            "add" => {
+                ensure!(
+                    tokens.len() >= 6,
+                    "use: ui effect add ID WIDGET KIND [key=value ..]"
+                );
+                let kind = serde_json::from_value(json!(tokens[5])).map_err(|_| {
+                    anyhow::anyhow!(
+                        "unknown effect kind '{}' (use {})",
+                        tokens[5],
+                        crate::gameplay::UiEffectKind::ALL
+                            .map(|k| k.name())
+                            .join(", ")
+                    )
+                })?;
+                let mut effect =
+                    crate::gameplay::UiEffect::new(tokens[3].clone(), tokens[4].clone(), kind);
+                crate::ops::apply_effect_options(&mut effect, &key_values(&tokens[6..])?)?;
+                UiStatement::EffectAdd(Box::new(effect))
+            }
+            "set" => {
+                ensure!(
+                    tokens.len() >= 5,
+                    "use: ui effect set ID key=value [key=value ..]"
+                );
+                UiStatement::EffectSet(tokens[3].clone(), key_values(&tokens[4..])?)
+            }
+            "remove" => {
+                ensure!(tokens.len() == 4, "use: ui effect remove ID");
+                UiStatement::EffectRemove(tokens[3].clone())
+            }
+            other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
+        },
+        other => bail!("unknown ui verb '{other}' (place, style, button, effect)"),
+    })
+}
+
+fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
+    match stmt {
+        UiStatement::Place(widget, region) => crate::ops::set_ui_region(w, widget, *region),
+        UiStatement::Style(widget, style) => crate::ops::set_ui_style(w, widget, *style),
+        UiStatement::Button(widget, command) => {
+            crate::ops::set_ui_button_command(w, widget, command)
+        }
+        UiStatement::EffectAdd(effect) => crate::ops::add_ui_effect(w, r, effect),
+        UiStatement::EffectSet(id, options) => crate::ops::edit_ui_effect(w, id, options),
+        UiStatement::EffectRemove(id) => crate::ops::remove_ui_effect(w, id),
+    }
+}
+
+/// One `ui ...` statement (without the leading `ui`) compiled against `world`: the editor's
+/// `ui.*` commands run their argument through this, so they match the ACL verb exactly.
+pub fn ui_command_edits(world: &World, registry: &Registry, statement: &str) -> Result<Vec<Edit>> {
+    let mut tokens = vec!["ui".to_owned()];
+    tokens.extend(tokenize(statement)?);
+    ui_edits(world, registry, &ui_statement(&tokens)?)
 }
 
 impl Statement {
@@ -613,6 +754,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             }
             Statement::EventDeclare(arg(2)?.clone(), fields)
         }
+        "ui" => Statement::Ui(ui_statement(tokens)?),
         "rotate" => {
             ensure!(tokens.len() == 3, "use: rotate SEL x,y,z (Euler degrees)");
             Statement::Rotate(Box::new(selector(arg(1)?)?), vec3(arg(2)?)?)
@@ -1372,6 +1514,7 @@ pub fn run(
             Statement::EventDeclare(name, fields) => crate::ops::declare_event(w, &name, &fields),
             Statement::Rotate(select, degrees) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_rotation(w, &ids, degrees)),
+            Statement::Ui(stmt) => ui_edits(w, r, &stmt),
             _ => unreachable!(),
         }
         .map_err(wrap)?;

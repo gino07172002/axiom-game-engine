@@ -51,7 +51,7 @@
 
 **材質(`render.material` / `render.shaders` 的參數)不支援**:那是全世界共用的資源,不是逐實體的屬性;要逐物件變色請用 `render.mesh/color` / `emission`。
 
-**UI**:`ui.document` 沒有不透明度或位移屬性(那是規劃中的 M7 UI 動效)。現在能做的是動一個 number 變數:`progress` widget、文字的 `variable` 綁定、widget 的 `when` 條件都會即時反映它(例如變數從 0 補到 1 讓進度條滑入、到 0.5 以上才顯示面板)。
+**UI**:`ui.document` 的不透明度、位移、縮放、數值跳動由 M7 的 `ui.document.effects` 負責(見 [ui-effects.zh-TW.md](ui-effects.zh-TW.md),與本文件共用 easing)。補間仍然可以動一個 number 變數:`progress` widget、文字的 `variable` 綁定、widget 的 `when` 條件都會即時反映它(例如變數從 0 補到 1 讓進度條滑入、到 0.5 以上才顯示面板)。
 
 ### Easing
 

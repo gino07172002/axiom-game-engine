@@ -1312,7 +1312,7 @@ impl Editor {
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
-            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World => {}
+            Dock::Hierarchy | Dock::Scene | Dock::Inspector | Dock::World | Dock::UiEditor => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -1626,12 +1626,14 @@ impl egui_dock::TabViewer for TabHost<'_> {
                 editor.scene_tab(ui, self.runtime, actions);
             }
             Dock::World => editor.world_tab(ui, actions),
+            Dock::UiEditor => editor.ui_editor_tab(ui, actions),
             other => editor.dock_tab(ui, other, actions),
         }
     }
     /// The scene is composited by the renderer at the tab's rectangle on the main surface.
     fn allowed_in_windows(&self, tab: &mut Dock) -> bool {
-        *tab != Dock::Scene
+        // The UI Editor canvas is drawn in its own egui areas, which would sit under a window.
+        !matches!(*tab, Dock::Scene | Dock::UiEditor)
     }
     /// The scene body stays transparent so the world drawn underneath shows.
     fn clear_background(&self, tab: &Dock) -> bool {

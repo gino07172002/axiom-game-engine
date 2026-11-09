@@ -116,27 +116,31 @@ impl RuntimeSystem for NameplateSystem {
                 continue;
             }
             if let Some([x, y]) = view.project(p, bounds) {
-                let [r, g, b] = plate.color.map(|c| (c * 255.0) as u8);
-                let galley = painter.layout_no_wrap(
-                    plate.text.clone(),
-                    egui::FontId::proportional(14.0),
-                    egui::Color32::from_rgb(r, g, b),
-                );
-                let rect = egui::Rect::from_center_size(
-                    egui::pos2(x, y),
-                    galley.size() + egui::vec2(10.0, 4.0),
-                );
-                painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(140));
-                painter.galley(
-                    rect.min + egui::vec2(5.0, 2.0),
-                    galley,
-                    egui::Color32::WHITE,
-                );
+                paint(&painter, egui::pos2(x, y), &plate.text, plate.color);
             }
         }
         // Painting only: the generic bar and bound ui.document still draw.
         None
     }
+}
+
+/// One name tag centered at `at` (the game overlay and the editor's UI canvas preview).
+/// Returns its rectangle.
+pub fn paint(painter: &egui::Painter, at: egui::Pos2, text: &str, color: [f32; 3]) -> egui::Rect {
+    let [r, g, b] = color.map(|c| (c * 255.0) as u8);
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(14.0),
+        egui::Color32::from_rgb(r, g, b),
+    );
+    let rect = egui::Rect::from_center_size(at, galley.size() + egui::vec2(10.0, 4.0));
+    painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha(140));
+    painter.galley(
+        rect.min + egui::vec2(5.0, 2.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+    rect
 }
 
 pub fn register(r: &mut RuntimeRegistry) {
