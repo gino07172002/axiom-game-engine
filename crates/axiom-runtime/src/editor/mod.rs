@@ -6,12 +6,15 @@ mod resource;
 mod timeline;
 mod ui;
 mod viewport;
+mod world_panel;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
 mod hierarchy_tests;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod world_tests;
 use axiom_core::{local::Target, ops, CoreEdit, Edit, Request, Transform, World};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -249,6 +252,125 @@ impl Draft {
     }
 }
 
+/// Everything the Inspector's Apply writes: the draft's edits, preceded by what a newly staged
+/// component needs and followed by the same changes on the other selected objects.
+fn inspector_edits(
+    world: &World,
+    registry: &axiom_core::Registry,
+    draft: &Draft,
+    others: &BTreeSet<String>,
+) -> anyhow::Result<Vec<Edit>> {
+    let edits = draft.edits()?;
+    let mut all = staged_component_requirements(world, registry, draft);
+    all.extend(edits);
+    all.extend(multi_object_edits(world, draft, others));
+    Ok(all)
+}
+
+/// Inspector ▸ Stage component of a component the object has neither authored nor inherited:
+/// the capability/systems it needs, written in the same batch (as `ops::add_component`).
+fn staged_component_requirements(
+    world: &World,
+    registry: &axiom_core::Registry,
+    draft: &Draft,
+) -> Vec<Edit> {
+    let new = draft.component_dirty
+        && world
+            .entity(&draft.id)
+            .is_some_and(|e| !world.resolved_components(e).contains_key(&draft.component));
+    if new {
+        ops::component_requirement_edits(world, registry, &draft.component)
+    } else {
+        vec![]
+    }
+}
+
+/// Multi-object Inspector: the primary's changed transform axes and component form fields,
+/// applied to every other selected object that has them (`ACL: set entities[id=a,id=b] F V`).
+/// Position / scale axes and Euler rotation axes are set per axis, so the other values of
+/// each object stay; objects without the transform or the field are skipped.
+fn multi_object_edits(world: &World, draft: &Draft, others: &BTreeSet<String>) -> Vec<Edit> {
+    let mut edits = vec![];
+    if others.is_empty() {
+        return edits;
+    }
+    let transform_change = match (&draft.base_transform, &draft.transform) {
+        (Some(before), Some(after)) if draft.transform_dirty => Some((before, after)),
+        _ => None,
+    };
+    let leaves = {
+        let mut leaves = vec![];
+        if let Some(form) = draft.form.as_ref().filter(|_| draft.form_dirty) {
+            form::changes(&draft.form_base, form, "", &mut leaves);
+        }
+        leaves
+    };
+    let component = draft.component.replace('~', "~0").replace('/', "~1");
+    for id in others.iter().filter(|id| **id != draft.id) {
+        let Some(entity) = world.entity(id) else {
+            continue;
+        };
+        let resolved = world.resolved_components(entity);
+        let mut fields = vec![];
+        if let Some((before, after)) = transform_change {
+            if let Some(mut own) = resolved
+                .get("core.transform")
+                .and_then(|v| serde_json::from_value::<Transform>(v.clone()).ok())
+            {
+                let axes = |from: [f32; 3], to: [f32; 3], into: &mut [f32; 3]| {
+                    let mut changed = false;
+                    for k in 0..3 {
+                        if from[k] != to[k] {
+                            into[k] = to[k];
+                            changed = true;
+                        }
+                    }
+                    changed
+                };
+                if axes(before.position, after.position, &mut own.position) {
+                    fields.push((
+                        "/components/core.transform/position".to_owned(),
+                        json!(own.position),
+                    ));
+                }
+                if axes(before.scale, after.scale, &mut own.scale) {
+                    fields.push((
+                        "/components/core.transform/scale".to_owned(),
+                        json!(own.scale),
+                    ));
+                }
+                let mut angles = viewport::degrees(&own);
+                if before.rotation != after.rotation
+                    && axes(viewport::degrees(before), draft.angles, &mut angles)
+                {
+                    fields.push((
+                        "/components/core.transform/rotation".to_owned(),
+                        json!(viewport::rotation(angles)),
+                    ));
+                }
+            }
+        }
+        if let Some(value) = resolved.get(&draft.component) {
+            for (pointer, leaf) in &leaves {
+                // Only a field the other object has, with the same JSON type (a box collider's
+                // half_extents is not written into a capsule).
+                let same = value
+                    .pointer(pointer)
+                    .is_some_and(|v| std::mem::discriminant(v) == std::mem::discriminant(leaf));
+                if same {
+                    fields.push((format!("/components/{component}{pointer}"), leaf.clone()));
+                }
+            }
+        }
+        if !fields.is_empty() {
+            edits.extend(
+                ops::set_fields(world, std::slice::from_ref(id), &fields).unwrap_or_default(),
+            );
+        }
+    }
+    edits
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Dock {
     Changes,
@@ -341,6 +463,18 @@ pub(crate) struct Editor {
     pub(crate) saving: usize,
     /// Writer counters for `observe` (set by the host): last commit duration etc.
     pub(crate) writes: Value,
+    /// Installed types (capabilities, systems, resource and component schemas) for the world
+    /// operations; the host's registry (`set_component_hints`), else the core one.
+    registry: std::sync::Arc<axiom_core::Registry>,
+    /// Window ▸ World: open flag, inputs and the rows cached per revision.
+    world_panel: world_panel::WorldPanel,
+    /// Inspector tag chips: typed tag and the chips cached per revision and selection.
+    tag_ui: world_panel::TagUi,
+    /// Component to open in the Inspector once the Add component write is shown.
+    open_component_after: Option<String>,
+    /// Bumped whenever `world` is replaced (with `rev`, the key of the per-world caches;
+    /// an address could be reused after the old world is freed).
+    world_version: u64,
 }
 
 /// Inline rename state: the row being renamed, the text being typed, focus requested yet.
@@ -414,6 +548,11 @@ impl Editor {
             tween_ui: Default::default(),
             saving: 0,
             writes: Value::Null,
+            registry: std::sync::Arc::new(axiom_core::Registry::core()),
+            world_panel: Default::default(),
+            tag_ui: Default::default(),
+            open_component_after: None,
+            world_version: 0,
         };
         if selected
             .as_ref()
@@ -449,6 +588,7 @@ impl Editor {
         let diff = !local || self.changes.is_empty();
         self.rev = rev;
         let previous = std::mem::replace(&mut self.world, world);
+        self.world_version += 1;
         self.needs_history = true;
         self.forget_missing();
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
@@ -507,6 +647,7 @@ impl Editor {
         select: Option<String>,
     ) -> std::sync::Arc<World> {
         let previous = std::mem::replace(&mut self.world, world);
+        self.world_version += 1;
         self.forget_missing();
         self.reset_draft();
         if let Some(id) = select {
@@ -529,6 +670,7 @@ impl Editor {
         }
         let old = std::mem::replace(&mut self.rev, rev);
         let previous = std::mem::replace(&mut self.world, world);
+        self.world_version += 1;
         self.needs_history = true;
         self.forget_missing();
         if self.dirty() || self.drag.is_some() || self.scene_input.point_drag.is_some() {
@@ -554,6 +696,7 @@ impl Editor {
     /// last committed state at the same revision).
     pub(crate) fn revert_staged(&mut self, world: std::sync::Arc<World>) -> std::sync::Arc<World> {
         let previous = std::mem::replace(&mut self.world, world);
+        self.world_version += 1;
         self.forget_missing();
         self.drag = None;
         self.scene_input.point_drag = None;
@@ -1494,6 +1637,7 @@ impl Editor {
 
     /// Records a failed request as a structured problem and shows it in the status line.
     pub fn problem(&mut self, error: &anyhow::Error) {
+        self.open_component_after = None;
         let response = axiom_core::error_response(error);
         let d = response["diagnostics"][0].clone();
         self.problems.insert(0, d);
@@ -1516,6 +1660,8 @@ impl Editor {
             .iter()
             .map(|(id, d)| (id.clone(), d.schema.clone()))
             .collect();
+        self.registry = std::sync::Arc::new(registry.clone());
+        self.world_panel.invalidate();
     }
 
     pub fn dirty(&self) -> bool {
@@ -1557,6 +1703,10 @@ impl Editor {
         self.drag = None;
         self.scene_input.point_drag = None;
         self.scroll_selection = true;
+        let open = self
+            .open_component_after
+            .take()
+            .filter(|c| entity.is_some_and(|e| self.world.resolved_components(e).contains_key(c)));
         self.draft = entity.map(|e| {
             let transform = crate::editor::ui::component_value(&self.world, e, "core.transform")
                 .and_then(|value| serde_json::from_value(value).ok());
@@ -1588,6 +1738,9 @@ impl Editor {
                 json_mode: false,
             }
         });
+        if let (Some(component), Some(draft), Some(e)) = (open, self.draft.as_mut(), entity) {
+            draft.open_component(&self.world, e, &component);
+        }
     }
 
     fn try_select(&mut self, id: Option<String>) {

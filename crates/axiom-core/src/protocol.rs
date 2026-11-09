@@ -130,6 +130,10 @@ pub enum Request {
         /// Run a registered editor command (the same IDs as the menu bar and palette).
         #[serde(default)]
         command: Option<String>,
+        /// The argument of a command that takes one (`discover editor_commands`), e.g.
+        /// `world.capability_add` + `physics` or `object.tag` + `+player -npc`.
+        #[serde(default)]
+        arg: Option<String>,
     },
     Undo {
         rev: i64,

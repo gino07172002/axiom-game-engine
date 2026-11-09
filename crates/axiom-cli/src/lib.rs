@@ -130,6 +130,9 @@ enum Command {
         /// Run an editor command by ID (same as the menu bar / palette), e.g. edit.duplicate.
         #[arg(long)]
         command: Option<String>,
+        /// Argument of a command that takes one, e.g. --command world.capability_add --arg physics.
+        #[arg(long, allow_hyphen_values = true)]
+        arg: Option<String>,
     },
     /// List queued edit proposals (newest first).
     Proposals {
@@ -599,6 +602,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             play,
             open,
             command,
+            arg,
         } => {
             ensure!(
                 cli.connect.is_some(),
@@ -612,6 +616,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 play,
                 open,
                 command,
+                arg,
             }
         }
         Command::Proposals { status, limit } => Request::Proposals { status, limit },

@@ -1,0 +1,13 @@
+# Seed (rev 2): world id/title, capabilities, behavior.execute and the resource shells the later
+# stages fill. Same verbs as the editor's World panel (World ▸ ID / Title / Capabilities / Resources).
+world id street
+world title "Axiom Street / 黃昏街口"
+capability add render
+capability add physics
+capability add nav
+# behavior.program brings the behavior capability and behavior.execute (the system that reads it).
+resource create behavior.program {"variables":{},"events":{},"rules":[]}
+resource create render.environment {"ambient":{"mode":"color","color":[0.2,0.2,0.2],"intensity":1}}
+resource create nav.grid {"cell_size":0.25,"bounds":{"min":[-48,-24],"max":[48,24]}}
+resource create narrative.graph {"start":"street","nodes":[{"id":"street","speaker":"street","text":"hub"}]}
+resource create ui.document {"locale":"zh-TW","catalogs":{"zh-TW":{"street":"街道","hub":"…"}},"widgets":[]}

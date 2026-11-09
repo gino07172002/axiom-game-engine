@@ -58,6 +58,7 @@ fn acl_verbs_compile_to_the_shared_ops() {
                     position: Some([1.0, 2.0, 3.0]),
                     parent: Some("stage/rack".into()),
                     scene: Some("staging".into()),
+                    ..Default::default()
                 },
             )
             .unwrap()
@@ -1463,4 +1464,296 @@ fn adding_an_audio_clip_keeps_the_other_library_entries_verbatim() {
     assert_eq!(library["clips"]["mini"], serde_json::json!({"seconds":1}));
     assert_eq!(library["cues"], world.resources["audio.library"]["cues"]);
     assert_eq!(library["clips"]["creak"]["wave"], "saw");
+}
+
+#[test]
+fn world_tag_component_and_rotation_verbs_compile_to_the_shared_ops() {
+    let start = lab();
+    let r = Registry::core();
+    let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let cases: Vec<(&str, Vec<Edit>)> = vec![
+        (
+            "tag entities[id=stage/crate,id=stage/rack] +player +npc",
+            ops::edit_tags(
+                &start,
+                &ids(&["stage/crate", "stage/rack"]),
+                &ids(&["player", "npc"]),
+                &[],
+            )
+            .unwrap(),
+        ),
+        ("world id yard", ops::set_world_id(&start, "yard").unwrap()),
+        (
+            "world title \"組裝場 Yard\"",
+            ops::set_world_title(&start, "組裝場 Yard").unwrap(),
+        ),
+        (
+            "capability add physics",
+            ops::add_capability(&start, &r, "physics").unwrap(),
+        ),
+        (
+            "system add trigger.detect",
+            ops::add_system(&start, &r, "trigger.detect").unwrap(),
+        ),
+        (
+            "resource create nav.grid",
+            ops::create_resource(&start, &r, "nav.grid", None).unwrap(),
+        ),
+        (
+            "add stage/beacon trigger.zone",
+            ops::add_component(&start, &r, &ids(&["stage/beacon"]), "trigger.zone", None).unwrap(),
+        ),
+        (
+            "add stage/beacon core.health {\"value\":5,\"max\":10}",
+            ops::add_component(
+                &start,
+                &r,
+                &ids(&["stage/beacon"]),
+                "core.health",
+                Some(serde_json::json!({"value":5,"max":10})),
+            )
+            .unwrap(),
+        ),
+        (
+            "rotate stage/crate 0,90,0",
+            ops::set_rotation(&start, &ids(&["stage/crate"]), [0.0, 90.0, 0.0]).unwrap(),
+        ),
+        (
+            "create cube id=turned rot=0,45,0",
+            ops::create_object(
+                &start,
+                "cube",
+                &ops::Placement {
+                    id: Some("turned".into()),
+                    rotation: Some([0.0, 45.0, 0.0]),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .edits,
+        ),
+        (
+            "event declare door_bump who=text",
+            ops::declare_event(
+                &start,
+                "door_bump",
+                &[("who".into(), axiom_core::gameplay::ScalarType::Text)],
+            )
+            .unwrap(),
+        ),
+    ];
+    for (script, edits) in cases {
+        let mut s = store();
+        acl(&mut s, script).unwrap_or_else(|e| panic!("{script}: {e}"));
+        assert_eq!(s.current().unwrap().1, apply(edits), "{script}");
+    }
+    // Spot checks of the results.
+    let mut s = store();
+    acl(
+        &mut s,
+        "add stage/beacon trigger.zone\nresource create behavior.program",
+    )
+    .unwrap();
+    let w = s.current().unwrap().1;
+    assert_eq!(w.capabilities.get("trigger"), Some(&1));
+    assert_eq!(w.systems, ["trigger.detect", "behavior.execute"]);
+    assert!(
+        w.entity("stage/beacon").unwrap().components["trigger.zone"]["filter"]["tags"]
+            == serde_json::json!(["player"])
+    );
+    let mut s = store();
+    acl(&mut s, "create cube id=c rot=0,90,0").unwrap();
+    let q = s.current().unwrap().1.entity("c").unwrap().components["core.transform"]["rotation"]
+        .clone();
+    assert_eq!(
+        q,
+        serde_json::json!(ops::rotation_from_degrees([0.0, 90.0, 0.0]))
+    );
+}
+
+#[test]
+fn world_verbs_report_structured_errors() {
+    let cases = [
+        ("capability add nope", "unknown_capability"),
+        ("capability remove core", "invalid_value"),
+        ("capability remove physics", "not_found"),
+        ("capability remove render", "capability_in_use"),
+        ("system add nope", "unknown_system"),
+        ("system remove trigger.detect", "not_found"),
+        ("resource create nope.x", "unknown_resource"),
+        ("resource create render.settings", "id_taken"),
+        ("resource remove nav.grid", "not_found"),
+        ("resource create narrative.graph", "no_default"),
+        (
+            "resource create nav.grid {\"cell_size\":-1}",
+            "invalid_value",
+        ),
+        ("world id \"has space\"", "invalid_id"),
+        ("add stage/beacon render.mesh", "component_exists"),
+        ("add stage/beacon nope.x", "unknown_component"),
+        ("add stage/beacon path.follow", "no_default"),
+        ("tag stage/crate +\"a b\"", "invalid_tag"),
+        ("event declare \"bad name\"", "invalid_value"),
+    ];
+    for (script, expected) in cases {
+        let mut s = store();
+        let error = acl(&mut s, script).unwrap_err();
+        assert_eq!(code(error.clone()), expected, "{script}: {error}");
+        assert_eq!(s.current().unwrap().0, 1, "{script} must not write");
+    }
+    // Syntax: a tag needs + or -.
+    let mut s = store();
+    assert_eq!(
+        code(acl(&mut s, "tag stage/crate player").unwrap_err()),
+        "acl_syntax"
+    );
+    // Unchanged (already there) is not an error and writes nothing.
+    let out = acl(&mut s, "capability add render").unwrap();
+    assert!(out.starts_with("unchanged"), "{out}");
+}
+
+#[test]
+fn array_element_verbs_append_insert_and_remove() {
+    let mut s = store();
+    acl(
+        &mut s,
+        "resource create input.bindings {\"buttons\":{\"a\":\"KeyA\"}}\nset stage/rack render.mesh/parts/0/color [1,0,0]",
+    )
+    .unwrap();
+    let rack = |s: &Store| {
+        s.current()
+            .unwrap()
+            .1
+            .entity("stage/rack")
+            .unwrap()
+            .components["render.mesh"]["parts"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let before = rack(&s);
+    acl(
+        &mut s,
+        "append stage/rack render.mesh/parts {\"color\":[0,1,0]}",
+    )
+    .unwrap();
+    let after = rack(&s);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after.last().unwrap(), &serde_json::json!({"color":[0,1,0]}));
+    acl(
+        &mut s,
+        "insert stage/rack render.mesh/parts 0 {\"color\":[0,0,1]}",
+    )
+    .unwrap();
+    assert_eq!(rack(&s)[0], serde_json::json!({"color":[0,0,1]}));
+    acl(&mut s, "remove stage/rack render.mesh/parts 0").unwrap();
+    assert_eq!(rack(&s), after);
+    // Out of range / not an array / missing: structured errors, no write.
+    let rev = s.current().unwrap().0;
+    for (script, expected) in [
+        (
+            "remove stage/rack render.mesh/parts 99",
+            "index_out_of_range",
+        ),
+        (
+            "insert stage/rack render.mesh/parts 99 {}",
+            "index_out_of_range",
+        ),
+        ("append stage/rack label \"x\"", "invalid_field"),
+        ("append stage/rack render.mesh/nope 1", "invalid_field"),
+    ] {
+        assert_eq!(code(acl(&mut s, script).unwrap_err()), expected, "{script}");
+    }
+    assert_eq!(s.current().unwrap().0, rev);
+    // `set` past the end explains how to append.
+    let error = acl(&mut s, "set stage/rack render.mesh/parts/99 {}").unwrap_err();
+    assert!(
+        error["error"].as_str().unwrap().contains("append"),
+        "{error}"
+    );
+}
+
+#[test]
+fn set_replacing_a_resource_list_warns_about_dropped_items() {
+    let mut s = store();
+    acl(
+        &mut s,
+        "resource create input.bindings {\"buttons\":{}}\ncreate trigger box id=gate",
+    )
+    .unwrap();
+    // runtime.bindings is a runtime resource; a custom list in a core resource shows the same.
+    let mut store = store();
+    acl(&mut store, "event declare a\nevent declare b").unwrap();
+    acl(
+        &mut store,
+        "set resources[id=behavior.program] rules [{\"id\":\"r1\",\"event\":\"a\",\"actions\":[]},{\"id\":\"r2\",\"event\":\"b\",\"actions\":[]}]",
+    )
+    .unwrap();
+    let out = acl_mode(
+        &mut store,
+        "set resources[id=behavior.program] rules [{\"id\":\"r2\",\"event\":\"b\",\"actions\":[]}]",
+        false,
+        false,
+    )
+    .unwrap();
+    let text = out["text"].as_str().unwrap();
+    assert!(
+        text.contains("warn line 1") && text.contains("1 current item(s)"),
+        "{text}"
+    );
+    assert_eq!(out["warnings"].as_array().unwrap().len(), 1);
+    // Appending keeps everything: no warning.
+    let out = acl_mode(
+        &mut store,
+        "append resources[id=behavior.program] rules {\"id\":\"r3\",\"event\":\"a\",\"actions\":[]}",
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(out.get("warnings").is_none(), "{out}");
+    // An item kept by id but rewritten: a superset of its list is fine, a lost entry warns
+    // (the street's door binding that lost the tween play call another verb had added).
+    let rule = |actions: &str| {
+        format!("set resources[id=behavior.program] rules [{{\"id\":\"r1\",\"event\":\"a\",\"actions\":{actions}}}]")
+    };
+    acl(&mut store, &rule("[{\"kind\":\"emit\",\"event\":\"b\"}]")).unwrap();
+    let grown = rule("[{\"kind\":\"emit\",\"event\":\"b\"},{\"kind\":\"emit\",\"event\":\"a\"}]");
+    let out = acl_mode(&mut store, &grown, false, false).unwrap();
+    assert!(out.get("warnings").is_none(), "{out}");
+    let out = acl_mode(&mut store, &rule("[]"), false, false).unwrap();
+    assert!(
+        out["text"].as_str().unwrap().contains("2 current item(s)"),
+        "{out}"
+    );
+    // Entity vectors and mesh parts are replaced on purpose: no warning.
+    let out = acl_mode(
+        &mut s,
+        "set gate core.transform/position [1,2,3]",
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(out.get("warnings").is_none());
+}
+
+#[test]
+fn undeclared_events_carry_the_fix() {
+    let mut s = store();
+    acl(&mut s, "create trigger box id=gate").unwrap();
+    let error = acl(&mut s, "set gate trigger.zone/on_enter \"door_bump\"").unwrap_err();
+    let message = error["error"].as_str().unwrap();
+    assert!(
+        message.contains("declare it first: event declare door_bump"),
+        "{message}"
+    );
+    acl(&mut s, "event declare door_bump").unwrap();
+    acl(&mut s, "set gate trigger.zone/on_enter \"door_bump\"").unwrap();
+    // Declaring the same again is a no-op; different fields are refused.
+    assert!(acl(&mut s, "event declare door_bump")
+        .unwrap()
+        .starts_with("unchanged"));
+    assert_eq!(
+        code(acl(&mut s, "event declare door_bump who=text").unwrap_err()),
+        "id_taken"
+    );
 }

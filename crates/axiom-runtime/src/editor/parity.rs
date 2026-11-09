@@ -42,6 +42,8 @@ fn headless(start: &World, script: &str) -> World {
 /// Runs `drive` against an editor on `start`, then checks the ACL script leaves an equal world.
 fn assert_parity(start: World, drive: impl FnOnce(&mut Editor) -> Vec<Vec<Action>>, script: &str) {
     let mut editor = Editor::new(start.clone(), 1, None);
+    // The host installs the same registry as the store's (world ops read its types).
+    editor.set_component_hints(&crate::installed_registry().authoring);
     let mut store = store(&start);
     for batch in drive(&mut editor) {
         commit(&mut editor, &mut store, batch);
@@ -1114,4 +1116,327 @@ fn camera_follow_and_main_camera_match_acl() {
     assert!(e.run_command("object.camera_follow").unwrap().is_empty());
     let mut e = Editor::new(start, 1, Some("hero_box".into()));
     assert!(e.run_command("object.main_camera").unwrap().is_empty());
+}
+
+#[test]
+fn tags_match_acl() {
+    // Multi-selection: Object ▸ Edit Tags (editor_view {command, arg}) on both objects.
+    assert_parity(
+        lab(),
+        |e| {
+            e.select(Some("stage/crate".into()));
+            e.extra.insert("stage/rack".into());
+            vec![e
+                .run_command_with("object.tag", Some("+player +npc"))
+                .unwrap()]
+        },
+        "tag entities[id=stage/crate,id=stage/rack] +player +npc",
+    );
+    // Removing keeps the other tags and their order (Inspector chip x = edit_tags remove).
+    let tagged = headless(&lab(), "tag stage/crate +a +b +c");
+    assert_parity(
+        tagged.clone(),
+        |e| {
+            e.select(Some("stage/crate".into()));
+            vec![e.edit_tags(&[], &["b".into()]).into_iter().collect()]
+        },
+        "tag stage/crate -b",
+    );
+    assert_eq!(
+        headless(&tagged, "tag stage/crate -b +player")
+            .entity("stage/crate")
+            .unwrap()
+            .tags,
+        ["a", "c", "player"]
+    );
+    // Nothing to change: no write in either path.
+    let mut e = Editor::new(tagged, 1, Some("stage/crate".into()));
+    assert!(e.edit_tags(&["a".into()], &[]).is_none());
+}
+
+#[test]
+fn world_panel_operations_match_acl() {
+    let blank = World::empty("blank");
+    // World ▸ ID / Title, capabilities, systems (with their capability and `after` systems),
+    // resources (default or typed JSON) — the World window calls the same methods.
+    for (command, arg, script) in [
+        ("world.set_id", "street", "world id street"),
+        ("world.set_title", "黃昏街口 / Street", "world title \"黃昏街口 / Street\""),
+        ("world.capability_add", "physics", "capability add physics"),
+        ("world.system_add", "trigger.detect", "system add trigger.detect"),
+        ("world.resource_create", "nav.grid", "resource create nav.grid"),
+        ("world.resource_create", "behavior.program", "resource create behavior.program"),
+        (
+            "world.resource_create",
+            "render.environment {\"ambient\":{\"mode\":\"color\",\"color\":[0.2,0.2,0.2],\"intensity\":1}}",
+            "resource create render.environment {\"ambient\":{\"mode\":\"color\",\"color\":[0.2,0.2,0.2],\"intensity\":1}}",
+        ),
+    ] {
+        assert_parity(
+            blank.clone(),
+            |e| vec![e.run_command_with(command, Some(arg)).unwrap()],
+            script,
+        );
+    }
+    let program = headless(&blank, "resource create behavior.program");
+    assert!(program.systems.iter().any(|s| s == "behavior.execute"));
+    assert_eq!(program.capabilities.get("behavior"), Some(&1));
+
+    // Removals.
+    let full = headless(
+        &blank,
+        "capability add physics\nsystem add trigger.detect\nresource create nav.grid",
+    );
+    for (command, arg, script) in [
+        (
+            "world.capability_remove",
+            "physics",
+            "capability remove physics",
+        ),
+        (
+            "world.system_remove",
+            "trigger.detect",
+            "system remove trigger.detect",
+        ),
+        (
+            "world.resource_remove",
+            "nav.grid",
+            "resource remove nav.grid",
+        ),
+    ] {
+        assert_parity(
+            full.clone(),
+            |e| vec![e.run_command_with(command, Some(arg)).unwrap()],
+            script,
+        );
+    }
+    // In use: a problem, not a write (and the same structured code headless).
+    let mut e = Editor::new(full.clone(), 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    assert!(e
+        .run_command_with("world.capability_remove", Some("trigger"))
+        .unwrap()
+        .is_empty());
+    assert_eq!(e.problem_codes()[0], "capability_in_use");
+    let mut s = store(&full);
+    let error = s
+        .execute(Request::Acl {
+            text: "capability remove trigger".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    assert_eq!(
+        axiom_core::error_response(&error)["diagnostics"][0]["code"],
+        "capability_in_use"
+    );
+}
+
+#[test]
+fn add_component_brings_its_capability_and_systems_like_acl() {
+    // Inspector ▸ Add component on a world without the trigger capability or system.
+    let start = headless(
+        &World::empty("blank"),
+        "create empty id=gate\ncreate empty id=door",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("gate".into()));
+            e.extra.insert("door".into());
+            vec![e.add_component("trigger.zone").into_iter().collect()]
+        },
+        "add entities[id=gate,id=door] trigger.zone",
+    );
+    let made = headless(&start, "add gate trigger.zone");
+    assert_eq!(made.capabilities.get("trigger"), Some(&1));
+    assert!(made.systems.iter().any(|s| s == "trigger.detect"));
+    // physics.collider: capability only; the component then opens in the Inspector form.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("gate".into()));
+            vec![e
+                .run_command_with("object.add_component", Some("physics.collider"))
+                .unwrap()]
+        },
+        "add gate physics.collider",
+    );
+    let mut e = Editor::new(start.clone(), 1, Some("gate".into()));
+    e.set_component_hints(&crate::installed_registry().authoring);
+    let mut s = store(&start);
+    let added = e.add_component("physics.collider").into_iter().collect();
+    commit(&mut e, &mut s, added);
+    assert_eq!(e.draft.as_ref().unwrap().component, "physics.collider");
+    // No default (camera.follow needs a target): the JSON draft opens; Stage component +
+    // Apply writes it with the camera capability and camera.rig, like `add SEL COMP JSON`.
+    let cameras = headless(&start, "create camera id=cam");
+    assert!(!cameras.capabilities.contains_key("camera"));
+    assert_parity(
+        cameras,
+        |e| {
+            e.select(Some("cam".into()));
+            assert!(e.add_component("camera.follow").is_none());
+            let draft = e.draft.as_mut().unwrap();
+            assert!(draft.json_mode && draft.component == "camera.follow");
+            draft.json = r#"{"target":"door"}"#.into();
+            draft.component_dirty = true;
+            let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        r#"add cam camera.follow {"target":"door"}"#,
+    );
+}
+
+#[test]
+fn declare_event_and_rotation_match_acl() {
+    let start = headless(&lab(), "create trigger box id=gate");
+    assert_parity(
+        start.clone(),
+        |e| {
+            vec![e
+                .run_command_with("event.declare", Some("door_bump"))
+                .unwrap()]
+        },
+        "event declare door_bump",
+    );
+    // The commit error names the event; the Problems button declares exactly it.
+    let mut s = store(&start);
+    let error = s
+        .execute(Request::Acl {
+            text: "set gate trigger.zone/on_enter \"door_bump\"".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("event declare door_bump"), "{message}");
+    assert_eq!(
+        axiom_core::ops::undeclared_event(&message),
+        Some("door_bump")
+    );
+    // Inspector Rotation° (Euler degrees) = ACL rotate SEL x,y,z.
+    assert_parity(
+        lab(),
+        |e| {
+            e.select(Some("stage/crate".into()));
+            let draft = e.draft.as_mut().unwrap();
+            draft.angles = [0.0, 90.0, 0.0];
+            draft.transform.as_mut().unwrap().rotation = super::viewport::rotation(draft.angles);
+            draft.transform_dirty = true;
+            let edits = draft.edits().unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "rotate stage/crate 0,90,0",
+    );
+    // create … rot= = create, then Rotation° in the Inspector.
+    let rotated = headless(&lab(), "create cube id=c rot=0,90,0");
+    let turned = headless(&lab(), "create cube id=c\nrotate c 0,90,0");
+    assert_eq!(rotated, turned);
+}
+
+#[test]
+fn multi_object_inspector_edits_match_acl() {
+    let start = headless(
+        &lab(),
+        "create cube id=a at=1,0,0\ncreate cube id=b at=5,2,3\ncreate trigger box id=t1\ncreate trigger box id=t2",
+    );
+    // Position X typed with two cubes selected: X set on both, Y/Z of each kept.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("a".into()));
+            e.extra.insert("b".into());
+            let draft = e.draft.as_mut().unwrap();
+            draft.transform.as_mut().unwrap().position[0] = 9.0;
+            draft.transform_dirty = true;
+            let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "set a core.transform/position [9.0,0.0,0.0]\nset b core.transform/position [9.0,2.0,3.0]",
+    );
+    // A component form field on two triggers = set entities[id=..] FIELD VALUE.
+    assert_parity(
+        start,
+        |e| {
+            e.select(Some("t1".into()));
+            e.extra.insert("t2".into());
+            let entity = e.world.entity("t1").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "trigger.zone");
+            draft.form.as_mut().unwrap()["once"] = serde_json::json!(true);
+            draft.form_dirty = true;
+            let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+            assert_eq!(edits.len(), 2);
+            vec![vec![e.write(edits, None)]]
+        },
+        "set entities[id=t1,id=t2] trigger.zone/once true",
+    );
+}
+
+#[test]
+fn resource_form_edits_match_acl() {
+    let start = headless(&World::empty("blank"), "resource create nav.grid");
+    assert_parity(
+        start,
+        |e| {
+            e.open_resource("nav.grid");
+            let draft = e.resource.as_mut().unwrap();
+            assert!(draft.form_mode, "resources open as a schema-guided form");
+            draft.form.as_mut().unwrap()["cell_size"] = serde_json::json!(0.5);
+            draft.dirty = true;
+            let request = draft.request(false).unwrap();
+            vec![vec![Action::Write {
+                request,
+                select: None,
+            }]]
+        },
+        "set resources[id=nav.grid] cell_size 0.5",
+    );
+}
+
+#[test]
+fn declare_event_applies_the_waiting_draft_and_multi_edits_skip_mismatched_fields() {
+    // Inspector: on_enter typed as an undeclared event, Apply refused; Problems ▸ Declare
+    // event writes the declaration and the draft in one revision (the draft is not lost).
+    let start = headless(&lab(), "create trigger box id=gate");
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("gate".into()));
+            let entity = e.world.entity("gate").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "trigger.zone");
+            draft.form.as_mut().unwrap()["on_enter"] = serde_json::json!("door_bump");
+            draft.form_dirty = true;
+            vec![e.declare_event("door_bump").into_iter().collect()]
+        },
+        "event declare door_bump\nset gate trigger.zone/on_enter \"door_bump\"",
+    );
+    // Multi-object form edit: a box collider's half_extents is not written into a capsule.
+    let colliders = headless(
+        &lab(),
+        "create cube id=a\ncreate cube id=b\nadd a physics.collider\nadd b physics.collider {\"shape\":{\"shape\":\"capsule\",\"half_height\":0.5,\"radius\":0.3}}",
+    );
+    assert_parity(
+        colliders,
+        |e| {
+            e.select(Some("a".into()));
+            e.extra.insert("b".into());
+            let entity = e.world.entity("a").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "physics.collider");
+            draft.form.as_mut().unwrap()["shape"]["half_extents"] =
+                serde_json::json!([1.0, 0.5, 0.5]);
+            draft.form_dirty = true;
+            let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "set a physics.collider/shape/half_extents [1.0,0.5,0.5]",
+    );
 }

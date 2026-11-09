@@ -10,10 +10,10 @@ rename car/b "藍色廂型車"
 rename car/c "黃色計程車"
 set car/b render.mesh/parts/0/color [0.15,0.3,0.7]
 set car/c render.mesh/parts/0/color [0.95,0.75,0.1]
-# GAP-1: the editor Inspector cannot edit entity tags; tags are written with a raw pointer.
-set car/a /tags ["car","car_a"]
-set car/b /tags ["car","car_b"]
-set car/c /tags ["car","car_c"]
+# Tags (editor: Inspector ▸ Tags; triggers filter on car_a / car_b / car_c).
+tag car/a +car +car_a
+tag car/b +car +car_b
+tag car/c +car +car_c
 
 # Road loop: eastbound on the south lane (z=+2), U-turn, westbound on the north lane (z=-2).
 create path id=road/loop at=0,0,0

@@ -14,6 +14,11 @@ pub(super) struct ResourceDraft {
     /// True only after a projection loaded successfully. A failed root load must never
     /// allow an empty editor to be written back as a whole-resource replacement.
     pub loaded: bool,
+    /// Schema-guided form over the loaded projection (objects only) and its baseline; only
+    /// changed leaves are written, as `set_field` edits.
+    pub form: Option<Value>,
+    form_base: Value,
+    pub form_mode: bool,
 }
 impl ResourceDraft {
     pub fn load(&mut self, world: &World) -> Result<()> {
@@ -35,31 +40,52 @@ impl ResourceDraft {
             "resource projection exceeds 64 KiB; choose a narrower JSON pointer"
         );
         self.field = field.into();
+        self.form = value.is_object().then(|| value.clone());
+        self.form_base = value.clone();
+        self.form_mode = self.form.is_some();
         self.text = text;
         self.dirty = false;
         self.loaded = true;
         Ok(())
     }
-    fn request(&self, preview: bool) -> Result<Request> {
+    pub(super) fn request(&self, preview: bool) -> Result<Request> {
         anyhow::ensure!(
             self.loaded,
             "no resource projection is loaded; choose a narrower JSON pointer and load it first"
         );
-        let value: Value = serde_json::from_str(&self.text)?;
         let target = Target::Resource {
             id: self.id.clone(),
         };
-        let edit = if self.field.is_empty() {
-            CoreEdit::PutObject { target, value }
-        } else {
-            CoreEdit::SetField {
-                target,
-                field: self.field.clone(),
-                value,
+        let edits = match self.form.as_ref().filter(|_| self.form_mode) {
+            Some(form) => {
+                let mut leaves = vec![];
+                super::form::changes(&self.form_base, form, "", &mut leaves);
+                anyhow::ensure!(!leaves.is_empty(), "no field changed");
+                leaves
+                    .into_iter()
+                    .map(|(pointer, value)| {
+                        Edit::Core(CoreEdit::SetField {
+                            target: target.clone(),
+                            field: format!("{}{pointer}", self.field),
+                            value,
+                        })
+                    })
+                    .collect()
+            }
+            None => {
+                let value: Value = serde_json::from_str(&self.text)?;
+                vec![Edit::Core(if self.field.is_empty() {
+                    CoreEdit::PutObject { target, value }
+                } else {
+                    CoreEdit::SetField {
+                        target,
+                        field: self.field.clone(),
+                        value,
+                    }
+                })]
             }
         };
         let expected_rev = Some(self.rev);
-        let edits = vec![Edit::Core(edit)];
         Ok(if preview {
             Request::Preview {
                 expected_rev,
@@ -87,6 +113,9 @@ impl Editor {
             text: String::new(),
             dirty: false,
             loaded: false,
+            form: None,
+            form_base: Value::Null,
+            form_mode: false,
         };
         if let Err(error) = draft.load(&self.world) {
             self.set_error(format!("{error:#}"));
@@ -165,19 +194,49 @@ impl Editor {
             })
             .small(),
         );
+        if draft.form.is_some() {
+            ui.add_enabled_ui(!draft.dirty, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(draft.form_mode, "Form")
+                        .on_hover_text("Schema-guided fields; only changed fields are written")
+                        .clicked()
+                    {
+                        draft.form_mode = true;
+                    }
+                    if ui
+                        .selectable_label(!draft.form_mode, "JSON")
+                        .on_hover_text("Edit the projection as raw JSON (replaces it)")
+                        .clicked()
+                    {
+                        draft.form_mode = false;
+                    }
+                });
+            });
+        }
+        let hints = self.registry.resources.get(&draft.id).map(|d| &d.schema);
         ScrollArea::vertical()
             .id_salt("editor_resource_json")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                draft.dirty |= ui
-                    .add_enabled(
-                        !stale && loaded,
-                        egui::TextEdit::multiline(&mut draft.text)
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(24),
-                    )
-                    .changed();
+                match draft.form.as_mut().filter(|_| draft.form_mode) {
+                    Some(form) => {
+                        ui.add_enabled_ui(!stale && loaded, |ui| {
+                            draft.dirty |= super::form::edit(ui, &draft.id, form, hints);
+                        });
+                    }
+                    None => {
+                        draft.dirty |= ui
+                            .add_enabled(
+                                !stale && loaded,
+                                egui::TextEdit::multiline(&mut draft.text)
+                                    .code_editor()
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(24),
+                            )
+                            .changed();
+                    }
+                }
             });
         if let Some(error) = issue {
             self.set_error(error);
@@ -206,6 +265,9 @@ mod tests {
         let draft = editor.resource.as_mut().unwrap();
         draft.field_input = "/abilities/slash2/dodge_window".into();
         draft.load(&editor.world).unwrap();
+        // The projection is an object, so it opens as a form; this test edits raw JSON.
+        assert!(draft.form_mode);
+        draft.form_mode = false;
         draft.text = json!({"start":25,"end":70}).to_string();
         draft.dirty = true;
         let preview = store.execute(draft.request(true).unwrap()).unwrap();

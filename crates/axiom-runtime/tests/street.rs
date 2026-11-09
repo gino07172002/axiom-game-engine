@@ -1,6 +1,6 @@
 //! Axiom Street (final acceptance demo): the pack is reproducible from its authoring script and
 //! its headless scenario passes. The script is replayed in-process through the same protocol the
-//! CLI uses (typed seed request + one ACL revision per stage); see `scripts/build-street.ps1`.
+//! CLI uses (one ACL revision per stage, the seed included); see `scripts/build-street.ps1`.
 use axiom_core::{ContentPackage, Request, Store, World};
 use axiom_runtime::{installed_registry, scenario};
 use serde_json::Value;
@@ -25,18 +25,16 @@ fn replay_build_script() -> (i64, World) {
     let mut store =
         Store::memory_with(installed_registry().authoring, load("content/empty")).unwrap();
     let build = root().join("content/street/build");
-    let seed = std::fs::read_to_string(build.join("00-seed.apply.json")).unwrap();
-    let seed: Request = serde_json::from_str(&seed).unwrap();
-    store.execute(seed).unwrap();
     let mut stages: Vec<PathBuf> = std::fs::read_dir(&build)
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|e| e == "acl"))
         .collect();
     stages.sort();
+    // The seed (world id/title, capabilities, resource shells) is ACL too: no typed request.
     assert!(
-        stages.len() >= 6,
-        "expected the six ACL stages, got {stages:?}"
+        stages.len() >= 7 && stages[0].ends_with("00-seed.acl"),
+        "expected the seed and six ACL stages, got {stages:?}"
     );
     for stage in &stages {
         let text = std::fs::read_to_string(stage).unwrap();

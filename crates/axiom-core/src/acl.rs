@@ -22,6 +22,7 @@ EDIT (any number, atomic):
   remove SEL COMPONENT            remove an authored component (not one inherited from a prefab)
  editor operations (same code as the editor UI; P = [id=ID] [at=x,y,z] [parent=ID] [scene=ID]):
   create empty|cube|camera P      new object; default id = preset name, then NAME/2, NAME/3..
+                                  (P also takes rot=x,y,z: Euler degrees XYZ, like the Inspector)
   create light directional|point|spot|area P   render.light aimed along local -Z (id light.KIND)
   create trigger box|sphere P      trigger.zone for tag player, no events yet (id trigger.SHAPE)
   create path P                   path.spline: closed 8x6 m rectangle on local XZ (id path)
@@ -62,6 +63,18 @@ EDIT (any number, atomic):
   prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
                                   prefab gets ID's resolved components, ID keeps its core.transform
   ground SEL                      drop to the highest render.mesh top below (else y=0); moves position.y
+  rotate SEL x,y,z                core.transform rotation from Euler degrees (XYZ)
+  tag SEL +TAG -TAG ..            add / remove entity tags (other tags and their order kept)
+  add SEL COMPONENT [JSON]        component with JSON or its default, + the capability/systems it needs
+  append SEL F VALUE | insert SEL F INDEX VALUE | remove SEL F INDEX   one array element (set F
+                                  replaces the whole array; it warns when resource list items are dropped)
+  event declare NAME [FIELD=text|number|int|bool ..]   declare a behavior.program event
+ world (World panel):
+  world id ID | world title TEXT
+  capability add|remove ID        installed capability; remove refuses while components/resources/systems use it
+  system add|remove ID            scheduled system (+ its capability and the systems it runs after)
+  resource create ID [JSON]       registered resource with JSON or its default (+ capability/systems)
+  resource remove ID
   Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
@@ -168,6 +181,11 @@ fn statements_in(line: &str) -> Vec<&str> {
 
 fn value(token: &str) -> Value {
     serde_json::from_str(token).unwrap_or_else(|_| Value::String(token.to_owned()))
+}
+
+/// A token that must be JSON (resource and component bodies), unlike `value`'s bare words.
+fn json_value(token: &str) -> Result<Value> {
+    serde_json::from_str(token).with_context(|| format!("'{token}' is not valid JSON"))
 }
 
 /// Short field syntax → JSON pointer. A first segment containing a dot names a component.
@@ -313,6 +331,19 @@ enum Statement {
     TweenTrackAdd(String, String, String, String),
     TweenTrackRemove(String, String, usize),
     TweenKey(String, String, usize, crate::ops::KeyEdit),
+    Tag(Box<Selection>, Vec<String>, Vec<String>),
+    WorldId(String),
+    WorldTitle(String),
+    CapabilityAdd(String),
+    CapabilityRemove(String),
+    SystemAdd(String),
+    SystemRemove(String),
+    ResourceCreate(String, Option<Value>),
+    ResourceRemove(String),
+    AddComponent(Box<Selection>, String, Option<Value>),
+    Array(Box<Selection>, String, crate::ops::ArrayEdit),
+    EventDeclare(String, Vec<(String, crate::gameplay::ScalarType)>),
+    Rotate(Box<Selection>, [f32; 3]),
 }
 
 impl Statement {
@@ -341,9 +372,10 @@ fn placement(tokens: &[String]) -> Result<crate::ops::Placement> {
         match k {
             "id" => p.id = Some(v.into()),
             "at" => p.position = Some(vec3(v)?),
+            "rot" => p.rotation = Some(vec3(v)?),
             "parent" => p.parent = Some(v.into()),
             "scene" => p.scene = Some(v.into()),
-            other => bail!("unknown option '{other}' (use id, at, parent, scene)"),
+            other => bail!("unknown option '{other}' (use id, at, rot, parent, scene)"),
         }
     }
     Ok(p)
@@ -454,9 +486,117 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             ensure!(tokens.len() == 2, "delete takes one selector");
             Statement::Delete(Box::new(selector(arg(1)?)?))
         }
+        "remove" if tokens.len() == 4 => {
+            let s = selector(arg(1)?)?;
+            let f = field(arg(2)?, s.from);
+            let index = arg(3)?
+                .parse()
+                .context("use: remove SEL FIELD INDEX (index = non-negative integer)")?;
+            Statement::Array(Box::new(s), f, crate::ops::ArrayEdit::Remove(index))
+        }
         "remove" => {
-            ensure!(tokens.len() == 3, "use: remove SEL COMPONENT");
+            ensure!(
+                tokens.len() == 3,
+                "use: remove SEL COMPONENT | remove SEL FIELD INDEX"
+            );
             Statement::Remove(Box::new(selector(arg(1)?)?), arg(2)?.clone())
+        }
+        "append" => {
+            ensure!(tokens.len() == 4, "use: append SEL FIELD VALUE");
+            let s = selector(arg(1)?)?;
+            let f = field(arg(2)?, s.from);
+            Statement::Array(
+                Box::new(s),
+                f,
+                crate::ops::ArrayEdit::Append(value(arg(3)?)),
+            )
+        }
+        "insert" => {
+            ensure!(tokens.len() == 5, "use: insert SEL FIELD INDEX VALUE");
+            let s = selector(arg(1)?)?;
+            let f = field(arg(2)?, s.from);
+            let index = arg(3)?
+                .parse()
+                .context("insert index must be a non-negative integer")?;
+            Statement::Array(
+                Box::new(s),
+                f,
+                crate::ops::ArrayEdit::Insert(index, value(arg(4)?)),
+            )
+        }
+        "tag" => {
+            ensure!(tokens.len() >= 3, "use: tag SEL +TAG -TAG ...");
+            let (mut add, mut remove) = (vec![], vec![]);
+            for t in &tokens[2..] {
+                match (t.strip_prefix('+'), t.strip_prefix('-')) {
+                    (Some(tag), _) => add.push(tag.to_owned()),
+                    (_, Some(tag)) => remove.push(tag.to_owned()),
+                    _ => bail!("tag '{t}' needs + (add) or - (remove): tag SEL +{t}"),
+                }
+            }
+            Statement::Tag(Box::new(selector(arg(1)?)?), add, remove)
+        }
+        "world" => {
+            ensure!(tokens.len() == 3, "use: world id ID | world title TEXT");
+            let text = match value(arg(2)?) {
+                Value::String(s) => s,
+                _ => arg(2)?.clone(),
+            };
+            match arg(1)?.as_str() {
+                "id" => Statement::WorldId(text),
+                "title" => Statement::WorldTitle(text),
+                other => bail!("unknown world field '{other}' (id, title)"),
+            }
+        }
+        "capability" | "system" => {
+            ensure!(
+                tokens.len() == 3,
+                "use: {0} add ID | {0} remove ID",
+                tokens[0]
+            );
+            let id = arg(2)?.clone();
+            match (tokens[0].as_str(), arg(1)?.as_str()) {
+                ("capability", "add") => Statement::CapabilityAdd(id),
+                ("capability", "remove") => Statement::CapabilityRemove(id),
+                ("system", "add") => Statement::SystemAdd(id),
+                ("system", "remove") => Statement::SystemRemove(id),
+                (_, other) => bail!("unknown {} verb '{other}' (add, remove)", tokens[0]),
+            }
+        }
+        "resource" => match (arg(1)?.as_str(), tokens.len()) {
+            ("create", 3) => Statement::ResourceCreate(arg(2)?.clone(), None),
+            ("create", 4) => Statement::ResourceCreate(arg(2)?.clone(), Some(json_value(arg(3)?)?)),
+            ("remove", 3) => Statement::ResourceRemove(arg(2)?.clone()),
+            _ => bail!("use: resource create ID [JSON] | resource remove ID"),
+        },
+        "add" => {
+            ensure!(
+                (3..=4).contains(&tokens.len()),
+                "use: add SEL COMPONENT [JSON]"
+            );
+            let value = tokens.get(3).map(|t| json_value(t)).transpose()?;
+            Statement::AddComponent(Box::new(selector(arg(1)?)?), arg(2)?.clone(), value)
+        }
+        "event" => {
+            ensure!(
+                tokens.get(1).is_some_and(|t| t == "declare") && tokens.len() >= 3,
+                "use: event declare NAME [FIELD=text|number|int|bool ...]"
+            );
+            let mut fields = vec![];
+            for t in &tokens[3..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("field '{t}' must be NAME=TYPE"))?;
+                let ty = serde_json::from_value(json!(v)).with_context(|| {
+                    format!("unknown field type '{v}' (text, number, int, bool)")
+                })?;
+                fields.push((k.to_owned(), ty));
+            }
+            Statement::EventDeclare(arg(2)?.clone(), fields)
+        }
+        "rotate" => {
+            ensure!(tokens.len() == 3, "use: rotate SEL x,y,z (Euler degrees)");
+            Statement::Rotate(Box::new(selector(arg(1)?)?), vec3(arg(2)?)?)
         }
         "create" if tokens.get(1).is_some_and(|t| t == "trigger") => {
             let shape = tokens
@@ -1099,6 +1239,7 @@ pub fn run(
         }
     }
     let mut edits = vec![];
+    let mut warnings: Vec<String> = vec![];
     let mut taken = std::collections::BTreeSet::new();
     let mut scratch = world.clone();
     for (line, stmt) in statements {
@@ -1114,11 +1255,16 @@ pub fn run(
         let w = &scratch;
         let r = &store.registry;
         let compiled = match stmt {
-            Statement::Set(select, f, v) => Ok(vec![Edit::Core(CoreEdit::SetWhere {
-                select,
-                field: f,
-                value: v,
-            })]),
+            Statement::Set(select, f, v) => {
+                if let Value::Array(items) = &v {
+                    warnings.extend(dropped_items(w, r, &select, &f, items, line));
+                }
+                Ok(vec![Edit::Core(CoreEdit::SetWhere {
+                    select,
+                    field: f,
+                    value: v,
+                })])
+            }
             Statement::Spawn(opts, prefab) => spawn(w, &prefab, &opts, &mut taken),
             Statement::Delete(select) => {
                 if select.from != Collection::Entities {
@@ -1189,6 +1335,22 @@ pub fn run(
             Statement::TweenKey(id, clip, track, edit) => {
                 crate::ops::edit_tween_key(w, &id, &clip, track, &edit)
             }
+            Statement::Tag(select, add, remove) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::edit_tags(w, &ids, &add, &remove)),
+            Statement::WorldId(id) => crate::ops::set_world_id(w, &id),
+            Statement::WorldTitle(title) => crate::ops::set_world_title(w, &title),
+            Statement::CapabilityAdd(id) => crate::ops::add_capability(w, r, &id),
+            Statement::CapabilityRemove(id) => crate::ops::remove_capability(w, r, &id),
+            Statement::SystemAdd(id) => crate::ops::add_system(w, r, &id),
+            Statement::SystemRemove(id) => crate::ops::remove_system(w, r, &id),
+            Statement::ResourceCreate(id, value) => crate::ops::create_resource(w, r, &id, value),
+            Statement::ResourceRemove(id) => crate::ops::remove_resource(w, &id),
+            Statement::AddComponent(select, component, value) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_component(w, r, &ids, &component, value)),
+            Statement::Array(select, f, edit) => crate::ops::edit_array(w, r, &select, &f, &edit),
+            Statement::EventDeclare(name, fields) => crate::ops::declare_event(w, &name, &fields),
+            Statement::Rotate(select, degrees) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::set_rotation(w, &ids, degrees)),
             _ => unreachable!(),
         }
         .map_err(wrap)?;
@@ -1199,9 +1361,10 @@ pub fn run(
     }
     if edits.is_empty() {
         // e.g. `move X end` when X is already last: nothing to commit, not an error.
-        return Ok(
+        return Ok(with_warnings(
             json!({"ok":true,"format":"lines","rev":rev,"text":format!("unchanged rev={rev} changes=0")}),
-        );
+            &warnings,
+        ));
     }
     ensure!(
         edits.len() <= 256,
@@ -1210,11 +1373,13 @@ pub fn run(
     );
     if propose {
         let note: String = text.trim().chars().take(2048).collect();
-        let result = store.execute(Request::Propose {
-            expected_rev: Some(rev),
-            edits,
-            note,
-        })?;
+        let result = store
+            .execute(Request::Propose {
+                expected_rev: Some(rev),
+                edits,
+                note,
+            })
+            .map_err(with_fix_hint)?;
         let summary = edit_summary(&json!({"rev":rev,"diff":result["diff"]}), true);
         let body = summary.split_once('\n').map_or("", |(_, rest)| rest);
         let mut text = format!(
@@ -1225,22 +1390,131 @@ pub fn run(
             text.push('\n');
             text.push_str(body);
         }
-        return Ok(json!({"ok":true,"format":"lines","proposal":result["proposal"],"text":text}));
+        return Ok(with_warnings(
+            json!({"ok":true,"format":"lines","proposal":result["proposal"],"text":text}),
+            &warnings,
+        ));
     }
-    let result = store.execute(if preview {
-        Request::Preview {
-            expected_rev: Some(rev),
-            edits,
-        }
-    } else {
-        Request::Apply {
-            expected_rev: Some(rev),
-            edits,
-        }
-    })?;
-    Ok(
+    let result = store
+        .execute(if preview {
+            Request::Preview {
+                expected_rev: Some(rev),
+                edits,
+            }
+        } else {
+            Request::Apply {
+                expected_rev: Some(rev),
+                edits,
+            }
+        })
+        .map_err(with_fix_hint)?;
+    Ok(with_warnings(
         json!({"ok":true,"format":"lines","rev":result["rev"],"text":edit_summary(&result, preview)}),
-    )
+        &warnings,
+    ))
+}
+
+/// Appends warning lines to the text output and lists them under `warnings`.
+fn with_warnings(mut out: Value, warnings: &[String]) -> Value {
+    if !warnings.is_empty() {
+        let text = format!(
+            "{}\n{}",
+            out["text"].as_str().unwrap_or(""),
+            warnings.join("\n")
+        );
+        out["text"] = json!(text);
+        out["warnings"] = json!(warnings);
+    }
+    out
+}
+
+/// `set` that replaces a resource-side list (bindings, rules, widgets, nodes) without some of
+/// its current items: those items are dropped silently by design of `set`, so say so. Entity
+/// arrays (mesh parts, vectors, path points) are usually replaced on purpose and not checked.
+fn dropped_items(
+    w: &World,
+    r: &Registry,
+    select: &Selection,
+    field: &str,
+    new: &[Value],
+    line: usize,
+) -> Vec<String> {
+    if select.from == Collection::Entities {
+        return vec![];
+    }
+    let Ok(found) = crate::local::matches(w, r, select) else {
+        return vec![];
+    };
+    found
+        .iter()
+        .filter_map(|(target, data)| {
+            let old = data.pointer(field)?.as_array()?;
+            let lost = dropped(old, new);
+            (lost > 0).then(|| {
+                format!(
+                    "warn line {line}: set replaced {}{field} ({} -> {} items); {lost} current item(s) are not in the new value (dropped, or changed without an id). To change one item use append/insert SEL FIELD [INDEX] VALUE or remove SEL FIELD INDEX",
+                    target.path(),
+                    old.len(),
+                    new.len()
+                )
+            })
+        })
+        .collect()
+}
+
+/// Items of `old` that `new` no longer has. An object item whose `id` (or, for bindings,
+/// `event`) still exists in `new` was edited, not dropped; the items of its own lists are
+/// checked the same way (e.g. a binding that lost one of its calls).
+fn dropped(old: &[Value], new: &[Value]) -> usize {
+    let identity = |v: &Value| {
+        ["id", "event"]
+            .iter()
+            .find_map(|k| v.get(k).filter(|x| x.is_string()).map(|x| (*k, x.clone())))
+    };
+    old.iter()
+        .map(|item| {
+            if new.contains(item) {
+                return 0;
+            }
+            let Some((key, id)) = identity(item) else {
+                return 1;
+            };
+            let Some(next) = new.iter().find(|n| n.get(key) == Some(&id)) else {
+                return 1;
+            };
+            item.as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(k, v)| Some((v.as_array()?, k)))
+                .map(|(list, k)| {
+                    let empty = vec![];
+                    dropped(
+                        list,
+                        next.get(k).and_then(Value::as_array).unwrap_or(&empty),
+                    )
+                })
+                .sum()
+        })
+        .sum()
+}
+
+/// Commit errors about an event no `behavior.program` declares get the fix in the message.
+fn with_fix_hint(e: anyhow::Error) -> anyhow::Error {
+    let Some(d) = e.downcast_ref::<Diagnostic>() else {
+        let text = format!("{e:#}");
+        return match crate::ops::undeclared_event(&text) {
+            Some(name) => anyhow::anyhow!("{text}; declare it first: event declare {name}"),
+            None => e,
+        };
+    };
+    match crate::ops::undeclared_event(&d.message) {
+        Some(name) => Diagnostic::error(
+            d.code.clone(),
+            d.path.clone(),
+            format!("{}; declare it first: event declare {name}", d.message),
+        ),
+        None => e,
+    }
 }
 
 fn read(store: &mut Store, stmt: Statement, expected_rev: Option<i64>) -> Result<Value> {

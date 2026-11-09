@@ -11,6 +11,8 @@ use glam::{EulerRot, Quat};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+pub use crate::ops_world::*;
+
 /// Presets offered by the editor's "+ Object" menu. ACL: `create light point` is
 /// shorthand for `create light.point` (and `create trigger box` for `create trigger.box`).
 pub const PRESETS: [&str; 11] = [
@@ -41,6 +43,8 @@ pub struct Placement {
     pub id: Option<String>,
     /// Local position (relative to `parent` when one is given).
     pub position: Option<[f32; 3]>,
+    /// Local rotation as Euler degrees (XYZ, the Inspector's Rotation° fields).
+    pub rotation: Option<[f32; 3]>,
     pub parent: Option<String>,
     /// Scene that receives membership of the new object.
     pub scene: Option<String>,
@@ -141,6 +145,15 @@ fn placement_id(world: &World, base: &str, place: &Placement) -> Result<String> 
                 "invalid_value",
                 "/position",
                 "position must be finite and within ±1e6",
+            ));
+        }
+    }
+    if let Some(r) = place.rotation {
+        if !r.iter().all(|v| v.is_finite() && v.abs() <= 36_000.0) {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                "/rotation",
+                "rotation degrees must be finite and within ±36000",
             ));
         }
     }
@@ -304,6 +317,9 @@ pub fn create_object(world: &World, preset: &str, place: &Placement) -> Result<C
     if let Some(p) = place.position {
         transform.position = p;
     }
+    if let Some(r) = place.rotation {
+        transform.rotation = rotation_from_degrees(r);
+    }
     entity.set("core.transform", transform)?;
     if preset == "cube" || preset == "obstacle" {
         entity.set(
@@ -372,10 +388,17 @@ pub fn instantiate_prefab(world: &World, prefab: &str, place: &Placement) -> Res
     let id = placement_id(world, prefab, place)?;
     let mut entity = Entity::new(&id);
     entity.prefab = Some(prefab.to_owned());
+    let mut transform = serde_json::Map::new();
     if let Some(p) = place.position {
+        transform.insert("position".into(), json!(p));
+    }
+    if let Some(r) = place.rotation {
+        transform.insert("rotation".into(), json!(rotation_from_degrees(r)));
+    }
+    if !transform.is_empty() {
         entity
             .components
-            .insert("core.transform".into(), json!({ "position": p }));
+            .insert("core.transform".into(), Value::Object(transform));
     }
     Ok(Created {
         edits: place_entity(entity, place),

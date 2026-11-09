@@ -55,9 +55,17 @@
 | Inspector 場景勾選(membership) | `scene member SCENE SEL on\|off` | ⚠️ 編輯器仍直接送出 `set_scene_membership`(單一 edit,跟 ops 輸出相同),還沒有編輯器端的對等測試 |
 | `object.main_camera`(Object ▸ Set as Main Camera,主選取) | `camera main ID`(在同一批次把 ID 設為 active,其他攝影機設為 inactive) | ✅ `camera_follow_and_main_camera_match_acl`;`camera_main_switches_the_active_camera_in_one_revision` |
 | `object.camera_follow`(Object ▸ Camera Follow Selected,指令面板):選取的相機都跟隨選取中唯一一個不是相機的物件(預設 `camera.follow`,取代既有的);沒有目標或兩個以上、沒有相機 = problem 不寫入 | `camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=AXIS] [zoom=AXIS] [radius=] [collide=on\|off]`。世界缺少時補 `camera` capability 與 `camera.rig` 系統,見 `docs/camera-follow.zh-TW.md` | ✅ `camera_follow_and_main_camera_match_acl`(選取順序、兩台相機、空世界、Inspector 表單改 distance / collision.radius = ACL `set`);`camera_follow_verb_matches_the_op_and_reports_structured_errors` |
+| Inspector ▸ Tags(標籤 chip:輸入後 Enter / Add、點建議、chip 旁的 x 移除;建議 = 世界已用的 tag,含 `trigger.zone` / `interact.target` 的 `filter.tags`,所以還沒有人有 `player` 時也會建議它)、`object.tag`(`editor_view {command, arg:"+player -npc"}`)。多選時作用在每個選取的物件,chip 顯示「tag 2/3」表示只有部分物件有 | `tag SEL +TAG -TAG …`(`ops::edit_tags`:移除的拿掉、新增的接在尾端、其他 tag 與順序不變;每物件 ≤ 32 個、≤ 64 bytes、不能有空白 / 逗號 / 括號 / 引號 = `invalid_tag`;都不變 = `unchanged`) | ✅ `tags_match_acl`(多選、移除保留順序、無變化不寫入);egui 實際輸入 `world_tests::tag_chips_add_suggest_and_remove_on_every_selected_object`(中文 tag、Enter、點建議、x、快取只在 revision / 選取改變時重建) |
+| Window ▸ World(`window.world`,Ctrl+9;World 選單):世界 ID / Title、capabilities(含使用數,core 與使用中的不能移除)、systems(依 phase 排序,被別的系統 `after` 依賴的不能移除)、resources(點 ID 在 Inspector 開啟、Remove、從已註冊的資源型別 Create,JSON 預先填入預設值)。World 選單的 `world.*` 指令帶參數時直接執行(`editor_view {command, arg}`),不帶參數時打開這個視窗 | `world id ID` / `world title TEXT` / `capability add\|remove ID` / `system add\|remove ID` / `resource create ID [JSON]` / `resource remove ID`(`ops::set_world_id`、`set_world_title`、`add_capability`、`remove_capability`、`add_system`、`remove_system`、`create_resource`、`remove_resource`)。加系統時一併補它的 capability 與它 `after` 的系統;建資源時補它的 capability 與「同 capability 且讀它的系統」(例如 `behavior.program` → `behavior.execute`)。錯誤碼:`unknown_capability`、`capability_in_use`、`unknown_system`、`system_in_use`、`unknown_resource`、`id_taken`、`no_default`(沒有有效預設值的資源要給 JSON,例如 `narrative.graph`)、`invalid_id` | ✅ `world_panel_operations_match_acl`(空世界上每個操作 + 移除 + 使用中拒絕);egui 實際點擊 `world_tests::world_window_adds_a_capability_and_caches_rows_per_revision`(下拉選單 → Add capability;列表只在 revision 改變時重建);核心 `world_tag_component_and_rotation_verbs_compile_to_the_shared_ops`、`world_verbs_report_structured_errors` |
+| Inspector ▸ Components ▸ Add component…(列出所有已安裝的元件,缺 capability / 系統的標「+ trigger, trigger.detect」)、`object.add_component`:寫入預設值並在同一個 revision 補上需要的 capability 與系統,然後在 Inspector 表單開啟。沒有有效預設值的(`path.follow`、`camera.follow` 等要指定目標)改開 JSON,Stage component + Apply 時同樣補 capability / 系統 | `add SEL COMPONENT [JSON]`(`ops::add_component`;已經有(含 prefab 繼承)= `component_exists`,沒有預設值又沒給 JSON = `no_default`) | ✅ `add_component_brings_its_capability_and_systems_like_acl`(多選 trigger.zone、physics.collider 開啟表單、camera.follow 手打 JSON) |
+| Inspector 多選編輯:選了多個物件時,Transform 改的軸(位置 / 縮放逐軸、旋轉逐個歐拉角)與元件表單改的欄位套用到每個有該欄位的選取物件;沒有該欄位的跳過。label、parent、JSON 模式仍只改主選取 | `set entities[id=a,id=b] FIELD VALUE`(`ops::set_fields`) | ✅ `multi_object_inspector_edits_match_acl`(兩個方塊只改 X、兩個觸發區的 `once`)。限制:不顯示混合值(「—」),顯示的是主選取的值 |
+| Inspector Rotation°(歐拉角,XYZ) | `rotate SEL x,y,z`(`ops::set_rotation`)、`create/instantiate … rot=x,y,z`(`Placement.rotation`),同一個 `ops::rotation_from_degrees` | ✅ `declare_event_and_rotation_match_acl`;`create … rot=` = `create` + `rotate` |
+| Problems ▸ Declare event NAME(錯誤訊息是「… emits NAME, which behavior.program does not declare」時出現;Inspector 草稿保留,宣告後再 Apply)、`event.declare` | `event declare NAME [FIELD=text\|number\|int\|bool …]`(`ops::declare_event`;沒有 program 就建立並補 `behavior.execute`;同名同欄位 = `unchanged`,欄位不同 = `id_taken`)。ACL 送出時遇到這種錯誤,訊息尾端加上「declare it first: event declare NAME」 | ✅ `declare_event_and_rotation_match_acl`;核心 `undeclared_events_carry_the_fix` |
+| Resource inspector 表單模式(物件型的投影預設用 schema 表單,只寫改過的欄位;JSON 模式照舊) | `set resources[id=R] FIELD V` | ✅ `resource_form_edits_match_acl` |
+| (陣列單一元素)編輯器沒有對應按鈕,Resource inspector 只能整個替換陣列 | `append SEL F VALUE` / `insert SEL F INDEX VALUE` / `remove SEL F INDEX`(`ops::edit_array`,錯誤 `index_out_of_range` / `invalid_field`)。`set` 整個替換資源端的清單(bindings、rules、widgets…)而丟掉現有項目時,輸出 `warn line N: … dropped` 並在 JSON 的 `warnings` 列出;`set …/99` 超出範圍的錯誤會提示用 `append` | 核心 `array_element_verbs_append_insert_and_remove`、`set_replacing_a_resource_list_warns_about_dropped_items` |
 | Inspector:label、transform、元件表單、JSON | `set ID label "…"`、`set ID core.transform/position [x,y,z]`、`set ID comp/field V` | 欄位層級的 `set_field`,兩邊是同一種 edit |
 | 視窗內 gizmo 移動/旋轉/縮放 | `set ID core.transform/position\|rotation\|scale V` | 同上 |
-| 新增元件(元件挑選器 / Stage component) | `set ID comp.name {…}` | 同上 |
+| 新增元件(Component ID 欄位 Load + Stage component,手打 JSON) | 物件原本沒有這個元件:`add ID comp.name {…}`(一併補 capability / 系統);已經有:`set ID comp.name {…}`(覆寫) | 見上方 Add component 列 |
 | Inspector ▸ Remove component | `remove SEL COMPONENT`(只移除物件自己編寫的元件;從 prefab 繼承的回 `not_found` 並說明要改 prefab) | ✅ `remove_component_matches_acl`;`remove_verb_matches_the_op_and_reports_inherited_components` |
 | Prefab inspector | `set prefabs[id=P] comp/field V` | 欄位層級 `set_field` |
 | Material inspector | `set resources[id=render.shaders] materials/ID/param V` | 同上 |
@@ -67,7 +75,19 @@
 
 ## 反方向:AI 做得到、編輯器還做不到(街道驗收時記錄)
 
-見 `docs/acceptance-street.zh-TW.md` 的缺口報告。摘要:實體 tags(ACL `set ID /tags [...]`,編輯器沒有欄位,GAP-1);新建資源、加 capability / 系統、改世界 id / title(型別化 `apply`,GAP-3);tween 的 `play_on`(GAP-14);多物件同欄位 `set`(編輯器逐一改,GAP-10)。真 GPU 編輯器與 ACL 的 8 步對照(`scripts/street-editor-parity.ps1`)匯出結果逐位元相同。
+見 `docs/acceptance-street.zh-TW.md` 的缺口報告。已補上(2026-11-09 晚):實體 tags(GAP-1)、新建 / 移除資源、加 / 移 capability 與系統、改世界 id / title(GAP-3)、Add component 一律補需要的 capability / 系統、多物件編輯 transform 與元件欄位(GAP-10,不顯示混合值)、未宣告事件的 Declare(GAP-9)、歐拉角(GAP-11)—— 都在上表。
+
+目前仍然只有 AI 做得到、編輯器做不到的:
+
+| AI(ACL) | 編輯器 | 備註 |
+|---|---|---|
+| `tween … play_on=E` | 沒有 UI(GAP-14) | 要先 ACL 或手改 `runtime.bindings` |
+| `append` / `insert` / `remove SEL F INDEX`(陣列單一元素) | Resource inspector 只能整個替換陣列(JSON 模式),表單沒有新增 / 刪除項目 | GAP-8 的編輯器半邊,歸 M3 / M6 |
+| `spawn PREFAB count=N …`(大量生成) | 一次一個 | 既有 |
+| 建立指令的選項(`interact … event= prompt=`、`audio clip ID`、`tween … property=` 等) | 先建預設值再到 Inspector 改;音效片段 ID = 預設名稱 | GAP-14 |
+| 多選時的 label / parent / JSON 模式 | 只改主選取 | 多物件編輯只涵蓋 transform 與表單欄位 |
+
+真 GPU 編輯器與 ACL 的 8 步對照(`scripts/street-editor-parity.ps1`)匯出結果逐位元相同;從空世界只用編輯器指令建出 capability / 系統 / 資源、tag 玩家、做出可互動物件的對照見 `docs/acceptance-street.zh-TW.md`「從空世界用編輯器」一節。
 
 ## 唯讀或只影響畫面的功能(不改內容,不需要無頭等價)
 

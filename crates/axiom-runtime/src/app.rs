@@ -1186,6 +1186,7 @@ impl App {
             play,
             open,
             command,
+            arg,
         } = request
         {
             if let Some(play) = play {
@@ -1205,7 +1206,7 @@ impl App {
             }
             // Registered editor commands run exactly as from the menu bar or palette.
             let commanded = match command.as_deref() {
-                Some(id) => Some(editor.run_command(id)?),
+                Some(id) => Some(editor.run_command_with(id, arg.as_deref())?),
                 None => None,
             };
             for action in editor::coalesce(commanded.unwrap_or_default()) {
@@ -3114,6 +3115,7 @@ mod tests {
                     play: None,
                     open: None,
                     command: Some("object.cube".into()),
+                    arg: None,
                 },
                 reply,
             };

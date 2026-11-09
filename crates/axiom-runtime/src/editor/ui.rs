@@ -283,6 +283,7 @@ impl Editor {
                 self.scene_view(ui, runtime, &mut actions);
             });
         self.command_windows(ctx, &mut actions);
+        self.world_window(ctx, &mut actions);
         self.save_prefs();
         actions
     }
@@ -756,6 +757,9 @@ impl Editor {
         let audio = self.selected.as_deref().and_then(|id| self.audio_clips(id));
         let mut audio_clip: Option<String> = None;
         let mut audio_preset: Option<&'static str> = None;
+        self.refresh_tag_cache();
+        let mut tag_request = None;
+        let mut add_component = None;
         let Some(draft) = self.draft.as_mut() else {
             caption(ui, "Select an object in the hierarchy or viewport.");
             return;
@@ -815,6 +819,21 @@ impl Editor {
                             .changed();
                         if let Some(prefab) = &entity.prefab {
                             caption(ui, format!("Prefab · {prefab}"));
+                        }
+                        tag_request = super::world_panel::tag_chips(
+                            ui,
+                            &mut self.tag_ui,
+                            !draft.dirty(),
+                            &mut self.rects,
+                        );
+                        if !self.extra.is_empty() {
+                            ui.label(
+                                RichText::new(
+                                    "Several objects selected · Transform and component field edits apply to each one that has the field",
+                                )
+                                .small()
+                                .color(WARNING),
+                            );
                         }
                         ui.add_space(8.0);
                         // First for animated objects: the inspector is short on laptop screens
@@ -910,8 +929,10 @@ impl Editor {
                                     ui,
                                     &self.world,
                                     &self.component_hints,
+                                    &self.registry,
                                     entity,
                                     draft,
+                                    &mut add_component,
                                 )
                                 .or(structural.take());
                             });
@@ -1015,7 +1036,7 @@ impl Editor {
             );
         }
         if copy || write.is_some() {
-            match draft.edits() {
+            match super::inspector_edits(&self.world, &self.registry, draft, &self.extra) {
                 Ok(edits) if !edits.is_empty() => {
                     if copy {
                         ui.ctx().copy_text(
@@ -1095,6 +1116,17 @@ impl Editor {
         if let Some(clip) = audio_clip {
             actions.extend(self.set_audio_clip(&clip));
         }
+        if let Some(request) = tag_request {
+            let before = actions.len();
+            actions.extend(self.edit_tags(&request.add, &request.remove));
+            // The typed tag is kept when it was refused (e.g. invalid_tag), so it can be fixed.
+            if !request.add.is_empty() && (actions.len() > before || !self.error) {
+                self.tag_ui.input.clear();
+            }
+        }
+        if let Some(component) = add_component {
+            actions.extend(self.add_component(&component));
+        }
         if let Some(preset) = audio_preset {
             actions.extend(self.add_audio_clip(preset));
         }
@@ -1143,6 +1175,9 @@ impl Editor {
         let mut open_prefab = None;
         let mut instantiate: Option<String> = None;
         let mut open_material = None;
+        let mut declare: Option<String> = None;
+        // Resource / material / prefab drafts would be reset by the write; the object draft is not.
+        let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match self.dock {
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
@@ -1314,7 +1349,18 @@ impl Editor {
                         if let Some(id) = &target {
                             if link.on_hover_text(format!("Select {id}")).clicked() { jump = Some(id.clone()); }
                         }
-                        ui.label(p["message"].as_str().unwrap_or(""));
+                        let message = p["message"].as_str().unwrap_or("");
+                        ui.label(message);
+                        // Declare-on-use: an event typed into a field that behavior.program
+                        // does not declare yet (declared and applied with the Inspector draft).
+                        if let Some(name) = axiom_core::ops::undeclared_event(message) {
+                            let button = ui
+                                .add_enabled(self.saving == 0 && !asset_draft, egui::Button::new(RichText::new(format!("Declare event {name}")).color(ACCENT)))
+                                .on_hover_text("Adds it to behavior.program (ACL: event declare NAME); a waiting Inspector draft is applied with it");
+                            #[cfg(test)]
+                            self.rects.insert(format!("problem:declare:{name}"), button.rect);
+                            if button.clicked() { declare = Some(name.to_owned()); }
+                        }
                     });
                 }
             }
@@ -1396,6 +1442,9 @@ impl Editor {
         }
         if let Some(id) = open_material {
             self.open_material(&id);
+        }
+        if let Some(name) = declare {
+            actions.extend(self.declare_event(&name));
         }
     }
 }
@@ -1550,8 +1599,10 @@ fn component_editor(
     ui: &mut Ui,
     world: &World,
     hints: &std::collections::BTreeMap<String, Value>,
+    registry: &axiom_core::Registry,
     entity: &Entity,
     draft: &mut Draft,
+    add_component: &mut Option<String>,
 ) -> Option<CoreEdit> {
     let inherited = entity.prefab.as_ref().and_then(|p| world.prefabs.get(p));
     let keys: std::collections::BTreeSet<_> = entity
@@ -1562,7 +1613,8 @@ fn component_editor(
         .cloned()
         .collect();
     let mut remove = None;
-    ui.add_enabled_ui(!draft.component_dirty && !draft.form_dirty, |ui| {
+    // Picking in Add component writes at once, so any unapplied draft edit blocks it.
+    ui.add_enabled_ui(!draft.dirty(), |ui| {
         ui.horizontal_wrapped(|ui| {
             for key in &keys {
                 if ui
@@ -1584,37 +1636,46 @@ fn component_editor(
                 draft.open_component(world, entity, &id);
             }
         });
-        // Picker over every component this world can use that the object lacks.
-        let mut available: Vec<&String> = hints
-            .keys()
-            .chain(world.component_schemas.keys())
-            .filter(|id| {
-                !keys.contains(*id)
-                    && id.as_str() != "core.transform"
-                    && hints.get(*id).is_none_or(|_| {
-                        world
-                            .capabilities
-                            .keys()
-                            .any(|c| id.starts_with(&format!("{c}.")))
-                    })
-            })
-            .collect();
-        available.sort();
-        available.dedup();
-        let mut chosen = None;
+        // Picker over every installed component the object lacks. Picking one writes it with
+        // its default and whatever capability/systems it needs (ops::add_component).
         egui::ComboBox::from_id_salt("add_component")
-            .selected_text(format!("Add component… ({})", available.len()))
+            .selected_text("Add component…")
             .width(220.0)
             .show_ui(ui, |ui| {
-                for id in &available {
-                    if ui.selectable_label(false, id.as_str()).clicked() {
-                        chosen = Some((*id).clone());
+                let mut available: Vec<&String> = registry
+                    .components
+                    .keys()
+                    .chain(world.component_schemas.keys())
+                    .filter(|id| !keys.contains(*id) && id.as_str() != "core.transform")
+                    .collect();
+                available.sort();
+                available.dedup();
+                for id in available {
+                    let needs = axiom_core::ops::requirements(registry, id);
+                    let missing: Vec<&str> = needs
+                        .capabilities
+                        .iter()
+                        .filter(|c| !world.capabilities.contains_key(*c))
+                        .chain(needs.systems.iter().filter(|s| !world.systems.contains(s)))
+                        .map(String::as_str)
+                        .collect();
+                    let text = if missing.is_empty() {
+                        RichText::new(id.as_str())
+                    } else {
+                        RichText::new(format!("{id}   + {}", missing.join(", "))).color(MUTED)
+                    };
+                    let response = ui.selectable_label(false, text);
+                    let response = if missing.is_empty() {
+                        response
+                    } else {
+                        response
+                            .on_hover_text("Adds what it needs to the world in the same revision")
+                    };
+                    if response.clicked() {
+                        *add_component = Some(id.clone());
                     }
                 }
             });
-        if let Some(id) = chosen {
-            draft.open_component(world, entity, &id);
-        }
     });
     if !draft.component.is_empty() && draft.component != "core.transform" {
         let known = hints.contains_key(&draft.component)

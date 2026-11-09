@@ -1,6 +1,6 @@
 # Rebuilds content/street from its authoring script (content/street/build) through the public
-# protocol: a fresh database from content/empty, the typed seed request, then every ACL stage in
-# order (one revision each), verify, and export. The database is a throwaway under target/.
+# protocol: a fresh database from content/empty, then every ACL stage in order (00-seed.acl
+# first; one revision each), verify, and export. The database is a throwaway under target/.
 # Usage: powershell -NoProfile -File scripts/build-street.ps1 [-Exe target\release\axiom.exe] [-NoExport]
 param(
     [string]$Exe = "target\debug\axiom.exe",
@@ -21,8 +21,6 @@ function Invoke-Axiom([string[]]$Arguments) {
 }
 
 Invoke-Axiom @("--pack", "content\empty", "query") | Out-Null
-$seed = Invoke-Axiom @("apply", "content\street\build\00-seed.apply.json")
-Write-Host "seed: rev $(($seed | ConvertFrom-Json).rev)"
 foreach ($stage in Get-ChildItem content\street\build\*.acl | Sort-Object Name) {
     $out = Invoke-Axiom @("acl", $stage.FullName)
     Write-Host "$($stage.Name): $(($out -split "`n")[0].Trim())"

@@ -205,8 +205,10 @@ impl Target {
                         map.insert(key, value.context("field value missing")?);
                     } else if let Some(list) = parent.as_array_mut() {
                         let index = key.parse::<usize>()?;
-                        *list.get_mut(index).context("field index out of range")? =
-                            value.context("field value missing")?;
+                        let len = list.len();
+                        *list.get_mut(index).with_context(|| {
+                            format!("field index {index} out of range ({len} item(s)); add one with append SEL FIELD VALUE")
+                        })? = value.context("field value missing")?;
                     } else {
                         anyhow::bail!("field parent is not a record or array");
                     }

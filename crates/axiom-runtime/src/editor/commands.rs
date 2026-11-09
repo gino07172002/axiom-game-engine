@@ -13,6 +13,9 @@ pub(crate) struct Command {
     pub menu: &'static str,
     /// Default shortcut(s), `|`-separated, e.g. `Ctrl+Y|Ctrl+Shift+Z`. Empty for none.
     pub keys: &'static str,
+    /// The argument the command takes (`editor_view {command, arg}`), empty for none. From
+    /// the menu or palette such a command opens the UI where the person picks the argument.
+    pub arg: &'static str,
 }
 const fn c(
     id: &'static str,
@@ -25,9 +28,27 @@ const fn c(
         title,
         menu,
         keys,
+        arg: "",
     }
 }
-pub(crate) const MENUS: [&str; 7] = ["File", "Edit", "View", "Object", "Play", "Window", "Help"];
+/// A command with an argument (no default shortcut).
+const fn a(
+    id: &'static str,
+    title: &'static str,
+    menu: &'static str,
+    arg: &'static str,
+) -> Command {
+    Command {
+        id,
+        title,
+        menu,
+        keys: "",
+        arg,
+    }
+}
+pub(crate) const MENUS: [&str; 8] = [
+    "File", "Edit", "View", "Object", "World", "Play", "Window", "Help",
+];
 pub(crate) const COMMANDS: &[Command] = &[
     c("file.verify", "Verify World", "File", ""),
     c(
@@ -196,6 +217,43 @@ pub(crate) const COMMANDS: &[Command] = &[
         "",
     ),
     c("object.drop_to_ground", "Drop to Ground", "Object", "End"),
+    a("object.tag", "Edit Tags…", "Object", "+TAG -TAG …"),
+    a(
+        "object.add_component",
+        "Add Component…",
+        "Object",
+        "COMPONENT",
+    ),
+    c("window.world", "World Settings…", "World", "Ctrl+9"),
+    a("world.set_id", "Set World ID…", "World", "ID"),
+    a("world.set_title", "Set World Title…", "World", "TEXT"),
+    a(
+        "world.capability_add",
+        "Add Capability…",
+        "World",
+        "CAPABILITY",
+    ),
+    a(
+        "world.capability_remove",
+        "Remove Capability…",
+        "World",
+        "CAPABILITY",
+    ),
+    a("world.system_add", "Add System…", "World", "SYSTEM"),
+    a("world.system_remove", "Remove System…", "World", "SYSTEM"),
+    a(
+        "world.resource_create",
+        "Create Resource…",
+        "World",
+        "RESOURCE [JSON]",
+    ),
+    a(
+        "world.resource_remove",
+        "Remove Resource…",
+        "World",
+        "RESOURCE",
+    ),
+    a("event.declare", "Declare Event…", "World", "NAME"),
     c("play.start", "Play", "Play", "F5"),
     c("window.changes", "Changes", "Window", "Ctrl+1"),
     c("window.proposals", "Proposals", "Window", "Ctrl+2"),
@@ -429,6 +487,8 @@ impl Editor {
             | "object.camera_follow"
             | "object.main_camera"
             | "object.tween_clip"
+            | "object.tag"
+            | "object.add_component"
                 if nothing =>
             {
                 Some("nothing selected")
@@ -495,6 +555,17 @@ impl Editor {
             | "object.child_cube"
             | "object.child_camera"
             | "object.create_prefab"
+            | "object.tag"
+            | "object.add_component"
+            | "world.set_id"
+            | "world.set_title"
+            | "world.capability_add"
+            | "world.capability_remove"
+            | "world.system_add"
+            | "world.system_remove"
+            | "world.resource_create"
+            | "world.resource_remove"
+            | "event.declare"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")
@@ -528,15 +599,30 @@ impl Editor {
 
     /// Runs a registered command. Unknown or blocked commands are errors, never no-ops.
     pub(crate) fn run_command(&mut self, id: &str) -> anyhow::Result<Vec<Action>> {
-        anyhow::ensure!(
-            command(id).is_some(),
-            "unknown editor command {id}; see discover editor (commands)"
-        );
+        self.run_command_with(id, None)
+    }
+
+    /// Runs a registered command with its argument (`editor_view {command, arg}`). A command
+    /// that takes an argument but gets none opens the UI where a person picks it.
+    pub(crate) fn run_command_with(
+        &mut self,
+        id: &str,
+        arg: Option<&str>,
+    ) -> anyhow::Result<Vec<Action>> {
+        let Some(cmd) = command(id) else {
+            anyhow::bail!("unknown editor command {id}; see discover editor (commands)");
+        };
         if let Some(reason) = self.command_blocked(id) {
             anyhow::bail!("{id} is unavailable: {reason}");
         }
+        if cmd.arg.is_empty() {
+            anyhow::ensure!(arg.is_none(), "{id} takes no argument");
+        } else {
+            return Ok(self.run_with_arg(id, arg));
+        }
         let mut actions = vec![];
         match id {
+            "window.world" => self.world_panel.open = !self.world_panel.open,
             "file.verify" => actions.push(Action::Verify),
             "file.copy_context" => {
                 self.pending_copy = Some(self.context_text());
@@ -677,6 +763,9 @@ impl Editor {
                                 | "help.copy_discovery"
                                 | "view.perspective"
                                 | "view.bookmark.save.1"
+                                | "object.tag"
+                                | "world.set_id"
+                                | "world.capability_add"
                         ) {
                             ui.separator();
                         }
@@ -687,6 +776,7 @@ impl Editor {
                             "view.space" => Some(self.prefs.local_space),
                             "view.gizmos" => Some(self.prefs.gizmos),
                             "view.nav_grid" => Some(self.prefs.nav_grid),
+                            "window.world" => Some(self.world_panel.open),
                             id if ViewMode::from_command(id).is_some() => {
                                 Some(ViewMode::from_command(id) == Some(self.orbit.mode))
                             }
@@ -976,9 +1066,10 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
         "editor_commands".into(),
         serde_json::json!({
             "run": {"op":"editor_view","command":"edit.duplicate"},
+            "run_with_arg": {"op":"editor_view","command":"world.capability_add","arg":"physics"},
             "cli": "axiom --connect 127.0.0.1:4252 view --command edit.duplicate",
             "rule": "same registry as the menu bar, palette and shortcuts; refused while a human draft is dirty or when the command is unavailable (the error says why)",
-            "commands": COMMANDS.iter().map(|c| serde_json::json!([c.id, c.title])).collect::<Vec<_>>(),
+            "commands": COMMANDS.iter().map(|c| if c.arg.is_empty() { serde_json::json!([c.id, c.title]) } else { serde_json::json!([c.id, c.title, c.arg]) }).collect::<Vec<_>>(),
             // Content-changing commands share axiom_core::ops with these ACL verbs, so an agent
             // gets the same result with no editor running (axiom --db DB acl -e "...").
             "headless": {
@@ -1017,6 +1108,20 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.create_prefab": "prefab create [PID] from ID",
                 "hierarchy.reorder": "move ID before OTHER|after OTHER|end",
                 "object.drop_to_ground": "ground SEL",
+                "object.tag": "tag SEL +TAG -TAG (Inspector tag chips)",
+                "object.add_component": "add SEL COMPONENT [JSON] (adds the capability/systems it needs)",
+                "window.world": "World panel: world id|title, capability add|remove, system add|remove, resource create|remove (open a resource: editor_view {open: resource:ID})",
+                "world.set_id": "world id ID",
+                "world.set_title": "world title TEXT",
+                "world.capability_add": "capability add ID",
+                "world.capability_remove": "capability remove ID",
+                "world.system_add": "system add ID",
+                "world.system_remove": "system remove ID",
+                "world.resource_create": "resource create ID [JSON]",
+                "world.resource_remove": "resource remove ID",
+                "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
+                "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
+                "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",
                 "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.bookmark.save|recall.N, RMB+WASD fly, box select (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
@@ -1082,9 +1187,10 @@ mod tests {
                     panic!("{k} bound to both {other} and {}", cmd.id);
                 }
             }
-            if let Some(dock) = cmd.id.strip_prefix("window.") {
+            if let Some(dock) = cmd.id.strip_prefix("window.").filter(|d| *d != "world") {
                 assert!(dock_from_name(dock).is_some(), "{}", cmd.id);
             }
+            assert!(cmd.arg.is_empty() || cmd.keys.is_empty(), "{}", cmd.id);
         }
         assert_eq!(
             Shortcut::parse("Ctrl+Shift+Z"),
