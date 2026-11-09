@@ -106,8 +106,54 @@ GPU 編輯器(release,外部 `set_field` 經 bridge,最終版 vs 基準交錯 2 
 
 ## 剩餘熱點(依量測排序)與下一步
 
-1. **本地編輯的 commit 在主執行緒**(4096:~330 ms;小世界:~110–160 ms)。組成(4096,debug 探針比例):fsync(WAL `synchronous=FULL`,約 110 ms 底線)、兩次 IR 編譯(新+舊,約 1/3)、`Target::edit` 的整個世界 JSON 往返、diff 摘要、序列化。要達 16 ms 只能:(a) 編輯器寫入改為非同步(worker 自有連線,草稿在結果回來前鎖定),或 (b) 由擁有者決定是否放寬耐久性(`synchronous=NORMAL`);(c) 可另外快取最新修訂的 `CompiledWorld` 省掉一次編譯。未做:超出本次範圍且 (b) 是需求變更。
+1. **(已處理:2026-11-09 改為背景寫入器,主執行緒 p95 ≤2.6 ms,見文末;下列為當時紀錄)本地編輯的 commit 在主執行緒**(4096:~330 ms;小世界:~110–160 ms)。組成(4096,debug 探針比例):fsync(WAL `synchronous=FULL`,約 110 ms 底線)、兩次 IR 編譯(新+舊,約 1/3)、`Target::edit` 的整個世界 JSON 往返、diff 摘要、序列化。要達 16 ms 只能:(a) 編輯器寫入改為非同步(worker 自有連線,草稿在結果回來前鎖定),或 (b) 由擁有者決定是否放寬耐久性(`synchronous=NORMAL`);(c) 可另外快取最新修訂的 `CompiledWorld` 省掉一次編譯。未做:超出本次範圍且 (b) 是需求變更。
 2. **swapchain 取得阻塞**:本機(MX150/Optimus,Vulkan,AutoVsync)`Surface::get_current_texture` 每幀阻塞 200–475 ms,隱藏或可見視窗、基準或新版皆同(rts-bench 300 幀:基準 60.2 s、新版 59.5 s)。新的 `observe` → `frame.last_slow.phases_ms.render_present` 可直接看到。這也讓 `scripts/m2-smoke-test.ps1` 的 900 幀 GPU 段超過 60 s 逾時。下一步:試 `desired_maximum_frame_latency`、Mailbox/Immediate、DX12 後端或內顯,逐一量測。
 3. **外部修訂偶發快取未命中**:bridge commit 與寫入共享快取之間的極短空窗被主執行緒輪詢撞到時,主執行緒仍會解碼一次(4096:17–38 ms,約 15% 樣本)。
 4. **CPU 蒙皮每幀配置**:axiom-town `render_frame` 1.5 ms、1.9 MB/幀(`skin::deform` 產生新頂點);可改為重用緩衝或 GPU 蒙皮。
 5. 新 shader 內容第一次出現時仍在主執行緒編譯 16 條 pipeline(約 20 ms/程式);可改為背景建立或延遲建立變體。
+
+## 2026-11-09:編輯器 commit 移到背景寫入器(剩餘熱點第 1 項)
+
+決策(擁有者):選 (a) 編輯器寫入非同步;**耐久性不變**(`synchronous` 維持預設 FULL,未改任何 PRAGMA)。(c) 快取已編譯世界:目標已達成,依 rigorous-perf「達標即停」未做(見下方「編輯→生效」)。
+
+### 設計(`crates/axiom-runtime/src/writer.rs`、`app.rs`)
+
+- **寫入器執行緒**:`axiom-editor-writer`,自己的 SQLite 連線(與主連線/bridge 共享已解碼修訂快取),依序執行 `Store::execute`。編輯器所有 commit 都走它:`Action::Write`(Inspector 套用、gizmo 拖曳、階層操作、時間軸、所有 `ops::*` 編輯器路徑、Preview)、Undo/Redo、History 還原、提案核准/拒絕。bridge/AI 與 CLI 仍用自己的同步 Store,協定輸出不變。
+- **佇列**:主執行緒 FIFO,上限 `MAX_PENDING = 8`,同時只有一筆在寫入器上;下一筆在前一筆結果回來後才送出,CAS `expected_rev` 在送出時解析為前一筆產生的修訂(外部寫入夾在中間仍會衝突)。
+- **樂觀世界**:每筆 apply 在 worker job(`jobs::Job`,watchdog 30 s)上做「複製 + 套用 + 編譯驗證」,完成後編輯器改顯示這個世界、後續編輯建立在它之上;`editor.rev` 維持最後採用的修訂,佇列清空才採用 commit 結果(`Editor::commit_landed`:保留 undo、編輯中的草稿與拖曳)。驗證失敗時草稿保持原樣(和舊版一樣可修正再套用)。
+- **何時拒絕(附原因)**:佇列滿;前一筆仍在準備樂觀世界(4096 世界約 75 ms,小世界 2–15 ms);佇列裡有 undo/還原/提案(其結果世界要 commit 後才知道)。Play 在有待存寫入時拒絕。原因寫進狀態列與 Problems(`editor_saving`)。bridge `editor_view` 遇到這些情況改到下一幀處理(順序不變),回覆在該筆 commit 完成(或失敗)後才送出,語意同舊版。
+- **失敗/衝突**:該筆的錯誤(例如 `revision_conflict`)進 Problems;排在後面的寫入全部丟棄並列出(`write_discarded`),編輯器回到資料庫內容(含先落地的外部修訂),絕不覆蓋。
+- **watchdog**:單筆 commit 超過 30 s → SQLite interrupt(交易回滾);再 5 s 不回應 → 寫入器脫離、未開始的請求一律拒絕、回報 `writer_stalled`、改回主執行緒同步寫入。
+- **關閉**:`run()` 結束時 `close_writes`(上限 30 s)送完佇列並以剩餘時間 join;逾時或 join 失敗 → stderr + 程序錯誤結束,訊息列出未確認筆數。
+- **可觀測**:`observe` → `editor.pending_commits`、`editor.last_commit_ms`、`editor.writes{pending, in_flight{what, elapsed_ms, interrupted}, committed, failed, discarded, last_commit_rev, recent_ms[16]}`;狀態列 `saving N…`。幀剖析器現在從幀開頭計時,第一段 `writes_bridge` 含寫入結果與 bridge 請求(以前這段不在 `frame.last_slow` 裡)。
+- 寫入排隊中時不做 0.25 s 外部輪詢 reload(避免和寫入器快取寫入競速而在主執行緒解碼);外部修訂會讓下一筆寫入衝突、佇列清空時被採用。
+
+### 量測(release,`perf_bench` 編輯器路徑,5 輪交錯 HEAD 1bf44ac ↔ 本版,每輪每包 20 次編輯捨棄第 1 次;中位數 [各輪範圍])
+
+「編輯器主執行緒/commit」:本版 = 送出 + 顯示樂觀世界 + 處理結果三段主執行緒時間總和(`edit_live.editor_main_ms`);HEAD = 整個同步 `editor_action`(commit + reload 請求,p95 為兩者 p95 相加,上限估計)。
+
+| 內容包 | 編輯器主執行緒/commit p50 HEAD → 本版 | p95 HEAD → 本版 | 單段最大 p95(本版) | 編輯→生效 p50 HEAD → 本版 | 編輯→生效 p95 HEAD → 本版 | 寫入器 commit p50(本版) | 樂觀世界就緒 p50 |
+|---|---|---|---|---|---|---|---|
+| 生成 4096 | 313.4 [302..319] → **1.18** [0.94..1.47] | 551 [513..594] → **2.62** [1.98..3.47] | 2.39 | 347 [341..355] → **375** [367..405] | 581 → 592 | 334 | 75.0 ms |
+| light-lab | 112.3 → **1.29** | 252 → **1.78** | 1.50 | 113.5 → 113.5 | 253 → 147 | 110 | 2.0 ms |
+| axiom-town | 120.5 → **1.35** | 232 → **2.12** | 1.85 | 132.5 → 128.6 | 246 → 181 | 117 | 4.2 ms |
+| fps | 128.1 → **1.41** | 149 → **2.07** | 1.81 | 136.8 → 136.4 | 161 → 224 | 128 | 9.6 ms |
+| effects-tour | 141.0 → **1.31** | 185 → **1.99** | 1.80 | 171.1 → 169.6 | 220 → 273 | 139 | 14.5 ms |
+| rts (frontier) | 147.2 → **1.58** | 339 → **2.07** | 1.87 | 168.0 → 164.0 | 358 → 354 | 141 | 14.4 ms |
+
+- 噪音底線(HEAD 兩輪,`noise-head.jsonl`):小世界 commit p50 兩輪差最多 ~34 ms、p95 差最多 ~190 ms;4096 commit p50 差 ~9 ms。
+- **目標**:編輯器主執行緒每次 commit ≤16 ms p95 → **達成**(4096:2.6 ms;小世界 ≤2.1 ms;最差單輪 3.5 ms)。剩下的主執行緒成本約 1 ms 是處理結果時啟動背景執行期建置(`reload.request_ms`)。
+- **編輯→生效**:小世界在噪音內不變。**4096 p50 變慢約 28 ms(347 → 375,超出 HEAD 各輪範圍)**:寫入器 commit 本身 313 → 334 ms,推測是同時在另一核心做樂觀世界(複製 + 編譯 ~75 ms)搶 CPU(4C 筆電),未進一步拆解。若要收回,下一步是 (c)(快取最新修訂的 `CompiledWorld` 省一次編譯)或讓樂觀世界與 commit 共用一次編譯。
+- 被量測但不改:無(只有一個變因)。
+
+重跑:`powershell -File scripts/perf-bench.ps1 -Exe <perf_bench.exe> -Repeats 1 -Edits 20 -Ticks 300 -Packs ...` HEAD 與本版交錯各 5 次;`perf_bench --sync-writes` 量舊的主執行緒 commit。GPU 編輯器路徑:`scripts/perf-live-edit.ps1 -EditorCommand object.cube`(每次編輯 = `editor_view` 跑一個編輯器指令,回覆在 commit 後)。
+GPU 編輯器(release,隱藏視窗,MX150/Vulkan;`perf-live-edit.ps1 -EditorCommand`,每包每版 1 輪 × 10 次,HEAD 與本版依序執行;client 端數字含 PowerShell TCP 連線與本機每幀 200–475 ms 的 present 阻塞,單輪,只當參考):
+
+| 內容包 / 編輯 | client 編輯→生效 p50 / p95 HEAD → 本版 | `editor_view` 回覆(= commit 完成)p50 HEAD → 本版 | 寫入器 commit p50(本版) | 修訂順序 / 失敗 |
+|---|---|---|---|---|
+| light-lab / `object.cube` | 517 / 539 → 768 / 1040 ms | 389 → 504 ms | 146 ms | 2..12 皆 `apply` 依序;11 committed / 0 failed |
+| 生成 4096 / `edit.delete` 選 `box/i` | 827 / 1040 → 1053 / 1829 ms | 555 → 766 ms | 317 ms | 2..12 依序;11 committed / 0 failed |
+
+- **GPU 路徑的編輯→生效多約一幀**(這台機器一幀 ≈ 250 ms):舊版在處理 bridge 請求的那一幀內同步 commit、同幀啟用;本版 commit 在 present 阻塞期間於寫入器完成,幀尾收到結果才開始背景建置,下一幀才上線。60 Hz 機器上這一幀是 ≤16 ms。可再改進:幀尾收到結果後在剩餘預算內等候建置(像第 12 項),未做。
+- 經 bridge 無法造出多於 1 筆的佇列(bridge 一次處理一個連線,`editor_view` 回覆又等 commit 完成),所以「快速連續編輯依序落地」在 GPU 上驗證的是連續 10 次、每次前一次完成後立即送出;佇列深度 >1 的順序、衝突、undo、關閉 flush、watchdog 由 `app::tests` 的 7 個測試覆蓋。
+- 寫入器版的 `frame.last_slow` 例:4096 一幀 19.8 ms,其中 12.1 ms 是既有的「本幀剩餘預算內等候背景建置」(第 12 項),`writes_bridge` 0.006 ms。HEAD 的幀剖析器不含 bridge 請求處理,看不到當時的 commit 卡頓(主執行緒成本以上方 headless 數字為準)。

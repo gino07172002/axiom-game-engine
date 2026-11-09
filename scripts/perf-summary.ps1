@@ -21,6 +21,15 @@ $metrics = [ordered]@{
     'edit->live ms p50'      = { param($r) $r.edit_live.edit_to_live_ms.p50 }
     'edit->live ms p95'      = { param($r) $r.edit_live.edit_to_live_ms.p95 }
     'commit ms p50'          = { param($r) $r.edit_live.commit_ms.p50 }
+    'commit ms p95'          = { param($r) $r.edit_live.commit_ms.p95 }
+    # Editor-side main-thread time per commit. Builds before the background writer report
+    # no editor_main_ms: there the whole commit ran on the main thread (commit + request;
+    # the p95 row is then the sum of both p95s, an upper bound).
+    'editor main ms p50'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p50 } else { $r.edit_live.commit_ms.p50 + $r.edit_live.request_ms.p50 } }
+    'editor main ms p95'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p95 } else { $r.edit_live.commit_ms.p95 + $r.edit_live.request_ms.p95 } }
+    'editor main ms max'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.max } else { $r.edit_live.commit_ms.max + $r.edit_live.request_ms.max } }
+    '  piece max ms p95'     = { param($r) if ($r.edit_live.editor_piece_max_ms) { $r.edit_live.editor_piece_max_ms.p95 } else { [double]::NaN } }
+    '  staged ms p50'        = { param($r) if ($r.edit_live.staged_ms) { $r.edit_live.staged_ms.p50 } else { [double]::NaN } }
     'main reload ms p50'     = { param($r) $r.edit_live.main_thread_reload_ms.p50 }
     'main reload ms p95'     = { param($r) $r.edit_live.main_thread_reload_ms.p95 }
     '  read ms p50'          = { param($r) $r.edit_live.read_ms.p50 }

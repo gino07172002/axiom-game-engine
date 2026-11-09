@@ -396,8 +396,8 @@ impl Editor {
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
         match id {
-            "edit.undo" if self.undo.is_empty() => Some("nothing to undo"),
-            "edit.redo" if self.redo.is_empty() => Some("nothing to redo"),
+            "edit.undo" if self.undo.is_empty() && self.saving == 0 => Some("nothing to undo"),
+            "edit.redo" if self.redo.is_empty() && self.saving == 0 => Some("nothing to redo"),
             "edit.paste" if self.clipboard.is_empty() => Some("nothing copied"),
             "edit.duplicate"
             | "edit.delete"
@@ -876,6 +876,18 @@ impl Editor {
                     ui.separator();
                 };
                 item(ui, format!("{:.0} FPS", self.fps));
+                if self.saving > 0 {
+                    ui.label(
+                        RichText::new(format!("saving {}…", self.saving))
+                            .small()
+                            .monospace()
+                            .color(egui::Color32::from_rgb(255, 214, 120)),
+                    )
+                    .on_hover_text(
+                        "Edits are committed in order on the background writer; the scene shows them already",
+                    );
+                    ui.separator();
+                }
                 if let Some(job) = &self.scenario_job {
                     let (done, total) = job.progress();
                     item(

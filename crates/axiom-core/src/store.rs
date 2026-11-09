@@ -5,6 +5,13 @@ use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 /// Shared decoded copy of the newest known revision.
 pub type LatestRevision = std::sync::Arc<std::sync::Mutex<Option<(i64, std::sync::Arc<World>)>>>;
+/// Aborts the SQL statement a `Store` connection is running, from any thread.
+pub struct Interrupt(rusqlite::InterruptHandle);
+impl Interrupt {
+    pub fn interrupt(&self) {
+        self.0.interrupt();
+    }
+}
 pub struct Store {
     connection: Connection,
     pub registry: Registry,
@@ -109,6 +116,11 @@ impl Store {
     /// Use `cache` from a connection to the same database file.
     pub fn share_latest_cache(&mut self, cache: LatestRevision) {
         self.latest = cache;
+    }
+    /// A handle another thread can use to abort the statement this connection is running
+    /// (the transaction then rolls back). Used by watchdogs of background writers.
+    pub fn interrupt_handle(&self) -> Interrupt {
+        Interrupt(self.connection.get_interrupt_handle())
     }
     pub fn proposal_signature(&self) -> Result<(i64, i64)> {
         Ok(self.connection.query_row(

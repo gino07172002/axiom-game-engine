@@ -10,8 +10,10 @@
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
-//! edit → live latency through the editor write path (phases from `App::reload_after`),
-//! and process working set. A counting global allocator exists in this binary only.
+//! edit → live latency through the editor write path (background writer by default,
+//! `--sync-writes` for the old main-thread commit; editor-side main-thread time per commit
+//! in `edit_live.editor_main_ms`; phases from `App::reload_after`), and process working
+//! set. A counting global allocator exists in this binary only.
 use anyhow::{Context, Result};
 use axiom_core::{CoreEdit, Edit, World};
 use axiom_runtime::{world::RuntimeRegistry, ActionMap, WorldRuntime};
@@ -449,6 +451,9 @@ fn main() -> Result<()> {
         db,
         mode == "editor",
         !args.iter().any(|a| a == "--sync"),
+        // Editor commits on the background writer (the editor's real path); `--sync-writes`
+        // measures the old main-thread commit.
+        !args.iter().any(|a| a == "--sync-writes"),
         batches,
     )?;
     let samples = &samples[1..]; // first edit warms SQLite statement caches
@@ -477,6 +482,10 @@ fn main() -> Result<()> {
             "mode":mode,"edits":samples.len(),"target":target,
             "edit_to_live_ms":pick(&|s| s.edit_to_live_ms),
             "commit_ms":pick(&|s| s.commit_ms),
+            "writer":!args.iter().any(|a| a == "--sync-writes"),
+            "editor_main_ms":pick(&|s| s.editor_main_ms),
+            "editor_piece_max_ms":pick(&|s| s.editor_piece_max_ms),
+            "staged_ms":pick(&|s| s.staged_ms),
             "main_thread_reload_ms":pick(&|s| s.reload.total_ms),
             "read_ms":pick(&|s| s.reload.read_ms),
             "editor_clone_ms":pick(&|s| s.reload.editor_clone_ms),

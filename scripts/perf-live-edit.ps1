@@ -13,6 +13,13 @@ param(
     # between the file text and the text plus a comment (like undo/redo of a shader edit).
     [string]$ShaderProgram = '',
     [string]$ShaderFile = '',
+    # Editor mode: each edit is an editor commit (`editor_view` running this registered command,
+    # e.g. object.cube), committed by the editor itself instead of the bridge's own store.
+    # The reply arrives once the commit landed; `bridge_commit_ms` is then that reply time.
+    [string]$EditorCommand = '',
+    # Optional: select "<prefix><i>" for edit i in the same request (e.g. -EditorCommand edit.delete
+    # -EditorSelectPrefix box/ on a world at its entity budget).
+    [string]$EditorSelectPrefix = '',
     [int]$Port = 4471,
     [string]$Exe = 'target/release/axiom.exe',
     [string]$Out = ''
@@ -62,6 +69,26 @@ try {
     for ($i = 0; $i -le $Edits; $i++) {
         $p = @(($pos[0] + 0.001 * ($i + 1)), $pos[1], $pos[2])
         $watch = [Diagnostics.Stopwatch]::StartNew()
+        if ($EditorCommand) {
+            $view = @{op = 'editor_view'; command = $EditorCommand }
+            if ($EditorSelectPrefix) { $view.select = @("$EditorSelectPrefix$i") }
+            $reply = Send-Bridge $view
+            if (-not $reply.ok) { throw "editor command failed: $($reply | ConvertTo-Json -Compress -Depth 10)" }
+            $commitMs = $watch.Elapsed.TotalMilliseconds
+            $next = $rev + 1
+            $live = Wait-Observation { param($o) [int64]$o.rev -eq $next -and $o.activation -eq 'applied' -and $o.editor.authoring_rev -eq $next }
+            $rev = $next
+            if ($i -eq 0) { continue }
+            $last = $live.reload.last
+            $rows += [pscustomobject]@{
+                client_edit_to_live_ms = $watch.Elapsed.TotalMilliseconds
+                bridge_commit_ms       = $commitMs
+                main_thread_ms         = $last.total_ms
+                writer_commit_ms       = [double]$live.editor.last_commit_ms
+                slow_frames            = [double]$live.frame.slow_frames
+            }
+            continue
+        }
         $edit = if ($ShaderProgram) {
             $text = if ($i % 2 -eq 0) { $shaderText + "`n// perf edit" } else { $shaderText }
             @{kind = 'set_field'; target = @{kind = 'resource'; id = 'render.shaders' }; field = "/shaders/$ShaderProgram/wgsl"; value = $text }
@@ -91,6 +118,7 @@ try {
         }
     }
     $final = Send-Bridge @{op = 'observe' }
+    $history = Send-Bridge @{op = 'history'; limit = 64 }
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
 }
@@ -99,8 +127,9 @@ function Stat($name) {
     $n = $v.Count
     [pscustomobject]@{ metric = $name; p50 = $v[[math]::Ceiling(($n - 1) * 0.5)]; p95 = $v[[math]::Ceiling(($n - 1) * 0.95)]; min = $v[0]; max = $v[$n - 1] }
 }
-$summary = @('client_edit_to_live_ms', 'bridge_commit_ms', 'main_thread_ms', 'read_ms', 'editor_clone_ms', 'editor_update_ms', 'compile_ms', 'systems_ms', 'transfer_ms', 'prepare_gpu_ms', 'reconcile_ms') | ForEach-Object { Stat $_ }
-$result = [pscustomobject]@{ pack = $Pack; exe = $Exe; edits = $rows.Count; summary = $summary; samples = $rows; reload_counters = $final.observation.reload }
+$names = if ($EditorCommand) { @('client_edit_to_live_ms', 'bridge_commit_ms', 'main_thread_ms', 'writer_commit_ms') } else { @('client_edit_to_live_ms', 'bridge_commit_ms', 'main_thread_ms', 'read_ms', 'editor_clone_ms', 'editor_update_ms', 'compile_ms', 'systems_ms', 'transfer_ms', 'prepare_gpu_ms', 'reconcile_ms') }
+$summary = $names | ForEach-Object { Stat $_ }
+$result = [pscustomobject]@{ pack = $Pack; exe = $Exe; editor_command = $EditorCommand; edits = $rows.Count; summary = $summary; samples = $rows; reload_counters = $final.observation.reload; frame = $final.observation.frame; editor_writes = $final.observation.editor.writes; history = $history.revisions }
 $json = $result | ConvertTo-Json -Depth 8
 if ($Out) { [IO.File]::WriteAllText((Join-Path $PWD $Out), $json) }
 $summary | Format-Table -AutoSize | Out-String | Write-Output

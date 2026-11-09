@@ -42,6 +42,8 @@
 ## 待辦(排入效能基準里程碑)
 
 > 2026-11-09:三項皆已實作並量測;前後數字、未達成部分(編輯器本地編輯的 commit 仍在主執行緒)與剩餘熱點見 `docs/perf-baseline.zh-TW.md`。
+>
+> 2026-11-09(稍後):原本未達成的「編輯器本地編輯的 commit 在主執行緒」(4096 世界約 330 ms、小世界 110–160 ms)已改為背景寫入器:自有 SQLite 連線、FIFO 佇列(上限 8、一次一筆)、樂觀世界在 worker 上準備、watchdog(30 s interrupt)、關閉時限時 flush 並回報未確認的編輯。耐久性不變(synchronous 未改)。release 量測編輯器主執行緒每次 commit p95:4096 世界 551 → 2.6 ms,小世界 ≤2.1 ms;4096 的編輯→生效 p50 慢約 28 ms(誠實記錄,見 docs/perf-baseline.zh-TW.md 文末)。
 
 - 情境改為背景 job:進度(tick / 總 tick)、取消、結果回填 Scenarios 分頁;同時保留 CLI 的同步模式。
 - 修訂生效改為增量:先量測各世界大小下的 reconcile 耗時,再依量測結果把編譯 / 系統重建拆成增量,或移到背景 job 並以「最後可用版本」繼續顯示。

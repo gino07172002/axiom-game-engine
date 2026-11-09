@@ -42,6 +42,7 @@ pub mod ui;
 pub mod vfx;
 pub mod vfx_gpu;
 pub mod world;
+pub mod writer;
 pub use app::{run, RunMode, RunOptions};
 pub use world::{ActionMap, WorldRuntime};
 pub fn installed_registry() -> world::RuntimeRegistry {

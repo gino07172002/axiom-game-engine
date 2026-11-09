@@ -287,11 +287,14 @@ impl Editor {
         actions
     }
 
+    /// Undo / redo. While writes are saving, the step they will push may not exist yet; the
+    /// host's write queue then resolves the target revision when the restore is sent.
     pub(super) fn restore_action(&self, redo: bool) -> Option<Action> {
-        let rev = *if redo {
-            self.redo.last()?
-        } else {
-            self.undo.last()?
+        let stack = if redo { &self.redo } else { &self.undo };
+        let rev = match stack.last() {
+            Some(rev) => *rev,
+            None if self.saving > 0 => 0,
+            None => return None,
         };
         Some(Action::Restore { rev, redo })
     }

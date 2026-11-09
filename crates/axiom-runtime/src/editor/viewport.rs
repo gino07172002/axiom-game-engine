@@ -1444,7 +1444,9 @@ impl Editor {
         self.viewport = rect;
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         let painter = ui.painter_at(rect);
-        let ready = self.rev == runtime.rev;
+        // While queued writes save, the runtime may already run one of them (newer than the
+        // revision the editor adopted); picking and gizmos keep working on it.
+        let ready = self.rev == runtime.rev || (self.saving > 0 && runtime.rev > self.rev);
         let matrices = runtime.state.matrices();
         let state = &runtime.state.compiled;
         // Editor-view flags: hidden objects are neither drawn nor picked; locked ones are drawn
@@ -1610,9 +1612,7 @@ impl Editor {
             .and_then(|i| state.parents[i])
             .map_or(Mat4::IDENTITY, |i| matrices[i]);
         let display = selected.map(|i| {
-            self.draft
-                .as_ref()
-                .filter(|d| d.transform_dirty && d.rev == runtime.rev)
+            self.shown_draft(runtime)
                 .and_then(|d| d.transform.as_ref())
                 .filter(|t| t.validate().is_ok())
                 .map_or(matrices[i], |t| parent * t.matrix())

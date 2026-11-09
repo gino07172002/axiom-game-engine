@@ -102,6 +102,14 @@ struct App {
     /// Frames over the 16 ms budget and the phases of the last one (`observe` -> `frame`).
     slow_frames: u64,
     last_slow_frame: Option<serde_json::Value>,
+    /// Editor commits on the background writer (windowed editor and measurements);
+    /// without it (headless tests, in-memory stores) they commit on this thread.
+    writes: Option<Writes>,
+    /// A bridge request postponed to the next frame because the write queue cannot take it
+    /// yet (its order relative to later requests is kept).
+    deferred_command: Option<crate::bridge::RuntimeRequest>,
+    /// Closing: pending commits are flushed, no new runtime builds start.
+    closing: bool,
 }
 
 /// Wall-clock phases of one main-loop frame; only frames over budget are kept.
@@ -137,6 +145,140 @@ impl FramePhases {
                 phases.insert((*name).into(), serde_json::json!(value));
             }
             serde_json::json!({"total_ms":total,"phases_ms":phases})
+        })
+    }
+}
+
+/// One editor write in the background writer's queue (see `crate::writer`).
+struct PendingWrite {
+    seq: u64,
+    kind: WriteKind,
+    /// Submitted while earlier writes were queued: built on their optimistic world, so it is
+    /// sent with the revision the previous write produced and discarded if one fails.
+    chained: bool,
+    /// The editor revision the request was built against (`editor.rev` at submission).
+    view_rev: i64,
+    stage: Stage,
+    /// The request as sent (CAS revision resolved) and its expected revision.
+    sent: Option<(Request, i64)>,
+    /// Bridge `editor_view` replies waiting for this write: (reply, response so far).
+    replies: Vec<(
+        std::sync::mpsc::SyncSender<serde_json::Value>,
+        serde_json::Value,
+    )>,
+}
+
+enum WriteKind {
+    Write {
+        request: Request,
+        select: Option<String>,
+    },
+    /// Undo / redo; the target revision is resolved from the undo stack when sent.
+    Restore {
+        rev: i64,
+        redo: bool,
+    },
+    RestoreTo {
+        rev: i64,
+    },
+    Resolve {
+        id: i64,
+        approve: bool,
+        rebase: bool,
+    },
+}
+
+impl WriteKind {
+    /// For problem messages: what was (not) saved.
+    fn label(&self) -> String {
+        match self {
+            WriteKind::Write { request, .. } => crate::writer::describe(request),
+            WriteKind::Restore { redo: true, .. } => "redo".into(),
+            WriteKind::Restore { .. } => "undo".into(),
+            WriteKind::RestoreTo { rev } => format!("restore of revision {rev}"),
+            WriteKind::Resolve { id, approve, .. } => format!(
+                "{} of proposal #{id}",
+                if *approve { "approval" } else { "rejection" }
+            ),
+        }
+    }
+}
+
+/// What the editor shows of a queued write.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// Optimistic world being computed off the main thread; no further writes meanwhile.
+    Staging,
+    /// Shown (or changes nothing in the world): later writes may queue behind it.
+    Ready,
+    /// Staging refused the edit; the draft stays as typed and the commit reports the error.
+    Refused,
+    /// The resulting world is only known after the commit (undo, restore, proposals).
+    Barrier,
+}
+
+/// Editor writes on the background writer: FIFO on the main thread, one in flight.
+struct Writes {
+    writer: crate::writer::Writer,
+    registry: Arc<axiom_core::Registry>,
+    queue: std::collections::VecDeque<PendingWrite>,
+    /// Revision the next request is sent against: the editor's revision when the queue was
+    /// empty, then each queued commit's result.
+    chain_rev: i64,
+    staging: Option<(u64, crate::jobs::Job<Result<Arc<World>>>)>,
+    in_flight: Option<InFlight>,
+    next_seq: u64,
+    committed: u64,
+    failed: u64,
+    discarded: u64,
+    last_commit: Option<(i64, f64)>,
+    recent_ms: std::collections::VecDeque<f64>,
+    commit_timeout: std::time::Duration,
+    commit_grace: std::time::Duration,
+}
+
+struct InFlight {
+    seq: u64,
+    sent: Instant,
+    interrupted: Option<Instant>,
+    what: String,
+}
+
+impl Writes {
+    fn busy(&self) -> Option<String> {
+        if self.queue.len() >= crate::writer::MAX_PENDING {
+            return Some(format!(
+                "{} edits are still saving; wait for them to finish",
+                self.queue.len()
+            ));
+        }
+        self.queue.iter().find_map(|w| match w.stage {
+            Stage::Ready => None,
+            Stage::Staging => {
+                Some("Saving: the previous edit is still being prepared; try again".into())
+            }
+            Stage::Refused => {
+                Some("Saving: the previous edit was refused; waiting for its result".into())
+            }
+            Stage::Barrier => {
+                Some("Saving: waiting for an undo/restore to commit; try again".into())
+            }
+        })
+    }
+
+    fn observation(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pending":self.queue.len(),
+            "max_pending":crate::writer::MAX_PENDING,
+            "in_flight":self.in_flight.as_ref().map(|f| serde_json::json!({"what":f.what,"elapsed_ms":f.sent.elapsed().as_millis() as u64,"interrupted":f.interrupted.is_some()})),
+            "committed":self.committed,
+            "failed":self.failed,
+            "discarded":self.discarded,
+            "last_commit_rev":self.last_commit.map(|c| c.0),
+            "last_commit_ms":self.last_commit.map(|c| c.1),
+            "recent_ms":self.recent_ms,
+            "timeout_ms":self.commit_timeout.as_millis() as u64,
+            "scope":"background writer wall clock of each editor commit (main thread does not wait)",
         })
     }
 }
@@ -182,14 +324,21 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
         let revision = store.revision()?;
         store.apply(Some(revision), vec![axiom_core::Edit::replace(initial)])?;
     }
+    let editor_mode = matches!(options.mode, RunMode::Editor { .. });
     let mut app = App::new(options, registry, store)?;
+    if editor_mode {
+        app.enable_writer(None)?;
+    }
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut app)?;
+    let ran = event_loop.run_app(&mut app);
+    // Edits submitted before the window closed are committed (or reported) before exit.
+    let flushed = app.close_writes(crate::writer::SHUTDOWN_FLUSH);
+    ran?;
     if let Some(error) = app.error {
         return Err(error);
     }
-    Ok(())
+    flushed
 }
 
 /// One measured edit → live sample (milliseconds, main-thread wall clock).
@@ -197,21 +346,31 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
 pub struct EditLiveSample {
     /// From submitting the editor write until the active runtime runs the new revision.
     pub edit_to_live_ms: f64,
-    /// `Store::execute(apply)`: validation, diff, SQLite commit.
+    /// `Store::execute(apply)`: validation, diff, SQLite commit (on the writer thread when
+    /// `writer`, otherwise on the main thread).
     pub commit_ms: f64,
     pub reload: ReloadTimings,
+    /// Editor-side main-thread time attributable to this commit: submitting it, showing its
+    /// optimistic world, handling its result (with the writer); the whole synchronous
+    /// `editor_action` otherwise.
+    pub editor_main_ms: f64,
+    /// Longest single main-thread piece of the above (one frame's share).
+    pub editor_piece_max_ms: f64,
+    /// Submission until the optimistic world was shown (writer only).
+    pub staged_ms: f64,
 }
 
 /// Headless edit → live measurement through the editor's real write path
-/// (`editor::Action::Write` → `Store::execute` → `App::reload_after`). No window or GPU,
-/// so `reload.reconcile.prepare_ms` excludes pipeline creation; the GPU path reports the
-/// same phases live in `observe` → `metrics.reload`.
+/// (`editor::Action::Write` → background writer or `Store::execute` → `App::reload_after`).
+/// No window or GPU, so `reload.reconcile.prepare_ms` excludes pipeline creation; the GPU
+/// path reports the same phases live in `observe` → `metrics.reload`.
 pub fn measure_edit_live(
     world: World,
     registry: RuntimeRegistry,
     db: PathBuf,
     editor: bool,
     background: bool,
+    writer: bool,
     batches: Vec<Vec<axiom_core::Edit>>,
 ) -> Result<Vec<EditLiveSample>> {
     for path in [
@@ -242,6 +401,10 @@ pub fn measure_edit_live(
     )?;
     let mut samples = Vec::with_capacity(batches.len());
     app.background_activation = background;
+    let writer = editor && writer;
+    if writer {
+        app.enable_writer(None)?;
+    }
     for edits in batches {
         let started = Instant::now();
         let expected = app.store.revision()?;
@@ -249,6 +412,53 @@ pub fn measure_edit_live(
             expected_rev: Some(expected),
             edits,
         };
+        if writer {
+            app.editor_action(editor::Action::Write {
+                request,
+                select: None,
+            })?;
+            let submit_ms = ms(started);
+            let (mut main_ms, mut piece_max, mut staged_ms) = (submit_ms, submit_ms, 0.0);
+            // Frame loop stand-in: poll until the commit result was handled.
+            while app.writes_pending() > 0 {
+                let phase = Instant::now();
+                let was_staging = app.writes.as_ref().is_some_and(|w| w.staging.is_some());
+                if app.poll_writes(std::time::Duration::ZERO)? {
+                    let piece = ms(phase);
+                    main_ms += piece;
+                    piece_max = piece_max.max(piece);
+                    if was_staging && app.writes.as_ref().is_some_and(|w| w.staging.is_none()) {
+                        staged_ms = ms(started);
+                    }
+                } else {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+            }
+            let writes = app.writes.as_ref().unwrap();
+            anyhow::ensure!(
+                writes.failed == 0,
+                "editor write failed: {}",
+                app.editor.as_ref().unwrap().status
+            );
+            let commit_ms = writes.last_commit.map_or(0.0, |c| c.1);
+            app.finish_activation()?;
+            let edit_to_live_ms = ms(started);
+            let reload = app.last_reload.context("edit did not reload the runtime")?;
+            anyhow::ensure!(
+                app.runtime.rev == expected + 1 && app.runtime.activation_error.is_none(),
+                "runtime did not go live at revision {}",
+                expected + 1
+            );
+            samples.push(EditLiveSample {
+                edit_to_live_ms,
+                commit_ms,
+                reload,
+                editor_main_ms: main_ms,
+                editor_piece_max_ms: piece_max,
+                staged_ms,
+            });
+            continue;
+        }
         let commit = if editor {
             app.editor_action(editor::Action::Write {
                 request,
@@ -283,8 +493,12 @@ pub fn measure_edit_live(
                     },
             ),
             reload,
+            editor_main_ms: submitted_ms,
+            editor_piece_max_ms: submitted_ms,
+            staged_ms: 0.0,
         });
     }
+    app.close_writes(crate::writer::SHUTDOWN_FLUSH)?;
     Ok(samples)
 }
 
@@ -393,8 +607,526 @@ impl App {
             changes_job: None,
             slow_frames: 0,
             last_slow_frame: None,
+            writes: None,
+            deferred_command: None,
+            closing: false,
             audio: crate::audio::Output::new(),
         })
+    }
+
+    /// Editor commits go to a writer thread with its own connection to the database file.
+    fn enable_writer(&mut self, gate: Option<Arc<std::sync::Mutex<()>>>) -> Result<()> {
+        let registry = self.store.registry.clone();
+        let writer = crate::writer::Writer::spawn(
+            self.options.db.clone(),
+            registry.clone(),
+            self.store.latest_cache(),
+            gate,
+        )?;
+        let chain_rev = self.editor.as_ref().map_or(0, |e| e.rev);
+        self.writes = Some(Writes {
+            writer,
+            registry: Arc::new(registry),
+            queue: Default::default(),
+            chain_rev,
+            staging: None,
+            in_flight: None,
+            next_seq: 0,
+            committed: 0,
+            failed: 0,
+            discarded: 0,
+            last_commit: None,
+            recent_ms: Default::default(),
+            commit_timeout: crate::writer::COMMIT_TIMEOUT,
+            commit_grace: crate::writer::COMMIT_GRACE,
+        });
+        self.sync_write_stats();
+        Ok(())
+    }
+
+    fn writes_pending(&self) -> usize {
+        self.writes.as_ref().map_or(0, |w| w.queue.len())
+    }
+
+    fn sync_write_stats(&mut self) {
+        if let (Some(writes), Some(editor)) = (&self.writes, &mut self.editor) {
+            editor.saving = writes.queue.len();
+            editor.writes = writes.observation();
+        }
+    }
+
+    /// Queues an editor write (main thread: bookkeeping only). Refused with a visible
+    /// reason when the queue is full or the editor cannot build on the pending state yet.
+    fn submit_write(&mut self, kind: WriteKind) -> Result<()> {
+        let writes = self.writes.as_mut().expect("writer enabled");
+        if let Some(reason) = writes.busy() {
+            return Err(axiom_core::Diagnostic::error("editor_saving", "/", reason));
+        }
+        let editor = self.editor.as_mut().unwrap();
+        let chained = !writes.queue.is_empty();
+        if !chained {
+            writes.chain_rev = editor.rev;
+            // Without queued writes the target is known now; nothing to undo is an error
+            // right away, exactly as before.
+            if let WriteKind::Restore { redo, .. } = kind {
+                anyhow::ensure!(
+                    editor.restore_target(redo).is_some(),
+                    "nothing to {}",
+                    if redo { "redo" } else { "undo" }
+                );
+            }
+        }
+        let seq = writes.next_seq;
+        writes.next_seq += 1;
+        let stage = match &kind {
+            WriteKind::Write {
+                request: Request::Apply { edits, .. },
+                ..
+            } => {
+                let base = editor.world.clone();
+                let edits = edits.clone();
+                let registry = writes.registry.clone();
+                let job = crate::jobs::Job::spawn(
+                    "stage",
+                    format!("write {seq}"),
+                    crate::writer::STAGE_TIMEOUT,
+                    move |_| crate::writer::stage(&base, &edits, &registry),
+                )?;
+                if let Some((_, stale)) = writes.staging.replace((seq, job)) {
+                    stale.detach();
+                }
+                Stage::Staging
+            }
+            WriteKind::Write {
+                request: Request::Preview { .. },
+                ..
+            } => Stage::Ready,
+            _ => Stage::Barrier,
+        };
+        writes.queue.push_back(PendingWrite {
+            seq,
+            kind,
+            chained,
+            view_rev: editor.rev,
+            stage,
+            sent: None,
+            replies: vec![],
+        });
+        let pending = writes.queue.len();
+        editor.notice(format!("Saving… {pending} edit(s) pending"));
+        self.dispatch_write()?;
+        self.sync_write_stats();
+        Ok(())
+    }
+
+    /// Sends the oldest queued write when nothing is in flight, resolving its CAS revision
+    /// (and an undo/redo target) from the commits before it.
+    fn dispatch_write(&mut self) -> Result<()> {
+        let (Some(writes), Some(editor)) = (&mut self.writes, &mut self.editor) else {
+            return Ok(());
+        };
+        if writes.in_flight.is_some() {
+            return Ok(());
+        }
+        let Some(item) = writes.queue.front_mut() else {
+            return Ok(());
+        };
+        let base = writes.chain_rev;
+        let request = match &item.kind {
+            WriteKind::Write { request, .. } => {
+                let mut request = request.clone();
+                if item.chained {
+                    if let Request::Apply { expected_rev, .. }
+                    | Request::Preview { expected_rev, .. } = &mut request
+                    {
+                        // Built on the optimistic world of the writes before it: expect
+                        // the revision they produced (a foreign commit in between still
+                        // conflicts). A request built on an older view keeps its own.
+                        if *expected_rev == Some(item.view_rev) {
+                            *expected_rev = Some(base);
+                        }
+                    }
+                }
+                Ok(request)
+            }
+            WriteKind::Restore { rev, redo } => {
+                let target = if item.chained {
+                    editor.restore_target(*redo)
+                } else {
+                    Some(*rev)
+                };
+                target
+                    .map(|rev| Request::Undo {
+                        rev,
+                        expected_rev: Some(base),
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("nothing to {}", if *redo { "redo" } else { "undo" })
+                    })
+            }
+            WriteKind::RestoreTo { rev } => Ok(Request::Undo {
+                rev: *rev,
+                expected_rev: Some(base),
+            }),
+            WriteKind::Resolve {
+                id,
+                approve,
+                rebase,
+            } => Ok(Request::ResolveProposal {
+                id: *id,
+                approve: *approve,
+                rebase: *rebase,
+            }),
+        };
+        let seq = item.seq;
+        let sent = request.and_then(|request| {
+            let what = crate::writer::describe(&request);
+            writes.writer.send(seq, request.clone())?;
+            item.sent = Some((request, base));
+            writes.in_flight = Some(InFlight {
+                seq,
+                sent: Instant::now(),
+                interrupted: None,
+                what,
+            });
+            Ok(())
+        });
+        if let Err(error) = sent {
+            // Could not even be sent (nothing to undo, writer gone): same as a failed commit.
+            self.finish_write(crate::writer::Finished {
+                seq,
+                result: Err(error),
+                ms: 0.0,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Delivers staged worlds and commit results; once per frame (and while flushing).
+    /// Never waits unless `wait` is non-zero. Returns whether anything was handled.
+    fn poll_writes(&mut self, wait: std::time::Duration) -> Result<bool> {
+        let Some(writes) = &mut self.writes else {
+            return Ok(false);
+        };
+        let mut worked = false;
+        let staged = writes
+            .staging
+            .as_mut()
+            .and_then(|(seq, job)| job.poll().map(|outcome| (*seq, outcome)));
+        if let Some((seq, outcome)) = staged {
+            writes.staging = None;
+            worked = true;
+            self.staged(seq, outcome);
+        }
+        let mut wait = wait;
+        while let Some(done) = self
+            .writes
+            .as_ref()
+            .and_then(|w| w.writer.finished(std::mem::take(&mut wait)))
+        {
+            worked = true;
+            self.finish_write(done)?;
+            self.dispatch_write()?;
+        }
+        self.write_watchdog();
+        self.sync_write_stats();
+        Ok(worked)
+    }
+
+    fn staged(&mut self, seq: u64, outcome: crate::jobs::Outcome<Result<Arc<World>>>) {
+        let (Some(writes), Some(editor)) = (&mut self.writes, &mut self.editor) else {
+            return;
+        };
+        let Some(item) = writes.queue.iter_mut().find(|w| w.seq == seq) else {
+            return;
+        };
+        match outcome {
+            crate::jobs::Outcome::Done {
+                value: Ok(world), ..
+            } => {
+                item.stage = Stage::Ready;
+                let select = match &mut item.kind {
+                    WriteKind::Write { select, .. } => select.take(),
+                    _ => None,
+                };
+                retire(editor.apply_staged(world, select));
+                let pending = writes.queue.len();
+                editor.notice(format!("Saving… {pending} edit(s) pending"));
+            }
+            // The draft stays as typed; the commit (same validation) reports the error.
+            _ => item.stage = Stage::Refused,
+        }
+    }
+
+    /// One commit result, in submission order.
+    fn finish_write(&mut self, done: crate::writer::Finished) -> Result<()> {
+        let Some(writes) = &mut self.writes else {
+            return Ok(());
+        };
+        if writes.queue.front().is_none_or(|w| w.seq != done.seq) {
+            eprintln!("editor writer: result {} out of order; ignored", done.seq);
+            return Ok(());
+        }
+        let mut item = writes.queue.pop_front().unwrap();
+        if writes.in_flight.as_ref().is_some_and(|f| f.seq == done.seq) {
+            writes.in_flight = None;
+        }
+        if writes.staging.as_ref().is_some_and(|(s, _)| *s == done.seq) {
+            // Committed before its optimistic world arrived; the commit result is adopted.
+            writes.staging.take().unwrap().1.detach();
+        }
+        let editor = self.editor.as_mut().unwrap();
+        let what = item.kind.label();
+        let (request, expected) = item.sent.take().unwrap_or((Request::Verify {}, 0));
+        match done.result {
+            Ok(value) => {
+                writes.committed += 1;
+                let rev = value["rev"].as_i64();
+                if let Some(rev) = rev {
+                    writes.last_commit = Some((rev, done.ms));
+                }
+                writes.recent_ms.push_back(done.ms);
+                if writes.recent_ms.len() > 16 {
+                    writes.recent_ms.pop_front();
+                }
+                let mut select = None;
+                match item.kind {
+                    WriteKind::Write { select: s, .. } => {
+                        let apply = matches!(request, Request::Apply { .. });
+                        editor.record(request, &value);
+                        if apply {
+                            if value["changed"] == true {
+                                editor.record_apply(expected);
+                            }
+                            writes.chain_rev = rev.unwrap_or(writes.chain_rev);
+                        }
+                        select = s;
+                    }
+                    WriteKind::Restore { redo, .. } => {
+                        editor.record_restore(expected, redo);
+                        editor.record(request, &value);
+                        writes.chain_rev = rev.unwrap_or(writes.chain_rev);
+                    }
+                    WriteKind::RestoreTo { .. } => {
+                        editor.record(request, &value);
+                        writes.chain_rev = rev.unwrap_or(writes.chain_rev);
+                    }
+                    WriteKind::Resolve { id, approve, .. } => {
+                        editor.proposal_signature = None;
+                        if approve {
+                            editor.record_apply(expected);
+                            editor.notice(format!(
+                                "Approved proposal #{id} · committed revision {}",
+                                value["rev"]
+                            ));
+                            writes.chain_rev = rev.unwrap_or(writes.chain_rev);
+                        } else {
+                            editor.notice(format!("Rejected proposal #{id}; nothing was written"));
+                        }
+                    }
+                }
+                editor.needs_history = true;
+                let idle = writes.queue.is_empty();
+                let chain_rev = writes.chain_rev;
+                if !self.closing {
+                    if idle {
+                        // Adopt the committed world (same content as the optimistic one).
+                        self.reload_after(Some(chain_rev))?;
+                        if let Some(id) = select {
+                            self.editor.as_mut().unwrap().select(Some(id));
+                        }
+                    } else {
+                        // The runtime follows each commit; the editor keeps showing the
+                        // optimistic world of the writes still queued.
+                        self.reload()?;
+                    }
+                }
+                self.sync_write_stats();
+                let observation = self.editor.as_ref().unwrap().observation();
+                for (reply, mut response) in item.replies {
+                    response["editor"] = observation.clone();
+                    let _ = reply.send(response);
+                }
+            }
+            Err(error) => {
+                writes.failed += 1;
+                let shown = matches!(item.stage, Stage::Ready)
+                    && matches!(
+                        item.kind,
+                        WriteKind::Write {
+                            request: Request::Apply { .. },
+                            ..
+                        }
+                    );
+                // Everything queued behind it was built on its optimistic world.
+                let discarded: Vec<PendingWrite> = writes.queue.drain(..).collect();
+                if let Some((_, job)) = writes.staging.take() {
+                    job.detach();
+                }
+                writes.discarded += discarded.len() as u64;
+                let shown = shown || discarded.iter().any(|w| w.stage == Stage::Ready);
+                let lost: Vec<String> = discarded.iter().map(|w| w.kind.label()).collect();
+                let response = axiom_core::error_response(&error);
+                for (reply, _) in item.replies {
+                    let _ = reply.send(response.clone());
+                }
+                let skipped = axiom_core::error_response(&anyhow::anyhow!(
+                    "not saved: an earlier queued editor write failed"
+                ));
+                for w in discarded {
+                    for (reply, _) in w.replies {
+                        let _ = reply.send(skipped.clone());
+                    }
+                }
+                let chain_rev = writes.chain_rev;
+                if !self.closing {
+                    // Back to what the database holds: the commits that succeeded, or a
+                    // foreign revision that made this one conflict (never overwritten).
+                    let (latest, world) = self.store.current_shared()?;
+                    let editor = self.editor.as_mut().unwrap();
+                    if latest == editor.rev {
+                        if shown {
+                            retire(editor.revert_staged(world));
+                        }
+                        self.reload_after(None)?;
+                    } else {
+                        // Our earlier commits (adopted as local) or a foreign revision
+                        // (adopted like any external one; its Changes list is computed
+                        // against what the editor showed).
+                        drop(world);
+                        self.reload_after(Some(chain_rev))?;
+                    }
+                }
+                self.sync_write_stats();
+                let editor = self.editor.as_mut().unwrap();
+                if !lost.is_empty() {
+                    editor.problem(&axiom_core::Diagnostic::error(
+                        "write_discarded",
+                        "/",
+                        format!(
+                            "{} queued edit(s) built on a failed edit were not saved: {}",
+                            lost.len(),
+                            lost.join("; ")
+                        ),
+                    ));
+                }
+                editor.problem(&error);
+                if !matches!(item.stage, Stage::Refused) {
+                    editor.set_error(format!("Not saved ({what}): {error:#}"));
+                }
+                if self.closing {
+                    eprintln!("editor writer: not saved ({what}): {error:#}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Interrupts a commit over its deadline; detaches a writer that does not answer.
+    fn write_watchdog(&mut self) {
+        let Some(writes) = &mut self.writes else {
+            return;
+        };
+        let Some(flight) = &mut writes.in_flight else {
+            return;
+        };
+        match flight.interrupted {
+            None if flight.sent.elapsed() >= writes.commit_timeout => {
+                eprintln!(
+                    "editor writer: {} exceeded {} ms; interrupting",
+                    flight.what,
+                    writes.commit_timeout.as_millis()
+                );
+                writes.writer.interrupt();
+                flight.interrupted = Some(Instant::now());
+            }
+            Some(at) if at.elapsed() >= writes.commit_grace => {
+                let what = flight.what.clone();
+                let elapsed = flight.sent.elapsed();
+                let writes = self.writes.take().unwrap();
+                writes.writer.abort();
+                let pending = writes.queue.len();
+                for w in &writes.queue {
+                    for (reply, _) in &w.replies {
+                        let _ = reply.send(axiom_core::error_response(&anyhow::anyhow!(
+                            "editor writer stalled; this edit was not confirmed"
+                        )));
+                    }
+                }
+                let message = format!(
+                    "Editor writer stalled: {what} did not finish within {:.1} s and was detached; it may still land (check History). {} queued edit(s) not confirmed. Further edits commit on the main thread.",
+                    elapsed.as_secs_f64(),
+                    pending.saturating_sub(1)
+                );
+                eprintln!("{message}");
+                // Never wait for the stuck thread here.
+                retire(writes);
+                if let Some(editor) = &mut self.editor {
+                    editor.saving = 0;
+                    editor.writes = serde_json::json!({"state":"stalled","detail":message});
+                    if let Ok((latest, world)) = self.store.current_shared() {
+                        if latest == editor.rev {
+                            retire(editor.revert_staged(world));
+                        }
+                    }
+                    let _ = self.reload_after(None);
+                    if let Some(editor) = &mut self.editor {
+                        editor.problem(&axiom_core::Diagnostic::error(
+                            "writer_stalled",
+                            "/",
+                            message,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Flushes queued editor writes on shutdown (bounded), then joins the writer with the
+    /// rest of the budget. Unconfirmed edits are reported, never dropped silently.
+    fn close_writes(&mut self, limit: std::time::Duration) -> Result<()> {
+        self.closing = true;
+        let Some(writes) = &self.writes else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        let queued = writes.queue.len();
+        while self.writes_pending() > 0 && started.elapsed() < limit {
+            let left = limit.saturating_sub(started.elapsed());
+            self.poll_writes(left.min(std::time::Duration::from_millis(50)))?;
+        }
+        let Some(mut writes) = self.writes.take() else {
+            anyhow::bail!("editor writer stalled during shutdown; see the messages above");
+        };
+        let unconfirmed = writes.queue.len();
+        let joined = writes
+            .writer
+            .shutdown(limit.saturating_sub(started.elapsed()));
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        if queued > 0 || unconfirmed > 0 || !joined {
+            eprintln!(
+                "editor writer: flushed {} of {queued} pending edit(s) in {ms:.0} ms; {} commit(s) this session, {} failed",
+                queued - unconfirmed,
+                writes.committed,
+                writes.failed
+            );
+        }
+        if unconfirmed > 0 || !joined {
+            let message = format!(
+                "editor writer: {unconfirmed} edit(s) not confirmed within {:.0} s; writer {}",
+                limit.as_secs_f64(),
+                if joined {
+                    "joined"
+                } else {
+                    "detached (join timed out)"
+                }
+            );
+            writes.writer.abort();
+            retire(writes);
+            anyhow::bail!(message);
+        }
+        Ok(())
     }
     fn editing(&self) -> bool {
         self.editor.as_ref().is_some_and(|e| !e.previewing)
@@ -592,8 +1324,14 @@ impl App {
     }
 
     fn reload_after(&mut self, local_revision: Option<i64>) -> Result<()> {
+        if self.closing {
+            return Ok(());
+        }
         let latest = self.store.revision()?;
-        if self.editor.as_ref().is_none_or(|e| e.rev == latest)
+        // While editor writes are queued the editor shows their optimistic world; it adopts
+        // the database again when the queue drains (`finish_write`). The runtime follows.
+        let writing = self.writes_pending() > 0;
+        if (writing || self.editor.as_ref().is_none_or(|e| e.rev == latest))
             && (self.editor.as_ref().is_some_and(|e| e.previewing)
                 || latest == self.runtime.requested_rev)
         {
@@ -606,13 +1344,18 @@ impl App {
             read_ms: ms(started),
             ..Default::default()
         };
-        if let Some(editor) = &mut self.editor {
+        if let Some(editor) = self.editor.as_mut().filter(|_| !writing) {
             let phase = Instant::now();
             let copy = world.clone();
             timings.editor_clone_ms = ms(phase);
             let phase = Instant::now();
             let local = local_revision == Some(rev);
-            if self.background_activation {
+            if local && self.writes.is_some() {
+                // This editor's own queued writes landed: keep undo, drafts and drags.
+                if let Some(previous) = editor.commit_landed(rev, copy) {
+                    retire(previous);
+                }
+            } else if self.background_activation {
                 // The Changes-list diff and freeing the replaced world run off this thread.
                 if let Some((previous, diff)) = editor.update_deferred(rev, copy, local) {
                     if diff {
@@ -832,6 +1575,30 @@ impl App {
     }
 
     fn editor_action(&mut self, action: editor::Action) -> Result<()> {
+        if self.writes.is_some() {
+            // Every editor commit goes to the background writer, in order.
+            let kind = match action {
+                editor::Action::Write { request, select } => WriteKind::Write { request, select },
+                editor::Action::Restore { rev, redo } => WriteKind::Restore { rev, redo },
+                editor::Action::RestoreTo { rev } => WriteKind::RestoreTo { rev },
+                editor::Action::ResolveProposal {
+                    id,
+                    approve,
+                    rebase,
+                } => WriteKind::Resolve {
+                    id,
+                    approve,
+                    rebase,
+                },
+                other => return self.editor_action_now(other),
+            };
+            return self.submit_write(kind);
+        }
+        self.editor_action_now(action)
+    }
+
+    /// Editor actions on this thread (all of them without a background writer).
+    fn editor_action_now(&mut self, action: editor::Action) -> Result<()> {
         let editor = self.editor.as_mut().unwrap();
         match action {
             editor::Action::Play => self.editor_play(true),
@@ -980,6 +1747,14 @@ impl App {
         if self.editor.as_ref().unwrap().previewing == play {
             return Ok(());
         }
+        let saving = self.writes_pending();
+        if play && saving > 0 {
+            return Err(axiom_core::Diagnostic::error(
+                "editor_saving",
+                "/play",
+                format!("{saving} edit(s) are still saving; Play starts from committed revisions, try again when they finish"),
+            ));
+        }
         if let Some(pending) = self.activation.take() {
             // Preview and stop build their runtimes from the current revision themselves.
             pending.job.detach();
@@ -1025,27 +1800,74 @@ impl App {
         self.capture();
         Ok(())
     }
-    fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        for _ in 0..32 {
-            let Ok(command) = self.commands.try_recv() else {
-                break;
-            };
-            if std::time::Instant::now() >= command.deadline {
-                continue;
+    /// One bridge runtime request. Returns it when it has to wait for the editor write queue
+    /// (it is retried first on the next frame, keeping the order of later requests).
+    fn handle_command(
+        &mut self,
+        command: crate::bridge::RuntimeRequest,
+    ) -> Option<crate::bridge::RuntimeRequest> {
+        if std::time::Instant::now() >= command.deadline {
+            return None;
+        }
+        if let Request::EditorView {
+            command: run, play, ..
+        } = &command.request
+        {
+            let busy = self.writes.as_ref().is_some_and(|w| w.busy().is_some());
+            if (run.is_some() && busy) || (*play == Some(true) && self.writes_pending() > 0) {
+                return Some(command);
             }
-            let editor_view = matches!(command.request, Request::EditorView { .. });
-            let result = self
-                .reload()
-                .and_then(|_| {
-                    if editor_view {
-                        Ok(())
-                    } else {
-                        self.finish_activation()
+        }
+        let editor_view = matches!(command.request, Request::EditorView { .. });
+        let before = self.writes.as_ref().map_or(0, |w| w.next_seq);
+        let result = self
+            .reload()
+            .and_then(|_| {
+                if editor_view {
+                    Ok(())
+                } else {
+                    self.finish_activation()
+                }
+            })
+            .and_then(|_| self.runtime_request(command.request));
+        match result {
+            Ok(response) => {
+                // An editor command that queued a write answers when that write is committed
+                // (or fails), as it did when commits ran on this thread.
+                match self
+                    .writes
+                    .as_mut()
+                    .and_then(|w| w.queue.back_mut().filter(|last| last.seq >= before))
+                {
+                    Some(last) => last.replies.push((command.reply, response)),
+                    None => {
+                        let _ = command.reply.send(response);
                     }
-                })
-                .and_then(|_| self.runtime_request(command.request));
-            let response = result.unwrap_or_else(|e| axiom_core::error_response(&e));
-            let _ = command.reply.send(response);
+                }
+            }
+            Err(error) => {
+                let _ = command.reply.send(axiom_core::error_response(&error));
+            }
+        }
+        None
+    }
+
+    fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // The frame profile includes write results and bridge requests handled here.
+        let mut phases = FramePhases::start(Instant::now());
+        self.poll_writes(std::time::Duration::ZERO)?;
+        for _ in 0..32 {
+            let command = match self.deferred_command.take() {
+                Some(command) => command,
+                None => match self.commands.try_recv() {
+                    Ok(command) => command,
+                    Err(_) => break,
+                },
+            };
+            if let Some(waiting) = self.handle_command(command) {
+                self.deferred_command = Some(waiting);
+                break;
+            }
         }
         let now = Instant::now();
         let elapsed = (now - self.last).as_secs_f32().min(0.1);
@@ -1058,11 +1880,17 @@ impl App {
             .editor
             .as_ref()
             .is_some_and(|e| e.proposal_signature.is_none());
-        let mut phases = FramePhases::start(now);
+        phases.mark("writes_bridge");
         let poll = self.poll_elapsed >= 0.25;
         if poll {
             self.poll_elapsed = 0.0;
-            self.reload()?;
+            // While editor writes are queued, each commit result moves the runtime on (after
+            // the writer cached the decoded revision); polling meanwhile could race that
+            // cache and decode the world here. A foreign revision then conflicts the next
+            // queued write and is adopted when the queue drains.
+            if self.writes_pending() == 0 {
+                self.reload()?;
+            }
         }
         if poll || proposals_unknown {
             if let Some(editor) = &self.editor {
@@ -1406,6 +2234,8 @@ impl App {
         // adopting here instead of next frame saves one frame of edit -> live latency.
         self.poll_activation()?;
         self.poll_changes();
+        // Likewise a commit that finished during the present.
+        self.poll_writes(std::time::Duration::ZERO)?;
         let mut obs = self.observation();
         obs.fps = self.fps_smooth;
         obs.frame_ms_cpu = now.elapsed().as_secs_f32() * 1000.0;
@@ -1928,6 +2758,423 @@ mod tests {
         assert!(changes.iter().any(|c| c.contains("/title")), "{changes:?}");
         app.finish_activation().unwrap();
         assert_eq!(app.runtime.rev, rev + 1);
+    }
+
+    // ---- Editor writes on the background writer ----
+
+    /// Editor app on a file database (the writer needs its own connection) with the writer
+    /// enabled; `gate` lets a test hold commits in the queue.
+    fn writer_app(name: &str, gate: Option<Arc<std::sync::Mutex<()>>>) -> App {
+        let dir = std::env::temp_dir().join(format!("axiom-editor-writes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join(name);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+        }
+        let world =
+            serde_json::from_str(include_str!("../../../content/two-cameras/world.json")).unwrap();
+        let registry = crate::installed_registry();
+        let store = Store::open_with(&db, registry.authoring.clone(), world).unwrap();
+        let mut app = App::new(
+            RunOptions {
+                mode: RunMode::Editor {
+                    selected: Some("box".into()),
+                },
+                load_slot: None,
+                replace_world: false,
+                db,
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: false,
+            },
+            registry,
+            store,
+        )
+        .unwrap();
+        app.background_activation = true;
+        app.enable_writer(gate).unwrap();
+        app
+    }
+
+    /// Holds `gate` on another thread (the writer then waits before each commit) until the
+    /// returned sender is dropped.
+    fn hold(gate: &Arc<std::sync::Mutex<()>>) -> std::sync::mpsc::Sender<()> {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (locked, ready) = std::sync::mpsc::channel();
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            let _held = gate.lock().unwrap();
+            locked.send(()).unwrap();
+            let _ = wait.recv();
+        });
+        ready.recv().unwrap();
+        release
+    }
+
+    fn move_box(app: &App, x: f32) -> editor::Action {
+        editor::Action::Write {
+            request: Request::Apply {
+                expected_rev: Some(app.editor.as_ref().unwrap().rev),
+                edits: vec![Edit::Core(axiom_core::CoreEdit::SetField {
+                    target: axiom_core::local::Target::Entity { id: "box".into() },
+                    field: "/components/core.transform/position".into(),
+                    value: json!([x, 1.0, 0.0]),
+                })],
+            },
+            select: None,
+        }
+    }
+
+    fn box_x(world: &World) -> f64 {
+        world.entity("box").unwrap().components["core.transform"]["position"][0]
+            .as_f64()
+            .unwrap()
+    }
+
+    /// Frame-loop stand-in: polls until the optimistic world of the last write is shown.
+    fn wait_ready(app: &mut App) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while app.writes.as_ref().unwrap().busy().is_some() {
+            app.poll_writes(std::time::Duration::ZERO).unwrap();
+            assert!(Instant::now() < deadline, "write never staged");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn drain(app: &mut App) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while app.writes_pending() > 0 {
+            app.poll_writes(std::time::Duration::from_millis(5))
+                .unwrap();
+            assert!(Instant::now() < deadline, "writes never drained");
+        }
+    }
+
+    #[test]
+    fn queued_editor_writes_commit_in_order_without_blocking_the_main_thread() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("order.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        for x in [1.0, 2.0, 3.0] {
+            let started = Instant::now();
+            let action = move_box(&app, x);
+            app.editor_action(action).unwrap();
+            // The commit waits on the writer; submitting never does (debug build bound).
+            assert!(started.elapsed() < std::time::Duration::from_millis(250));
+            wait_ready(&mut app);
+            // Later edits are built on the optimistic world of the queued ones.
+            assert_eq!(box_x(&app.editor.as_ref().unwrap().world), x as f64);
+        }
+        assert_eq!(app.store.revision().unwrap(), base, "nothing committed yet");
+        let observed = app.observation().metrics["editor"].clone();
+        assert_eq!(observed["pending_commits"], 3);
+        assert_eq!(observed["authoring_rev"], base);
+        assert_eq!(observed["writes"]["in_flight"]["interrupted"], false);
+        assert!(app.editor.as_ref().unwrap().status.contains("Saving"));
+        drop(held);
+        drain(&mut app);
+        // Same order, consecutive revisions, each with exactly its own change.
+        assert_eq!(app.store.revision().unwrap(), base + 3);
+        for (k, x) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            let rev = base + 1 + k as i64;
+            let diff = app
+                .store
+                .execute(Request::Diff {
+                    from_rev: rev - 1,
+                    to_rev: rev,
+                    offset: 0,
+                    limit: Some(8),
+                })
+                .unwrap();
+            let moved = diff["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| {
+                    c["path"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with("/core.transform/position/0")
+                })
+                .unwrap_or_else(|| panic!("{diff}"));
+            assert_eq!(moved["after"], json!(x), "{diff}");
+        }
+        let history = app
+            .store
+            .execute(Request::History { limit: Some(3) })
+            .unwrap();
+        assert!(history["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["reason"] == "apply"));
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!((editor.rev, editor.saving), (base + 3, 0));
+        assert_eq!(box_x(&editor.world), 3.0);
+        assert_eq!(editor.restore_target(false), Some(base + 2));
+        let observed = app.observation().metrics["editor"].clone();
+        assert_eq!(observed["pending_commits"], 0);
+        assert_eq!(observed["writes"]["committed"], 3);
+        assert!(observed["last_commit_ms"].as_f64().unwrap() > 0.0);
+        // The runtime follows the last commit.
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, base + 3);
+        // Undo goes through the same queue and restores the revision before the last apply.
+        app.editor_action(editor::Action::Restore {
+            rev: base + 2,
+            redo: false,
+        })
+        .unwrap();
+        drain(&mut app);
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.rev, base + 4);
+        assert_eq!(box_x(&editor.world), 2.0);
+        assert_eq!(editor.restore_target(true), Some(base + 3));
+        app.close_writes(std::time::Duration::from_secs(10))
+            .unwrap();
+    }
+
+    #[test]
+    fn ai_commit_during_an_in_flight_editor_write_is_a_conflict_not_an_overwrite() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("conflict.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        for x in [5.0, 6.0] {
+            let action = move_box(&app, x);
+            app.editor_action(action).unwrap();
+            wait_ready(&mut app);
+        }
+        // An AI edit lands through another connection while the first write waits.
+        let mut bridge = Store::open_with(
+            &app.options.db,
+            app.store.registry.clone(),
+            World::empty("x"),
+        )
+        .unwrap();
+        bridge
+            .apply(Some(base), vec![Edit::set("title", json!("AI edit"))])
+            .unwrap();
+        drop(held);
+        drain(&mut app);
+        // Nothing of the editor's landed on top of it; both edits are reported.
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+        let (_, world) = app.store.current().unwrap();
+        assert_eq!(world.title, "AI edit");
+        assert_eq!(box_x(&world), 0.0);
+        let editor = app.editor.as_ref().unwrap();
+        let codes = editor.problem_codes();
+        assert_eq!(codes[0], "revision_conflict", "{codes:?}");
+        assert_eq!(codes[1], "write_discarded", "{codes:?}");
+        assert!(editor.error && editor.status.contains("Not saved"));
+        // The editor shows the database again (the AI revision), not its optimistic world.
+        assert_eq!(editor.rev, base + 1);
+        assert_eq!(editor.world.title, "AI edit");
+        assert_eq!(box_x(&editor.world), 0.0);
+        assert_eq!(editor.saving, 0);
+        let writes = &app.observation().metrics["editor"]["writes"];
+        assert_eq!(
+            (writes["failed"].clone(), writes["discarded"].clone()),
+            (json!(1), json!(1))
+        );
+        // Recoverable: the next edit commits normally.
+        let action = move_box(&app, 7.0);
+        app.editor_action(action).unwrap();
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 2);
+        assert_eq!(box_x(&app.store.current().unwrap().1), 7.0);
+    }
+
+    #[test]
+    fn undo_queued_behind_a_pending_write_and_blocked_writes_say_why() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("undo.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        let action = move_box(&app, 4.0);
+        app.editor_action(action).unwrap();
+        wait_ready(&mut app);
+        // Ctrl+Z right after a drag: the step it undoes is still being committed.
+        assert!(app.editor.as_ref().unwrap().restore_target(false).is_none());
+        app.editor_action(editor::Action::Restore {
+            rev: 0,
+            redo: false,
+        })
+        .unwrap();
+        // Nothing can be built on an undo before it commits: refused with a reason.
+        let action = move_box(&app, 9.0);
+        let refused = app.editor_action(action).unwrap_err();
+        let response = axiom_core::error_response(&refused);
+        assert_eq!(response["diagnostics"][0]["code"], "editor_saving");
+        // Play waits for committed revisions too.
+        assert!(app.editor_action(editor::Action::Play).is_err());
+        drop(held);
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 2);
+        let history = app
+            .store
+            .execute(Request::History { limit: Some(1) })
+            .unwrap();
+        assert_eq!(history["revisions"][0]["reason"], format!("restore:{base}"));
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(box_x(&editor.world), 0.0);
+        assert_eq!(editor.restore_target(true), Some(base + 1));
+    }
+
+    #[test]
+    fn closing_flushes_queued_writes_and_reports_unconfirmed_ones() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("flush.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        for x in [1.5, 2.5] {
+            let action = move_box(&app, x);
+            app.editor_action(action).unwrap();
+            wait_ready(&mut app);
+        }
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(held);
+        });
+        app.close_writes(std::time::Duration::from_secs(20))
+            .unwrap();
+        assert_eq!(app.store.revision().unwrap(), base + 2);
+        assert_eq!(box_x(&app.store.current().unwrap().1), 2.5);
+
+        // A writer that cannot finish in time: reported, never silently dropped.
+        let mut app = writer_app("flush-timeout.sqlite", Some(gate.clone()));
+        let held = hold(&gate);
+        let action = move_box(&app, 8.0);
+        app.editor_action(action).unwrap();
+        let error = app
+            .close_writes(std::time::Duration::from_millis(200))
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("1 edit(s) not confirmed"),
+            "{error:#}"
+        );
+        drop(held);
+        // The aborted writer refuses the edit that never started; nothing half-lands.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(app.store.revision().unwrap(), base);
+    }
+
+    #[test]
+    fn failed_editor_write_is_a_problem_and_the_queue_keeps_working() {
+        let mut app = writer_app("failure.sqlite", None);
+        let base = app.editor.as_ref().unwrap().rev;
+        app.editor_action(editor::Action::Write {
+            request: Request::Apply {
+                expected_rev: Some(base),
+                edits: vec![Edit::Core(axiom_core::CoreEdit::SetField {
+                    target: axiom_core::local::Target::Entity {
+                        id: "missing".into(),
+                    },
+                    field: "/label".into(),
+                    value: json!("x"),
+                })],
+            },
+            select: None,
+        })
+        .unwrap();
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base);
+        let editor = app.editor.as_ref().unwrap();
+        assert!(editor.error);
+        assert_eq!(editor.problem_codes().len(), 1);
+        assert_eq!(app.writes.as_ref().unwrap().failed, 1);
+        // Refused while staging: the editor never showed it.
+        assert_eq!(box_x(&editor.world), 0.0);
+        let action = move_box(&app, 3.0);
+        app.editor_action(action).unwrap();
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+    }
+
+    #[test]
+    fn editor_view_command_replies_after_its_commit_and_waits_its_turn() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("bridge.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let entities = app.editor.as_ref().unwrap().world.entities.len();
+        let held = hold(&gate);
+        let command = |app: &mut App| {
+            let (reply, response) = std::sync::mpsc::sync_channel(1);
+            let request = crate::bridge::RuntimeRequest {
+                deadline: Instant::now() + std::time::Duration::from_secs(30),
+                request: Request::EditorView {
+                    select: vec![],
+                    focus: false,
+                    dock: None,
+                    capture: None,
+                    play: None,
+                    open: None,
+                    command: Some("object.cube".into()),
+                },
+                reply,
+            };
+            (app.handle_command(request), response)
+        };
+        let (deferred, first) = command(&mut app);
+        assert!(deferred.is_none());
+        // While the first cube is being staged a second command waits for the next frame.
+        let (deferred, second) = command(&mut app);
+        let deferred = deferred.expect("postponed while staging");
+        wait_ready(&mut app);
+        assert!(app.handle_command(deferred).is_none());
+        wait_ready(&mut app);
+        assert!(first.try_recv().is_err(), "replied before the commit");
+        drop(held);
+        drain(&mut app);
+        // Each reply is sent once its own write committed. The editor adopts revisions when
+        // its queue drains, so the first reply names its commit in `writes`.
+        let reply = first.recv().unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["editor"]["writes"]["last_commit_rev"], base + 1);
+        let reply = second.recv().unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["editor"]["authoring_rev"], base + 2);
+        assert_eq!(reply["editor"]["pending_commits"], 0);
+        assert_eq!(app.store.revision().unwrap(), base + 2);
+        assert_eq!(
+            app.editor.as_ref().unwrap().world.entities.len(),
+            entities + 2
+        );
+    }
+
+    #[test]
+    fn stalled_writer_is_detached_reported_and_editing_continues() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("stall.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        {
+            let writes = app.writes.as_mut().unwrap();
+            writes.commit_timeout = std::time::Duration::from_millis(20);
+            writes.commit_grace = std::time::Duration::from_millis(40);
+        }
+        let held = hold(&gate);
+        let action = move_box(&app, 6.0);
+        app.editor_action(action).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while app.writes.is_some() {
+            app.poll_writes(std::time::Duration::ZERO).unwrap();
+            assert!(Instant::now() < deadline, "watchdog never fired");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.problem_codes()[0], "writer_stalled");
+        assert_eq!(editor.saving, 0);
+        assert_eq!(box_x(&editor.world), 0.0, "optimistic world reverted");
+        drop(held);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // The detached writer refused the edit it had not started.
+        assert_eq!(app.store.revision().unwrap(), base);
+        // Editing continues on the main thread.
+        let action = move_box(&app, 2.0);
+        app.editor_action(action).unwrap();
+        assert_eq!(app.store.revision().unwrap(), base + 1);
     }
 
     #[test]

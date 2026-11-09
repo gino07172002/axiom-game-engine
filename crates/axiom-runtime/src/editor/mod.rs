@@ -335,6 +335,12 @@ pub(crate) struct Editor {
     scene_input: SceneInput,
     /// Inspector tween timeline: clip, playhead, selected key, scrub preview.
     tween_ui: timeline::TweenUi,
+    /// Editor writes queued or running on the background writer (set by the host). While
+    /// non-zero, `world` is the optimistic result of those writes and `rev` the last
+    /// revision this editor adopted.
+    pub(crate) saving: usize,
+    /// Writer counters for `observe` (set by the host): last commit duration etc.
+    pub(crate) writes: Value,
 }
 
 /// Inline rename state: the row being renamed, the text being typed, focus requested yet.
@@ -406,6 +412,8 @@ impl Editor {
             rects: Default::default(),
             scene_input: SceneInput::default(),
             tween_ui: Default::default(),
+            saving: 0,
+            writes: Value::Null,
         };
         if selected
             .as_ref()
@@ -442,15 +450,7 @@ impl Editor {
         self.rev = rev;
         let previous = std::mem::replace(&mut self.world, world);
         self.needs_history = true;
-        let world = &self.world;
-        self.extra.retain(|id| world.entity(id).is_some());
-        if self
-            .renaming
-            .as_ref()
-            .is_some_and(|r| world.entity(&r.id).is_none())
-        {
-            self.renaming = None;
-        }
+        self.forget_missing();
         // A drag only starts from a clean draft, so its dirtiness is transient gizmo state.
         // Dropping the drag without resetting would strand an uncommittable stale draft.
         let interrupted = self.drag.take().is_some() | self.scene_input.point_drag.take().is_some();
@@ -471,17 +471,94 @@ impl Editor {
                 self.error = false;
             }
         }
-        if self
-            .scene
-            .as_ref()
-            .is_some_and(|id| !self.world.scenes.iter().any(|s| &s.id == id))
-        {
-            self.scene = None;
-        }
         if local || !self.dirty() {
             self.reset_draft();
         }
         Some((previous, diff))
+    }
+
+    /// Drops view state that refers to objects or scenes the current world no longer has.
+    fn forget_missing(&mut self) {
+        let world = &self.world;
+        self.extra.retain(|id| world.entity(id).is_some());
+        if self
+            .renaming
+            .as_ref()
+            .is_some_and(|r| world.entity(&r.id).is_none())
+        {
+            self.renaming = None;
+        }
+        if self
+            .scene
+            .as_ref()
+            .is_some_and(|id| !world.scenes.iter().any(|s| &s.id == id))
+        {
+            self.scene = None;
+        }
+    }
+
+    /// Shows the optimistic world of a queued write (staged off the main thread) and builds
+    /// further edits on it. `rev` stays the last adopted revision. The submitted draft is
+    /// replaced by the staged values; `select` (e.g. a created object) is selected.
+    /// Returns the replaced world so the host can free it off the main thread.
+    pub(crate) fn apply_staged(
+        &mut self,
+        world: std::sync::Arc<World>,
+        select: Option<String>,
+    ) -> std::sync::Arc<World> {
+        let previous = std::mem::replace(&mut self.world, world);
+        self.forget_missing();
+        self.reset_draft();
+        if let Some(id) = select {
+            self.select(Some(id));
+        }
+        previous
+    }
+
+    /// The writer committed this editor's own queued writes up to `rev` and nothing else is
+    /// pending: adopt the committed world (same content as the staged one). Unlike an
+    /// external revision this keeps the undo stack, a draft being edited meanwhile (its
+    /// revision tag moves to `rev`) and a gizmo drag in progress.
+    pub(crate) fn commit_landed(
+        &mut self,
+        rev: i64,
+        world: std::sync::Arc<World>,
+    ) -> Option<std::sync::Arc<World>> {
+        if self.rev == rev {
+            return None;
+        }
+        let old = std::mem::replace(&mut self.rev, rev);
+        let previous = std::mem::replace(&mut self.world, world);
+        self.needs_history = true;
+        self.forget_missing();
+        if self.dirty() || self.drag.is_some() || self.scene_input.point_drag.is_some() {
+            if let Some(d) = self.draft.as_mut().filter(|d| d.rev == old) {
+                d.rev = rev;
+            }
+            if let Some(d) = self.resource.as_mut().filter(|d| d.rev == old) {
+                d.rev = rev;
+            }
+            if let Some(d) = self.material.as_mut().filter(|d| d.rev == old) {
+                d.rev = rev;
+            }
+            if let Some(d) = self.prefab.as_mut().filter(|d| d.rev == old) {
+                d.rev = rev;
+            }
+        } else {
+            self.reset_draft();
+        }
+        Some(previous)
+    }
+
+    /// A queued write failed after its optimistic world was shown: return to `world` (the
+    /// last committed state at the same revision).
+    pub(crate) fn revert_staged(&mut self, world: std::sync::Arc<World>) -> std::sync::Arc<World> {
+        let previous = std::mem::replace(&mut self.world, world);
+        self.forget_missing();
+        self.drag = None;
+        self.scene_input.point_drag = None;
+        self.reset_draft();
+        previous
     }
 
     /// Change list computed off the main thread for revision `rev`; ignored if stale.
@@ -1334,6 +1411,15 @@ impl Editor {
         self.set_error(format!("{error:#}"));
     }
 
+    /// Codes of the recorded problems, newest first (tests).
+    #[cfg(test)]
+    pub(crate) fn problem_codes(&self) -> Vec<String> {
+        self.problems
+            .iter()
+            .map(|p| p["code"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
     pub fn set_component_hints(&mut self, registry: &axiom_core::Registry) {
         self.component_hints = registry
             .components
@@ -1474,6 +1560,15 @@ impl Editor {
         self.redo.clear();
     }
 
+    /// Revision an undo (or redo) restores now, if any.
+    pub(crate) fn restore_target(&self, redo: bool) -> Option<i64> {
+        if redo {
+            self.redo.last().copied()
+        } else {
+            self.undo.last().copied()
+        }
+    }
+
     pub fn record_restore(&mut self, previous: i64, redo: bool) {
         if redo {
             self.redo.pop();
@@ -1501,7 +1596,10 @@ impl Editor {
             "locked":self.prefs.locked.get(&self.world.id),
             "selection":self.selection(),
             "jobs":self.jobs_observation(),
-            "last_job":self.last_job
+            "last_job":self.last_job,
+            "pending_commits":self.saving,
+            "last_commit_ms":self.writes.get("last_commit_ms"),
+            "writes":self.writes
         })
     }
 
@@ -1515,6 +1613,18 @@ impl Editor {
         }
     }
 
+    /// The draft whose transform the scene view shows instead of the runtime's: while it is
+    /// being dragged or typed, while the runtime for the editor's newest revision is still
+    /// being built in the background, and while queued writes are saving (the editor world
+    /// is then their optimistic result). No snap-back after a gizmo commit.
+    fn shown_draft(&self, runtime: &WorldRuntime) -> Option<&Draft> {
+        let pending = runtime.rev != self.rev && runtime.requested_rev == self.rev;
+        self.draft.as_ref().filter(|d| {
+            (d.transform_dirty && d.rev == runtime.rev)
+                || ((pending || self.saving > 0) && d.rev == self.rev)
+        })
+    }
+
     pub fn render_frame(
         &self,
         runtime: &mut WorldRuntime,
@@ -1523,10 +1633,7 @@ impl Editor {
         // While the runtime for the editor's newest revision is still being built in the
         // background, show the selected object where that revision put it (no snap-back
         // after a gizmo commit).
-        let pending = runtime.rev != self.rev && runtime.requested_rev == self.rev;
-        let draft = self.draft.as_ref().filter(|d| {
-            (d.transform_dirty && d.rev == runtime.rev) || (pending && d.rev == self.rev)
-        });
+        let draft = self.shown_draft(runtime);
         // The override only lives during extraction, so all descendants and native mesh
         // extractors see the draft, while the simulation retains the committed transform.
         let original = draft.and_then(|d| {
