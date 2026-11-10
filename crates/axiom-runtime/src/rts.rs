@@ -735,6 +735,13 @@ impl RuntimeSystem for RtsSystem {
     fn screen_pointer(&mut self, state: &mut RuntimeState, pointer: &ScreenPointer) -> Result<()> {
         self.sim
             .set_combat(state.combat.as_ref().map(|c| c.scene.clone()));
+        if pointer.kind == PointerKind::Move {
+            // Off the terrain too: a run of moves must end where the last one is.
+            if let Some(drag) = &mut self.drag {
+                drag.2 = pointer.screen;
+            }
+            return Ok(());
+        }
         let Some(p) = Self::terrain(pointer) else {
             return Ok(());
         };
@@ -742,11 +749,7 @@ impl RuntimeSystem for RtsSystem {
             PointerKind::PrimaryDown => {
                 self.drag = Some((pointer.screen, p, pointer.screen, pointer.additive))
             }
-            PointerKind::Move => {
-                if let Some(drag) = &mut self.drag {
-                    drag.2 = pointer.screen;
-                }
-            }
+            PointerKind::Move => {}
             PointerKind::PrimaryUp => {
                 if let Some((screen, start, _, additive)) = self.drag.take() {
                     if Vec3::new(

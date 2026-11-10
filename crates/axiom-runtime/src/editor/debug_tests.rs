@@ -391,6 +391,64 @@ fn profiler_measures_only_while_visible_and_reports_per_system_time() {
 }
 
 #[test]
+fn profiler_shows_gpu_timestamp_times_or_says_why_not() {
+    use crate::gpu_timing::{GpuFrame, Section};
+    let mut h = Harness::new(town());
+    h.open("profiler");
+    // Unsupported: the reason, no GPU table, observe says why.
+    h.editor.debug.profiler.gpu_timing = Some(Err("the adapter has no TIMESTAMP_QUERY"));
+    h.frame();
+    assert!(!h.editor.rects.contains_key("profiler:gpu"));
+    let gpu = h.editor.observation()["debug"]["profiler"]["gpu"].clone();
+    assert_eq!(gpu["available"], false);
+    assert_eq!(gpu["reason"], "the adapter has no TIMESTAMP_QUERY");
+    // Supported: measured frames (from the renderer's readbacks) fill the GPU table.
+    h.editor.debug.profiler.gpu_timing = Some(Ok(()));
+    let mut frame = GpuFrame::default();
+    frame.ms[Section::World as usize] = 2.0;
+    frame.ms[Section::Ui as usize] = 0.5;
+    frame.total = 2.6;
+    h.editor.debug.profiler.push_gpu(&frame);
+    frame.ms[Section::World as usize] = 4.0;
+    frame.total = 4.6;
+    h.editor.debug.profiler.push_gpu(&frame);
+    h.editor.debug.profiler.gpu_dropped = 3;
+    h.frame();
+    assert!(h.editor.rects.contains_key("profiler:gpu"));
+    let gpu = h.editor.observation()["debug"]["profiler"]["gpu"].clone();
+    assert_eq!(gpu["source"], "timestamp_queries");
+    assert_eq!(
+        (gpu["frames"].as_u64(), gpu["dropped"].as_u64()),
+        (Some(2), Some(3))
+    );
+    assert_eq!(gpu["mean_ms"]["world"], 3.0);
+    assert_eq!(gpu["mean_ms"]["ui"], 0.5);
+    assert!(
+        gpu["mean_ms"].get("shadows").is_none(),
+        "unmeasured groups are left out"
+    );
+    assert_eq!(
+        (gpu["total_mean_ms"].as_f64(), gpu["total_max_ms"].as_f64()),
+        (Some(3.6), Some(4.6))
+    );
+    // The CPU side is summarized next to it (frame minus swapchain wait).
+    h.editor.debug.profiler.push_frame(
+        &[("simulate", 1.0), ("render_present_acquire_wait", 2.0)],
+        5.0,
+        1,
+    );
+    let cpu = h.editor.observation()["debug"]["profiler"]["cpu"].clone();
+    assert_eq!(cpu["frame_mean_ms"], 3.0, "{cpu}");
+    assert_eq!(cpu["phase_mean_ms"]["simulate"], 1.0);
+    // Paused: nothing is added; reset clears the GPU window too.
+    h.editor.run_command("profiler.pause").unwrap();
+    h.editor.debug.profiler.push_gpu(&frame);
+    assert_eq!(h.editor.debug.profiler.gpu_len, 2);
+    h.editor.run_command("profiler.reset").unwrap();
+    assert_eq!(h.editor.debug.profiler.gpu_len, 0);
+}
+
+#[test]
 fn record_command_arms_play_and_refuses_bad_names() {
     let dir = std::env::temp_dir().join(format!("axiom-m8-record-{}", std::process::id()));
     let mut h = Harness::new(lab());

@@ -283,8 +283,8 @@ pub trait RuntimeSystem: Any + Send {
     ) -> Result<()> {
         Ok(())
     }
-    /// Whether `screen_pointer` can change this system's simulation (scenario recordings
-    /// cannot carry pointer events).
+    /// Whether `screen_pointer` can change this system's simulation (only then are pointer
+    /// events recorded into scenarios).
     fn uses_screen_pointer(&self) -> bool {
         false
     }
@@ -349,7 +349,12 @@ pub trait RuntimeSystem: Any + Send {
     }
 }
 pub type SystemFactory = fn(&mut RuntimeState) -> Result<Box<dyn RuntimeSystem>>;
-#[derive(Clone, Copy, Debug)]
+/// Scenario recordings keep `Move` events only while the primary button is held (a drag),
+/// and only the last of consecutive moves between two fixed steps: a system must treat a run
+/// of moves as "the cursor is now here" (last wins) and must not change simulated state on
+/// a move without a drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerKind {
     Move,
     PrimaryDown,

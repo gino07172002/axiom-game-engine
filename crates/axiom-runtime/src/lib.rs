@@ -19,6 +19,7 @@ pub mod fps;
 pub mod fsm;
 pub mod gameplay;
 pub mod geometry;
+pub mod gpu_timing;
 mod input;
 pub mod interact;
 pub mod jobs;

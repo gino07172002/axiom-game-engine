@@ -214,7 +214,7 @@ cargo build --release -p axiom -j1
 .\target\debug\axiom.exe --db data/scenario.sqlite scenario examples/fps-regression.scenario.json
 ```
 
-Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
+Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。`commands` 的操作(`op`)有 `command`、`save`、`load`、`assert`、`look`(`{"op":"look","deltas":[[dx,dy],…]}`,滑鼠視角原始 delta,依序套用)與 `pointer`(`{"op":"pointer","kind":"primary_down|primary_up|move|secondary_down","screen":[x,y],"aspect":a,"additive":false}`,遊戲區域正規化座標,射線由當下相機推導);tick 為 `ticks` 的操作在最後一步之後、最終斷言之前執行(見 `docs/adr-scenario-mouse-input.zh-TW.md`)。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
 
 M2 smoke 預設包含 M1.5 → M1 → M0，不必逐一重跑上述腳本。RTS 功能場景（`content/rts-bench`）執行 7200 ticks：64 初始單位、32 友方全數群組抵達、採集交付、生產兩單位至 66。另驗證原生 64／128／256 單位畫面、即時命令與生產冪等重試。`artifacts/m2-validation.json` 保存完整證據，`artifacts/m2-*.png` 為截圖。
 
