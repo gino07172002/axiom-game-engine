@@ -29,6 +29,10 @@ pub(super) fn tab_icon(tab: Dock) -> Icon {
         Dock::Console => Icon::Console,
         Dock::Profiler => Icon::Chip,
         Dock::Trace => Icon::Event,
+        Dock::InputMap => Icon::Input,
+        Dock::Localization => Icon::Localization,
+        Dock::Animation => Icon::Animation,
+        Dock::Vfx => Icon::Vfx,
     }
 }
 

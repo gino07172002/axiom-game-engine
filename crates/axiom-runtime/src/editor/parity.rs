@@ -1972,3 +1972,135 @@ fn asset_rename_matches_acl() {
         );
     }
 }
+
+fn package(name: &str) -> World {
+    axiom_core::ContentPackage::load(
+        format!("{}/../../content/{name}", env!("CARGO_MANIFEST_DIR")),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+/// Tuning editors (Input Map, Localization, Animation, VFX tabs, material shader source):
+/// the method each widget calls and the `*.edit` registry command, against the ACL verb.
+#[test]
+fn tuning_editor_edits_match_acl() {
+    use axiom_core::ops::{AbilityEventEdit, InputEdit, LocEdit, VfxEdit};
+    assert_parity(
+        town(),
+        |e| {
+            let edit = InputEdit::Button {
+                action: "attack".into(),
+                key: "KeyF".into(),
+            };
+            vec![e.input_edit(&edit).into_iter().collect()]
+        },
+        "input button attack KeyF",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .run_command_with("input.edit", Some("axis orbit KeyQ KeyE"))
+                .unwrap()]
+        },
+        "input axis orbit KeyQ KeyE",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            let edit = LocEdit::Set {
+                locale: "en".into(),
+                key: "town".into(),
+                text: "Plaza «center»".into(),
+            };
+            vec![e.loc_edit(&edit).into_iter().collect()]
+        },
+        r#"loc set en town "Plaza «center»""#,
+    );
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .run_command_with("loc.edit", Some(r#"key add greeting "你好""#))
+                .unwrap()]
+        },
+        r#"loc key add greeting "你好""#,
+    );
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .run_command_with("loc.edit", Some("locale add ja from=en"))
+                .unwrap()]
+        },
+        "loc locale add ja from=en",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            let edit = AbilityEventEdit::Add {
+                tick: 40,
+                sound: "pop".into(),
+            };
+            vec![e.ability_event_edit("wave", &edit).into_iter().collect()]
+        },
+        "ability wave event add 40 pop",
+    );
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .run_command_with("ability.edit", Some("hop event move 0 30"))
+                .unwrap()]
+        },
+        "ability hop event move 0 30",
+    );
+    let fx = package("effects-tour");
+    assert_parity(
+        fx.clone(),
+        |e| {
+            let edit = VfxEdit::Size {
+                start: 0.3,
+                end: 0.01,
+            };
+            vec![e.vfx_edit("fx/01-cpu", &edit).into_iter().collect()]
+        },
+        "vfx fx/01-cpu size 0.3 0.01",
+    );
+    assert_parity(
+        fx,
+        |e| {
+            vec![e
+                .run_command_with("vfx.edit", Some("fx/01-cpu color 1,0.5,0,1 0.2,0,0.4,0"))
+                .unwrap()]
+        },
+        "vfx fx/01-cpu color 1,0.5,0,1 0.2,0,0.4,0",
+    );
+    let lab = package("shader-lab");
+    let source = lab.resources["render.shaders"]["shaders"]["scan"]["wgsl"]
+        .as_str()
+        .unwrap()
+        .replace(
+            "surface(s: SurfaceInput)",
+            "surface(s: SurfaceInput) /* tuned */",
+        );
+    let script = format!(
+        "shader scan source {}",
+        serde_json::to_string(&source).unwrap()
+    );
+    assert_parity(
+        lab.clone(),
+        |e| vec![e.apply_shader_source("scan", &source).into_iter().collect()],
+        &script,
+    );
+    assert_parity(
+        lab,
+        |e| {
+            let arg = script.trim_start_matches("shader ");
+            vec![e.run_command_with("shader.edit", Some(arg)).unwrap()]
+        },
+        &script,
+    );
+}

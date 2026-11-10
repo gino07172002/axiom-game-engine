@@ -138,6 +138,15 @@ fn format_location(line: u32, column: u32) -> String {
     }
 }
 
+/// The hook line and column of a `validate_hook` message (the `format_location` prefix), if
+/// the error has one.
+pub(crate) fn error_location(message: &str) -> Option<(u32, u32)> {
+    let rest = message.strip_prefix("line ")?;
+    let (line, rest) = rest.split_once(", column ")?;
+    let (column, _) = rest.split_once(": ")?;
+    Some((line.parse().ok()?, column.parse().ok()?))
+}
+
 fn bounded(block: &naga::Block) -> bool {
     block.iter().all(|statement| match statement {
         naga::Statement::Loop { .. } | naga::Statement::Kill | naga::Statement::Barrier(_) => false,

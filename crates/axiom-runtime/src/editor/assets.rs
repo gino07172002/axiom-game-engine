@@ -243,6 +243,7 @@ impl Editor {
             let id = draft.id.clone();
             self.open_material(&id);
         }
+        self.shader_section(ui, actions);
     }
 
     pub(super) fn prefab_inspector(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {

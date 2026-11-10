@@ -21,6 +21,13 @@ mod ui;
 mod ui_editor;
 mod viewport;
 mod world_panel;
+// Tuning editors (M9): Input Map, Localization, Animation, VFX tabs and the shader source.
+mod anim_timeline;
+mod input_map;
+mod localization;
+mod shader_editor;
+mod tuning;
+mod vfx_editor;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
@@ -41,6 +48,8 @@ mod hierarchy_tests;
 mod inspector_tests;
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod tuning_tests;
 #[cfg(test)]
 mod ui_editor_tests;
 #[cfg(test)]
@@ -454,6 +463,10 @@ enum Dock {
     Console,
     Profiler,
     Trace,
+    InputMap,
+    Localization,
+    Animation,
+    Vfx,
 }
 
 pub(crate) struct Editor {
@@ -598,6 +611,8 @@ pub(crate) struct Editor {
     assets: asset_browser::AssetBrowser,
     /// Console, Event trace, Profiler and the scenario recording (M8).
     pub(crate) debug: debug::Debug,
+    /// Input Map, Localization, Animation, VFX tabs and the shader source (editor state).
+    tuning: tuning::Tuning,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -710,6 +725,7 @@ impl Editor {
             camera_preview: Default::default(),
             live: Default::default(),
             ui_editor: Default::default(),
+            tuning: Default::default(),
             graph: Default::default(),
             assets: Default::default(),
             debug: Default::default(),
@@ -1916,6 +1932,7 @@ impl Editor {
     pub(crate) fn poll_jobs(&mut self) {
         use crate::jobs::Outcome;
         self.poll_assets();
+        self.poll_shader_check();
         let Some(job) = &mut self.scenario_job else {
             return;
         };
@@ -1965,6 +1982,7 @@ impl Editor {
             .iter()
             .map(|job| job.observation())
             .chain(self.asset_job_observation())
+            .chain(self.tuning.shader.job.as_ref().map(|j| j.observation()))
             .collect::<Vec<_>>())
     }
 
@@ -2270,7 +2288,8 @@ impl Editor {
             "last_commit_ms":self.writes.get("last_commit_ms"),
             "writes":self.writes,
             "graph":self.graph_observation(),
-            "debug":self.debug.observation()
+            "debug":self.debug.observation(),
+            "tuning":self.tuning_observation()
         })
     }
 
@@ -2397,6 +2416,13 @@ impl Editor {
                     &writes,
                 ))
             });
+        // Animation tab scrub: the model posed at the playhead for this frame only; the
+        // simulation's controller is put back after extraction.
+        let pose = self.anim_scrub_target().and_then(|(id, clip, time)| {
+            runtime
+                .system_mut::<crate::animation::AnimationSystem>()?
+                .begin_scrub(id, clip, time)
+        });
         // A light / mesh / camera field being dragged or typed in the Inspector: its draft
         // value is drawn for this frame only (other components show once committed).
         let component = if self.previewing {
@@ -2410,6 +2436,11 @@ impl Editor {
         }
         if let Some(restore) = scrub {
             restore.restore(&mut runtime.state);
+        }
+        if let Some(pose) = pose {
+            if let Some(system) = runtime.system_mut::<crate::animation::AnimationSystem>() {
+                system.end_scrub(pose);
+            }
         }
         runtime.state.compiled.enabled = original_visibility;
         // VFX live in a resource, not on entities: drop the emitters attached to hidden objects.

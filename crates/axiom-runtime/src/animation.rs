@@ -210,6 +210,61 @@ impl Controller {
 }
 pub struct AnimationSystem {
     players: BTreeMap<String, Controller>,
+    /// The editor's last scrubbed pose: (entity, clip, seconds, pose). A playhead that did not
+    /// move reuses it, so an idle preview neither clones nor evaluates per frame.
+    scrubbed: Option<(String, String, f32, Pose)>,
+}
+
+/// An entity posed by the editor's Animation timeline for one extraction: only the drawn
+/// pose is swapped; [`AnimationSystem::end_scrub`] puts the simulation's pose back.
+pub(crate) struct Scrub {
+    entity: String,
+    clip: String,
+    time: f32,
+    pose: Pose,
+}
+
+impl AnimationSystem {
+    /// Poses `entity` at `seconds` of `clip` (clamped, not looping) until `end_scrub`. The
+    /// simulation's controller state is untouched apart from the swapped pose; `None` when
+    /// there is no such player or clip, or the pose cannot be evaluated.
+    pub(crate) fn begin_scrub(&mut self, entity: &str, clip: &str, seconds: f32) -> Option<Scrub> {
+        let p = self.players.get_mut(entity)?;
+        let duration = p.clips.get(clip)?.source.duration;
+        let time = if seconds.is_finite() {
+            seconds.clamp(0.0, duration.max(0.0))
+        } else {
+            0.0
+        };
+        let (entity, clip, posed) = match self.scrubbed.take() {
+            Some((e, c, t, pose)) if e == entity && c == clip && t == time => (e, c, pose),
+            _ => {
+                // A new playhead: evaluate on a copy (twists / IK / overrides apply as in play).
+                let mut probe = p.clone();
+                probe.active = Some(clip.to_owned());
+                probe.time = time;
+                probe.playing = false;
+                probe.looping = false;
+                probe.fade = None;
+                probe.evaluate(0.0).ok()?;
+                (entity.to_owned(), clip.to_owned(), probe.pose)
+            }
+        };
+        let pose = std::mem::replace(&mut p.pose, posed);
+        Some(Scrub {
+            entity,
+            clip,
+            time,
+            pose,
+        })
+    }
+
+    pub(crate) fn end_scrub(&mut self, scrub: Scrub) {
+        if let Some(p) = self.players.get_mut(&scrub.entity) {
+            let posed = std::mem::replace(&mut p.pose, scrub.pose);
+            self.scrubbed = Some((scrub.entity, scrub.clip, scrub.time, posed));
+        }
+    }
 }
 
 /// Imported assets shared across runtime rebuilds (derived data cached outside revisions).
@@ -333,7 +388,10 @@ pub fn register(registry: &mut RuntimeRegistry) {
                     )
                 })
                 .collect();
-            Ok(Box::new(AnimationSystem { players }))
+            Ok(Box::new(AnimationSystem {
+                players,
+                scrubbed: None,
+            }))
         });
 }
 impl RuntimeSystem for AnimationSystem {
@@ -349,6 +407,9 @@ impl RuntimeSystem for AnimationSystem {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
     fn step(&mut self, state: &mut RuntimeState, _: &ActionMap) {
         for cue in std::mem::take(&mut state.animation_cues.pending) {

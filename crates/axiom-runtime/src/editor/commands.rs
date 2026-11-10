@@ -443,6 +443,48 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Assets",
         "",
     ),
+    c("window.input_map", "Input Map", "Window", ""),
+    c("window.localization", "Localization", "Window", ""),
+    c("window.animation", "Animation", "Window", ""),
+    c("window.vfx", "VFX", "Window", ""),
+    a(
+        "input.edit",
+        "Input: Bind / Remove Action…",
+        "World",
+        "button ACTION KEY|axis ACTION POSITIVE NEGATIVE|remove ACTION",
+    ),
+    a(
+        "input.capture",
+        "Input Map: Press a Key for…",
+        "Window",
+        "ACTION|ACTION+|ACTION-",
+    ),
+    a(
+        "loc.edit",
+        "Localization: Edit Text / Key / Locale…",
+        "World",
+        "set LOCALE KEY TEXT|key add KEY [TEXT]|key remove KEY|locale add L [from=L2]|locale remove L",
+    ),
+    a("loc.filter", "Localization: Filter…", "Window", "TEXT"),
+    a(
+        "ability.edit",
+        "Animation: Ability Event…",
+        "World",
+        "ID event add TICK SOUND|ID event move I TICK|ID event sound I SOUND|ID event remove I",
+    ),
+    a("anim.target", "Animation: Model / Clip…", "Window", "ENTITY [CLIP]"),
+    a("anim.scrub", "Animation: Scrub to…", "Window", "SECONDS"),
+    a(
+        "vfx.edit",
+        "VFX: Size Curve / Colour Gradient…",
+        "World",
+        "ID size START END|ID color r,g,b,a r,g,b,a",
+    ),
+    a("vfx.select", "VFX: Select Emitter…", "Window", "EMITTER"),
+    a("shader.edit", "Shader: Set Source…", "World", "ID source \"WGSL\""),
+    c("shader.check", "Check Shader Source", "Assets", ""),
+    a("shader.draft", "Shader: Replace Unsaved Draft…", "Assets", "\"WGSL\""),
+    c("shader.cancel_check", "Cancel Shader Check", "Assets", ""),
 ];
 /// Commands that write authoring revisions (refused during Play with the reason).
 pub(crate) const CONTENT_COMMANDS: &[&str] = &[
@@ -496,6 +538,11 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "world.resource_remove",
     "event.declare",
     "game.main_camera",
+    "input.edit",
+    "loc.edit",
+    "ability.edit",
+    "vfx.edit",
+    "shader.edit",
 ];
 pub(crate) fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
@@ -692,6 +739,9 @@ impl Editor {
     pub(crate) fn command_blocked(&self, id: &str) -> Option<&'static str> {
         if let Some(reason) = self.graph_blocked(id) {
             return reason;
+        }
+        if super::tuning::is_tuning(id) && !(self.previewing && CONTENT_COMMANDS.contains(&id)) {
+            return self.tuning_blocked(id);
         }
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
@@ -900,6 +950,13 @@ impl Editor {
             || id.starts_with("profiler.")
         {
             return self.debug_command(id, arg);
+        }
+        if super::tuning::is_tuning(id) {
+            anyhow::ensure!(
+                !cmd.arg.is_empty() || arg.is_none(),
+                "{id} takes no argument"
+            );
+            return self.tuning_command(id, arg);
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
