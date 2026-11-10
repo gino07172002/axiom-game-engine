@@ -2,6 +2,7 @@ mod asset_browser;
 mod assets;
 mod chrome;
 mod commands;
+pub(crate) mod debug;
 mod form;
 pub(crate) mod game;
 mod graph;
@@ -11,6 +12,7 @@ pub use thumbs::validate_thumbnails_gpu;
 mod layout;
 mod options;
 mod panels;
+pub(crate) mod record;
 mod resource;
 mod theme;
 mod thumbs;
@@ -25,6 +27,8 @@ use crate::world::WorldRuntime;
 mod asset_browser_tests;
 #[cfg(test)]
 mod chrome_tests;
+#[cfg(test)]
+mod debug_tests;
 #[cfg(test)]
 mod dock_tests;
 #[cfg(test)]
@@ -62,6 +66,8 @@ pub(crate) enum Action {
     PlayPause,
     /// Play ▸ Step: pauses, then advances exactly one fixed step.
     PlayStep,
+    /// Play ▸ Record (while recording): write the recorded scenario; Play continues.
+    RecordStop,
     /// Load the before/after diff of one revision against its predecessor.
     LoadDiff {
         rev: i64,
@@ -445,6 +451,9 @@ enum Dock {
     Assets,
     Agent,
     UiEditor,
+    Console,
+    Profiler,
+    Trace,
 }
 
 pub(crate) struct Editor {
@@ -587,6 +596,8 @@ pub(crate) struct Editor {
     graph: graph::GraphUi,
     /// Assets tab: filters, selection, Find Usages, thumbnails.
     assets: asset_browser::AssetBrowser,
+    /// Console, Event trace, Profiler and the scenario recording (M8).
+    pub(crate) debug: debug::Debug,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -701,6 +712,7 @@ impl Editor {
             ui_editor: Default::default(),
             graph: Default::default(),
             assets: Default::default(),
+            debug: Default::default(),
         };
         if selected
             .as_ref()
@@ -2007,9 +2019,16 @@ impl Editor {
         self.open_component_after = None;
         let response = axiom_core::error_response(error);
         let d = response["diagnostics"][0].clone();
+        let entity = d["path"]
+            .as_str()
+            .and_then(|path| entity_in_path(path, &self.world));
         self.problems.insert(0, d);
         self.problems.truncate(32);
-        self.set_error(format!("{error:#}"));
+        // One Console entry, linked to the object the diagnostic points at.
+        let text = format!("{error:#}");
+        self.console_log(debug::Level::Error, &text, entity);
+        self.error = true;
+        self.status = text;
     }
 
     /// Codes of the recorded problems, newest first (tests).
@@ -2144,11 +2163,25 @@ impl Editor {
     pub fn set_error(&mut self, message: impl Into<String>) {
         self.error = true;
         self.status = message.into();
+        self.debug.console.log(
+            debug::Level::Error,
+            debug::Source::Editor,
+            &self.status,
+            None,
+            self.previewing.then_some(self.play.tick),
+        );
     }
 
     pub fn notice(&mut self, message: impl Into<String>) {
         self.error = false;
         self.status = message.into();
+        self.debug.console.log(
+            debug::Level::Info,
+            debug::Source::Editor,
+            &self.status,
+            None,
+            self.previewing.then_some(self.play.tick),
+        );
     }
 
     pub fn record(&mut self, request: Request, result: &Value) {
@@ -2236,7 +2269,8 @@ impl Editor {
             "pending_commits":self.saving,
             "last_commit_ms":self.writes.get("last_commit_ms"),
             "writes":self.writes,
-            "graph":self.graph_observation()
+            "graph":self.graph_observation(),
+            "debug":self.debug.observation()
         })
     }
 

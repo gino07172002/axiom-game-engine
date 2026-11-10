@@ -16,9 +16,9 @@ use std::hash::{Hash, Hasher};
 pub(crate) const BUILTIN: [&str; 3] = ["Default", "Tall Inspector", "Classic"];
 /// Version of the built-in Default. A saved current layout from an older Default is replaced
 /// by the new one once (named layouts are kept; Classic is the previous arrangement).
-pub(crate) const LAYOUT_VERSION: u32 = 2;
+pub(crate) const LAYOUT_VERSION: u32 = 3;
 /// The tabs that shared the old bottom dock; a reopened one joins the others.
-const BOTTOM: [Dock; 8] = [
+const BOTTOM: [Dock; 11] = [
     Dock::Changes,
     Dock::Proposals,
     Dock::History,
@@ -27,15 +27,18 @@ const BOTTOM: [Dock; 8] = [
     Dock::Graphs,
     Dock::Assets,
     Dock::Agent,
+    Dock::Console,
+    Dock::Profiler,
+    Dock::Trace,
 ];
 const MAX_DEPTH: usize = 12;
 const MAX_WINDOWS: usize = 8;
-const MAX_NAMED: usize = 32;
+pub(crate) const MAX_NAMED: usize = 32;
 /// Where the World tab opens when it is not in the layout (the old floating window).
 const WORLD_WINDOW: [f32; 4] = [300.0, 50.0, 400.0, 560.0];
 
 impl Dock {
-    pub(crate) const ALL: [Dock; 14] = [
+    pub(crate) const ALL: [Dock; 17] = [
         Dock::Hierarchy,
         Dock::Scene,
         Dock::Game,
@@ -50,6 +53,9 @@ impl Dock {
         Dock::Agent,
         Dock::World,
         Dock::UiEditor,
+        Dock::Console,
+        Dock::Profiler,
+        Dock::Trace,
     ];
     /// Stable name used by the preferences file, `window.*` commands and `editor_view {dock}`.
     pub(crate) fn name(self) -> &'static str {
@@ -68,6 +74,9 @@ impl Dock {
             Dock::Agent => "agent",
             Dock::World => "world",
             Dock::UiEditor => "ui_editor",
+            Dock::Console => "console",
+            Dock::Profiler => "profiler",
+            Dock::Trace => "trace",
         }
     }
     pub(crate) fn from_name(name: &str) -> Option<Dock> {
@@ -89,6 +98,9 @@ impl Dock {
             Dock::Agent => "AI / Protocol",
             Dock::World => "World",
             Dock::UiEditor => "UI Editor",
+            Dock::Console => "Console",
+            Dock::Profiler => "Profiler",
+            Dock::Trace => "Event Trace",
         }
     }
     fn bottom(self) -> bool {
@@ -398,23 +410,23 @@ pub(crate) fn from_spec(spec: &Value) -> Result<(DockState<Dock>, Vec<String>), 
 pub(crate) fn builtin(name: &str) -> Option<Value> {
     let bottom: Vec<&str> = BOTTOM.iter().map(|d| d.name()).collect();
     match name {
-        // Hierarchy | Scene, Game, Graphs over Assets, Problems, History | full-height
-        // Inspector. Changes, Proposals, Scenarios and AI / Protocol open from the Window menu
-        // (into the bottom leaf).
+        // Hierarchy | Scene, Game, Graphs over Assets, Console, Problems, History |
+        // full-height Inspector. Changes, Proposals, Scenarios, AI / Protocol, Profiler and
+        // Event Trace open from the Window menu (into the bottom leaf).
         "Default" => Some(json!({"v":1,"main":{
             "split":"h","fraction":0.17,
             "a":{"tabs":["hierarchy"]},
             "b":{"split":"h","fraction":0.77,
                 "a":{"split":"v","fraction":0.7,
                     "a":{"tabs":["scene","game","graphs"],"active":0},
-                    "b":{"tabs":["assets","problems","history"],"active":0}},
+                    "b":{"tabs":["assets","console","problems","history"],"active":0}},
                 "b":{"tabs":["inspector"]}}},"windows":[]})),
         // The inspector gets the full window height (long component forms on 1080p screens).
         "Tall Inspector" => Some(json!({"v":1,"main":{
             "split":"h","fraction":0.72,
             "a":{"split":"v","fraction":0.7,
                 "a":{"split":"h","fraction":0.24,"a":{"tabs":["hierarchy"]},"b":{"tabs":["scene","game","graphs"],"active":0}},
-                "b":{"tabs":["assets","problems","history"],"active":0}},
+                "b":{"tabs":["assets","console","problems","history"],"active":0}},
             "b":{"tabs":["inspector"]}},"windows":[]})),
         // The arrangement before M-UI: every tool tab in one full-width bottom strip.
         "Classic" => Some(json!({"v":1,"main":{
@@ -657,13 +669,18 @@ mod tests {
             assert_eq!(to_spec(&from_spec(&saved).unwrap().0), saved, "{name}");
             for tab in Dock::ALL {
                 // World floats and the UI Editor opens beside Scene on demand; Default and Tall
-                // Inspector keep only Assets, Problems and History in the bottom strip (the
-                // other tool tabs open from the Window menu); Classic has them all.
+                // Inspector keep only Assets, Console, Problems and History in the bottom
+                // strip (the other tool tabs open from the Window menu); Classic has them all.
                 let on_demand = matches!(tab, Dock::World | Dock::UiEditor)
                     || (name != "Classic"
                         && matches!(
                             tab,
-                            Dock::Changes | Dock::Proposals | Dock::Scenarios | Dock::Agent
+                            Dock::Changes
+                                | Dock::Proposals
+                                | Dock::Scenarios
+                                | Dock::Agent
+                                | Dock::Profiler
+                                | Dock::Trace
                         ));
                 assert_eq!(is_open(&state, tab), !on_demand, "{name} {tab:?}");
             }
@@ -673,11 +690,11 @@ mod tests {
     #[test]
     fn unknown_repeated_and_empty_entries_are_dropped_and_bad_specs_rejected() {
         let spec = json!({"v":1,"main":{"split":"h","fraction":7.0,
-            "a":{"tabs":["console","scene","scene"],"active":1},
+            "a":{"tabs":["terminal","scene","scene"],"active":1},
             "b":{"split":"v","fraction":null,"a":{"tabs":["nope"]},"b":{"tabs":["inspector"]}}},
             "windows":[{"rect":[1,2,"x",4],"node":{"tabs":["world"]}}]});
         let (state, dropped) = from_spec(&spec).unwrap();
-        assert_eq!(dropped, ["console", "scene", "nope"]);
+        assert_eq!(dropped, ["terminal", "scene", "nope"]);
         // The empty leaf collapsed its split; the fraction was clamped.
         assert_eq!(
             to_spec(&state)["main"],

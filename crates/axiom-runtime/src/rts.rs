@@ -729,6 +729,9 @@ impl RuntimeSystem for RtsSystem {
         self.sync(next);
         Ok(())
     }
+    fn uses_screen_pointer(&self) -> bool {
+        true
+    }
     fn screen_pointer(&mut self, state: &mut RuntimeState, pointer: &ScreenPointer) -> Result<()> {
         self.sim
             .set_combat(state.combat.as_ref().map(|c| c.scene.clone()));

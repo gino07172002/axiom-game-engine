@@ -233,7 +233,7 @@ fn tabs_close_and_reopen_through_commands_and_bridge_names_and_the_scene_stops_r
     assert!(h.editor.dock_shows(Dock::Assets));
     let error = h
         .editor
-        .remote_view(&[], false, Some("console"))
+        .remote_view(&[], false, Some("terminal"))
         .unwrap_err();
     assert!(
         error.to_string().contains("hierarchy|scene|game|inspector"),
@@ -343,8 +343,8 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
         (json!("garbage"), "Saved layout ignored"),
         (json!({"v":7}), "Saved layout ignored"),
         (
-            json!({"v":1,"main":{"tabs":["console","scene"]}}),
-            "unknown panel(s) ignored: console",
+            json!({"v":1,"main":{"tabs":["terminal","scene"]}}),
+            "unknown panel(s) ignored: terminal",
         ),
     ] {
         std::fs::write(
@@ -421,7 +421,7 @@ fn steady_state_frames_do_not_grow_or_resync_the_dock() {
     assert_eq!(layout::fingerprint(h.state()), print);
     // The open-tab list for observe is cached, not rebuilt per call.
     let a = h.editor.observation()["tabs"].clone();
-    // Hierarchy, Scene, Game, Graphs, Inspector, Assets, Problems, History.
-    assert_eq!(a.as_array().unwrap().len(), 8, "the Default layout's tabs");
+    // Hierarchy, Scene, Game, Graphs, Inspector, Assets, Console, Problems, History.
+    assert_eq!(a.as_array().unwrap().len(), 9, "the Default layout's tabs");
     assert_eq!(h.editor.observation()["tabs"], a);
 }

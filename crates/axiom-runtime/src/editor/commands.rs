@@ -310,6 +310,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Play",
         "[ID]",
     ),
+    a(
+        "play.record",
+        "Play and Record Scenario / Stop Recording",
+        "Play",
+        "[NAME]",
+    ),
     c("window.hierarchy", "Hierarchy", "Window", ""),
     c("window.scene", "Scene", "Window", ""),
     c("window.game", "Game", "Window", ""),
@@ -322,6 +328,38 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("window.graphs", "Graphs", "Window", "Ctrl+6"),
     c("window.assets", "Assets", "Window", "Ctrl+7"),
     c("window.agent", "AI / Protocol", "Window", "Ctrl+8"),
+    c("window.console", "Console", "Window", "Ctrl+Shift+1"),
+    c("window.profiler", "Profiler", "Window", "Ctrl+Shift+2"),
+    c("window.trace", "Event Trace", "Window", "Ctrl+Shift+3"),
+    c("console.clear", "Console: Clear", "Window", ""),
+    a(
+        "console.filter",
+        "Console: Filter…",
+        "Window",
+        "[levels=info,warn,error] [source=all|editor|runtime|game|event] [text=TEXT] | reset",
+    ),
+    a(
+        "console.open",
+        "Console: Select the Entry's Object…",
+        "Window",
+        "SEQ",
+    ),
+    c("trace.pause", "Event Trace: Pause / Resume", "Window", ""),
+    c("trace.clear", "Event Trace: Clear", "Window", ""),
+    a(
+        "trace.filter",
+        "Event Trace: Filter…",
+        "Window",
+        "[kinds=event,rule,narrative,package,state|all] [text=TEXT] | reset",
+    ),
+    a(
+        "trace.open",
+        "Event Trace: Select the Entry's Object…",
+        "Window",
+        "SEQ",
+    ),
+    c("profiler.pause", "Profiler: Pause / Resume", "Window", ""),
+    c("profiler.reset", "Profiler: Reset", "Window", ""),
     a("window.close", "Close Tab", "Window", "TAB"),
     a("layout.save_as", "Save Layout As…", "Window", "NAME"),
     a("layout.load", "Load Layout…", "Window", "NAME"),
@@ -663,6 +701,12 @@ impl Editor {
                 Some("stop Play first (Play runs a pinned revision; edits would not show in it)")
             }
             "play.stop" | "play.pause" | "play.step" if !self.previewing => Some("not playing"),
+            "play.record" if self.previewing && self.debug.recorder.is_none() => {
+                Some("a recording starts with Play: stop Play first")
+            }
+            "play.record" if !self.previewing && busy => {
+                Some("apply or reload the inspector draft first")
+            }
             "play.maximize" if self.previewing => Some("stop Play first"),
             "game.main_camera" if busy => Some("apply or reload the inspector draft first"),
             "edit.undo" if self.undo.is_empty() && self.saving == 0 => Some("nothing to undo"),
@@ -849,6 +893,13 @@ impl Editor {
         }
         if id.starts_with("asset.") {
             return self.asset_command(id, arg);
+        }
+        if id == "play.record"
+            || id.starts_with("console.")
+            || id.starts_with("trace.")
+            || id.starts_with("profiler.")
+        {
+            return self.debug_command(id, arg);
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
@@ -1466,15 +1517,24 @@ impl Editor {
         self.prefs.layout_version = self.prefs.layout_version.max(layout::LAYOUT_VERSION);
         let (state, problem) = if outdated {
             // The replaced arrangement stays available as a named layout.
-            let kept = self.prefs.layouts.len() < 32 || self.prefs.layouts.contains_key("Previous");
-            if kept {
+            // Never over an existing named layout (an earlier migration's "Previous" or the
+            // user's own): the first free "Previous", "Previous 2", ….
+            let name = (1..=layout::MAX_NAMED)
+                .map(|n| match n {
+                    1 => "Previous".to_owned(),
+                    n => format!("Previous {n}"),
+                })
+                .find(|n| !self.prefs.layouts.contains_key(n))
+                .filter(|_| self.prefs.layouts.len() < layout::MAX_NAMED);
+            if let Some(name) = &name {
                 let previous = self.prefs.layout.clone();
-                self.prefs.layouts.insert("Previous".into(), previous);
+                self.prefs.layouts.insert(name.clone(), previous);
             }
-            self.notice(if kept {
-                "Editor layout updated to the new Default (your previous one: Window › Layouts › Previous)"
-            } else {
-                "Editor layout updated to the new Default (Window › Layouts › Classic is the old default)"
+            self.notice(match &name {
+                Some(name) => format!(
+                    "Editor layout updated to the new Default (your previous one: Window › Layouts › {name})"
+                ),
+                None => "Editor layout updated to the new Default (32 saved layouts: the previous one was not kept)".to_owned(),
             });
             (layout::default_state(), None)
         } else if self.prefs.layout.is_null() {

@@ -230,3 +230,54 @@ fn group_command_commits_like_acl_through_the_toolbar() {
     .unwrap();
     assert_eq!(store.current().unwrap().1, acl.current().unwrap().1);
 }
+
+#[test]
+fn narrow_panels_keep_the_hierarchy_toolbar_and_transform_fields_on_screen() {
+    // 1366×768 (the harness screen): the Hierarchy toolbar and the Inspector's X / Y / Z
+    // fields stay inside their panels instead of running off the right edge.
+    let mut h = Harness::new();
+    h.editor.select(Some("stage/crate".into()));
+    for _ in 0..3 {
+        h.frame();
+    }
+    let rects = &h.editor.rects;
+    let row = rects["row:stage/crate"];
+    let more = rects["hierarchy:more"];
+    assert!(more.max.x <= row.max.x + 1.0, "{more:?} vs row {row:?}");
+    for cmd in [
+        "edit.duplicate",
+        "edit.delete",
+        "edit.rename",
+        "object.group",
+        "edit.frame",
+    ] {
+        if let Some(r) = rects.get(&format!("hierarchy:{cmd}")) {
+            assert!(r.max.x < more.min.x, "{cmd} {r:?} overlaps … {more:?}");
+        }
+    }
+    for key in ["inspector:position.z", "inspector:scale.z"] {
+        let z = rects[key];
+        assert!(z.is_positive() && z.max.x <= 1366.0 - 4.0, "{key} {z:?}");
+    }
+    // A very narrow Hierarchy moves the selection commands into "…" (still reachable there).
+    let mut narrow = Harness::new();
+    narrow.editor.select(Some("stage/crate".into()));
+    let (editor, runtime) = (&mut narrow.editor, &narrow.runtime);
+    for _ in 0..2 {
+        let _ = narrow.ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1024.0, 640.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                editor.draw(ctx, runtime);
+            },
+        );
+    }
+    let rects = &narrow.editor.rects;
+    let row = rects["row:stage/crate"];
+    assert!(rects["hierarchy:more"].max.x <= row.max.x + 1.0);
+    assert!(rects["hierarchy:add"].max.x <= row.max.x);
+    let z = rects["inspector:position.z"];
+    assert!(z.max.x <= 1024.0, "{z:?}");
+}

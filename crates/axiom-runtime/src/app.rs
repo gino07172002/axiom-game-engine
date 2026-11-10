@@ -260,6 +260,10 @@ impl FramePhases {
             self.count += 1;
         }
     }
+    /// The phases recorded so far (name, ms).
+    fn marked(&self) -> &[(&'static str, f64)] {
+        &self.phases[..self.count]
+    }
     /// The phase breakdown when the frame exceeded the 16 ms budget.
     fn finish(self) -> Option<serde_json::Value> {
         let total = ms(self.started);
@@ -456,6 +460,13 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let ran = event_loop.run_app(&mut app);
+    // A scenario still being recorded when the window closed is written now.
+    if app.recorder().is_some() {
+        app.finish_recording();
+        if let Some(editor) = &app.editor {
+            eprintln!("{}", editor.status);
+        }
+    }
     // Edits submitted before the window closed are committed (or reported) before exit.
     let flushed = app.close_writes(crate::writer::SHUTDOWN_FLUSH);
     ran?;
@@ -1353,6 +1364,9 @@ impl App {
         let max = (12.0 * scale.max(1.0)).ceil() as u32;
         let mut steps = 0;
         while self.accumulator >= FIXED_DT && steps < max {
+            if let Some(recorder) = self.recorder() {
+                recorder.step(&input);
+            }
             self.runtime.step(&input);
             self.accumulator -= FIXED_DT;
             steps += 1;
@@ -1363,10 +1377,66 @@ impl App {
         steps
     }
 
+    /// The scenario recording of this Play session, if one is running.
+    fn recorder(&mut self) -> Option<&mut editor::record::Recorder> {
+        self.editor
+            .as_mut()
+            .filter(|e| e.previewing)
+            .and_then(|e| e.debug.recorder.as_mut())
+    }
+
+    /// Ends the recording (if any): writes the scenario with the Play runtime's state hash
+    /// and reports the result in the status line and the Console. Before the Play runtime
+    /// is replaced (Stop, Restart) or when a budget filled the recording.
+    fn finish_recording(&mut self) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let Some(mut recorder) = editor.debug.recorder.take() else {
+            return;
+        };
+        // `axiom scenario` replays on the current revision; Play ran a pinned one.
+        match self.store.revision() {
+            Ok(current) if current == self.runtime.rev => {}
+            Ok(current) => recorder.mark_inexact(format!(
+                "recorded on revision {} but the current revision is {current}",
+                self.runtime.rev
+            )),
+            Err(e) => recorder.mark_inexact(format!("current revision unknown: {e:#}")),
+        }
+        let hash = crate::scenario::state_hash(&self.runtime);
+        let result = hash.and_then(|hash| recorder.finish(&hash));
+        match result {
+            Ok(summary) => {
+                let path = summary["path"].as_str().unwrap_or_default().to_owned();
+                let ticks = summary["ticks"].as_u64().unwrap_or(0);
+                match summary["inexact"].as_str() {
+                    None => editor.notice(format!(
+                        "Recorded {ticks} ticks to {path} (replay: axiom scenario {path})"
+                    )),
+                    Some(why) => {
+                        editor.notice(format!(
+                            "Recorded {ticks} ticks to {path}; no state_hash assertion: {why}"
+                        ));
+                        editor.console_warn(&format!(
+                            "Recording {path} will not replay exactly: {why}"
+                        ));
+                    }
+                }
+                editor.add_scenario(path);
+                editor.debug.last_recording = Some(summary);
+            }
+            Err(error) => editor.set_error(format!("Recording not saved: {error:#}")),
+        }
+    }
+
     /// Play ▸ Step: pauses, then advances exactly one fixed step (no input held).
     fn play_step(&mut self) {
         self.ui.playing = false;
         self.accumulator = 0.0;
+        if let Some(recorder) = self.recorder() {
+            recorder.step(&ActionMap::default());
+        }
         self.runtime.step(&ActionMap::default());
         if let Some(editor) = &mut self.editor {
             editor.play.manual_steps += 1;
@@ -1515,8 +1585,13 @@ impl App {
             }
             let additive =
                 self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+            let used = self.runtime.uses_screen_pointer();
             if let Err(e) = self.runtime.screen_pointer(kind, cursor, aspect, additive) {
                 self.ui.output.push(format!("{e:#}"));
+            } else if used {
+                if let Some(recorder) = self.recorder() {
+                    recorder.pointer();
+                }
             }
         }
     }
@@ -1634,10 +1709,26 @@ impl App {
                     expected_rev.is_none_or(|rev| rev == self.runtime.rev),
                     "runtime revision conflict"
                 );
-                self.runtime.command(&command)
+                let result = self.runtime.command(&command);
+                if let (Ok(_), Some(recorder)) = (&result, self.recorder()) {
+                    recorder.command(&command);
+                }
+                result
             }
-            Request::Save { slot } => self.runtime.save_slot(&root, &slot),
-            Request::Load { slot } => self.runtime.load_slot(&root, &slot),
+            Request::Save { slot } => {
+                let result = self.runtime.save_slot(&root, &slot);
+                if let (Ok(_), Some(recorder)) = (&result, self.recorder()) {
+                    recorder.save(&slot);
+                }
+                result
+            }
+            Request::Load { slot } => {
+                let result = self.runtime.load_slot(&root, &slot);
+                if let (Ok(_), Some(recorder)) = (&result, self.recorder()) {
+                    recorder.load(&slot);
+                }
+                result
+            }
             _ => anyhow::bail!("not a runtime request"),
         }
     }
@@ -1962,8 +2053,20 @@ impl App {
     fn editor_action_now(&mut self, action: editor::Action) -> Result<()> {
         let editor = self.editor.as_mut().unwrap();
         match action {
-            editor::Action::Play => self.editor_play(true),
+            editor::Action::Play => {
+                let result = self.editor_play(true);
+                // A recording armed by play.record starts with this Play or not at all.
+                let editor = self.editor.as_mut().unwrap();
+                if result.is_err() || !editor.previewing {
+                    editor.debug.recorder = None;
+                }
+                result
+            }
             editor::Action::PlayStop => self.editor_play(false),
+            editor::Action::RecordStop => {
+                self.finish_recording();
+                Ok(())
+            }
             editor::Action::PlayPause => {
                 if editor.previewing {
                     self.ui.playing = !self.ui.playing;
@@ -2003,8 +2106,14 @@ impl App {
                     action,
                     args,
                 };
-                if let Err(error) = self.runtime.command(&command) {
-                    self.editor.as_mut().unwrap().problem(&error);
+                match self.runtime.command(&command) {
+                    Ok(_) => {
+                        // ▶ on a component during a recorded Play is part of the session.
+                        if let Some(recorder) = self.recorder() {
+                            recorder.command(&command);
+                        }
+                    }
+                    Err(error) => self.editor.as_mut().unwrap().problem(&error),
                 }
                 Ok(())
             }
@@ -2149,6 +2258,10 @@ impl App {
         if self.editor.as_ref().unwrap().previewing == play {
             return Ok(());
         }
+        if !play {
+            // The recording ends with the Play runtime it recorded.
+            self.finish_recording();
+        }
         let saving = self.writes_pending();
         if play && saving > 0 {
             return Err(axiom_core::Diagnostic::error(
@@ -2289,6 +2402,7 @@ impl App {
             editor.bridge_activity = self._bridge.as_ref().map_or((0, None), Bridge::activity);
             if let Some(renderer) = &self.renderer {
                 editor.frame_stats = renderer.stats;
+                editor.debug.profiler.timestamp_query = Some(renderer.timestamp_query_supported);
                 if self.gpu_alloc_elapsed >= 2.0 {
                     self.gpu_alloc_elapsed = 0.0;
                     editor.gpu_alloc = renderer
@@ -2331,11 +2445,17 @@ impl App {
             }
         }
         phases.mark("poll_reload_proposals");
+        let profiling = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.debug.profiler.wants());
+        self.runtime.set_system_profiling(profiling);
+        let mut steps = 0;
         if self.ui.playing
             && !self.ui.console
             && (self.focused || self.options.smoke_frames.is_some())
         {
-            self.advance(if self.options.smoke_frames.is_some() {
+            steps = self.advance(if self.options.smoke_frames.is_some() {
                 1.0 / 60.0
             } else {
                 elapsed
@@ -2350,6 +2470,15 @@ impl App {
             editor.play.paused = !self.ui.playing;
             editor.play.tick = self.runtime.state.tick;
             editor.game.input = self.game_input;
+            // Console / Event trace: runtime faults; events only during Play.
+            editor.debug.collect(&self.runtime, editor.previewing);
+            if profiling && editor.previewing {
+                editor.debug.profiler.take_systems(&mut self.runtime);
+            }
+        }
+        if self.recorder().is_some_and(|r| r.full.is_some()) {
+            // A scenario budget is full: save what was recorded (Play continues).
+            self.finish_recording();
         }
         self.poll_activation()?;
         self.poll_changes();
@@ -2516,11 +2645,14 @@ impl App {
         }
         for action in actions {
             match action {
-                Action::Gameplay(command) => {
-                    if let Err(e) = self.runtime.command(&command) {
-                        self.ui.output.push(format!("ERROR {e:#}"));
+                Action::Gameplay(command) => match self.runtime.command(&command) {
+                    Ok(_) => {
+                        if let Some(recorder) = self.recorder() {
+                            recorder.command(&command);
+                        }
                     }
-                }
+                    Err(e) => self.ui.output.push(format!("ERROR {e:#}")),
+                },
                 Action::Save | Action::Load => {
                     let request = if matches!(action, Action::Save) {
                         Request::Save {
@@ -2542,6 +2674,8 @@ impl App {
                     self.ui.console = false;
                 }
                 Action::Restart => {
+                    // A restart replaces the recorded runtime: the recording ends here.
+                    self.finish_recording();
                     let (rev, world) = if self.editor.is_some() {
                         (self.runtime.rev, self.runtime.state.compiled.source.clone())
                     } else {
@@ -2575,8 +2709,20 @@ impl App {
                 }
             }
         }
+        if let Some(editor) = &mut self.editor {
+            // The game's output lines since the last frame go to the Console.
+            let seen = editor.debug.game_output_seen.min(self.ui.output.len());
+            if seen < self.ui.output.len() {
+                editor
+                    .debug
+                    .game_output(&self.ui.output[seen..], self.runtime.state.tick);
+            }
+        }
         if self.ui.output.len() > 32 {
             self.ui.output.drain(..self.ui.output.len() - 32);
+        }
+        if let Some(editor) = &mut self.editor {
+            editor.debug.game_output_seen = self.ui.output.len();
         }
         self.capture();
         if self.captured && self.play_in_tab() {
@@ -2667,6 +2813,14 @@ impl App {
             *value = obs.clone();
         }
         phases.mark("observation");
+        if profiling {
+            if let Some(editor) = &mut self.editor {
+                editor
+                    .debug
+                    .profiler
+                    .push_frame(phases.marked(), ms(phases.started), steps);
+            }
+        }
         if let Some(slow) = phases.finish() {
             self.slow_frames += 1;
             self.last_slow_frame = Some(slow);
@@ -2904,6 +3058,9 @@ impl ApplicationHandler for App {
         if self.captured {
             if let DeviceEvent::MouseMotion { delta } = event {
                 self.runtime.pointer(delta.0 as f32, delta.1 as f32);
+                if let Some(recorder) = self.recorder() {
+                    recorder.pointer();
+                }
             }
         }
     }
@@ -3878,5 +4035,116 @@ mod tests {
         assert_eq!(app.runtime.rev, base + 3);
         assert_eq!(app.runtime.state.compiled.source.title, "third");
         assert!(app.activation.is_none());
+    }
+
+    /// M8 acceptance: a scenario recorded in the editor's Play (keys, a pause and a single
+    /// step, a bridge command, the live Inspector reading the selection) replays headless,
+    /// the way `axiom scenario FILE` runs it, to the same `state_hash`.
+    #[test]
+    fn a_play_recording_replays_headless_to_the_same_state_hash() {
+        let world = axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world;
+        let registry = crate::installed_registry();
+        let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
+        let mut app = App::new(
+            RunOptions {
+                mode: RunMode::Editor {
+                    selected: Some("npc/lumi".into()),
+                },
+                load_slot: None,
+                replace_world: false,
+                db: PathBuf::new(),
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: false,
+            },
+            registry.clone(),
+            store,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("axiom-m8-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        app.editor.as_mut().unwrap().debug.record_dir = dir.clone();
+        command(&mut app, "play.record", Some("town-take")).unwrap();
+        assert!(!app.editing() && app.runtime.state.tick == 0);
+        let press = |app: &mut App, keys: &[KeyCode], frames: usize| {
+            app.keys = keys.iter().copied().collect();
+            for _ in 0..frames {
+                app.advance(1.0 / 60.0);
+                app.refresh_live_inspect();
+            }
+        };
+        app.editor.as_mut().unwrap().live.shown = true;
+        press(&mut app, &[KeyCode::KeyW, KeyCode::KeyD], 125);
+        press(&mut app, &[], 25);
+        press(&mut app, &[KeyCode::KeyE], 1);
+        press(&mut app, &[], 10);
+        // A pause and one Step (an empty input) in the middle.
+        command(&mut app, "play.pause", None).unwrap();
+        command(&mut app, "play.step", None).unwrap();
+        command(&mut app, "play.pause", None).unwrap();
+        // A runtime command over the bridge (recorded at the current tick).
+        let node = app.runtime.observation();
+        let node = serde_json::json!(node)["gameplay"]["node"].clone();
+        assert_eq!(node, "lumi", "the walk reached Lumi and talked");
+        app.runtime_request(Request::Command {
+            command: axiom_core::gameplay::RuntimeCommand::Choose {
+                node: "lumi".into(),
+                choice: "dance".into(),
+            },
+            expected_rev: None,
+        })
+        .unwrap();
+        press(&mut app, &[KeyCode::KeyA], 20);
+        press(&mut app, &[], 5);
+        let ticks = app.runtime.state.tick;
+        command(&mut app, "play.stop", None).unwrap();
+        assert!(app.editing());
+        let editor = app.editor.as_ref().unwrap();
+        assert!(editor.debug.recorder.is_none());
+        let summary = editor
+            .debug
+            .last_recording
+            .clone()
+            .expect("recording saved");
+        assert_eq!(summary["exact"], true, "{summary}");
+        assert_eq!(summary["ticks"], ticks);
+        let path = dir.join("town-take.scenario.json");
+        assert!(
+            editor.status.contains("town-take.scenario.json"),
+            "{}",
+            editor.status
+        );
+        // Replay exactly as the CLI does: parse the file, run it on the current revision.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let scenario: crate::scenario::Scenario = serde_json::from_str(&raw).unwrap();
+        assert!(
+            scenario.commands.len() == 1 && scenario.inputs.len() >= 4,
+            "{raw}"
+        );
+        let (rev, world) = app.store.current().unwrap();
+        let replay = crate::scenario::run(world.clone(), rev, registry.clone(), scenario).unwrap();
+        assert_eq!(replay["ok"], true);
+        assert_eq!(replay["state_hash"], summary["state_hash"], "{raw}");
+        assert_eq!(replay["ticks"], ticks);
+        let hash_check = replay["assertions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["assertion"]["kind"] == "state_hash")
+            .unwrap();
+        assert_eq!(hash_check["passed"], true);
+        // A changed recording no longer passes its own state_hash assertion.
+        let mut edited: crate::scenario::Scenario = serde_json::from_str(&raw).unwrap();
+        edited.inputs.pop();
+        assert!(crate::scenario::run(world, rev, registry, edited).is_err());
+        // Never overwritten: the same name is refused while the file exists.
+        assert!(command(&mut app, "play.record", Some("town-take")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

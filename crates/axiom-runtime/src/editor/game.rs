@@ -692,6 +692,7 @@ impl Editor {
             }
         });
         let paused = self.play.paused;
+        let recording = self.debug.recorder.is_some() && self.previewing;
         super::theme::pill_group(ui, |ui| {
             for (icon, cmd, tip, selected) in [
                 (
@@ -711,6 +712,16 @@ impl Editor {
                     false,
                 ),
                 (Icon::Stop, "play.stop", "Stop (back to editing)", false),
+                (
+                    Icon::Record,
+                    "play.record",
+                    if recording {
+                        "Stop recording and save the scenario (Play continues)"
+                    } else {
+                        "Play and record input + commands to examples/NAME.scenario.json"
+                    },
+                    recording,
+                ),
             ] {
                 let blocked = self.command_blocked(cmd);
                 let tip = format!("{tip}  {}", self.shortcut_text(cmd));
@@ -739,6 +750,23 @@ impl Editor {
                 })
                 .response
                 .on_hover_text("Time scale: steps per real second (each step stays 1/120 s)");
+            if let Some(r) = self.debug.recorder.as_ref() {
+                super::theme::chip(ui, format!("● REC {} ticks", r.ticks), super::theme::ERROR)
+                    .on_hover_ui(|ui| {
+                        ui.label(format!(
+                            "Recording to {} ({} input changes, {} commands)",
+                            r.path.display(),
+                            r.inputs_len(),
+                            r.commands_len(),
+                        ));
+                        if let Some(why) = &r.inexact {
+                            ui.label(
+                                RichText::new(format!("Will not replay exactly: {why}"))
+                                    .color(WARNING),
+                            );
+                        }
+                    });
+            }
             super::theme::chip(
                 ui,
                 format!(
@@ -833,6 +861,13 @@ pub(super) fn live_panel(ui: &mut Ui, live: &LiveInspect, runtime: &WorldRuntime
                                 ui.end_row();
                             }
                         });
+                }
+                if let Some(h) = runtime.state.health.get(slot).and_then(Option::as_ref) {
+                    ui.label(
+                        RichText::new(format!("Health  {:.1}", h.value))
+                            .monospace()
+                            .small(),
+                    );
                 }
                 if live.id == id {
                     for (action, value) in &live.results {

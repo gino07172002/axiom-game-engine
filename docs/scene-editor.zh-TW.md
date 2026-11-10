@@ -46,7 +46,7 @@ F5 從已提交修訂啟動固定步進的 Play。編輯器的選單、Hierarchy
 
 視窗頂端是選單列(File / Edit / View / Object / Assets / World / Play / Window / Help),最底下是狀態列(訊息、選取數、問題數、待審提案數、REV、bridge 位址、FPS)。所有選單項目、快捷鍵、命令面板(**Ctrl+Shift+P**,輸入關鍵字後按 Enter)與 AI 的遠端指令都來自同一份指令註冊表,行為完全相同。無法執行的指令會呈灰色,滑鼠停留時說明原因(例如「nothing selected」)。
 
-常用快捷鍵:Q / W / E / R 切換工具、F 對焦、X 切換 Global / Local、Ctrl+Z / Ctrl+Y(或 Ctrl+Shift+Z)復原 / 重做、Ctrl+D 複製物件、Delete 刪除、Esc 取消選取、Ctrl+Shift+N 新增空物件、F5 Play、Ctrl+1…8 開啟 / 聚焦 Changes…AI 分頁、Ctrl+9 開關 World、Ctrl+, 偏好設定、F1 快捷鍵表。
+常用快捷鍵:Q / W / E / R 切換工具、F 對焦、X 切換 Global / Local、Ctrl+Z / Ctrl+Y(或 Ctrl+Shift+Z)復原 / 重做、Ctrl+D 複製物件、Delete 刪除、Esc 取消選取、Ctrl+Shift+N 新增空物件、F5 Play、Ctrl+1…8 開啟 / 聚焦 Changes…AI 分頁、Ctrl+Shift+1 / 2 / 3 開啟 Console / Profiler / Event Trace、Ctrl+9 開關 World、Ctrl+, 偏好設定、F1 快捷鍵表。
 
 **偏好設定**(Edit ▸ Preferences…,或場景工具列 Snap 旁的「…」)可調整 Snap 的移動 / 旋轉 / 縮放間距。偏好存在資料庫旁的 `*.editor-prefs.json`(例如 `data/editor.editor-prefs.json`),不會進入世界修訂。可在該檔的 `"shortcuts"` 改綁快捷鍵,例如 `{"edit.duplicate": "Ctrl+J"}`;空字串代表取消綁定。
 
@@ -87,9 +87,18 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 - **Graphs**:State machine 工具列多一個 Frame(`graph.frame`):平移畫布讓全部狀態可見。沒有縮放。
 - **狀態列**:狀態文字、場景(篩選中的或啟用中的)、物件數、選取數、Draw(世界 draw call + UI 網格數)、Tris(世界三角形 × instance)、GPU alloc(wgpu allocator 報告,每 2 秒更新;Vulkan 沒有報告時顯示 n/a)、Edit / Play Mode、bridge、FPS、版本。Draw / Tris 是 renderer 錄製指令時在 CPU 上計數,不是 GPU 時間。
 - **面板外框**:每個停靠區是圓角、1 px 邊框的面板,面板之間留背景色間隙。分頁標題前有圖示;同一格只有一個分頁時顯示為面板標題,有多個時是膠囊形分頁(如 Scene / Game / Graphs)。分頁上不再有 X:每個面板右上角的「…」選單有 Close 與 Reset Layout(`window.close`、`layout.reset`;浮動視窗裡的分頁也有)。
-- **預設版面(版面版本 2)**:Hierarchy | Scene、Game、Graphs 在上,Assets、Problems、History 在下 | 全高 Inspector。Changes、Proposals、Scenarios、AI / Protocol 預設關閉,從 Window 選單或 `window.*` / `editor_view {dock}` 開啟(開在下方分頁區);Graphs、UI Editor 開在 Scene 旁。舊版存下的目前版面會在第一次啟動時換成新 Default,原本的排列存成具名版面 **Previous**;舊的預設排列是內建的 **Classic**。Window › Layouts › Reset Layout 隨時回到 Default。
+- **預設版面(版面版本 3,M8 加入 Console)**:Hierarchy | Scene、Game、Graphs 在上,Assets、Console、Problems、History 在下 | 全高 Inspector。Changes、Proposals、Scenarios、AI / Protocol、Profiler、Event Trace 預設關閉,從 Window 選單或 `window.*` / `editor_view {dock}` 開啟(開在下方分頁區);Graphs、UI Editor 開在 Scene 旁。舊版存下的目前版面會在第一次啟動時換成新 Default,原本的排列存成具名版面 **Previous**;舊的預設排列是內建的 **Classic**。Window › Layouts › Reset Layout 隨時回到 Default。
 - **密度**:8 pt 間距格線、控制項 24 pt 高、Hierarchy 列高 26 pt、Inspector 欄位為「標籤欄 96 pt + 值」兩欄;收合的物件欄位在名稱後顯示前 36 個字元的摘要。
 - QA:`AXIOM_WINDOW_SIZE=WxH`(實體像素)可指定編輯器 / 遊戲視窗大小,用於固定大小截圖。
+
+## 除錯工具(M8)
+
+- **Console**(下方分頁,預設在 Assets 旁;Window ▸ Console、Ctrl+Shift+1):編輯器的狀態訊息與失敗請求(Problems 的同一份診斷)、runtime 錯誤(activation、gameplay、跨套件事件)、遊戲自己的輸出(UI 指令失敗、存讀檔結果)與 Play 時的 gameplay / 跨套件事件。每列有層級圖示、tick、來源、文字;連續相同的訊息合併成「×N」。上方可依層級(info / warn / error,顯示數量)、來源(editor / runtime / game / event)、文字(也比對物件 ID,不分大小寫)篩選,垃圾桶 = 清除。列尾有「→ ID」的列點一下就選取該物件(在 Play 中也行,Inspector 顯示它的即時狀態)。分頁標題顯示目前保留的錯誤數。固定保留 512 筆,較舊的丟掉並計數。
+- **Event Trace**(Window ▸ Event Trace、Ctrl+Shift+3):Play 時 runtime 的事件流,依 tick 分組(「tick N · Play #k」標頭):gameplay 事件、通過條件的規則、敘事步驟(node / scene / ending / choice / activation)、跨套件事件(含欄位)與 FSM 狀態轉換(哪個 agent 進入哪個狀態)。可依種類與文字篩選、暫停(暫停期間的事件只計數,不保留)、清除;點有物件的列 = 選取。固定保留 2048 筆。runtime 的 gameplay trace 本身只留 128 筆,同一幀內超過時標示「missed」。
+- **Profiler**(Window ▸ Profiler、Ctrl+Shift+2):只在分頁看得到時量測。上方標出 debug / release 建置(debug 慢數倍,只比較 release 的數字);滾動長條圖是最近 240 幀主執行緒 CPU 時間(灰色 = 等待 swapchain,線 = 16.7 ms);表格是每個主迴圈階段(writes_bridge、poll_reload_proposals、simulate、jobs_overlay_ui、actions_history_audio、extract、render_present、observation)的本幀 / 平均 / 最大值,以及 Play 時每個 runtime 系統 `step()` 的耗時(本幀這些固定步的總和、平均、最近 2 秒的峰值)。**GPU 計時:不提供**——renderer 建立裝置時沒有要求 `TIMESTAMP_QUERY`,所以分頁明確寫「GPU timing unavailable」並說明 adapter 是否支援;`render_present` 是 CPU 端的編碼、送出與 present。
+- **Play 中的唯讀 Inspector**:M4 的 Live 區段(transform、各系統 `*.inspect` 結果,約每 250 ms 更新)另加 health。
+- **Scenario 錄製**(Play ▸ Play and Record Scenario、Play 工具列的 ● 按鈕):沒在 Play 時按下 = 開始 Play 並錄製;錄製中頂列顯示「● REC N ticks」,再按一次 = 停止錄製並寫檔(Play 繼續);Stop / 遊戲的 Restart 也會先寫檔。錄下每個固定步之前改變的動作值(放開 = 0)與成功的 runtime 指令(遊戲 UI、bridge `command`)、存讀檔,寫成 `examples/NAME.scenario.json`(預設名稱 `世界ID-recording-N`,不會覆蓋既有檔案),出現在 Scenarios 分頁。格式就是 `axiom scenario` 讀的格式;檔案帶 `finite` 與 `state_hash` 斷言(錄製結束時 Play runtime 的雜湊),所以 `axiom --db DB scenario examples/NAME.scenario.json` 重播後會自己檢查狀態是否完全相同。不能精確重播時(錄製中有滑鼠視角 / 點擊射線事件、最後一個 tick 之後才送出的指令、讀取錄製開始前的存檔)仍會寫檔,但不加 `state_hash` 斷言,並在狀態列與 Console(warn)說明原因。上限與 `axiom scenario` 相同:100 萬 tick、4096 個輸入變化、4096 個指令、1 MiB。
+- AI 用同一批指令:`window.console|profiler|trace`、`console.filter levels=warn,error source=event text=lumi`、`console.open SEQ`、`console.clear`、`trace.pause`、`trace.filter kinds=state,event text=TEXT`、`trace.open SEQ`、`trace.clear`、`profiler.pause`、`profiler.reset`、`play.record [NAME]`;`observe` 的 `editor.debug` 回報 Console 筆數 / 錯誤數 / 最後一筆錯誤、trace 筆數 / 暫停 / 略過、Profiler 是否在量、錄製中的狀態與上一次錄製的結果(路徑、ticks、state_hash、是否精確)。
 
 ## 驗證
 

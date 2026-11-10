@@ -144,6 +144,7 @@ impl Editor {
         self.camera_preview.rect = egui::Rect::NOTHING;
         self.camera_preview.camera = None;
         self.live.shown = false;
+        self.debug.profiler.visible = false;
         // A floating Inspector has a window frame over the preview hole: no preview there.
         let inspector_floating = dock
             .find_tab(&Dock::Inspector)
@@ -541,19 +542,39 @@ impl Editor {
     fn hierarchy(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let icons = self.icons;
         let busy = self.dirty();
+        const TOOLS: [(Icon, &str); 5] = [
+            (Icon::Duplicate, "edit.duplicate"),
+            (Icon::Delete, "edit.delete"),
+            (Icon::Rename, "edit.rename"),
+            (Icon::Group, "object.group"),
+            (Icon::Frame, "edit.frame"),
+        ];
         ui.horizontal(|ui| {
             // Toolbar: Add ▾ and the selection commands (registry commands, same as the
-            // menus); the "…" menu on the right.
+            // menus); the "…" menu on the right. In a narrow panel Add shows only its icon
+            // and the selection commands that do not fit move into "…".
+            let step = 22.0 + ui.spacing().item_spacing.x;
+            let room = ui.available_width();
+            let compact = room < 70.0 + 12.0 + step * (TOOLS.len() as f32 + 1.0);
+            let add_width = if compact { 30.0 } else { 70.0 };
+            let fit = (((room - add_width - 12.0) / step).floor() as usize)
+                .saturating_sub(1)
+                .min(TOOLS.len());
             let add = ui
                 .add_enabled_ui(!busy, |ui| {
-                    theme::icon_text_button(
-                        ui,
-                        icons,
-                        Icon::Add,
-                        "Add",
-                        Some(theme::ACCENT_SOFT),
-                        theme::TEXT,
-                    )
+                    if compact {
+                        let image = icons.image(ui.ctx(), Icon::Add, 16.0, theme::TEXT);
+                        ui.add(egui::Button::image(image).fill(theme::ACCENT_SOFT))
+                    } else {
+                        theme::icon_text_button(
+                            ui,
+                            icons,
+                            Icon::Add,
+                            "Add",
+                            Some(theme::ACCENT_SOFT),
+                            theme::TEXT,
+                        )
+                    }
                 })
                 .inner
                 .on_hover_text("Create an object");
@@ -629,13 +650,7 @@ impl Editor {
                 self.run_into(cmd, actions);
             }
             theme::divider(ui);
-            for (icon, cmd) in [
-                (Icon::Duplicate, "edit.duplicate"),
-                (Icon::Delete, "edit.delete"),
-                (Icon::Rename, "edit.rename"),
-                (Icon::Group, "object.group"),
-                (Icon::Frame, "edit.frame"),
-            ] {
+            for (icon, cmd) in TOOLS.into_iter().take(fit) {
                 let blocked = self.command_blocked(cmd);
                 let title = super::commands::command(cmd).map_or(cmd, |c| c.title);
                 let tip = match blocked {
@@ -661,13 +676,14 @@ impl Editor {
                 theme::dropdown(ui, id, &more, |ui| {
                     ui.add_enabled_ui(!busy, |ui| self.scene_menu(ui, actions));
                     ui.separator();
-                    for cmd in [
+                    let overflow = TOOLS.iter().skip(fit).map(|(_, cmd)| *cmd);
+                    for cmd in overflow.chain([
                         "edit.select_children",
                         "object.create_prefab",
                         "edit.copy",
                         "edit.toggle_hidden",
                         "edit.toggle_locked",
-                    ] {
+                    ]) {
                         let blocked = self.command_blocked(cmd);
                         let title = super::commands::command(cmd).map_or(cmd, |c| c.title);
                         let r = ui
@@ -1338,7 +1354,7 @@ impl Editor {
                                     let mixed_position = show(0, t.position, base.position);
                                     let mixed_angles = show(1, draft.angles, base_angles);
                                     let mixed_scale = show(2, t.scale, base.scale);
-                                    let position = vector(
+                                    let (position, z) = vector(
                                         ui,
                                         "Position",
                                         &mut t.position,
@@ -1346,7 +1362,8 @@ impl Editor {
                                         -100000.0..=100000.0,
                                         mixed_position,
                                     );
-                                    let rotate = vector(
+                                    self.rects.insert("inspector:position.z".into(), z);
+                                    let (rotate, _) = vector(
                                         ui,
                                         "Rotation°",
                                         &mut draft.angles,
@@ -1357,7 +1374,7 @@ impl Editor {
                                     if rotate {
                                         t.rotation = viewport::rotation(draft.angles);
                                     }
-                                    let scale = vector(
+                                    let (scale, z) = vector(
                                         ui,
                                         "Scale",
                                         &mut t.scale,
@@ -1365,6 +1382,7 @@ impl Editor {
                                         0.0001..=10000.0,
                                         mixed_scale,
                                     );
+                                    self.rects.insert("inspector:scale.z".into(), z);
                                     draft.transform_dirty |= position || rotate || scale;
                                 } else if ui.button("Add transform").clicked() {
                                     draft.transform = Some(Transform::default());
@@ -1732,7 +1750,10 @@ impl Editor {
             | Dock::World
             | Dock::UiEditor
             | Dock::Graphs
-            | Dock::Assets => {}
+            | Dock::Assets
+            | Dock::Console
+            | Dock::Profiler
+            | Dock::Trace => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -2048,6 +2069,9 @@ impl egui_dock::TabViewer for TabHost<'_> {
             Dock::UiEditor => editor.ui_editor_tab(ui, actions),
             Dock::Graphs => editor.graph_tab(ui, self.runtime, actions),
             Dock::Assets => editor.asset_browser(ui, actions),
+            Dock::Console => editor.console_tab(ui),
+            Dock::Profiler => editor.profiler_tab(ui),
+            Dock::Trace => editor.trace_tab(ui),
             other => editor.dock_tab(ui, other, actions),
         }
     }
@@ -3008,6 +3032,9 @@ fn component_body(
     request
 }
 
+/// One Transform row: label and X / Y / Z drag fields. The fields share the visible width
+/// (never wider than the panel); when that leaves them under 44 pt each, the label goes on
+/// its own line. Returns whether a value changed and the Z field's rectangle.
 fn vector(
     ui: &mut Ui,
     name: &str,
@@ -3015,15 +3042,35 @@ fn vector(
     speed: f32,
     range: std::ops::RangeInclusive<f32>,
     mixed: [bool; 3],
-) -> bool {
+) -> (bool, egui::Rect) {
+    const LABEL: f32 = 62.0;
+    const GAP: f32 = 4.0;
+    // A wide row elsewhere in the card can make `available_width` exceed what is visible.
+    let visible = ui
+        .available_width()
+        .min(ui.clip_rect().max.x - ui.cursor().min.x - 2.0)
+        .max(1.0);
+    let stacked = (visible - LABEL - 3.0 * GAP) / 3.0 < 44.0;
     let mut changed = false;
+    let mut z = egui::Rect::NOTHING;
+    if stacked {
+        ui.label(RichText::new(name).color(MUTED));
+    }
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.add_sized(
-            [62.0, 20.0],
-            egui::Label::new(RichText::new(name).color(MUTED)),
-        );
-        let width = ((ui.available_width() - 8.0) / 3.0).clamp(52.0, 96.0);
+        ui.spacing_mut().item_spacing.x = GAP;
+        let room = if stacked {
+            visible
+        } else {
+            ui.add_sized(
+                [LABEL, 20.0],
+                egui::Label::new(RichText::new(name).color(MUTED)),
+            );
+            visible - LABEL - GAP
+        };
+        let width = ((room - 2.0 * GAP) / 3.0).clamp(24.0, 96.0);
+        // `add_sized` cannot make a widget narrower than its own minimum.
+        ui.spacing_mut().interact_size.x = width;
+        ui.spacing_mut().button_padding.x = 3.0;
         for ((v, axis), mixed) in value.iter_mut().zip(["X ", "Y ", "Z "]).zip(mixed) {
             let mut drag = egui::DragValue::new(v)
                 .prefix(axis)
@@ -3033,10 +3080,12 @@ fn vector(
             if mixed {
                 drag = drag.custom_formatter(|_, _| super::form::MIXED.to_owned());
             }
-            changed |= ui.add_sized([width, 20.0], drag).changed();
+            let r = ui.add_sized([width, 20.0], drag);
+            changed |= r.changed();
+            z = r.rect;
         }
     });
-    changed
+    (changed, z)
 }
 
 pub(super) fn truncate(text: &str, limit: usize) -> String {

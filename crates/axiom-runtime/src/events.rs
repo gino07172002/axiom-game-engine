@@ -41,6 +41,10 @@ impl Events {
         }
         events
     }
+    /// The last delivered envelopes (at most 64), oldest first.
+    pub fn recent(&self) -> impl DoubleEndedIterator<Item = &Envelope> {
+        self.recent.iter()
+    }
     pub fn owns(&self, event: &str) -> bool {
         self.specs.contains_key(event)
     }

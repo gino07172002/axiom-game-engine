@@ -272,6 +272,11 @@ pub trait RuntimeSystem: Any + Send {
     ) -> Result<()> {
         Ok(())
     }
+    /// Whether `screen_pointer` can change this system's simulation (scenario recordings
+    /// cannot carry pointer events).
+    fn uses_screen_pointer(&self) -> bool {
+        false
+    }
     fn checkpoint_supported(&self) -> bool {
         false
     }
@@ -570,6 +575,9 @@ pub struct WorldRuntime {
     bound_seq: u64,
     binding_fault: Option<String>,
     binding_calls: u64,
+    /// Opt-in wall time of each system's `step` (ms, summed since the last `take_system_profile`;
+    /// same order as `system_ids`). `None` = not measured (no `Instant` reads per step).
+    system_profile: Option<Vec<f64>>,
 }
 impl WorldRuntime {
     /// Run `runtime.bindings` calls for gameplay events that fired since the last scan.
@@ -876,6 +884,7 @@ impl WorldRuntime {
             event_bindings,
             binding_fault: None,
             binding_calls: 0,
+            system_profile: None,
         })
     }
     /// Prepare a complete replacement and migrate state before changing the active runtime.
@@ -1063,7 +1072,7 @@ impl WorldRuntime {
             contexts.step(input.pressed("context.next"));
         }
         let empty = ActionMap::default();
-        for (id, system) in &mut self.systems {
+        for (index, (id, system)) in self.systems.iter_mut().enumerate() {
             let input = if self.state.contexts.as_ref().is_none_or(|c| c.routes(id)) {
                 input
             } else {
@@ -1072,7 +1081,16 @@ impl WorldRuntime {
             if self.state.contexts.as_ref().is_some_and(|c| !c.routes(id)) {
                 system.input_lost();
             }
-            system.step(&mut self.state, input);
+            match &mut self.system_profile {
+                Some(profile) => {
+                    let started = std::time::Instant::now();
+                    system.step(&mut self.state, input);
+                    if let Some(slot) = profile.get_mut(index) {
+                        *slot += started.elapsed().as_secs_f64() * 1000.0;
+                    }
+                }
+                None => system.step(&mut self.state, input),
+            }
         }
         crate::combat::resolve(&mut self.state);
         for (_, system) in &mut self.systems {
@@ -1109,6 +1127,33 @@ impl WorldRuntime {
             system.finish_step(&mut self.state);
         }
         self.dispatch_bindings();
+    }
+    /// Whether a system acts on screen pointer events (see `RuntimeSystem::uses_screen_pointer`).
+    pub fn uses_screen_pointer(&self) -> bool {
+        self.systems.iter().any(|(_, s)| s.uses_screen_pointer())
+    }
+    /// IDs of the installed systems in step order.
+    pub fn system_ids(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.systems.iter().map(|(id, _)| id.as_str())
+    }
+    /// Starts or stops measuring each system's `step` wall time (debug tooling; the
+    /// simulation is unchanged). Turning it on allocates one slot per system, once.
+    pub fn set_system_profiling(&mut self, on: bool) {
+        match (on, self.system_profile.is_some()) {
+            (true, false) => self.system_profile = Some(vec![0.0; self.systems.len()]),
+            (false, true) => self.system_profile = None,
+            _ => {}
+        }
+    }
+    /// Milliseconds each system spent in `step` since the last call (step order), then
+    /// zeroes them. Empty when profiling is off.
+    pub fn take_system_profile(&mut self, mut each: impl FnMut(usize, f64)) {
+        if let Some(profile) = &mut self.system_profile {
+            for (index, ms) in profile.iter_mut().enumerate() {
+                each(index, *ms);
+                *ms = 0.0;
+            }
+        }
     }
     pub fn pointer(&mut self, dx: f32, dy: f32) {
         for (id, system) in &mut self.systems {

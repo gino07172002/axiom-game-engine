@@ -84,6 +84,11 @@ pub enum Assertion {
         op: axiom_core::local::Op,
         value: Value,
     },
+    /// The run's `state_hash` equals `value` (recordings carry the hash the editor's Play
+    /// session ended with, so a replay checks itself).
+    StateHash {
+        value: String,
+    },
 }
 /// Order-stable hash of simulated state (tick, RNG, transforms, health, runtime metrics),
 /// excluding wall-clock and GPU fields. Equal hashes across processes mean identical runs.
@@ -321,6 +326,14 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
         compare(&format!("{action}{pointer}"), &actual, *op, value)?;
         return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
     }
+    if let Assertion::StateHash { value } = a {
+        let actual = state_hash(runtime)?;
+        ensure!(
+            &actual == value,
+            "state_hash assertion failed: actual {actual}, expected {value}"
+        );
+        return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
+    }
     let runtime = &*runtime;
     match a {
         Assertion::Position { axis, min, max, .. } => ensure!(
@@ -400,7 +413,9 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
             );
             json!(value)
         }
-        Assertion::Field { .. } | Assertion::Call { .. } => unreachable!("handled above"),
+        Assertion::Field { .. } | Assertion::Call { .. } | Assertion::StateHash { .. } => {
+            unreachable!("handled above")
+        }
     };
     Ok(json!({"assertion":a,"actual":actual,"passed":true}))
 }

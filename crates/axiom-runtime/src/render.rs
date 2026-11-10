@@ -93,6 +93,8 @@ pub struct Renderer {
     pub last_acquire: std::time::Duration,
     /// Counters of the last presented frame.
     pub stats: FrameStats,
+    /// The adapter offers `TIMESTAMP_QUERY` (the device does not request it).
+    pub timestamp_query_supported: bool,
 }
 
 impl Renderer {
@@ -109,6 +111,9 @@ impl Renderer {
             .await
             .context("no compatible GPU adapter")?;
         let info = adapter.get_info();
+        // Reported by the editor Profiler; the device is created without it (no GPU timing).
+        let timestamp_query_supported =
+            adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let gpu = format!("{} / {:?}", info.name, info.backend);
         let (device, queue) = adapter
             .request_device(
@@ -382,6 +387,7 @@ impl Renderer {
             shaders,
             last_acquire: std::time::Duration::ZERO,
             stats: FrameStats::default(),
+            timestamp_query_supported,
         })
     }
 

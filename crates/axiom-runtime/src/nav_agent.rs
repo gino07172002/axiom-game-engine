@@ -1295,6 +1295,9 @@ impl RuntimeSystem for NavSystem {
         self.fault = old.fault.clone();
         Ok(())
     }
+    fn uses_screen_pointer(&self) -> bool {
+        self.pointer_agent.is_some()
+    }
     fn screen_pointer(&mut self, _state: &mut RuntimeState, pointer: &ScreenPointer) -> Result<()> {
         let (Some(a), PointerKind::PrimaryDown) = (self.pointer_agent, pointer.kind) else {
             return Ok(());

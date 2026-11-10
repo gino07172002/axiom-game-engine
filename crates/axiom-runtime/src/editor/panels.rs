@@ -26,15 +26,20 @@ pub(super) fn tab_icon(tab: Dock) -> Icon {
         Dock::Assets => Icon::Assets,
         Dock::Agent => Icon::Agent,
         Dock::UiEditor => Icon::UiDocument,
+        Dock::Console => Icon::Console,
+        Dock::Profiler => Icon::Chip,
+        Dock::Trace => Icon::Event,
     }
 }
 
 impl Editor {
-    /// Tab title as the dock draws it: icon room, name, and a count on Problems / Proposals.
+    /// Tab title as the dock draws it: icon room, name, and a count on Problems / Proposals
+    /// (Console: kept errors).
     pub(super) fn tab_label(&self, tab: Dock) -> String {
         let count = match tab {
             Dock::Problems => self.problems.len(),
             Dock::Proposals => self.proposals.len(),
+            Dock::Console => self.debug.console.count(super::debug::Level::Error),
             _ => 0,
         };
         if count == 0 {
