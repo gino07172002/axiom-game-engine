@@ -128,3 +128,51 @@ impl Editor {
         })
     }
 }
+
+/// A left-aligned, truncated label in a fixed-size cell (table columns line up with their
+/// headers; `add_sized` would center the text).
+pub(super) fn cell_label(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: egui::RichText,
+) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        size,
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(size);
+            ui.add(egui::Label::new(text).truncate())
+        },
+    )
+    .inner
+}
+
+/// A clickable table cell: `fill` behind left-aligned, clipped text (hover brightens it).
+pub(super) fn cell_button(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: &str,
+    color: egui::Color32,
+    fill: egui::Color32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() && ui.is_enabled() {
+            super::theme::CONTROL_HOVER
+        } else if fill == egui::Color32::TRANSPARENT {
+            super::theme::FIELD
+        } else {
+            fill
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 4.0, fill);
+        painter.text(
+            rect.left_center() + egui::vec2(8.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(12.5),
+            color,
+        );
+    }
+    response
+}

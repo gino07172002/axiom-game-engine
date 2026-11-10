@@ -448,10 +448,10 @@ impl Editor {
                 ui.label(RichText::new("BUTTONS").size(11.0).color(theme::MUTED));
                 for (action, key) in &bindings.buttons {
                     ui.horizontal(|ui| {
-                        ui.add_sized(
-                            [150.0, 22.0],
-                            egui::Label::new(RichText::new(action).monospace().color(theme::TEXT))
-                                .truncate(),
+                        super::tuning::cell_label(
+                            ui,
+                            egui::vec2(150.0, 22.0),
+                            RichText::new(action).monospace().color(theme::TEXT),
                         );
                         self.key_cell(
                             ui,
@@ -473,10 +473,10 @@ impl Editor {
                 );
                 for (action, axis) in &bindings.axes {
                     ui.horizontal(|ui| {
-                        ui.add_sized(
-                            [150.0, 22.0],
-                            egui::Label::new(RichText::new(action).monospace().color(theme::TEXT))
-                                .truncate(),
+                        super::tuning::cell_label(
+                            ui,
+                            egui::vec2(150.0, 22.0),
+                            RichText::new(action).monospace().color(theme::TEXT),
                         );
                         ui.label(RichText::new("+").color(theme::MUTED));
                         self.key_cell(

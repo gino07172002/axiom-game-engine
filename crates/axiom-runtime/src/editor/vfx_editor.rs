@@ -246,226 +246,248 @@ impl Editor {
             }
         });
         ui.add_space(4.0);
+        // Side by side when the tab is wide enough, else stacked.
+        let wide = ui.available_width() >= 2.0 * 300.0 + 24.0;
+        let width = if wide {
+            ((ui.available_width() - 24.0) / 2.0).min(640.0)
+        } else {
+            ui.available_width().clamp(220.0, 640.0)
+        };
+        let layout = if wide {
+            egui::Layout::left_to_right(egui::Align::Min)
+        } else {
+            egui::Layout::top_down(egui::Align::Min)
+        };
         ui.add_enabled_ui(editable, |ui| {
-            // Size over life.
-            ui.label(
-                RichText::new("SIZE OVER LIFE")
-                    .size(11.0)
-                    .color(theme::MUTED),
-            );
-            let width = ui.available_width().clamp(220.0, 640.0);
-            let (rect, response) =
-                ui.allocate_exact_size(vec2(width, CURVE_H), Sense::click_and_drag());
-            mark!(self.rects, "vfx:curve".into(), rect);
-            let inner = rect.shrink2(vec2(14.0, 10.0));
-            let ymax = self.tuning.vfx.drag.map_or_else(
-                || (work.size[0].max(work.size[1]) * 1.6).clamp(0.2, 4.0),
-                |(_, y)| y,
-            );
-            let to_screen = |t: f64, v: f64| {
-                pos2(
-                    inner.left() + t as f32 * inner.width(),
-                    inner.bottom() - (v / ymax) as f32 * inner.height(),
-                )
-            };
-            let handles = [to_screen(0.0, work.size[0]), to_screen(1.0, work.size[1])];
-            if response.drag_started() && editable {
-                if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
-                    let near = |h: egui::Pos2| {
-                        (h.x - p.x).abs() <= 3.0 * HANDLE && (h.y - p.y).abs() <= 3.0 * HANDLE
+            ui.with_layout(layout, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    // Size over life.
+                    ui.label(
+                        RichText::new("SIZE OVER LIFE")
+                            .size(11.0)
+                            .color(theme::MUTED),
+                    );
+                    let (rect, response) =
+                        ui.allocate_exact_size(vec2(width, CURVE_H), Sense::click_and_drag());
+                    mark!(self.rects, "vfx:curve".into(), rect);
+                    let inner = rect.shrink2(vec2(14.0, 10.0));
+                    let ymax = self.tuning.vfx.drag.map_or_else(
+                        || (work.size[0].max(work.size[1]) * 1.6).clamp(0.2, 4.0),
+                        |(_, y)| y,
+                    );
+                    let to_screen = |t: f64, v: f64| {
+                        pos2(
+                            inner.left() + t as f32 * inner.width(),
+                            inner.bottom() - (v / ymax) as f32 * inner.height(),
+                        )
                     };
-                    let which = if near(handles[0]) {
-                        Some(0)
-                    } else if near(handles[1]) {
-                        Some(1)
-                    } else {
-                        // Anywhere else: the nearer end.
-                        Some(usize::from(p.x > inner.center().x))
-                    };
-                    self.tuning.vfx.drag = which.map(|h| (h, ymax));
-                }
-            }
-            if let (Some((h, ymax)), Some(p)) =
-                (self.tuning.vfx.drag, response.interact_pointer_pos())
-            {
-                if response.dragged() {
-                    let v = ((inner.bottom() - p.y) / inner.height()) as f64 * ymax;
-                    let (lo, hi) = if h == 0 { (0.005, 4.0) } else { (0.0, 4.0) };
-                    work.size[h] = (v.clamp(lo, hi) * 1000.0).round() / 1000.0;
-                }
-            }
-            if response.drag_stopped() {
-                self.tuning.vfx.drag = None;
-            }
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, theme::RADIUS, theme::FIELD);
-            for i in 0..=4 {
-                let y = inner.bottom() - inner.height() * i as f32 / 4.0;
-                painter.line_segment(
-                    [pos2(inner.left(), y), pos2(inner.right(), y)],
-                    Stroke::new(1.0_f32, theme::BORDER),
-                );
-            }
-            painter.text(
-                pos2(rect.left() + 3.0, rect.top() + 2.0),
-                egui::Align2::LEFT_TOP,
-                format!("{ymax:.2} m"),
-                egui::FontId::monospace(10.0),
-                theme::MUTED,
-            );
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    pos2(inner.left(), inner.bottom()),
-                    handles[0],
-                    handles[1],
-                    pos2(inner.right(), inner.bottom()),
-                ],
-                theme::ACCENT.gamma_multiply(0.15),
-                Stroke::NONE,
-            ));
-            painter.line_segment(
-                [handles[0], handles[1]],
-                Stroke::new(2.0_f32, theme::ACCENT),
-            );
-            // Particles sampled along life: size and colour at 9 points.
-            for i in 0..9 {
-                let t = i as f64 / 8.0;
-                let size = work.size[0] + (work.size[1] - work.size[0]) * t;
-                let c = lerp(work.color[0], work.color[1], t);
-                let r = ((size / ymax) as f32 * inner.height() * 0.25).clamp(1.5, 16.0);
-                painter.circle_filled(
-                    pos2(
-                        inner.left() + t as f32 * inner.width(),
-                        inner.bottom() - 2.0 - r,
-                    ),
-                    r,
-                    color32(c),
-                );
-            }
-            for (i, h) in handles.iter().enumerate() {
-                let hot = self.tuning.vfx.drag.is_some_and(|(d, _)| d == i);
-                painter.circle(
-                    *h,
-                    HANDLE,
-                    if hot { theme::WARNING } else { theme::TEXT },
-                    Stroke::new(1.5_f32, Color32::BLACK),
-                );
-                mark!(
-                    self.rects,
-                    format!("vfx:size_handle:{i}"),
-                    Rect::from_center_size(*h, vec2(2.0 * HANDLE, 2.0 * HANDLE))
-                );
-            }
-            ui.horizontal(|ui| {
-                for (i, label) in ["start", "end"].into_iter().enumerate() {
-                    ui.label(RichText::new(label).color(theme::MUTED));
-                    let lo = if i == 0 { 0.005 } else { 0.0 };
-                    let r = ui.add(
-                        egui::DragValue::new(&mut work.size[i])
-                            .range(lo..=4.0)
-                            .speed(0.005)
-                            .max_decimals(3)
-                            .suffix(" m"),
+                    let handles = [to_screen(0.0, work.size[0]), to_screen(1.0, work.size[1])];
+                    if response.drag_started() && editable {
+                        if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                            let near = |h: egui::Pos2| {
+                                (h.x - p.x).abs() <= 3.0 * HANDLE
+                                    && (h.y - p.y).abs() <= 3.0 * HANDLE
+                            };
+                            let which = if near(handles[0]) {
+                                Some(0)
+                            } else if near(handles[1]) {
+                                Some(1)
+                            } else {
+                                // Anywhere else: the nearer end.
+                                Some(usize::from(p.x > inner.center().x))
+                            };
+                            self.tuning.vfx.drag = which.map(|h| (h, ymax));
+                        }
+                    }
+                    if let (Some((h, ymax)), Some(p)) =
+                        (self.tuning.vfx.drag, response.interact_pointer_pos())
+                    {
+                        if response.dragged() {
+                            let v = ((inner.bottom() - p.y) / inner.height()) as f64 * ymax;
+                            let (lo, hi) = if h == 0 { (0.005, 4.0) } else { (0.0, 4.0) };
+                            work.size[h] = (v.clamp(lo, hi) * 1000.0).round() / 1000.0;
+                        }
+                    }
+                    if response.drag_stopped() {
+                        self.tuning.vfx.drag = None;
+                    }
+                    let painter = ui.painter_at(rect);
+                    painter.rect_filled(rect, theme::RADIUS, theme::FIELD);
+                    for i in 0..=4 {
+                        let y = inner.bottom() - inner.height() * i as f32 / 4.0;
+                        painter.line_segment(
+                            [pos2(inner.left(), y), pos2(inner.right(), y)],
+                            Stroke::new(1.0_f32, theme::BORDER),
+                        );
+                    }
+                    painter.text(
+                        pos2(rect.left() + 3.0, rect.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{ymax:.2} m"),
+                        egui::FontId::monospace(10.0),
+                        theme::MUTED,
                     );
-                    mark!(self.rects, format!("vfx:size:{i}"), r.rect);
-                }
-            });
-            ui.add_space(8.0);
-            // Colour over life.
-            ui.label(
-                RichText::new("COLOUR OVER LIFE")
-                    .size(11.0)
-                    .color(theme::MUTED),
-            );
-            let (bar, bar_response) =
-                ui.allocate_exact_size(vec2(width, BAR_H + 12.0), Sense::click());
-            mark!(self.rects, "vfx:gradient".into(), bar);
-            let strip = Rect::from_min_size(
-                bar.min + vec2(HANDLE, 0.0),
-                vec2(bar.width() - 2.0 * HANDLE, BAR_H),
-            );
-            let painter = ui.painter_at(bar);
-            // Checkerboard under the (alpha) gradient.
-            let cell = BAR_H / 2.0;
-            let mut x = strip.left();
-            let mut col = 0;
-            while x < strip.right() {
-                for row in 0..2 {
-                    let shade = if (col + row) % 2 == 0 { 90 } else { 60 };
-                    painter.rect_filled(
-                        Rect::from_min_size(
-                            pos2(x, strip.top() + row as f32 * cell),
-                            vec2(cell.min(strip.right() - x), cell),
-                        ),
-                        0.0,
-                        Color32::from_gray(shade),
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            pos2(inner.left(), inner.bottom()),
+                            handles[0],
+                            handles[1],
+                            pos2(inner.right(), inner.bottom()),
+                        ],
+                        theme::ACCENT.gamma_multiply(0.15),
+                        Stroke::NONE,
+                    ));
+                    painter.line_segment(
+                        [handles[0], handles[1]],
+                        Stroke::new(2.0_f32, theme::ACCENT),
                     );
-                }
-                x += cell;
-                col += 1;
-            }
-            let mut mesh = egui::Mesh::default();
-            let (a, b) = (color32(work.color[0]), color32(work.color[1]));
-            mesh.colored_vertex(strip.left_top(), a);
-            mesh.colored_vertex(strip.right_top(), b);
-            mesh.colored_vertex(strip.right_bottom(), b);
-            mesh.colored_vertex(strip.left_bottom(), a);
-            mesh.add_triangle(0, 1, 2);
-            mesh.add_triangle(0, 2, 3);
-            painter.add(mesh);
-            painter.rect_stroke(
-                strip,
-                2.0,
-                Stroke::new(1.0_f32, theme::BORDER),
-                egui::StrokeKind::Inside,
-            );
-            for (i, x) in [strip.left(), strip.right()].into_iter().enumerate() {
-                let y = strip.bottom() + 1.0;
-                let selected = self.tuning.vfx.stop == i;
-                painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        pos2(x, y),
-                        pos2(x + HANDLE, y + 10.0),
-                        pos2(x - HANDLE, y + 10.0),
-                    ],
-                    color32(work.color[i]),
-                    Stroke::new(
-                        if selected { 2.0_f32 } else { 1.0 },
-                        if selected { theme::ACCENT } else { theme::TEXT },
-                    ),
-                ));
-                mark!(
-                    self.rects,
-                    format!("vfx:stop:{i}"),
-                    Rect::from_center_size(pos2(x, y + 5.0), vec2(2.0 * HANDLE, 10.0))
-                );
-            }
-            if bar_response.clicked() {
-                if let Some(p) = bar_response.interact_pointer_pos() {
-                    self.tuning.vfx.stop = usize::from(p.x > strip.center().x);
-                }
-            }
-            ui.horizontal(|ui| {
-                let s = self.tuning.vfx.stop;
-                ui.label(
-                    RichText::new(if s == 0 { "start" } else { "end" })
-                        .strong()
-                        .color(theme::TEXT),
-                );
-                let mut c = work.color[s].map(|x| x as f32);
-                if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
-                    work.color[s] = c.map(|x| (f64::from(x) * 1000.0).round() / 1000.0);
-                }
-                for (ch, name) in ["R", "G", "B", "A"].into_iter().enumerate() {
-                    ui.label(RichText::new(name).color(theme::MUTED));
-                    let r = ui.add(
-                        egui::Slider::new(&mut work.color[s][ch], 0.0..=1.0)
-                            .max_decimals(3)
-                            .show_value(true),
+                    // Particles sampled along life: size and colour at 9 points.
+                    for i in 0..9 {
+                        let t = i as f64 / 8.0;
+                        let size = work.size[0] + (work.size[1] - work.size[0]) * t;
+                        let c = lerp(work.color[0], work.color[1], t);
+                        let r = ((size / ymax) as f32 * inner.height() * 0.25).clamp(1.5, 16.0);
+                        painter.circle_filled(
+                            pos2(
+                                inner.left() + t as f32 * inner.width(),
+                                inner.bottom() - 2.0 - r,
+                            ),
+                            r,
+                            color32(c),
+                        );
+                    }
+                    for (i, h) in handles.iter().enumerate() {
+                        let hot = self.tuning.vfx.drag.is_some_and(|(d, _)| d == i);
+                        painter.circle(
+                            *h,
+                            HANDLE,
+                            if hot { theme::WARNING } else { theme::TEXT },
+                            Stroke::new(1.5_f32, Color32::BLACK),
+                        );
+                        mark!(
+                            self.rects,
+                            format!("vfx:size_handle:{i}"),
+                            Rect::from_center_size(*h, vec2(2.0 * HANDLE, 2.0 * HANDLE))
+                        );
+                    }
+                    ui.horizontal(|ui| {
+                        for (i, label) in ["start", "end"].into_iter().enumerate() {
+                            ui.label(RichText::new(label).color(theme::MUTED));
+                            let lo = if i == 0 { 0.005 } else { 0.0 };
+                            let r = ui.add(
+                                egui::DragValue::new(&mut work.size[i])
+                                    .range(lo..=4.0)
+                                    .speed(0.005)
+                                    .max_decimals(3)
+                                    .suffix(" m"),
+                            );
+                            mark!(self.rects, format!("vfx:size:{i}"), r.rect);
+                        }
+                    });
+                });
+                ui.add_space(if wide { 24.0 } else { 8.0 });
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    // Colour over life.
+                    ui.label(
+                        RichText::new("COLOUR OVER LIFE")
+                            .size(11.0)
+                            .color(theme::MUTED),
                     );
-                    mark!(self.rects, format!("vfx:channel:{ch}"), r.rect);
-                }
-            });
+                    let (bar, bar_response) =
+                        ui.allocate_exact_size(vec2(width, BAR_H + 12.0), Sense::click());
+                    mark!(self.rects, "vfx:gradient".into(), bar);
+                    let strip = Rect::from_min_size(
+                        bar.min + vec2(HANDLE, 0.0),
+                        vec2(bar.width() - 2.0 * HANDLE, BAR_H),
+                    );
+                    let painter = ui.painter_at(bar);
+                    // Checkerboard under the (alpha) gradient.
+                    let cell = BAR_H / 2.0;
+                    let mut x = strip.left();
+                    let mut col = 0;
+                    while x < strip.right() {
+                        for row in 0..2 {
+                            let shade = if (col + row) % 2 == 0 { 90 } else { 60 };
+                            painter.rect_filled(
+                                Rect::from_min_size(
+                                    pos2(x, strip.top() + row as f32 * cell),
+                                    vec2(cell.min(strip.right() - x), cell),
+                                ),
+                                0.0,
+                                Color32::from_gray(shade),
+                            );
+                        }
+                        x += cell;
+                        col += 1;
+                    }
+                    let mut mesh = egui::Mesh::default();
+                    let (a, b) = (color32(work.color[0]), color32(work.color[1]));
+                    mesh.colored_vertex(strip.left_top(), a);
+                    mesh.colored_vertex(strip.right_top(), b);
+                    mesh.colored_vertex(strip.right_bottom(), b);
+                    mesh.colored_vertex(strip.left_bottom(), a);
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    painter.add(mesh);
+                    painter.rect_stroke(
+                        strip,
+                        2.0,
+                        Stroke::new(1.0_f32, theme::BORDER),
+                        egui::StrokeKind::Inside,
+                    );
+                    for (i, x) in [strip.left(), strip.right()].into_iter().enumerate() {
+                        let y = strip.bottom() + 1.0;
+                        let selected = self.tuning.vfx.stop == i;
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![
+                                pos2(x, y),
+                                pos2(x + HANDLE, y + 10.0),
+                                pos2(x - HANDLE, y + 10.0),
+                            ],
+                            color32(work.color[i]),
+                            Stroke::new(
+                                if selected { 2.0_f32 } else { 1.0 },
+                                if selected { theme::ACCENT } else { theme::TEXT },
+                            ),
+                        ));
+                        mark!(
+                            self.rects,
+                            format!("vfx:stop:{i}"),
+                            Rect::from_center_size(pos2(x, y + 5.0), vec2(2.0 * HANDLE, 10.0))
+                        );
+                    }
+                    if bar_response.clicked() {
+                        if let Some(p) = bar_response.interact_pointer_pos() {
+                            self.tuning.vfx.stop = usize::from(p.x > strip.center().x);
+                        }
+                    }
+                    let s = self.tuning.vfx.stop;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(if s == 0 { "start stop" } else { "end stop" })
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        let mut c = work.color[s].map(|x| x as f32);
+                        if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
+                            work.color[s] = c.map(|x| (f64::from(x) * 1000.0).round() / 1000.0);
+                        }
+                    });
+                    for (ch, name) in ["R", "G", "B", "A"].into_iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).monospace().color(theme::MUTED));
+                            let r = ui.add(
+                                egui::Slider::new(&mut work.color[s][ch], 0.0..=1.0)
+                                    .max_decimals(3)
+                                    .show_value(true),
+                            );
+                            mark!(self.rects, format!("vfx:channel:{ch}"), r.rect);
+                        });
+                    }
+                });
+            })
         });
         // Draft bookkeeping and the single commit once the interaction is over.
         self.tuning.vfx.draft = (work != authored).then(|| (id.clone(), work));

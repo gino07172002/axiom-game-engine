@@ -287,9 +287,10 @@ impl Editor {
         let column = ((ui.available_width() - KEY_COLUMN - 40.0) / n).max(170.0);
         // Header: locale name, default marker, missing / untranslated counts, remove.
         ui.horizontal(|ui| {
-            ui.add_sized(
-                [KEY_COLUMN, 22.0],
-                egui::Label::new(RichText::new("KEY").size(11.0).color(theme::MUTED)),
+            super::tuning::cell_label(
+                ui,
+                egui::vec2(KEY_COLUMN, 22.0),
+                RichText::new("KEY").size(11.0).color(theme::MUTED),
             );
             for (i, l) in m.locales.iter().enumerate() {
                 ui.allocate_ui(egui::vec2(column, 22.0), |ui| {
@@ -338,12 +339,10 @@ impl Editor {
                     let key = &m.keys[r];
                     ui.horizontal(|ui| {
                         ui.set_height(ROW);
-                        let label = ui.add_sized(
-                            [KEY_COLUMN - 24.0, ROW],
-                            egui::Label::new(
-                                RichText::new(key).monospace().size(12.0).color(theme::TEXT),
-                            )
-                            .truncate(),
+                        let label = super::tuning::cell_label(
+                            ui,
+                            egui::vec2(KEY_COLUMN - 24.0, ROW),
+                            RichText::new(key).monospace().size(12.0).color(theme::TEXT),
                         );
                         label.on_hover_text(key);
                         let x = ui
@@ -403,11 +402,12 @@ impl Editor {
                             } else {
                                 text.as_str()
                             };
-                            let cell = ui.add_sized(
-                                [column - 6.0, ROW - 2.0],
-                                egui::Button::new(RichText::new(shown).size(12.5).color(color))
-                                    .fill(fill)
-                                    .truncate(),
+                            let cell = super::tuning::cell_button(
+                                ui,
+                                egui::vec2(column - 6.0, ROW - 2.0),
+                                shown,
+                                color,
+                                fill,
                             );
                             mark!(self.rects, format!("loc:cell:{l}:{key}"), cell.rect);
                             let cell = match m.issues[r][i] {

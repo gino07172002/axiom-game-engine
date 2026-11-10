@@ -367,13 +367,23 @@ impl Editor {
                                 mark!(self.rects, "shader:error_line".into(), r);
                             }
                         }
+                        // No wrapping: one source line per gutter row (the area scrolls sideways).
+                        let mut layouter = |ui: &Ui, text: &str, _wrap: f32| {
+                            let job = egui::text::LayoutJob::simple(
+                                text.to_owned(),
+                                font.clone(),
+                                theme::TEXT,
+                                f32::INFINITY,
+                            );
+                            ui.fonts(|f| f.layout_job(job))
+                        };
                         let edit = ui.add_enabled(
                             editable,
                             egui::TextEdit::multiline(&mut self.tuning.shader.draft)
+                                .layouter(&mut layouter)
                                 .id_salt("shader_source")
                                 .font(font.clone())
                                 .code_editor()
-                                .desired_width(f32::INFINITY)
                                 .margin(egui::Margin::ZERO)
                                 .frame(false),
                         );
