@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-11 (late) — Claude (Opus 5.5) — integration of follow-ups A/B/C + scenario-job test flake root cause
+
+**Done:** A (930a09f), B (merge c60fe71), C (merge b0795e0) on main, each merge verified on the merged tree before the next. Fixed the two load-sensitive scenario-job tests in `app.rs`.
+
+**Root cause (flake):** a 1,000,000-tick scenario on Two Cameras takes ~2.5 s in debug (measured via `axiom scenario`, quiet machine). Under heavy load the test thread can spend that long drawing one or two editor frames, so the "long" job finished before the test saw progress / cancelled it / the 30 ms watchdog polled. Reproduced deterministically by injecting a 3 s sleep into the test `draw()`: the old world fails at the progress loop's `scenario_job.unwrap()` (same as the original failure); the new `busy_editor_app()` (Two Cameras + 256 spinning boxes, ~0.15 ms/tick → a long run needs minutes) passes. The first editor frame (font atlas) is no longer part of the 250 ms frame assertion.
+
+**Verification:** A+B+C merged tree: fmt, clippy -D warnings, workspace 681 passed / 0 failed; editor smoke ok; world/street parity identical; build-street leaves content/street unchanged; m0 GPU smoke PASS (screenshots inspected). After the test fix: runtime lib 258 passed, scenario-job tests 3/3 + starvation experiment.
+
+**Next / known gaps:** Material tint value row overflows the Inspector at 1366×768; override markers inside arrays / JSON mode; UI Editor canvas zoom; B's effects-smoke-test last step timed out on a loaded machine (all 36 stations passed) — re-run when quiet; C's GPU table needs scrolling at 768.
+
 ## 2026-11-11 — Claude (Opus 5.5) — editor UI follow-ups (FA): readable diff lines, shader card fit, Graphs zoom, Tags summary row, prefab override markers + Revert / Apply to Prefab, Game tab HUD scaling; main tree, not committed
 
 **Done (uncommitted, for review):** `editor/diff_view.rs` (Proposals / History lines `plaza/lamp-1 · core.transform/position[0]: 4 → 6`, order summary over common IDs, `‹N bytes›`), `shader_editor.rs` (card clamped to the visible width, wrapped header / errors, `ScrollArea::both` source with a synced gutter), `graph.rs` zoom (wheel around the cursor, 0.25–2, zoom-aware hit tests / drags, Frame fits ≤100 %, `graph.zoom`, `observe editor.graph.zoom`), `world_panel.rs` Tags summary row (`TagUi.expanded`), core `ops_prefab.rs` + ACL `prefab revert|apply` + `prefab.revert|apply` commands + `editor/prefab_overrides.rs` markers (form labels / headers / Transform rows, cached per revision + selection), `game.rs` HUD scale (`hud_scale`, `scale_game_input`, 3 lines in app.rs). Tests: `followup_tests.rs`, graph zoom test, parity test, core `ops_prefab` tests. Docs: plan (FA entry under 執行紀錄 ▸ 後續 / follow-ups), scene-editor, editor-parity.

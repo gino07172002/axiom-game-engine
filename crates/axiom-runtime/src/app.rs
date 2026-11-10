@@ -3432,6 +3432,34 @@ mod tests {
     fn editor_app() -> App {
         let world =
             serde_json::from_str(include_str!("../../../content/two-cameras/world.json")).unwrap();
+        editor_app_with(world)
+    }
+
+    /// Two Cameras plus 256 spinning boxes. A 1,000,000-tick scenario on the plain world
+    /// finishes in ~2.5 s (debug), which a loaded machine can spend drawing one or two
+    /// editor frames; the scenario-job tests then saw a finished job instead of a running
+    /// one. With ~0.15 ms per tick here a long run needs minutes, so "still running when
+    /// the test cancels it or the watchdog fires" no longer depends on scheduling.
+    fn busy_editor_app() -> App {
+        let mut world: serde_json::Value =
+            serde_json::from_str(include_str!("../../../content/two-cameras/world.json")).unwrap();
+        for i in 0..256 {
+            let id = format!("spin/{i}");
+            world["entities"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":id,"components":{
+                "core.transform":{"position":[i % 16, 0, i / 16]},
+                "core.motion":{"angular_velocity":[0,0.7,0]}}}));
+            world["scenes"][0]["entities"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(id));
+        }
+        editor_app_with(serde_json::from_value(world).unwrap())
+    }
+
+    fn editor_app_with(world: World) -> App {
         let registry = crate::installed_registry();
         let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
         App::new(
@@ -3498,7 +3526,7 @@ mod tests {
 
     #[test]
     fn editor_scenario_runs_in_background_with_progress_cancel_and_result() {
-        let mut app = editor_app();
+        let mut app = busy_editor_app();
         let ctx = egui::Context::default();
         let long = scenario_file("long.scenario.json", 1_000_000);
         let started = Instant::now();
@@ -3512,6 +3540,9 @@ mod tests {
         let mut frames = 0;
         let mut last = 0;
         let mut slowest = std::time::Duration::ZERO;
+        // The first frame builds egui's font atlas and layout caches (hundreds of ms in a
+        // loaded debug build) and says nothing about the worker, so it is not timed.
+        draw(&mut app, &ctx);
         while frames < 5 || last == 0 {
             slowest = slowest.max(draw(&mut app, &ctx));
             frames += 1;
@@ -3563,7 +3594,7 @@ mod tests {
 
     #[test]
     fn editor_scenario_watchdog_stops_a_long_run() {
-        let mut app = editor_app();
+        let mut app = busy_editor_app();
         app.scenario_timeout = std::time::Duration::from_millis(30);
         let ctx = egui::Context::default();
         let long = scenario_file("watchdog.scenario.json", 1_000_000);

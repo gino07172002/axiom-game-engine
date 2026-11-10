@@ -397,6 +397,7 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
   - **量測(release,同機有其他代理的建置與 GPU 工作,數字雜訊大)**:(a)exe A/B,Axiom Town Play + Profiler 可見 10 s,GPU 計時開 / 關(`AXIOM_GPU_TIMING=0`,裝置也不要求 feature)交錯 5 輪,`editor.debug.profiler.cpu.frame_mean_ms`(扣掉 swapchain 等待的主執行緒幀)中位數:開 10.01 ms、關 9.83 ms(+0.18 ms;逐輪差 +0.29 / +0.43 / +0.42 / −0.06 / −2.26,雜訊範圍內,不宣稱有或沒有差)。此時整個編輯器只有約 7 FPS,`render_present` 平均 128–172 ms(present / acquire 等待,兩組相同),GPU 量到每幀 1.8–14.6 ms——GPU 被其他工作佔用,這組數字不代表正常負載。(b)直接量計時器本身(`gpu_timing::tests::measure_gpu_timer_overhead`,`#[ignore]`,無頭裝置、8 個 render pass、每輪 400 幀、開 / 關交錯 10 輪,CPU 從建 encoder 到 submit + 讀回收集):每幀中位數開 168 µs、關 125 µs,約 +43 µs / 幀(只在 Profiler 可見時)。
   - **審查**:fresh-context 子代理審查:1 bug(位元組預算只算滑鼠,輸入 / 指令很多時整個錄製寫不出來)已修(統一預算 + 測試);風險:hover 的 move 吃掉操作上限(改為只錄拖曳中的 move)、RTS move last-wins 例外(已修)、f32 最長 17 字元(估算改 40 B / delta)、`AXIOM_GPU_TIMING=0` 不是乾淨 A/B(已改為裝置也不要求 feature);f32 JSON 來回經 f64 的雙重捨入:53 ≥ 2·24+2,無害,不改。
   - **未做 / 限制**:adapter 只有 `TIMESTAMP_QUERY`(沒有 INSIDE_ENCODERS)時不改用 pass 內的 `timestamp_writes`,只顯示原因;timestamp 是 pass 之間的編碼器時間點(Vulkan bottom-of-pipe),不是精確的單一 pass 時間;Profiler 沒有開關 GPU 計時的 UI;真實滑鼠的端到端錄製(實體滑鼠)沒有自動化,以 app 層測試走同一條 `mouse_look` / `send_screen_pointer` 路徑代替。
+- **FD 整合與測試穩定(2026-11-11)**:A / B / C 逐一合併、每次合併後在合併樹上驗證(最終 681 過 / 0 失敗、smoke、parity、build-street、m0 GPU smoke)。兩個 scenario 背景 job 測試的不穩定根因:Two Cameras 上 1,000,000 tick 在 debug 只要約 2.5 秒,機器忙時測試執行緒畫一兩個編輯器畫面就超過,job 在被觀察 / 取消 / 監控前就跑完;在測試 `draw()` 注入 3 秒延遲可穩定重現(舊世界失敗、新的 `busy_editor_app()` 256 個旋轉方塊通過)。第一個畫面(字型圖集)不再計入 250 ms 斷言。
 
 ## 修訂補記
 
