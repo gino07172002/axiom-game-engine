@@ -268,30 +268,52 @@ impl Editor {
                     != Some(s.base.as_str())
         };
         ui.add_space(6.0);
-        theme::card().show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
+        let card = theme::card().show(ui, |ui| {
+            // Rows wrap or scroll inside the Inspector's width instead of widening the card
+            // past the panel edge (badges, error text and long source lines). A wide row
+            // elsewhere in the Inspector can make `available_width` exceed what is visible:
+            // the card stops at the visible edge (minus its right margin and border).
+            let width = ui
+                .available_width()
+                .min(ui.clip_rect().max.x - ui.cursor().min.x - 13.0)
+                .max(120.0);
+            ui.set_min_width(width);
+            ui.set_max_width(width);
             ui.horizontal(|ui| {
                 icons.show(ui, Icon::Script, 16.0, theme::ACCENT);
-                ui.label(RichText::new(format!("Shader source · {id}")).strong().color(theme::TEXT));
-                let s = &self.tuning.shader;
-                match &s.checked {
-                    Some(c) if c.state == "finished" && c.source == s.draft => {
-                        if c.issues.is_empty() {
-                            theme::chip(ui, format!("valid · {:.1} ms", c.elapsed_ms), theme::SUCCESS);
-                        } else {
-                            let chip = theme::chip(ui, format!("{} error", c.issues.len()), theme::ERROR);
-                            mark!(self.rects, "shader:errors".into(), chip.rect);
-                        }
-                    }
-                    Some(_) => {
-                        theme::chip(ui, "not checked since edit", theme::MUTED);
-                    }
-                    None => {}
-                }
-                if s.draft != s.base {
-                    theme::chip(ui, "edited", theme::WARNING);
-                }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Shader source · {id}")).strong().color(theme::TEXT),
+                    )
+                    .truncate(),
+                );
             });
+            let has_badges = {
+                let s = &self.tuning.shader;
+                s.checked.is_some() || s.draft != s.base
+            };
+            if has_badges {
+                ui.horizontal_wrapped(|ui| {
+                    let s = &self.tuning.shader;
+                    match &s.checked {
+                        Some(c) if c.state == "finished" && c.source == s.draft => {
+                            if c.issues.is_empty() {
+                                theme::chip(ui, format!("valid · {:.1} ms", c.elapsed_ms), theme::SUCCESS);
+                            } else {
+                                let chip = theme::chip(ui, format!("{} error", c.issues.len()), theme::ERROR);
+                                mark!(self.rects, "shader:errors".into(), chip.rect);
+                            }
+                        }
+                        Some(_) => {
+                            theme::chip(ui, "not checked since edit", theme::MUTED);
+                        }
+                        None => {}
+                    }
+                    if s.draft != s.base {
+                        theme::chip(ui, "edited", theme::WARNING);
+                    }
+                });
+            }
             if authored_changed {
                 ui.label(
                     RichText::new("The shader changed in another revision; Apply would replace it, Revert loads it.")
@@ -299,7 +321,7 @@ impl Editor {
                         .color(theme::WARNING),
                 );
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let running = self.tuning.shader.job.is_some();
                 let check = ui
                     .add_enabled(!running, egui::Button::new("Check"))
@@ -338,13 +360,20 @@ impl Editor {
                 .map(|c| c.issues.clone())
                 .unwrap_or_default();
             for issue in &issues {
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal_top(|ui| {
                     icons.show(ui, Icon::Error, 14.0, theme::ERROR);
-                    let r = ui.label(RichText::new(&issue.message).monospace().size(11.5).color(theme::ERROR));
+                    // Wrapped (long paths and identifiers break anywhere) within the card.
+                    let r = ui.add(
+                        egui::Label::new(RichText::new(&issue.message).monospace().size(11.5).color(theme::ERROR))
+                            .wrap(),
+                    );
                     mark!(self.rects, "shader:issue".into(), r.rect);
                 });
             }
-            // Code with a line gutter; error lines are marked in the gutter.
+            // Code with a line gutter; error lines are marked in the gutter. Only the source
+            // scrolls (both ways, its scroll bars always at the card's edge); the gutter stays
+            // at the left and follows the vertical offset, so every number is beside its line
+            // and the card keeps the Inspector's width.
             let font = FontId::monospace(CODE_SIZE);
             let row = ui.fonts(|f| f.row_height(&font));
             let lines = self.tuning.shader.draft.lines().count().max(1)
@@ -352,24 +381,18 @@ impl Editor {
             if self.tuning.shader.gutter.0 != lines {
                 self.tuning.shader.gutter = (lines, (1..=lines).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"));
             }
-            egui::ScrollArea::both()
-                .id_salt("shader_code")
-                .max_height(320.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        let gutter = ui.add(egui::Label::new(
-                            RichText::new(&self.tuning.shader.gutter.1).font(font.clone()).color(theme::MUTED),
-                        ));
-                        for issue in &issues {
-                            if let Some(line) = issue.line {
-                                let top = gutter.rect.top() + (line - 1) as f32 * row;
-                                let r = Rect::from_min_size(pos2(gutter.rect.left() - 2.0, top), vec2(gutter.rect.width() + 4.0, row));
-                                ui.painter().rect_filled(r, 2.0, theme::ERROR.gamma_multiply(0.45));
-                                mark!(self.rects, "shader:error_line".into(), r);
-                            }
-                        }
-                        // No wrapping: one source line per gutter row (the area scrolls sideways).
+            ui.horizontal_top(|ui| {
+                let numbers = ui.fonts(|f| {
+                    f.layout_no_wrap(self.tuning.shader.gutter.1.clone(), font.clone(), theme::MUTED)
+                });
+                let (gutter, _) = ui.allocate_exact_size(vec2(numbers.size().x, 0.0), egui::Sense::hover());
+                let source_width = ui.available_width();
+                let source = egui::ScrollArea::both()
+                    .id_salt("shader_code")
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        // No wrapping: one source line per gutter row.
                         let mut layouter = |ui: &Ui, text: &str, _wrap: f32| {
                             let job = egui::text::LayoutJob::simple(
                                 text.to_owned(),
@@ -386,12 +409,33 @@ impl Editor {
                                 .id_salt("shader_source")
                                 .font(font.clone())
                                 .code_editor()
+                                .desired_width(source_width)
                                 .margin(egui::Margin::ZERO)
                                 .frame(false),
                         );
                         mark!(self.rects, "shader:source".into(), edit.rect);
                     });
-                });
+                mark!(self.rects, "shader:source_view".into(), source.inner_rect);
+                // The gutter column beside the source view, scrolled with it.
+                let top = source.inner_rect.top() - source.state.offset.y;
+                let column = Rect::from_x_y_ranges(
+                    gutter.left() - 2.0..=gutter.right() + 2.0,
+                    source.inner_rect.y_range(),
+                );
+                let painter = ui.painter().with_clip_rect(column.intersect(ui.clip_rect()));
+                for issue in &issues {
+                    if let Some(line) = issue.line {
+                        let r = Rect::from_min_size(
+                            pos2(gutter.left() - 2.0, top + (line - 1) as f32 * row),
+                            vec2(gutter.width() + 4.0, row),
+                        );
+                        painter.rect_filled(r, 2.0, theme::ERROR.gamma_multiply(0.45));
+                        mark!(self.rects, "shader:error_line".into(), r);
+                    }
+                }
+                painter.galley(pos2(gutter.left(), top), numbers, theme::MUTED);
+            });
         });
+        mark!(self.rects, "shader:card".into(), card.response.rect);
     }
 }

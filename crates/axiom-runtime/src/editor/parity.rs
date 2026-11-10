@@ -2104,3 +2104,63 @@ fn tuning_editor_edits_match_acl() {
         &script,
     );
 }
+
+#[test]
+fn prefab_revert_and_apply_match_acl() {
+    let town = axiom_core::ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world;
+    let start = headless(&town, "set plaza/lamp-2 nav.blocker/half [0.2,0.2]");
+    // Revert on a multi-selection: every selected instance that overrides the field.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("plaza/lamp-1".into()));
+            e.extra.insert("plaza/lamp-3".into());
+            vec![e
+                .run_command_with("prefab.revert", Some("core.transform/position"))
+                .unwrap()]
+        },
+        "prefab revert entities[id=plaza/lamp-1,id=plaza/lamp-3] core.transform/position",
+    );
+    // The whole override of a component (COMPONENT alone), as `reset` would.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("plaza/lamp-2".into()));
+            vec![e
+                .run_command_with("prefab.revert", Some("nav.blocker"))
+                .unwrap()]
+        },
+        "prefab revert plaza/lamp-2 nav.blocker",
+    );
+    // Apply: the prefab takes the instance's value; the Inspector menu calls the same op.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("plaza/lamp-2".into()));
+            vec![e
+                .run_command_with("prefab.apply", Some("nav.blocker/half"))
+                .unwrap()]
+        },
+        "prefab apply plaza/lamp-2 nav.blocker/half",
+    );
+    assert_parity(
+        start,
+        |e| {
+            e.select(Some("plaza/lamp-2".into()));
+            vec![e
+                .prefab_field(
+                    super::prefab_overrides::PrefabAction::Apply,
+                    "core.transform",
+                    "/position",
+                )
+                .into_iter()
+                .collect()]
+        },
+        "prefab apply plaza/lamp-2 core.transform/position",
+    );
+}

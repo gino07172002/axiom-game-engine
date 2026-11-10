@@ -106,6 +106,10 @@ fn tag_chips_add_suggest_and_remove_on_every_selected_object() {
     h.editor.extra.insert("stage/rack".into());
     let both = ["stage/crate".to_owned(), "stage/rack".to_owned()];
     h.frame(vec![]);
+    // The summary row opens the chip editor.
+    h.click("tag:summary");
+    assert!(h.editor.tag_ui.expanded);
+    h.frame(vec![]);
     // Type a new tag (CJK works) and press Enter: one write for both objects.
     h.click("tag:input");
     h.frame(vec![Event::Text("貨物".into())]);

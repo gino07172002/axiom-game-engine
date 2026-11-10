@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 pub use crate::ops_assets::*;
 pub use crate::ops_graph::*;
 pub use crate::ops_merge::*;
+pub use crate::ops_prefab::*;
 pub use crate::ops_tuning::*;
 pub use crate::ops_ui::*;
 pub use crate::ops_world::*;

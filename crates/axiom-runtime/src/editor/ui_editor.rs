@@ -920,6 +920,7 @@ impl Editor {
                 structural: false,
                 picker: &mut self.picker,
                 rects: Some(&mut self.rects),
+                overrides: None,
             };
             form::show(ui, &mut ctx, &spec, draft, &format!("ui_widget:{id}"))
         };

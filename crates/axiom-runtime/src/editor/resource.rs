@@ -280,6 +280,7 @@ impl Editor {
                                 structural: !draft.dirty,
                                 picker: &mut self.picker,
                                 rects: Some(&mut self.rects),
+                                overrides: None,
                             };
                             let out = super::form::show(ui, &mut ctx, spec, form, &draft.id);
                             draft.dirty |= out.changed;

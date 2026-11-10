@@ -17,6 +17,17 @@ pub(super) fn caption(ui: &mut Ui, text: impl Into<String>) {
     ui.label(RichText::new(text.into()).size(11.0).color(MUTED));
 }
 
+/// One Proposals / History diff line (readable text); the hover shows the protocol path.
+fn diff_label(ui: &mut Ui, line: &str, path: &str, selectable: bool) -> egui::Response {
+    ui.label(RichText::new(line).monospace().small())
+        .on_hover_ui(|ui| {
+            if selectable {
+                ui.label("Click to select");
+            }
+            ui.label(RichText::new(path).monospace().small().color(MUTED));
+        })
+}
+
 pub(super) fn component_value(world: &World, entity: &Entity, component: &str) -> Option<Value> {
     let mut inherited = entity
         .prefab
@@ -1166,6 +1177,9 @@ impl Editor {
         let mut audio_clip: Option<String> = None;
         self.refresh_tag_cache();
         self.refresh_mixed();
+        self.refresh_overrides();
+        let apply_to_prefab = self.prefab_apply_allowed();
+        let mut prefab_request = None;
         let mut tag_request = None;
         let mut add_component = None;
         let mut component_request = None;
@@ -1319,14 +1333,16 @@ impl Editor {
                                 }
                             }
                         }
-                        ui.add_enabled_ui(editable, |ui| {
-                            tag_request = super::world_panel::tag_chips(
-                                ui,
-                                &mut self.tag_ui,
-                                !draft.dirty(),
-                                &mut self.rects,
-                            );
-                        });
+                        if super::world_panel::tag_summary(ui, &mut self.tag_ui, icons, &mut self.rects) {
+                            ui.add_enabled_ui(editable, |ui| {
+                                tag_request = super::world_panel::tag_chips(
+                                    ui,
+                                    &mut self.tag_ui,
+                                    !draft.dirty(),
+                                    &mut self.rects,
+                                );
+                            });
+                        }
                     });
                     ui.add_enabled_ui(editable, |ui| {
                         if !self.extra.is_empty() {
@@ -1370,6 +1386,10 @@ impl Editor {
                                     let mixed_position = show(0, t.position, base.position);
                                     let mixed_angles = show(1, draft.angles, base_angles);
                                     let mixed_scale = show(2, t.scale, base.scale);
+                                    // Prefab override markers on the rows (pose fields the
+                                    // instance overrides).
+                                    let transform_overrides = self.overrides.get("core.transform");
+                                    let mut row_top = ui.cursor().top();
                                     let (position, z) = vector(
                                         ui,
                                         "Position",
@@ -1379,6 +1399,10 @@ impl Editor {
                                         mixed_position,
                                     );
                                     self.rects.insert("inspector:position.z".into(), z);
+                                    if let Some(action) = super::prefab_overrides::row_marker(ui, row_top, 62.0, transform_overrides, "/position", apply_to_prefab, &mut self.rects) {
+                                        prefab_request = Some(("core.transform".to_owned(), "/position".to_owned(), action));
+                                    }
+                                    row_top = ui.cursor().top();
                                     let (rotate, _) = vector(
                                         ui,
                                         "Rotation°",
@@ -1387,6 +1411,10 @@ impl Editor {
                                         -36000.0..=36000.0,
                                         mixed_angles,
                                     );
+                                    if let Some(action) = super::prefab_overrides::row_marker(ui, row_top, 62.0, transform_overrides, "/rotation", apply_to_prefab, &mut self.rects) {
+                                        prefab_request = Some(("core.transform".to_owned(), "/rotation".to_owned(), action));
+                                    }
+                                    row_top = ui.cursor().top();
                                     if rotate {
                                         t.rotation = viewport::rotation(draft.angles);
                                     }
@@ -1399,6 +1427,9 @@ impl Editor {
                                         mixed_scale,
                                     );
                                     self.rects.insert("inspector:scale.z".into(), z);
+                                    if let Some(action) = super::prefab_overrides::row_marker(ui, row_top, 62.0, transform_overrides, "/scale", apply_to_prefab, &mut self.rects) {
+                                        prefab_request = Some(("core.transform".to_owned(), "/scale".to_owned(), action));
+                                    }
                                     draft.transform_dirty |= position || rotate || scale;
                                 } else if ui.button("Add transform").clicked() {
                                     draft.transform = Some(Transform::default());
@@ -1445,6 +1476,10 @@ impl Editor {
                             });
                         ui.scope(|ui| {
                                 let panel = ComponentPanel {
+                                    overrides: self
+                                        .overrides
+                                        .get(&draft.component)
+                                        .map(|set| (set, apply_to_prefab)),
                                     world: &self.world,
                                     world_version: self.world_version,
                                     hints: &self.component_hints,
@@ -1632,6 +1667,9 @@ impl Editor {
         if let Some(edit) = structural {
             actions.push(self.write(vec![Edit::Core(edit)], None));
         }
+        if let Some((component, pointer, action)) = prefab_request {
+            actions.extend(self.prefab_field(action, &component, &pointer));
+        }
         match component_request {
             Some(ComponentRequest::Remove(component)) => {
                 actions.extend(self.remove_component(&id, &component));
@@ -1639,6 +1677,11 @@ impl Editor {
             Some(ComponentRequest::Reset(component)) => {
                 actions.extend(self.reset_component(&component));
             }
+            Some(ComponentRequest::Prefab {
+                component,
+                pointer,
+                action,
+            }) => actions.extend(self.prefab_field(action, &component, &pointer)),
             Some(ComponentRequest::Copy(component)) => self.copy_component(&component),
             Some(ComponentRequest::Paste(component)) => {
                 actions.extend(self.paste_component(&component));
@@ -1807,7 +1850,8 @@ impl Editor {
                             ghost_pick = Some(format!("proposal:{id}"));
                         }
                     }
-                    let Some(p) = self.proposals.iter().find(|p| p["id"].as_i64() == self.proposal_focus) else { return };
+                    let Some(focus) = self.proposals.iter().position(|p| p["id"].as_i64() == self.proposal_focus) else { return };
+                    let p = &self.proposals[focus];
                     let id = p["id"].as_i64().unwrap_or(0);
                     let base = p["base_rev"].as_i64().unwrap_or(0);
                     let mut merge = false;
@@ -1842,17 +1886,13 @@ impl Editor {
                         });
                         cols[1].label(RichText::new(format!("Base revision {base} is behind current {}: rebase replays the same edits on the latest world; Merge… lets you pick per field where both changed.", self.rev)).small().color(WARNING));
                     }
-                    for change in p["diff"]["changes"].as_array().into_iter().flatten() {
+                    let lines = self.proposal_lines.get(focus).map_or(&[][..], Vec::as_slice);
+                    for (change, line) in p["diff"]["changes"].as_array().into_iter().flatten().zip(lines).filter(|(_, line)| !line.is_empty()) {
                         let path = change["path"].as_str().unwrap_or("?");
-                        let short = |v: &Value| { let s = axiom_core::local::display_value(v).to_string(); if s.chars().count() > 40 { format!("{}…", s.chars().take(39).collect::<String>()) } else { s } };
-                        let line = match change["kind"].as_str() {
-                            Some("added") => format!("+ {path} = {}", short(&change["after"])),
-                            Some("removed") => format!("- {path}"),
-                            _ => format!("~ {path}: {} → {}", short(&change["before"]), short(&change["after"])),
-                        };
-                        let label = cols[1].label(RichText::new(line).monospace().small());
-                        if let Some(target) = super::entity_in_path(path, &self.world) {
-                            if label.on_hover_text("Click to select").clicked() { jump = Some(target); }
+                        let target = super::entity_in_path(path, &self.world);
+                        let label = diff_label(&mut cols[1], line, path, target.is_some());
+                        if let Some(target) = target {
+                            if label.clicked() { jump = Some(target); }
                         }
                     }
                     if p["diff"]["truncated"] == true { cols[1].label(RichText::new("… diff truncated to 64 changes").small().color(MUTED)); }
@@ -1908,17 +1948,12 @@ impl Editor {
                         None => { cols[1].label(RichText::new("Select a revision to see its before → after changes.").small().color(MUTED)); }
                         Some((rev, diff)) => {
                             cols[1].label(RichText::new(format!("{} → {rev} · {} change(s)", rev - 1, diff["total_changes"])).small().color(MUTED));
-                            for change in diff["changes"].as_array().into_iter().flatten() {
+                            for (change, line) in diff["changes"].as_array().into_iter().flatten().zip(&self.history_lines).filter(|(_, line)| !line.is_empty()) {
                                 let path = change["path"].as_str().unwrap_or("?");
-                                let short = |v: &Value| { let s = axiom_core::local::display_value(v).to_string(); if s.len() > 40 { format!("{}…", &s[..s.char_indices().nth(39).map_or(s.len(), |(i, _)| i)]) } else { s } };
-                                let line = match change["kind"].as_str() {
-                                    Some("added") => format!("+ {path} = {}", short(&change["after"])),
-                                    Some("removed") => format!("- {path}"),
-                                    _ => format!("~ {path}: {} → {}", short(&change["before"]), short(&change["after"])),
-                                };
-                                let label = cols[1].label(RichText::new(line).monospace().small());
-                                if let Some(id) = super::entity_in_path(path, &self.world) {
-                                    if label.on_hover_text("Click to select").clicked() { jump = Some(id); }
+                                let target = super::entity_in_path(path, &self.world);
+                                let label = diff_label(&mut cols[1], line, path, target.is_some());
+                                if let Some(id) = target {
+                                    if label.clicked() { jump = Some(id); }
                                 }
                             }
                             if diff["next_offset"].is_number() { cols[1].label(RichText::new("… more changes; use `axiom acl -e \"diff A B\"`").small().color(MUTED)); }
@@ -2499,10 +2534,18 @@ pub(super) enum ComponentRequest {
     MainCamera,
     Play(String),
     EditGraph,
+    /// Revert / Apply to Prefab on a marked field (pointer relative to the component).
+    Prefab {
+        component: String,
+        pointer: String,
+        action: super::prefab_overrides::PrefabAction,
+    },
 }
 
 /// Everything the component section reads besides the object and its draft.
 struct ComponentPanel<'a> {
+    /// The open component's prefab overrides (and whether Apply to Prefab is offered).
+    overrides: Option<(&'a super::prefab_overrides::OverrideSet, bool)>,
     world: &'a World,
     world_version: u64,
     hints: &'a std::collections::BTreeMap<String, Value>,
@@ -2562,6 +2605,7 @@ fn component_editor(
     add_component: &mut Option<String>,
 ) -> Option<ComponentRequest> {
     let ComponentPanel {
+        overrides,
         world,
         world_version,
         hints,
@@ -2749,6 +2793,7 @@ fn component_editor(
                     ui.scroll_to_cursor(Some(egui::Align::TOP));
                 }
                 let body = ComponentBody {
+                    overrides,
                     world,
                     world_version,
                     hints,
@@ -2958,6 +3003,7 @@ fn component_actions(
 
 /// What the open card's body reads.
 struct ComponentBody<'a> {
+    overrides: Option<(&'a super::prefab_overrides::OverrideSet, bool)>,
     world: &'a World,
     world_version: u64,
     hints: &'a std::collections::BTreeMap<String, Value>,
@@ -2978,6 +3024,7 @@ fn component_body(
     draft: &mut Draft,
 ) -> Option<ComponentRequest> {
     let ComponentBody {
+        overrides,
         world,
         world_version,
         hints,
@@ -3043,9 +3090,18 @@ fn component_body(
                 structural: !draft.form_dirty && own,
                 picker,
                 rects: Some(rects),
+                // Markers describe the committed instance, the base of the draft.
+                overrides: overrides.filter(|_| own && inherits),
             };
             let out = super::form::show(ui, &mut ctx, spec, form, &draft.component);
             draft.form_dirty |= out.changed;
+            if let Some((pointer, action)) = out.prefab {
+                request = Some(ComponentRequest::Prefab {
+                    component: draft.component.clone(),
+                    pointer,
+                    action,
+                });
+            }
             if let Some((pointer, edit)) = out.array {
                 request = Some(ComponentRequest::Array {
                     component: draft.component.clone(),

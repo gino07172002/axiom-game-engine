@@ -191,6 +191,8 @@ enum WorldRequest {
 #[derive(Default)]
 pub(crate) struct TagUi {
     pub input: String,
+    /// The chip editor is open under the "Tags (N)" summary row (kept across selections).
+    pub expanded: bool,
     cache: Option<TagCache>,
     /// Cache rebuilds so far (tests).
     #[cfg(test)]
@@ -205,6 +207,9 @@ struct TagCache {
     chips: Vec<(String, String, bool)>,
     objects: usize,
     caption: String,
+    /// Summary row: "Tags (N)" and the tags joined with ", " (cut to the row by the label).
+    count: String,
+    summary: String,
     /// Every tag the world uses, for suggestions.
     known: Vec<String>,
 }
@@ -258,10 +263,22 @@ impl Editor {
         {
             self.tag_ui.builds += 1;
         }
+        let count = format!("Tags ({})", chips.len());
+        let summary = if chips.is_empty() {
+            "none".to_owned()
+        } else {
+            chips
+                .iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         self.tag_ui.cache = Some(TagCache {
             key,
             primary: primary.to_owned(),
             extra: self.extra.iter().cloned().collect(),
+            count,
+            summary,
             chips,
             objects: ids.len(),
             caption: if ids.len() > 1 {
@@ -413,7 +430,10 @@ impl Editor {
     pub(super) fn run_with_arg(&mut self, id: &str, arg: Option<&str>) -> Vec<Action> {
         let Some(arg) = arg.map(str::trim) else {
             match id {
-                "object.tag" => self.notice("Type a tag under Inspector › Tags (Enter adds it)"),
+                "object.tag" => {
+                    self.tag_ui.expanded = true;
+                    self.notice("Type a tag under Inspector › Tags (Enter adds it)")
+                }
                 "object.add_component" => {
                     self.notice("Pick it under Inspector › Components › Add component")
                 }
@@ -678,6 +698,67 @@ impl Editor {
     }
 }
 
+/// The Inspector's "Tags (N)  a, b, … ›" row; a click opens / closes the chip editor below
+/// it. Returns whether the editor is open.
+pub(super) fn tag_summary(
+    ui: &mut Ui,
+    tags: &mut TagUi,
+    icons: super::icons::Icons,
+    rects: &mut std::collections::HashMap<String, egui::Rect>,
+) -> bool {
+    let Some(cache) = tags.cache.as_ref() else {
+        return false;
+    };
+    let expanded = tags.expanded;
+    let row = ui
+        .scope(|ui| {
+            // The row takes the click, not its labels.
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [62.0, 20.0],
+                    egui::Label::new(RichText::new(&cache.count).color(MUTED)),
+                );
+                let chevron = if expanded {
+                    super::icons::Icon::ChevronDown
+                } else {
+                    super::icons::Icon::ChevronRight
+                };
+                // Tags left-aligned and cut with "…" before the chevron at the right edge.
+                let width = (ui.available_width() - 22.0).max(0.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 20.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_width(width);
+                        let color = if cache.chips.is_empty() {
+                            MUTED
+                        } else {
+                            super::theme::TEXT
+                        };
+                        ui.add(
+                            egui::Label::new(RichText::new(&cache.summary).color(color)).truncate(),
+                        );
+                    },
+                );
+                icons.show(ui, chevron, 14.0, MUTED);
+            })
+            .response
+        })
+        .inner
+        .interact(egui::Sense::click())
+        .on_hover_text(if expanded {
+            "Hide the tag editor"
+        } else {
+            "Edit tags (add, remove, suggestions)"
+        });
+    rects.insert("tag:summary".into(), row.rect);
+    if row.clicked() {
+        tags.expanded = !expanded;
+    }
+    tags.expanded
+}
+
 /// Draws the tag chips of the selection (Inspector). Removing a chip or adding a typed or
 /// suggested tag returns a request; it applies to every selected object.
 pub(super) fn tag_chips(
@@ -688,7 +769,10 @@ pub(super) fn tag_chips(
 ) -> Option<TagRequest> {
     let cache = tags.cache.as_ref()?;
     let mut request = None;
-    ui.label(RichText::new(&cache.caption).size(11.0).color(MUTED));
+    // One object: the summary row above already says "Tags".
+    if cache.objects > 1 {
+        ui.label(RichText::new(&cache.caption).size(11.0).color(MUTED));
+    }
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal_wrapped(|ui| {
             for (tag, text, all) in &cache.chips {

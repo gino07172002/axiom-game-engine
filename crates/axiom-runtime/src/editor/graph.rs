@@ -24,6 +24,11 @@ pub(super) const MAX_DRAW_EDGES: usize = 128;
 /// Width of the element / rule inspector next to the canvas.
 const SIDE: f32 = 300.0;
 const PORT: f32 = 6.0;
+/// Canvas zoom limits (`graph.zoom`, wheel); Frame never magnifies past 100 %.
+pub(super) const ZOOM_MIN: f32 = 0.25;
+pub(super) const ZOOM_MAX: f32 = 2.0;
+/// Fit margin around the framed states (screen points).
+const FIT_MARGIN: f32 = 16.0;
 /// Where the "Any state" pseudo node (source of `*` transitions) sits.
 const ANY_AT: Pos2 = pos2(24.0, 20.0);
 
@@ -64,7 +69,12 @@ pub(crate) struct GraphUi {
     link: Option<Option<usize>>,
     panning: bool,
     pan: Vec2,
-    /// Graph ▸ Frame: pan so every state is in view on the next drawn frame (no zoom).
+    /// Canvas scale (screen points per canvas unit); 0 before the first use = 100 %.
+    zoom: f32,
+    /// Size of the canvas when last drawn (`graph.zoom` zooms around its center).
+    canvas_size: Vec2,
+    /// Graph ▸ Frame: zoom out (never past 100 %) and pan so every state is in view on the
+    /// next drawn frame.
     fit: bool,
     /// State name being typed in the inspector (rename).
     name: String,
@@ -512,17 +522,84 @@ enum Menu {
     AddState(Pos2),
 }
 
+/// Size of the "Any state" pseudo node in canvas units.
+const ANY_SIZE: Vec2 = vec2(110.0, 30.0);
+
 impl GraphUi {
+    /// Screen points per canvas unit.
+    pub(super) fn zoom(&self) -> f32 {
+        if self.zoom > 0.0 {
+            self.zoom
+        } else {
+            1.0
+        }
+    }
+
+    /// Sets the zoom (clamped) keeping the canvas point under `anchor` (relative to the
+    /// canvas' top-left corner, screen points) where it is.
+    fn zoom_around(&mut self, anchor: Vec2, zoom: f32) {
+        let old = self.zoom();
+        let new = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        let canvas = (anchor - self.pan) / old;
+        self.pan = anchor - canvas * new;
+        self.zoom = new;
+    }
+
+    /// Canvas position -> screen, with `origin` = canvas top-left + pan.
+    fn to_screen(&self, origin: Pos2, at: Pos2) -> Pos2 {
+        origin + at.to_vec2() * self.zoom()
+    }
+
+    /// Screen -> canvas position.
+    fn to_canvas(&self, origin: Pos2, p: Pos2) -> Pos2 {
+        ((p - origin) / self.zoom()).to_pos2()
+    }
+
     fn node_at(&self, model: &Model, origin: Pos2, i: usize) -> Rect {
         let at = match &self.drag {
             Some(d) if d.node == i => d.at,
             _ => model.nodes[i].at,
         };
-        Rect::from_min_size(origin + at.to_vec2(), NODE)
+        Rect::from_min_size(self.to_screen(origin, at), NODE * self.zoom())
     }
 
-    fn any_rect(origin: Pos2) -> Rect {
-        Rect::from_min_size(origin + ANY_AT.to_vec2(), vec2(110.0, 30.0))
+    fn any_rect(&self, origin: Pos2) -> Rect {
+        Rect::from_min_size(self.to_screen(origin, ANY_AT), ANY_SIZE * self.zoom())
+    }
+
+    /// Bounds of every state (and the Any state) in canvas units.
+    fn bounds(&self, model: &Model) -> Rect {
+        let mut bounds = (0..model.nodes.len())
+            .map(|i| {
+                let at = match &self.drag {
+                    Some(d) if d.node == i => d.at,
+                    _ => model.nodes[i].at,
+                };
+                Rect::from_min_size(at, NODE)
+            })
+            .fold(Rect::NOTHING, |a, b| a.union(b));
+        if model.any {
+            bounds = bounds.union(Rect::from_min_size(ANY_AT, ANY_SIZE));
+        }
+        bounds
+    }
+
+    /// Graph ▸ Frame: the largest zoom up to 100 % that shows `bounds` inside `size` with a
+    /// margin, centered; when even the smallest zoom does not fit, its top-left corner just
+    /// inside the canvas.
+    fn frame_bounds(&mut self, bounds: Rect, size: Vec2) {
+        if !bounds.is_positive() {
+            return;
+        }
+        let room = size - Vec2::splat(2.0 * FIT_MARGIN);
+        let fit = (room.x / bounds.width()).min(room.y / bounds.height());
+        let zoom = fit.clamp(ZOOM_MIN, 1.0);
+        self.zoom = zoom;
+        self.pan = if fit >= ZOOM_MIN {
+            size / 2.0 - bounds.center().to_vec2() * zoom
+        } else {
+            Vec2::splat(FIT_MARGIN) - bounds.min.to_vec2() * zoom
+        };
     }
 
     fn hit(&self, model: &Model, origin: Pos2, p: Pos2) -> Hit {
@@ -532,7 +609,7 @@ impl GraphUi {
         {
             return Hit::Node(i);
         }
-        if model.any && Self::any_rect(origin).contains(p) {
+        if model.any && self.any_rect(origin).contains(p) {
             return Hit::Any;
         }
         let mut best = (7.0, None);
@@ -545,7 +622,7 @@ impl GraphUi {
         }
         match best.1 {
             Some(k) => Hit::Edge(k),
-            None => Hit::Empty(p - origin.to_vec2()),
+            None => Hit::Empty(self.to_canvas(origin, p)),
         }
     }
 
@@ -558,11 +635,11 @@ impl GraphUi {
         let to = self.node_at(model, origin, e.to);
         let from = match e.from {
             Some(i) => self.node_at(model, origin, i),
-            None => Self::any_rect(origin),
+            None => self.any_rect(origin),
         };
         let (fc, tc) = (from.center(), to.center());
         let dir = (tc - fc).normalized();
-        let offset = vec2(-dir.y, dir.x) * e.lane;
+        let offset = vec2(-dir.y, dir.x) * e.lane * self.zoom();
         let a = boundary(fc + offset, tc + offset, from.size() / 2.0);
         let b = boundary(tc + offset, fc + offset, to.size() / 2.0);
         (a, b)
@@ -578,39 +655,55 @@ impl GraphUi {
             Sense::hover()
         };
         let (rect, response) = ui.allocate_exact_size(size, sense);
+        if interactive {
+            self.canvas_size = rect.size();
+        }
         if interactive && std::mem::take(&mut self.fit) {
-            let mut bounds = (0..model.nodes.len())
-                .map(|i| self.node_at(model, Pos2::ZERO, i))
-                .fold(Rect::NOTHING, |a, b| a.union(b));
-            if model.any {
-                bounds = bounds.union(Self::any_rect(Pos2::ZERO));
-            }
-            if bounds.is_positive() {
-                // Centered when it fits; otherwise its top-left corner just inside the canvas.
-                self.pan = if bounds.width() + 32.0 <= rect.width()
-                    && bounds.height() + 32.0 <= rect.height()
-                {
-                    rect.size() / 2.0 - bounds.center().to_vec2()
+            let bounds = self.bounds(model);
+            self.frame_bounds(bounds, rect.size());
+        }
+        // Wheel (or pinch / Ctrl+wheel) over the canvas zooms around the pointer, before
+        // anything is placed this frame; the scroll is used up so no parent scrolls too. Not
+        // while a node drag, link or pan is held (their offsets are in this zoom's points).
+        let held = self.drag.is_some() || self.link.is_some() || self.panning;
+        if interactive && !held {
+            if let Some(p) = response.hover_pos() {
+                // egui reports Ctrl+wheel both as zoom and as scroll: one of them only.
+                let (wheel, pinch) = ui.input(|i| (i.raw_scroll_delta.y, i.zoom_delta()));
+                let factor = if (pinch - 1.0).abs() > 1e-4 {
+                    pinch
                 } else {
-                    vec2(16.0, 16.0) - bounds.min.to_vec2()
+                    (wheel * 0.003).exp()
                 };
+                if (factor - 1.0).abs() > 1e-4 {
+                    let zoom = self.zoom() * factor;
+                    self.zoom_around(p - rect.min, zoom);
+                    ui.input_mut(|i| {
+                        i.raw_scroll_delta = Vec2::ZERO;
+                        i.smooth_scroll_delta = Vec2::ZERO;
+                    });
+                }
             }
         }
+        let zoom = self.zoom();
         let origin = rect.min + self.pan;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, CANVAS);
-        // Background grid (bounded by the canvas size).
-        let step = 40.0;
+        // Background grid (bounded by the canvas size; none when it would be denser than
+        // one line per 10 points).
+        let step = 40.0 * zoom;
         let grid = Stroke::new(1.0_f32, Color32::from_rgb(26, 31, 40));
-        let mut x = rect.left() + self.pan.x.rem_euclid(step);
-        while x < rect.right() {
-            painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], grid);
-            x += step;
-        }
-        let mut y = rect.top() + self.pan.y.rem_euclid(step);
-        while y < rect.bottom() {
-            painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], grid);
-            y += step;
+        if step >= 10.0 {
+            let mut x = rect.left() + self.pan.x.rem_euclid(step);
+            while x < rect.right() {
+                painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], grid);
+                x += step;
+            }
+            let mut y = rect.top() + self.pan.y.rem_euclid(step);
+            while y < rect.bottom() {
+                painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], grid);
+                y += step;
+            }
         }
         if interactive {
             self.interact(ui, model, origin, &response, &mut out);
@@ -639,17 +732,17 @@ impl GraphUi {
             let dir = (b - a).normalized();
             let side = vec2(-dir.y, dir.x);
             for s in [-1.0, 1.0] {
-                painter.line_segment([b, b - dir * 10.0 + side * 5.0 * s], stroke);
+                painter.line_segment([b, b - dir * 10.0 * zoom + side * 5.0 * zoom * s], stroke);
             }
             let mid = a + (b - a) * 0.5;
             let galley = painter.layout_no_wrap(
                 e.label.clone(),
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(11.0 * zoom),
                 if selected { ACCENT } else { MUTED },
             );
-            let label = Rect::from_center_size(mid, galley.size() + vec2(8.0, 2.0));
+            let label = Rect::from_center_size(mid, galley.size() + vec2(8.0, 2.0) * zoom);
             painter.rect_filled(label, 3.0, Color32::from_black_alpha(190));
-            painter.galley(label.min + vec2(4.0, 1.0), galley, MUTED);
+            painter.galley(label.min + vec2(4.0, 1.0) * zoom, galley, MUTED);
             #[cfg(test)]
             GRAPH_RECTS.with(|r| {
                 r.borrow_mut()
@@ -660,13 +753,13 @@ impl GraphUi {
         if let (Some(from), Some(p)) = (self.link, ui.input(|i| i.pointer.latest_pos())) {
             let start = match from {
                 Some(i) => Self::port(self.node_at(model, origin, i)),
-                None => Self::port(Self::any_rect(origin)),
+                None => Self::port(self.any_rect(origin)),
             };
             painter.line_segment([start, p], Stroke::new(2.0_f32, ACCENT));
         }
         // Any state.
         if model.any {
-            let r = Self::any_rect(origin);
+            let r = self.any_rect(origin);
             painter.rect(
                 r,
                 6.0,
@@ -678,7 +771,7 @@ impl GraphUi {
                 r.center(),
                 egui::Align2::CENTER_CENTER,
                 "Any state",
-                egui::FontId::proportional(12.0),
+                egui::FontId::proportional(12.0 * zoom),
                 Color32::WHITE,
             );
             painter.circle_filled(Self::port(r), PORT * 0.7, MUTED);
@@ -708,41 +801,45 @@ impl GraphUi {
             } else {
                 Stroke::new(1.0_f32, Color32::from_rgb(70, 84, 104))
             };
-            painter.rect(r, 6.0, fill, stroke, egui::StrokeKind::Inside);
+            painter.rect(r, 6.0 * zoom, fill, stroke, egui::StrokeKind::Inside);
             if node.name == model.initial {
                 // Initial state: green bar on the left edge.
-                painter.rect_filled(Rect::from_min_size(r.min, vec2(5.0, r.height())), 3.0, LIVE);
+                painter.rect_filled(
+                    Rect::from_min_size(r.min, vec2(5.0 * zoom, r.height())),
+                    3.0 * zoom,
+                    LIVE,
+                );
             }
             // Names and subtitles longer than the node are cut at its edge.
-            let text = painter.with_clip_rect(r.shrink(3.0).intersect(rect));
+            let text = painter.with_clip_rect(r.shrink(3.0 * zoom).intersect(rect));
             text.text(
-                r.min + vec2(12.0, 7.0),
+                r.min + vec2(12.0, 7.0) * zoom,
                 egui::Align2::LEFT_TOP,
                 &node.name,
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(14.0 * zoom),
                 Color32::WHITE,
             );
             text.text(
-                r.min + vec2(12.0, 27.0),
+                r.min + vec2(12.0, 27.0) * zoom,
                 egui::Align2::LEFT_TOP,
                 &node.detail,
-                egui::FontId::proportional(10.5),
+                egui::FontId::proportional(10.5 * zoom),
                 MUTED,
             );
             if live > 0 {
                 painter.text(
-                    pos2(r.right() - 8.0, r.top() + 7.0),
+                    pos2(r.right() - 8.0 * zoom, r.top() + 7.0 * zoom),
                     egui::Align2::RIGHT_TOP,
                     format!("live {live}"),
-                    egui::FontId::proportional(11.0),
+                    egui::FontId::proportional(11.0 * zoom),
                     LIVE,
                 );
             } else if node.problem.is_some() {
                 painter.text(
-                    pos2(r.right() - 9.0, r.top() + 6.0),
+                    pos2(r.right() - 9.0 * zoom, r.top() + 6.0 * zoom),
                     egui::Align2::RIGHT_TOP,
                     "!",
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(15.0 * zoom),
                     WARNING,
                 );
             }
@@ -792,11 +889,13 @@ impl GraphUi {
         let latest = ui.input(|i| i.pointer.latest_pos());
         if response.drag_started_by(PointerButton::Primary) {
             if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                // Smaller nodes when zoomed out: the port's grab radius shrinks with them.
+                let reach = (PORT + 2.0) * self.zoom().clamp(0.5, 1.0);
                 let port = (0..model.nodes.len())
-                    .find(|&i| Self::port(self.node_at(model, origin, i)).distance(p) <= PORT + 2.0)
+                    .find(|&i| Self::port(self.node_at(model, origin, i)).distance(p) <= reach)
                     .map(Some)
                     .or_else(|| {
-                        (model.any && Self::port(Self::any_rect(origin)).distance(p) <= PORT + 2.0)
+                        (model.any && Self::port(self.any_rect(origin)).distance(p) <= reach)
                             .then_some(None)
                     });
                 match (port, self.hit(model, origin, p)) {
@@ -806,7 +905,7 @@ impl GraphUi {
                         self.drag = Some(NodeDrag {
                             node: i,
                             grab: p - r.min,
-                            at: r.min - origin.to_vec2(),
+                            at: self.to_canvas(origin, r.min),
                         });
                         out.select = Some(Some(Sel::State(model.nodes[i].name.clone())));
                     }
@@ -815,8 +914,10 @@ impl GraphUi {
             }
         }
         if response.dragged_by(PointerButton::Primary) {
+            let zoom = self.zoom();
             if let (Some(d), Some(p)) = (self.drag.as_mut(), latest) {
-                d.at = p - d.grab - origin.to_vec2();
+                // The grab offset is in screen points; positions are canvas units.
+                d.at = ((p - d.grab - origin) / zoom).to_pos2();
             } else if self.panning {
                 self.pan += response.drag_delta();
             }
@@ -1242,6 +1343,7 @@ impl Editor {
             self.graph.selected = None;
             self.graph.element = None;
             self.graph.pan = Vec2::ZERO;
+            self.graph.zoom = 1.0;
         }
         self.graph.machine = Some(machine.to_owned());
         self.graph.view = View::Machine;
@@ -1398,8 +1500,8 @@ impl Editor {
         Some(match id {
             "graph.open" => None,
             // View only: allowed while a draft is open.
-            "graph.frame" if !open => Some("open a state machine in the Graphs tab"),
-            "graph.frame" => None,
+            "graph.frame" | "graph.zoom" if !open => Some("open a state machine in the Graphs tab"),
+            "graph.frame" | "graph.zoom" => None,
             "graph.add_state" | "graph.set_initial" | "graph.delete" if !open => {
                 Some("open a state machine in the Graphs tab")
             }
@@ -1427,7 +1529,7 @@ impl Editor {
         id: &str,
         arg: Option<&str>,
     ) -> anyhow::Result<Vec<Action>> {
-        let takes_arg = matches!(id, "graph.open" | "behavior.fsm_agent");
+        let takes_arg = matches!(id, "graph.open" | "graph.zoom" | "behavior.fsm_agent");
         anyhow::ensure!(takes_arg || arg.is_none(), "{id} takes no argument");
         let arg = arg.map(str::trim).filter(|a| !a.is_empty());
         let action = match (id, arg) {
@@ -1442,6 +1544,37 @@ impl Editor {
             }
             ("graph.frame", _) => {
                 self.graph.fit = true;
+                None
+            }
+            ("graph.zoom", None) => {
+                self.show_dock(Dock::Graphs);
+                self.notice(
+                    "Wheel over the graph zooms around the pointer; Frame fits every state",
+                );
+                None
+            }
+            ("graph.zoom", Some(arg)) => {
+                let current = self.graph.zoom();
+                let zoom = match arg {
+                    "in" => current * 1.25,
+                    "out" => current / 1.25,
+                    "reset" => 1.0,
+                    number => {
+                        let number = number.strip_suffix('%').map_or_else(
+                            || number.parse::<f32>(),
+                            |p| p.trim().parse::<f32>().map(|p| p / 100.0),
+                        );
+                        match number {
+                            Ok(z) if z.is_finite() && (ZOOM_MIN..=ZOOM_MAX).contains(&z) => z,
+                            _ => anyhow::bail!(
+                                "graph.zoom takes in|out|reset or a zoom {ZOOM_MIN}..{ZOOM_MAX} (e.g. 1.5 or 150%)"
+                            ),
+                        }
+                    }
+                };
+                // Around the canvas center (the last drawn size).
+                let center = self.graph.canvas_size / 2.0;
+                self.graph.zoom_around(center, zoom);
                 None
             }
             ("graph.add_state", _) => {
@@ -1480,6 +1613,7 @@ impl Editor {
         json!({
             "machine": self.graph.machine,
             "view": match self.graph.view { View::Machine => "machine", View::Rules => "rules", View::Overview => "overview" },
+            "zoom": (self.graph.zoom() * 1000.0).round() / 1000.0,
             "selected": match &self.graph.selected {
                 Some(Sel::State(s)) => json!({"state": s}),
                 Some(Sel::Transition(i)) => json!({"transition": i}),
@@ -1526,6 +1660,8 @@ impl Editor {
             ("graph.frame", "Frame"),
         ]
         .map(|(cmd, title)| (cmd, title, self.command_blocked(cmd)));
+        let frame_blocked = self.command_blocked("graph.zoom");
+        let mut zoom_reset = false;
         let mut view = self.graph.view;
         ui.horizontal_wrapped(|ui| {
             for (v, title) in [
@@ -1584,6 +1720,20 @@ impl Editor {
                         command = Some(cmd);
                     }
                 }
+                let zoom = self.graph.zoom();
+                let r = ui
+                    .add_enabled(
+                        frame_blocked.is_none(),
+                        egui::Button::new(format!("{:.0}%", zoom * 100.0)),
+                    )
+                    .on_hover_text(
+                        "Zoom: wheel over the graph (around the pointer); click for 100 %",
+                    );
+                #[cfg(test)]
+                GRAPH_RECTS.with(|g| g.borrow_mut().push(("graph:zoom".into(), r.rect)));
+                if r.clicked() {
+                    zoom_reset = true;
+                }
             }
             let text = if problems == 0 {
                 RichText::new("no graph problems").small().color(MUTED)
@@ -1610,6 +1760,11 @@ impl Editor {
         }
         if let Some(cmd) = command {
             self.run_into(cmd, actions);
+        }
+        if zoom_reset {
+            if let Err(e) = self.run_command_with("graph.zoom", Some("reset")) {
+                self.set_error(format!("{e:#}"));
+            }
         }
         match self.graph.view {
             View::Overview => {
@@ -1776,6 +1931,7 @@ impl Editor {
                 structural: false,
                 picker: &mut self.picker,
                 rects: Some(&mut self.rects),
+                overrides: None,
             };
             match &sel {
                 Sel::State(name) => {
@@ -2275,6 +2431,7 @@ impl Editor {
                 structural: false,
                 picker: &mut self.picker,
                 rects: Some(&mut self.rects),
+                overrides: None,
             };
             ui.label(RichText::new(format!("RULE  {id}")).strong().color(ACCENT));
             ui.horizontal(|ui| {
@@ -2513,7 +2670,11 @@ impl Editor {
                         e.max(n.at.to_vec2() + NODE + vec2(16.0, 16.0))
                     });
                     let size = extent.min(vec2(720.0, 360.0));
+                    // The overlay is sized in canvas units: drawn at 100 %, whatever the
+                    // Graphs tab's zoom.
+                    let zoom = std::mem::replace(&mut self.graph.zoom, 1.0);
                     self.graph.canvas(ui, &model, size, false);
+                    self.graph.zoom = zoom;
                 });
         }
         self.graph.model = Some(model);

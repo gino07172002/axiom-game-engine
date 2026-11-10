@@ -31,6 +31,9 @@ mod vfx_editor;
 // AI co-editing (M10): change ghosts in the Scene view, field-wise conflict merge.
 pub(crate) mod ghost;
 pub(crate) mod merge;
+// Follow-ups: readable diff lines, prefab override markers.
+mod diff_view;
+mod prefab_overrides;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
@@ -43,6 +46,8 @@ mod coedit_tests;
 mod debug_tests;
 #[cfg(test)]
 mod dock_tests;
+#[cfg(test)]
+mod followup_tests;
 #[cfg(test)]
 mod game_tests;
 #[cfg(test)]
@@ -591,6 +596,12 @@ pub(crate) struct Editor {
     world_panel: world_panel::WorldPanel,
     /// Inspector tag chips: typed tag and the chips cached per revision and selection.
     tag_ui: world_panel::TagUi,
+    /// Readable lines of each proposal's diff (parallel to `proposals`) and of the shown
+    /// History diff, built when the rows arrive.
+    proposal_lines: Vec<Vec<String>>,
+    history_lines: Vec<String>,
+    /// Inspector prefab override markers: the selection's override sets per revision.
+    overrides: prefab_overrides::OverrideCache,
     /// Component to open in the Inspector once the Add component write is shown.
     open_component_after: Option<String>,
     /// Bumped whenever `world` is replaced (with `rev`, the key of the per-world caches;
@@ -734,6 +745,9 @@ impl Editor {
             registry: std::sync::Arc::new(axiom_core::Registry::core()),
             world_panel: Default::default(),
             tag_ui: Default::default(),
+            proposal_lines: Vec::new(),
+            history_lines: Vec::new(),
+            overrides: Default::default(),
             open_component_after: None,
             world_version: 0,
             specs: Default::default(),
@@ -2031,6 +2045,11 @@ impl Editor {
     pub fn set_proposals(&mut self, signature: (i64, i64), rows: &Value) {
         let previous = self.proposals.len();
         self.proposals = rows.as_array().cloned().unwrap_or_default();
+        self.proposal_lines = self
+            .proposals
+            .iter()
+            .map(|p| diff_view::lines(&p["diff"]))
+            .collect();
         self.proposal_signature = Some(signature);
         if self
             .proposal_focus
@@ -2057,6 +2076,7 @@ impl Editor {
     }
 
     pub fn set_history_diff(&mut self, rev: i64, diff: Value) {
+        self.history_lines = diff_view::lines(&diff);
         self.history_diff = Some((rev, diff));
         self.show_dock(Dock::History);
     }

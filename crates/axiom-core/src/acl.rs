@@ -68,6 +68,10 @@ EDIT (any number, atomic):
   move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
   prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
                                   prefab gets ID's resolved components, ID keeps its core.transform
+  prefab revert SEL COMPONENT/FIELD   instances stop overriding FIELD (the prefab's value shows;
+                                  e.g. core.transform/position; COMPONENT alone = the whole override)
+  prefab apply ID COMPONENT/FIELD     ID's overridden value becomes the prefab's (all instances), ID
+                                  stops overriding it
   ground SEL                      drop to the highest render.mesh top below (else y=0); moves position.y
   rotate SEL x,y,z                core.transform rotation from Euler degrees (XYZ)
   tag SEL +TAG -TAG ..            add / remove entity tags (other tags and their order kept)
@@ -231,6 +235,17 @@ fn json_value(token: &str) -> Result<Value> {
     serde_json::from_str(token).with_context(|| format!("'{token}' is not valid JSON"))
 }
 
+/// `COMPONENT/FIELD..` (or `/components/COMPONENT/FIELD..`) -> (component, pointer relative to
+/// the component; "" for the whole component). Field segments stay JSON-pointer escaped.
+pub fn component_field(f: &str) -> (String, String) {
+    let f = f.strip_prefix("/components/").unwrap_or(f);
+    let f = f.strip_prefix('/').unwrap_or(f);
+    match f.split_once('/') {
+        Some((component, rest)) => (component.to_owned(), format!("/{rest}")),
+        None => (f.to_owned(), String::new()),
+    }
+}
+
 /// Short field syntax → JSON pointer. A first segment containing a dot names a component.
 pub fn field(f: &str, from: Collection) -> String {
     if f.starts_with('/') {
@@ -361,6 +376,9 @@ enum Statement {
     Rename(String, String),
     Move(String, crate::ops::Order),
     PrefabCreate(Option<String>, String),
+    /// `prefab revert SEL COMPONENT/FIELD` / `prefab apply ID COMPONENT/FIELD`.
+    PrefabRevert(Box<Selection>, String),
+    PrefabApply(String, String),
     Ground(Box<Selection>),
     Follow(Box<Selection>, String, crate::ops::FollowOptions),
     PathPoint(String, crate::ops::PointEdit),
@@ -1202,7 +1220,13 @@ fn parse(tokens: &[String]) -> Result<Statement> {
                 ["create", id, "from", entity] => {
                     Statement::PrefabCreate(Some((*id).into()), (*entity).into())
                 }
-                _ => bail!("use: prefab create [PREFAB_ID] from ENTITY"),
+                ["revert", _, field] => {
+                    Statement::PrefabRevert(Box::new(selector(arg(2)?)?), (*field).into())
+                }
+                ["apply", id, field] => Statement::PrefabApply((*id).into(), (*field).into()),
+                _ => bail!(
+                    "use: prefab create [PREFAB_ID] from ENTITY | prefab revert SEL COMPONENT/FIELD | prefab apply ID COMPONENT/FIELD"
+                ),
             }
         }
         "assets" => {
@@ -1958,6 +1982,15 @@ pub fn run(
             Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
             Statement::PrefabCreate(id, entity) => {
                 crate::ops::create_prefab(w, id.as_deref(), &entity).map(|c| c.edits)
+            }
+            Statement::PrefabRevert(select, f) => {
+                let (component, pointer) = component_field(&f);
+                entity_ids(w, r, &select, line)
+                    .and_then(|ids| crate::ops::revert_prefab_field(w, &ids, &component, &pointer))
+            }
+            Statement::PrefabApply(id, f) => {
+                let (component, pointer) = component_field(&f);
+                crate::ops::apply_prefab_field(w, &id, &component, &pointer)
             }
             Statement::Ground(select) => {
                 entity_ids(w, r, &select, line).and_then(|ids| crate::ops::drop_to_ground(w, &ids))

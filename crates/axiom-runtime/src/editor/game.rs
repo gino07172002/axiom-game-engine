@@ -88,6 +88,59 @@ pub(crate) fn compose(viewport: [f32; 4], game: Rect, screen: Rect) -> [f32; 4] 
     ]
 }
 
+/// Smallest scale of the game's interface in the Game tab (below it text is unreadable).
+pub(crate) const HUD_SCALE_MIN: f32 = 0.25;
+
+/// Scale of the game's interface (HUD, dialogue, prompts) inside a Game tab `area`: it lays
+/// out in the screen Play Maximized gives it (the editor `window`, in points) and is shrunk
+/// to fit, so the Game tab shows the maximized layout at a smaller size. When the aspects
+/// differ the shorter side matches and the longer one gets the extra room.
+pub(crate) fn hud_scale(area: egui::Vec2, window: egui::Vec2) -> f32 {
+    if !(area.x > 0.0 && area.y > 0.0 && window.x > 0.0 && window.y > 0.0) {
+        return 1.0;
+    }
+    // Steps of 1/32 (rounded down, so it still fits): egui rebuilds the game context's font
+    // atlas for every new pixels-per-point, which must not happen on every frame of a
+    // splitter drag.
+    let fit = (area.x / window.x).min(area.y / window.y);
+    ((fit * 32.0).floor() / 32.0).clamp(HUD_SCALE_MIN, 1.0)
+}
+
+/// `rect` (editor points) in the game interface's points at `scale`.
+pub(crate) fn hud_rect(rect: Rect, scale: f32) -> Rect {
+    Rect::from_min_max(
+        (rect.min.to_vec2() / scale).to_pos2(),
+        (rect.max.to_vec2() / scale).to_pos2(),
+    )
+}
+
+/// Turns the game area's input (editor points, from `app::game_raw_input`) into the game
+/// interface's points at `scale`: screen and pointer positions (and wheel deltas given in
+/// points) are divided by it and the
+/// pixels per point multiplied (`editor_ppp` = the editor's), so the game draws on the same
+/// physical pixels at `scale` times the size.
+pub(crate) fn scale_game_input(raw: &mut egui::RawInput, scale: f32, editor_ppp: f32) {
+    use egui::Event;
+    let to_game = |p: egui::Pos2| (p.to_vec2() / scale).to_pos2();
+    raw.screen_rect = raw.screen_rect.map(|r| hud_rect(r, scale));
+    for event in &mut raw.events {
+        match event {
+            Event::PointerMoved(p) => *p = to_game(*p),
+            Event::PointerButton { pos, .. } | Event::Touch { pos, .. } => *pos = to_game(*pos),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                ..
+            } => *delta /= scale,
+            _ => {}
+        }
+    }
+    raw.viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .native_pixels_per_point = Some(editor_ppp * scale);
+}
+
 /// What the Game tab shows and where (view state, never in revisions).
 pub(crate) struct GameState {
     /// The tab body was drawn this frame.

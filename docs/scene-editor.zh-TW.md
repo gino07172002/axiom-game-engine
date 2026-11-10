@@ -118,6 +118,15 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 - **材質 Inspector ▸ Shader source**:材質用自訂 shader 時,顯示 WGSL 與行號欄。Check(`shader.check`)在背景 job 跑和引擎相同的驗證(`shader::validate_hook`,naga parse + validate;一次一個、10 秒 watchdog、可取消(取消在驗證開始前生效;naga 驗證本身不可中斷,受 16 KB 原始碼上限約束,實測約 1 ms;取消或逾時不會蓋掉上一次的結果)、結果記在 `observe` 的 `editor.last_job` 與狀態列耗時,編輯器關閉時最多等 500 ms join),錯誤顯示為 `line N, column M: …` 並在行號欄標紅。Apply source 寫入;無效的 hook 在 commit 時被世界驗證器以同樣的行號拒絕。內建 shader(lit / unlit / toon)沒有可編輯的原始碼。
 - `observe` 的 `editor.tuning`:擷取中的動作、衝突數、篩選與每個語系的計數、Animation 的模型 / clip / 播放頭 / 預覽、VFX 選取、shader 草稿與最後一次檢查。
 
+## 後續改善(2026-11-11)
+
+- **Proposals / History 的差異**:路徑改成人看的寫法 `plaza/lamp-1 · core.transform/position[0]: 4 → 6`(不再顯示 `~1` 跳脫與 `@` 前綴),物件順序改變顯示 `↕ entities order: moved lamp-1 (12 items)`(以最長共同子序列找出被移動的項目),被省略的大值顯示 `‹N bytes›`。滑過一行可看到協定原本的 JSON pointer;協定與 ACL 輸出不變。
+- **Shader source 卡片**:在 1366×768 也不超出 Inspector:標題過長以「…」截斷、狀態標記與按鈕列自動換行、錯誤訊息換行(長識別字也會斷行)、原始碼只在卡片內水平捲動;行號欄固定在左側,和原始碼共用垂直捲動,所以行號與行永遠對齊。
+- **Graphs 縮放**:滾輪在游標位置縮放(25 %–200 %,游標下的點不動),工具列的百分比按鈕回到 100 %;Frame 縮小到全部狀態可見(不會放大超過 100 %)。點選、拖曳節點、拉轉移、右鍵選單都換算成畫布單位,拖曳放開仍是一筆 `fsm M node`。AI:`graph.zoom in|out|reset|1.5|150%`,`observe` 的 `editor.graph.zoom`。
+- **Tags 摘要**:Entity 卡片顯示一列「Tags (N)  a, b, … ›」,點一下展開原本的 chip 編輯器(輸入、建議、x 移除;多選時的「tag 2/3」),再點收合;`object.tag` 不帶參數時也會展開。
+- **Prefab 覆寫標記**:prefab 實例覆寫的欄位(元件 patch 裡有的欄位;陣列整個算一個)在 Inspector 左側有藍色條——Transform 的 Position / Rotation° / Scale、元件表單欄位,含有覆寫的物件 / 陣列標頭是淡藍色。標籤右鍵 ▸ Revert to Prefab(每個選取中有此覆寫的實例)/ Apply to Prefab(單選時:這個值寫進 prefab,所有沒覆寫的實例跟著變,這個實例不再覆寫),各一筆 revision。繼承的欄位外觀不變。覆寫集合依 revision 與選取的物件快取。AI:`prefab revert SEL COMPONENT/FIELD`、`prefab apply ID COMPONENT/FIELD`(ACL),`prefab.revert` / `prefab.apply`(編輯器指令)。
+- **Game 分頁的遊戲 UI**:HUD、對話、提示以 Play Maximized 時的空間(整個編輯器視窗)排版,再依遊戲區大小等比縮小(0.25–1 倍;長寬比不同時短邊對齊、長邊多出空間),所以 Game 分頁看到的是最大化版面的縮小版;滑鼠位置同步換算。
+
 ## 驗證
 
 ```powershell

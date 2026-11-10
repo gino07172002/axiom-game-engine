@@ -261,6 +261,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     c("graph.delete", "Graph: Delete Selection", "Object", ""),
     c("graph.frame", "Graph: Frame All States", "View", ""),
+    a("graph.zoom", "Graph: Zoom…", "View", "in|out|reset|FACTOR"),
     c("window.world", "World Settings…", "World", "Ctrl+9"),
     a("world.set_id", "Set World ID…", "World", "ID"),
     a("world.set_title", "Set World Title…", "World", "TEXT"),
@@ -506,6 +507,18 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     c("merge.commit", "Commit Merge", "Edit", ""),
     c("merge.cancel", "Cancel Merge", "Edit", ""),
+    a(
+        "prefab.revert",
+        "Revert Field to Prefab…",
+        "Object",
+        "COMPONENT/FIELD",
+    ),
+    a(
+        "prefab.apply",
+        "Apply Field to Prefab…",
+        "Object",
+        "COMPONENT/FIELD",
+    ),
 ];
 /// Commands that write authoring revisions (refused during Play with the reason).
 pub(crate) const CONTENT_COMMANDS: &[&str] = &[
@@ -565,6 +578,8 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "vfx.edit",
     "shader.edit",
     "merge.commit",
+    "prefab.revert",
+    "prefab.apply",
 ];
 pub(crate) fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
@@ -909,6 +924,13 @@ impl Editor {
             }
             "object.drop_to_ground" if nothing => Some("nothing selected"),
             "object.drop_to_ground" if busy => Some("apply or reload the inspector draft first"),
+            "prefab.revert" | "prefab.apply" if nothing => Some("nothing selected"),
+            "prefab.revert" | "prefab.apply" if busy => {
+                Some("apply or reload the inspector draft first")
+            }
+            "prefab.apply" if !self.prefab_apply_allowed() => {
+                Some("Apply to Prefab takes one selected object")
+            }
             id if self.drag.is_some()
                 && (ViewMode::from_command(id).is_some()
                     || id.starts_with("view.bookmark.recall.")) =>
@@ -975,6 +997,9 @@ impl Editor {
         }
         if id.starts_with("asset.") {
             return self.asset_command(id, arg);
+        }
+        if id.starts_with("prefab.") {
+            return self.prefab_command(id, arg);
         }
         if id == "play.record"
             || id.starts_with("console.")

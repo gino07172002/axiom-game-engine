@@ -542,3 +542,89 @@ fn a_revision_arriving_mid_drag_keeps_the_dragged_node() {
         &format!("fsm lumi node stroll {},{}", at.x + 40.0, at.y + 20.0),
     );
 }
+
+/// Zoom around the pointer (wheel), drags at 2× and ½× commit one canvas position each (the
+/// same as ACL `fsm M node`), `graph.zoom` limits and arguments, Frame fits with zoom.
+#[test]
+fn zoomed_canvas_hit_tests_and_drags_in_canvas_units() {
+    let mut h = Harness::new(town());
+    h.editor
+        .run_command_with("graph.open", Some("lumi"))
+        .unwrap();
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let actions = h.click("graph:graph.add_state");
+    h.commit(actions, "fsm lumi state add state");
+    assert_eq!(h.editor.graph_observation()["zoom"], 1.0);
+    // Wheel over the new node: 2× around the pointer (the node stays under it).
+    let node = h.rect("graph:node:state");
+    let at = node.center();
+    h.frame(vec![Event::PointerMoved(at)]);
+    let wheel = |dy: f32| Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, dy),
+        modifiers: Modifiers::NONE,
+    };
+    assert!(h.frame(vec![wheel(2.0f32.ln() / 0.003)]).is_empty());
+    h.frame(vec![]);
+    assert!((h.editor.graph.zoom() - 2.0).abs() < 1e-3);
+    let zoomed = h.rect("graph:node:state");
+    assert!((zoomed.width() - 2.0 * node.width()).abs() < 0.5);
+    assert!(
+        zoomed.center().distance(at) < 0.5,
+        "zoomed around the pointer"
+    );
+    // A drag of (60, 40) points at 2× moves the state (30, 20) canvas units, once.
+    let released = h.drag(at, at + vec2(60.0, 40.0), 8);
+    let edits = h.commit(released, "fsm lumi node state 798,100");
+    assert_eq!(edits.len(), 1);
+    // ½× (command, around the canvas center): the same drag moves (120, 80).
+    h.editor
+        .run_command_with("graph.zoom", Some("50%"))
+        .unwrap();
+    h.frame(vec![]);
+    let from = h.rect("graph:node:state").center();
+    assert_eq!(h.editor.graph_observation()["zoom"], 0.5);
+    let released = h.drag(from, from + vec2(60.0, 40.0), 8);
+    h.commit(released, "fsm lumi node state 918,180");
+    // Click on the node at ½× selects it (hit test in canvas units).
+    h.click("graph:node:stroll");
+    assert_eq!(h.editor.graph.selected, Some(Sel::State("stroll".into())));
+    // Limits and arguments.
+    for _ in 0..12 {
+        h.frame(vec![wheel(-400.0)]);
+    }
+    assert_eq!(h.editor.graph.zoom(), super::graph::ZOOM_MIN);
+    for arg in ["in", "in", "in", "in", "in", "in", "in", "in", "in", "in"] {
+        h.editor.run_command_with("graph.zoom", Some(arg)).unwrap();
+    }
+    assert_eq!(h.editor.graph.zoom(), super::graph::ZOOM_MAX);
+    assert!(h.editor.run_command_with("graph.zoom", Some("3")).is_err());
+    assert!(h
+        .editor
+        .run_command_with("graph.zoom", Some("big"))
+        .is_err());
+    h.click("graph:zoom");
+    assert_eq!(
+        h.editor.graph.zoom(),
+        1.0,
+        "the zoom button resets to 100 %"
+    );
+    // Frame: every state inside the canvas, never magnified past 100 %.
+    h.editor.run_command("graph.frame").unwrap();
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let canvas = h.rect("graph:canvas");
+    assert!(h.editor.graph.zoom() <= 1.0);
+    let nodes: Vec<_> = h
+        .editor
+        .rects
+        .iter()
+        .filter(|(k, _)| k.starts_with("graph:node:"))
+        .map(|(k, r)| (k.clone(), *r))
+        .collect();
+    assert!(nodes.len() >= 4);
+    for (key, r) in nodes {
+        assert!(canvas.contains_rect(r), "{key} {r:?} outside {canvas:?}");
+    }
+}

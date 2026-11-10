@@ -276,6 +276,9 @@ pub(super) struct Ctx<'a> {
     pub picker: &'a mut Option<Picker>,
     /// Screen rects of the widgets drawn (tests, `editor_view` capture), keyed `form:POINTER…`.
     pub rects: Option<&'a mut HashMap<String, egui::Rect>>,
+    /// Fields this prefab instance overrides (marked rows with Revert / Apply to Prefab;
+    /// the flag enables Apply). `None` outside a prefab instance's components.
+    pub overrides: Option<(&'a super::prefab_overrides::OverrideSet, bool)>,
 }
 
 /// Result of one form pass.
@@ -284,6 +287,8 @@ pub(super) struct Out {
     pub changed: bool,
     /// An array structure edit (pointer relative to the value).
     pub array: Option<(String, ArrayEdit)>,
+    /// Revert / Apply to Prefab picked on a marked field (pointer relative to the value).
+    pub prefab: Option<(String, super::prefab_overrides::PrefabAction)>,
 }
 
 impl Ctx<'_> {
@@ -294,6 +299,33 @@ impl Ctx<'_> {
     }
     fn is_mixed(&self, pointer: &str, v: &Value) -> bool {
         self.mixed.contains(pointer) && self.base.pointer(pointer) == Some(v)
+    }
+    /// Whether `pointer` gets an override marker (labels then take right clicks).
+    fn marked(&self, pointer: &str) -> bool {
+        self.overrides
+            .is_some_and(|(set, _)| set.fields.contains(pointer) || set.within.contains(pointer))
+    }
+    /// Override marker on `response` (label or header) of the field at `pointer`.
+    fn override_marker(
+        &mut self,
+        ui: &Ui,
+        response: &egui::Response,
+        pointer: &str,
+        out: &mut Out,
+    ) {
+        let Some((set, apply)) = self.overrides else {
+            return;
+        };
+        if let Some(action) = super::prefab_overrides::marker(
+            ui,
+            response,
+            Some(set),
+            pointer,
+            apply,
+            self.rects.as_deref_mut(),
+        ) {
+            out.prefab = Some((pointer.to_owned(), action));
+        }
     }
 }
 
@@ -409,8 +441,9 @@ fn summarize(v: &Value, out: &mut String, limit: usize) {
 /// Width of the label column (fields form a two-column label / value grid).
 const LABEL_WIDTH: f32 = 96.0;
 
-fn label(ui: &mut Ui, key: &str, spec: &Spec) {
-    let mut text = RichText::new(key).color(MUTED);
+/// The field name; a `marked` (prefab override) label is brighter and takes right clicks.
+fn label(ui: &mut Ui, key: &str, spec: &Spec, marked: bool) -> egui::Response {
+    let mut text = RichText::new(key).color(if marked { super::theme::TEXT } else { MUTED });
     if spec.desc.is_some() {
         text = text.underline();
     }
@@ -420,12 +453,17 @@ fn label(ui: &mut Ui, key: &str, spec: &Spec) {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.set_min_width(LABEL_WIDTH);
-                ui.add(egui::Label::new(text).truncate())
+                let mut label = egui::Label::new(text).truncate();
+                if marked {
+                    label = label.sense(egui::Sense::click());
+                }
+                ui.add(label)
             },
         )
         .inner;
-    if let Some(desc) = &spec.desc {
-        response.on_hover_text(desc);
+    match &spec.desc {
+        Some(desc) => response.on_hover_text(desc),
+        None => response,
     }
 }
 
@@ -474,18 +512,28 @@ fn field(
                 .show(ui, |ui| {
                     object_fields(ui, ctx, spec, v, pointer, depth + 1, out)
                 });
-            if let Some(desc) = &spec.desc {
-                response.header_response.on_hover_text(desc);
-            }
+            let header = match &spec.desc {
+                Some(desc) => response.header_response.on_hover_text(desc),
+                None => response.header_response,
+            };
+            ctx.override_marker(ui, &header, pointer, out);
         }
         Kind::Array if depth < 8 && !small_numbers(v) => {
-            array(ui, ctx, spec, key, v, pointer, depth, out);
+            let header = array(ui, ctx, spec, key, v, pointer, depth, out);
+            ctx.override_marker(ui, &header, pointer, out);
         }
         _ => {
-            ui.horizontal(|ui| {
-                label(ui, key, spec);
-                out.changed |= leaf(ui, ctx, spec, &kind, key, v, pointer);
-            });
+            let marked = ctx.marked(pointer);
+            let name = ui
+                .horizontal(|ui| {
+                    let name = label(ui, key, spec, marked);
+                    out.changed |= leaf(ui, ctx, spec, &kind, key, v, pointer);
+                    name
+                })
+                .inner;
+            if marked {
+                ctx.override_marker(ui, &name, pointer, out);
+            }
             out.changed |= picker_below(ui, ctx, &kind, v, pointer);
         }
     }
@@ -548,8 +596,10 @@ fn array(
     pointer: &str,
     depth: usize,
     out: &mut Out,
-) {
-    let Value::Array(items) = v else { return };
+) -> egui::Response {
+    let Value::Array(items) = v else {
+        return ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover());
+    };
     let len = items.len();
     let full = spec.max_items.is_some_and(|m| len >= m);
     let page_id = ui.make_persistent_id(("page", pointer));
@@ -685,8 +735,9 @@ fn array(
                 });
             });
     ui.data_mut(|d| d.insert_temp(page_id, page));
-    if let Some(desc) = &spec.desc {
-        response.header_response.on_hover_text(desc);
+    match &spec.desc {
+        Some(desc) => response.header_response.on_hover_text(desc),
+        None => response.header_response,
     }
 }
 
@@ -1369,6 +1420,7 @@ pub(super) fn edit_plain(
         structural: false,
         picker,
         rects: None,
+        overrides: None,
     };
     show(ui, &mut ctx, spec, value, id)
 }

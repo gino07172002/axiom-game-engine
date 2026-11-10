@@ -2647,9 +2647,18 @@ impl App {
                 let pointer = self.game_input || hovered || held;
                 let left = self.game_pointer && !pointer;
                 self.game_pointer = pointer;
-                let input = game_raw_input(game_raw, rect, pointer, self.game_input, left);
+                let mut input = game_raw_input(game_raw, rect, pointer, self.game_input, left);
+                // The HUD keeps Play Maximized's layout, scaled into the game area.
+                let scale =
+                    crate::editor::game::hud_scale(rect.size(), self.ctx.screen_rect().size());
+                crate::editor::game::scale_game_input(
+                    &mut input,
+                    scale,
+                    self.ctx.pixels_per_point(),
+                );
+                let area = crate::editor::game::hud_rect(rect, scale);
                 let overlay = if overlay_on {
-                    self.behavior_overlay([rect.min.x, rect.min.y, rect.width(), rect.height()])
+                    self.behavior_overlay([area.min.x, area.min.y, area.width(), area.height()])
                 } else {
                     BehaviorOverlay::default()
                 };
