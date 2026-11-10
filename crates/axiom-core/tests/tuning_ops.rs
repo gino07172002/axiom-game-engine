@@ -649,3 +649,84 @@ fn ability_vfx_and_shader_verbs_compile_to_the_ops() {
         );
     }
 }
+
+#[test]
+fn vfx_curve_and_gradient_verbs_write_whole_lists_and_remove_them() {
+    let w = runtime_world();
+    let edit = |e: &VfxEdit| of(ops::edit_vfx(&w, "fx/a", e).unwrap());
+    let curve = VfxEdit::SizeCurve {
+        keys: vec![[0.0, 0.1], [0.25, 0.4], [1.0, 0.0]],
+    };
+    let set = compiled(&w, "vfx fx/a size_curve 0:0.1 0.25:0.4 1:0");
+    assert_eq!(set, edit(&curve));
+    assert_eq!(set[0]["field"], "/emitters/fx~1a/size_curve");
+    assert_eq!(
+        set[0]["value"],
+        json!([{"t":0.0,"size":0.1},{"t":0.25,"size":0.4},{"t":1.0,"size":0.0}])
+    );
+    let gradient = VfxEdit::ColorGradient {
+        stops: vec![
+            (0.0, [1.0, 0.0, 0.0, 1.0]),
+            (0.5, [0.0, 1.0, 0.0, 1.0]),
+            (1.0, [0.0, 0.0, 1.0, 0.0]),
+        ],
+    };
+    assert_eq!(
+        compiled(&w, "vfx fx/a gradient 0:1,0,0,1 0.5:0,1,0,1 1:0,0,1,0"),
+        edit(&gradient)
+    );
+    // Same list again (authored ints) = no edit; `none` rewrites the emitter without it.
+    let mut curved = w.clone();
+    curved.resources.get_mut("vfx.library").unwrap()["emitters"]["fx/a"]["size_curve"] =
+        json!([{"t":0,"size":0.1},{"t":0.25,"size":0.4},{"t":1,"size":0}]);
+    assert!(ops::edit_vfx(&curved, "fx/a", &curve).unwrap().is_empty());
+    let none = axiom_core::acl::tuning_command_edits(&curved, "vfx fx/a size_curve none").unwrap();
+    let none = of(none);
+    assert_eq!(none[0]["field"], "/emitters/fx~1a");
+    assert!(none[0]["value"].get("size_curve").is_none());
+    assert_eq!(none[0]["value"]["size"], 0.2);
+    assert!(compiled(&w, "vfx fx/a gradient none").is_empty());
+    // Bounds: 2..8 keys, strictly increasing t in 0..1, size 0..4, channels 0..1.
+    let nine: Vec<[f64; 2]> = (0..9).map(|i| [i as f64 / 8.0, 0.1]).collect();
+    for bad in [
+        VfxEdit::SizeCurve {
+            keys: vec![[0.0, 0.1]],
+        },
+        VfxEdit::SizeCurve { keys: nine },
+        VfxEdit::SizeCurve {
+            keys: vec![[0.5, 0.1], [0.5, 0.2]],
+        },
+        // Distinct as typed, one time once rounded to 4 decimals.
+        VfxEdit::SizeCurve {
+            keys: vec![[0.00001, 0.1], [0.00004, 0.2]],
+        },
+        VfxEdit::SizeCurve {
+            keys: vec![[0.0, 0.1], [1.2, 0.2]],
+        },
+        VfxEdit::SizeCurve {
+            keys: vec![[0.0, 0.1], [1.0, 4.5]],
+        },
+        VfxEdit::ColorGradient {
+            stops: vec![(0.0, [1.0; 4]), (1.0, [2.0, 0.0, 0.0, 0.0])],
+        },
+        VfxEdit::ColorGradient {
+            stops: vec![(1.0, [1.0; 4]), (0.0, [1.0; 4])],
+        },
+    ] {
+        assert_eq!(
+            code(&ops::edit_vfx(&w, "fx/a", &bad).unwrap_err()),
+            "invalid_value",
+            "{bad:?}"
+        );
+    }
+    for bad in [
+        "vfx fx/a size_curve 0-0.1 1:0",
+        "vfx fx/a gradient 0:1,0,0 1:0,0,0,0",
+        "vfx fx/a size_curve",
+    ] {
+        assert!(
+            axiom_core::acl::tuning_command_edits(&w, bad).is_err(),
+            "{bad}"
+        );
+    }
+}

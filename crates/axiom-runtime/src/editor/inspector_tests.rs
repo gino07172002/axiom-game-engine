@@ -469,6 +469,24 @@ fn component_header_reset_copy_paste_enable_and_main_camera_match_acl() {
 }
 
 #[test]
+fn render_mesh_blocks_follow_cameras_checkbox_matches_acl() {
+    let start = acl(&lab(), "create cube id=wall");
+    let mut h = Harness::new(start.clone());
+    h.open("wall", "render.mesh");
+    let on = h.click("form:camera_blocker");
+    h.commit(on);
+    assert_same(&h, &start, "camera wall blocker on");
+    h.open("wall", "render.mesh");
+    let off = h.click("form:camera_blocker");
+    h.commit(off);
+    assert_same(
+        &h,
+        &start,
+        "camera wall blocker on\ncamera wall blocker off",
+    );
+}
+
+#[test]
 fn play_on_field_binds_and_unbinds_a_clip_like_acl() {
     let start = acl(&lab(), "create cube id=door\ntween door clip open");
     let mut h = Harness::new(start.clone());

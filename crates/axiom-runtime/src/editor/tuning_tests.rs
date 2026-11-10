@@ -508,6 +508,118 @@ fn vfx_curve_and_gradient_drags_write_once_like_acl() {
 }
 
 #[test]
+fn vfx_keys_and_stops_are_added_dragged_and_removed_one_revision_each_like_acl() {
+    let start = package("effects-tour");
+    let mut h = Harness::sized(start.clone(), "window.vfx", vec2(1700.0, 2000.0));
+    h.editor
+        .run_command_with("vfx.select", Some("fx/01-cpu"))
+        .unwrap();
+    h.frame(vec![]);
+    let emitter = |w: &World| w.resources["vfx.library"]["emitters"]["fx/01-cpu"].clone();
+    let size_keys = |w: &World| {
+        emitter(w)["size_curve"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| format!("{}:{}", k["t"], k["size"]))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // + Key: a third key in the middle, on the line (two-point -> size_curve), one write.
+    assert!(emitter(&start).get("size_curve").is_none());
+    let actions = h.click("vfx:key_add");
+    let three = h.commit(actions);
+    assert_eq!(emitter(&three)["size_curve"].as_array().unwrap().len(), 3);
+    assert_eq!(emitter(&three)["size_curve"][1]["t"], 0.5);
+    assert_eq!(
+        three,
+        acl(
+            &start,
+            &format!("vfx fx/01-cpu size_curve {}", size_keys(&three))
+        )
+    );
+    assert_eq!(h.editor.tuning.vfx.key, 1);
+    // Drag the middle key right and up: written once on release, its life moved.
+    let handle = h.rect("vfx:size_handle:1").center();
+    let actions = h.drag(handle, handle + vec2(40.0, -25.0), 6);
+    let moved = h.commit(actions);
+    let k = &emitter(&moved)["size_curve"][1];
+    assert!(k["t"].as_f64().unwrap() > 0.5, "{k}");
+    assert!(
+        k["size"].as_f64().unwrap() > emitter(&three)["size_curve"][1]["size"].as_f64().unwrap()
+    );
+    assert_eq!(
+        moved,
+        acl(
+            &three,
+            &format!("vfx fx/01-cpu size_curve {}", size_keys(&moved))
+        )
+    );
+    // Remove it again: two keys left, still a size_curve.
+    let actions = h.click("vfx:key_remove");
+    let two = h.commit(actions);
+    assert_eq!(emitter(&two)["size_curve"].as_array().unwrap().len(), 2);
+    // Two-point: the curve is removed (size / end_size as before).
+    let actions = h.click("vfx:size_reset");
+    let reset = h.commit(actions);
+    assert_eq!(reset, acl(&two, "vfx fx/01-cpu size_curve none"));
+    assert_eq!(emitter(&reset), emitter(&start));
+    // Gradient: + Stop, then drag the new stop along the bar; each one revision.
+    let actions = h.click("vfx:stop_add");
+    let stops = h.commit(actions);
+    let gradient = |w: &World| {
+        emitter(w)["color_gradient"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let c: Vec<String> = s["color"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect();
+                format!("{}:{}", s["t"], c.join(","))
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        emitter(&stops)["color_gradient"].as_array().unwrap().len(),
+        3
+    );
+    assert_eq!(
+        stops,
+        acl(
+            &reset,
+            &format!("vfx fx/01-cpu gradient {}", gradient(&stops))
+        )
+    );
+    let marker = h.rect("vfx:stop:1").center();
+    let actions = h.drag(marker, marker - vec2(60.0, 0.0), 5);
+    let slid = h.commit(actions);
+    let t = emitter(&slid)["color_gradient"][1]["t"].as_f64().unwrap();
+    assert!(t < 0.5 && t > 0.0, "{t}");
+    assert_eq!(
+        slid,
+        acl(
+            &stops,
+            &format!("vfx fx/01-cpu gradient {}", gradient(&slid))
+        )
+    );
+    // Up to eight keys: the ninth add is disabled.
+    for _ in 0..6 {
+        let actions = h.click("vfx:key_add");
+        h.commit(actions);
+    }
+    assert_eq!(
+        emitter(&h.world())["size_curve"].as_array().unwrap().len(),
+        8
+    );
+    assert!(h.click("vfx:key_add").is_empty());
+}
+
+#[test]
 fn shader_check_runs_in_the_background_and_marks_the_error_line() {
     let start = package("shader-lab");
     let mut h = Harness::new(start.clone(), "window.inspector");

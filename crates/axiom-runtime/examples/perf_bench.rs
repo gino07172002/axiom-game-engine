@@ -9,6 +9,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-tween 1024x4`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-audio 256`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-camera 8x1024`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-fsm 256x1024`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -297,6 +298,37 @@ fn generated_paths(paths: usize, followers: usize) -> Result<World> {
     }))?)
 }
 
+/// `agents` FSM agents (tags `enemy`, `npc`) idling among `props` props (tag `prop` plus one
+/// of 16 `group/N` tags; every 64th also `player`). Each agent evaluates `near(player)` and
+/// `far(prop)` every step and neither passes, so every step runs 2 x `agents` nearest-tag
+/// scans over all entities: the runtime tag-query hot path.
+fn generated_fsm(agents: usize, props: usize) -> Result<World> {
+    let mut entities = vec![];
+    for i in 0..agents {
+        let (x, z) = ((i % 16) as f32 * 3.0 - 24.0, (i / 16) as f32 * 3.0 - 24.0);
+        entities.push(json!({"id":format!("agent/{i}"),"tags":["enemy","npc"],"components":{"core.transform":{"position":[x,0,z]},
+            "fsm.agent":{"machine":"bench"}}}));
+    }
+    for i in 0..props {
+        let (x, z) = ((i % 32) as f32 * 2.0 - 31.0, (i / 32) as f32 * 2.0 + 40.0);
+        let mut tags = vec![json!("prop"), json!(format!("group/{}", i % 16))];
+        if i % 64 == 0 {
+            tags.push(json!("player"));
+        }
+        entities.push(json!({"id":format!("prop/{i}"),"tags":tags,"components":{"core.transform":{"position":[x,0,z]}}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("fsm-{agents}x{props}"),"title":"FSM tag bench",
+        "capabilities":{"core":1,"fsm":1},"systems":["fsm.step"],
+        "entities":entities,
+        "resources":{"fsm.machines":{"machines":{"bench":{"initial":"idle",
+            "states":{"idle":{"action":{"kind":"stop"}},"alert":{"action":{"kind":"stop"}}},
+            "transitions":[
+                {"from":"idle","to":"alert","when":{"kind":"near","tag":"player","within":0.01}},
+                {"from":"idle","to":"alert","when":{"kind":"far","tag":"prop","beyond":9999.0}}]}}}}
+    }))?)
+}
+
 /// `agents` navigation agents on a 64 x 64 m town (8 x 8 blocks of 4 x 4 m `nav.blocker`,
 /// 4 m streets; grid 256 x 256 cells of 0.25 m) chasing `agents` markers that circle two
 /// street loops at 2 m/s. Agents walk at 1.4 m/s with `follow_target`, so they never catch
@@ -405,6 +437,12 @@ fn main() -> Result<()> {
         (world.id.clone(), world)
     } else if let Some(sources) = arg("--generated-audio") {
         let world = generated_audio(sources.parse()?)?;
+        (world.id.clone(), world)
+    } else if let Some(spec) = arg("--generated-fsm") {
+        let (agents, props) = spec
+            .split_once('x')
+            .context("--generated-fsm AGENTSxPROPS")?;
+        let world = generated_fsm(agents.parse()?, props.parse()?)?;
         (world.id.clone(), world)
     } else if let Some(agents) = arg("--generated-nav") {
         let budget = arg("--nav-budget").map(|b| b.parse()).transpose()?;

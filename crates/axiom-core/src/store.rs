@@ -604,7 +604,7 @@ impl Store {
                 let (rev, w) = self.current()?;
                 let c = w.compile(&self.registry)?;
                 Ok(
-                    json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":[]}),
+                    json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":crate::camera::deprecations(&w)}),
                 )
             }
             Request::Observe {} => {

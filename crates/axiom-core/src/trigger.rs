@@ -44,6 +44,16 @@ impl TriggerFilter {
     pub fn matches(&self, tags: &[String], has: impl Fn(&str) -> bool) -> bool {
         self.tags.iter().all(|t| tags.contains(t)) && self.components.iter().all(|c| has(c))
     }
+    /// [`Self::matches`] on interned tags: `required` is `index.resolve(&self.tags)` of the
+    /// world's [`crate::tags::TagIndex`] (`None`: a filter tag no entity carries).
+    pub fn matches_interned(
+        &self,
+        required: Option<&crate::tags::TagSet>,
+        tags: &crate::tags::TagSet,
+        has: impl Fn(&str) -> bool,
+    ) -> bool {
+        required.is_some_and(|r| tags.contains_all(r)) && self.components.iter().all(|c| has(c))
+    }
 }
 
 fn yes() -> bool {
@@ -294,5 +304,48 @@ mod tests {
         assert!(!f.matches(&tags[..1], |c| c == "core.health"));
         assert!(!f.matches(&tags, |_| false));
         assert!(TriggerFilter::default().matches(&[], |_| false));
+    }
+
+    #[test]
+    fn interned_filter_agrees_with_the_string_filter() {
+        let mut index = crate::tags::TagIndex::default();
+        let rows: [&[&str]; 4] = [
+            &["player", "hero"],
+            &["player"],
+            &[],
+            &["hero", "x", "player"],
+        ];
+        for r in rows {
+            index.push(&r.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        }
+        let filters = [
+            vec!["player".to_owned(), "hero".to_owned()],
+            vec!["player".to_owned()],
+            vec![],
+            vec!["missing".to_owned()],
+            vec!["player".to_owned(), "missing".to_owned()],
+        ];
+        for tags in filters {
+            for health in [true, false] {
+                let f = TriggerFilter {
+                    tags: tags.clone(),
+                    components: if health {
+                        vec!["core.health".into()]
+                    } else {
+                        vec![]
+                    },
+                };
+                let required = index.resolve(&f.tags);
+                for (slot, r) in rows.iter().enumerate() {
+                    let strings: Vec<String> = r.iter().map(|s| s.to_string()).collect();
+                    let has = |c: &str| c == "core.health" && slot % 2 == 0;
+                    assert_eq!(
+                        f.matches_interned(required.as_ref(), index.set(slot), has),
+                        f.matches(&strings, has),
+                        "{tags:?} health={health} slot={slot}"
+                    );
+                }
+            }
+        }
     }
 }

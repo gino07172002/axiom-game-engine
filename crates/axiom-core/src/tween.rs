@@ -857,15 +857,14 @@ pub fn validate_world(
         let obstacle = ["nav.blocker", "physics.collider"]
             .into_iter()
             .find(|c| e.components.contains_key(*c))
-            .or_else(|| {
-                (e.mesh.is_some() && e.tags.iter().any(|t| t == crate::camera::BLOCKER_TAG))
-                    .then_some("render.mesh")
-            });
+            .or_else(|| crate::camera::mesh_blocks(e).then_some("render.mesh"));
         let Some(obstacle) = obstacle else { continue };
-        let what = if obstacle == "render.mesh" {
-            format!("render.mesh tagged {}", crate::camera::BLOCKER_TAG)
-        } else {
+        let what = if obstacle != "render.mesh" {
             obstacle.to_owned()
+        } else if e.components.contains_key(crate::camera::BLOCKER_COMPONENT) {
+            format!("render.mesh with {}", crate::camera::BLOCKER_COMPONENT)
+        } else {
+            format!("render.mesh tagged {}", crate::camera::BLOCKER_TAG)
         };
         let mut cursor = Some(slot);
         let mut depth = 0;

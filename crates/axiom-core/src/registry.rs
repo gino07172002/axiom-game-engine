@@ -197,6 +197,12 @@ impl Registry {
             crate::camera::follow_schema(),
             |v| typed(v, crate::camera::CameraFollow::validate),
         );
+        r.component(
+            crate::camera::BLOCKER_COMPONENT,
+            "camera",
+            crate::camera::blocker_schema(),
+            |v| typed(v, crate::camera::CameraBlocker::validate),
+        );
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());

@@ -1377,6 +1377,32 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Inspector render.mesh "Blocks follow cameras" / Object ▸ Blocks Follow Cameras… on|off
+    /// (`ACL: camera SEL blocker on|off`) on the selection.
+    pub(super) fn camera_blocker_selection(&mut self, on: bool) -> Option<Action> {
+        let ids = self.selection();
+        self.camera_blocker(&ids, on)
+    }
+
+    /// `camera.blocker` on|off on `ids` (the Inspector checkbox passes the inspected object).
+    pub(super) fn camera_blocker(&mut self, ids: &[String], on: bool) -> Option<Action> {
+        let result = ops::set_camera_blocker(&self.world, ids, on);
+        if result.as_ref().is_ok_and(Vec::is_empty) {
+            return None;
+        }
+        self.op_write(result, None)
+    }
+
+    /// World ▸ Migrate Legacy Camera Blockers (`ACL: migrate camera_blocker`).
+    pub(super) fn migrate_camera_blockers(&mut self) -> Option<Action> {
+        let result = ops::migrate_camera_blocker_tags(&self.world);
+        if result.as_ref().is_ok_and(Vec::is_empty) {
+            self.notice("No entity uses the deprecated camera_blocker tag");
+            return None;
+        }
+        self.op_write(result, None)
+    }
+
     /// Object ▸ Add Audio Source (`ACL: audio SEL source [clip=..]`): `audio.source` with the
     /// dialog's options on the selection (default clip: the library's first; a world without
     /// clips gets clip `tone`).

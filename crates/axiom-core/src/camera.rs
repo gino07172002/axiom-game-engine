@@ -10,7 +10,8 @@
 //!
 //! What blocks the camera (static geometry, collected once when the runtime is built, at the
 //! authored pose): `physics.collider` boxes and capsules, `nav.blocker` rectangles, and the
-//! `render.mesh` parts of entities tagged [`BLOCKER_TAG`]. Entities moved by a system (any
+//! `render.mesh` parts of entities with the [`BLOCKER_COMPONENT`] marker (or the deprecated
+//! [`BLOCKER_TAG`]). Entities moved by a system (any
 //! mover component, `path.follow`, or under one) and the followed target's own hierarchy
 //! never block. See docs/camera-follow.zh-TW.md.
 use crate::raycast::Shape;
@@ -28,7 +29,10 @@ pub const MAX_CAMERA_BLOCKERS: usize = 8192;
 /// Shapes one cast may test (the camera's two casts per step each have this budget). Above
 /// it the camera stops at its minimum distance and `observe camera` counts `over_budget`.
 pub const MAX_BLOCKER_TESTS: usize = 512;
-/// Tag that makes an entity's `render.mesh` parts block follow cameras.
+/// Marker component: the entity's `render.mesh` parts block follow cameras.
+pub const BLOCKER_COMPONENT: &str = "camera.blocker";
+/// Deprecated tag with the meaning of [`BLOCKER_COMPONENT`]: still honoured, reported by
+/// `verify` as `deprecated_tag`, converted by `migrate camera_blocker`.
 pub const BLOCKER_TAG: &str = "camera_blocker";
 /// The largest collision radius (the grid is bucketed for it).
 pub const MAX_COLLISION_RADIUS: f32 = 2.0;
@@ -290,7 +294,7 @@ pub fn follow_schema() -> Value {
         "rotation_smoothing": "half-life seconds 0..5, default 0.1: yaw, pitch and distance approach their goals (input, camera.follow.set)",
         "input": "{yaw_axis, pitch_axis, zoom_axis: input.bindings axis names (\"\" = none; keys are never hard-coded), yaw_speed deg/s 0..720 default 120, pitch_speed default 60, zoom_speed m/s 0..100 default 4}",
         "collision": format!("{{enabled default true, radius meters 0..{MAX_COLLISION_RADIUS} default 0.2 (sphere cast), recover half-life seconds 0..5 default 0.25}}: the camera stops in front of blockers at once and moves back out smoothly; never closer than min_distance"),
-        "blockers": format!("static, at the authored pose: physics.collider box/capsule, nav.blocker (height = the entity's own render.mesh bounds, else unbounded), render.mesh parts of entities tagged {BLOCKER_TAG}. Moving entities (any mover, path.follow, or under one), the target's hierarchy and entities in inactive scenes never block"),
+        "blockers": format!("static, at the authored pose: physics.collider box/capsule, nav.blocker (height = the entity's own render.mesh bounds, else unbounded), render.mesh parts of entities with the {BLOCKER_COMPONENT} component (or the deprecated tag {BLOCKER_TAG}). Moving entities (any mover, path.follow, or under one), the target's hierarchy and entities in inactive scenes never block"),
         "enabled": "bool, default true: a disabled follow leaves the camera where it is",
         "requires": "render.camera and core.transform on the same entity; the camera must be a root entity (no parent); system camera.rig (capability camera)",
         "conflicts": "authoring error camera_conflict: another mover on the camera, or a resource that drives the camera (e.g. action.session / fps / rts camera field); tween transform tracks and path.follow report tween_conflict / path_conflict",
@@ -298,6 +302,47 @@ pub fn follow_schema() -> Value {
         "budget": format!("{MAX_FOLLOW_CAMERAS} follow cameras, {MAX_CAMERA_BLOCKERS} blocker shapes per world, {MAX_BLOCKER_TESTS} shape tests per cast (over budget: the camera stays at min_distance and observe counts it)"),
         "checkpoint": "not supported: worlds scheduling camera.rig refuse checkpoints explicitly"
     })
+}
+
+/// `camera.blocker`: a marker with no fields (`{}`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CameraBlocker {}
+
+impl CameraBlocker {
+    pub fn validate(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+pub fn blocker_schema() -> Value {
+    json!({
+        "requires": format!("render.mesh on the same entity (without one it blocks nothing); capability camera. Replaces the deprecated tag {BLOCKER_TAG}, which still blocks but verify reports it (deprecated_tag; ACL `migrate camera_blocker` converts it)"),
+        "edit": "marker with no fields ({}): every render.mesh part of the entity blocks follow cameras as a box, at the authored pose; moving entities never block (see camera.follow blockers). Inspector checkbox 'Blocks follow cameras' = ACL `camera SEL blocker on|off`"
+    })
+}
+
+/// Whether a compiled entity's `render.mesh` parts block follow cameras: the
+/// [`BLOCKER_COMPONENT`] marker or the deprecated [`BLOCKER_TAG`].
+pub fn mesh_blocks(e: &CompiledEntity) -> bool {
+    e.mesh.is_some()
+        && (e.components.contains_key(BLOCKER_COMPONENT) || e.tags.iter().any(|t| t == BLOCKER_TAG))
+}
+
+/// `deprecated_tag` diagnostics (`verify`): authored entities still tagged [`BLOCKER_TAG`].
+pub fn deprecations(world: &crate::World) -> Vec<Value> {
+    world
+        .entities
+        .iter()
+        .filter(|e| e.tags.iter().any(|t| t == BLOCKER_TAG))
+        .map(|e| {
+            json!({
+                "code": "deprecated_tag",
+                "path": format!("/entities/@{}/tags", crate::local::escape(&e.id)),
+                "message": format!("tag {BLOCKER_TAG} is deprecated; use the {BLOCKER_COMPONENT} component (ACL: migrate camera_blocker)")
+            })
+        })
+        .collect()
 }
 
 /// What a static blocker shape came from.
@@ -348,7 +393,7 @@ pub fn collect_blockers(
 ) -> Result<Vec<Blocker>> {
     let mut out = vec![];
     for (i, e) in entities.iter().enumerate() {
-        let tagged = e.mesh.is_some() && e.tags.iter().any(|t| t == BLOCKER_TAG);
+        let tagged = mesh_blocks(e);
         let blocker = e.components.get("nav.blocker");
         if e.collider.is_none() && blocker.is_none() && !tagged {
             continue;
@@ -401,7 +446,7 @@ pub fn collect_blockers(
                 "camera_budget",
                 "/entities",
                 format!(
-                    "camera blocker budget exceeded (> {MAX_CAMERA_BLOCKERS} shapes from physics.collider, nav.blocker and {BLOCKER_TAG} mesh parts)"
+                    "camera blocker budget exceeded (> {MAX_CAMERA_BLOCKERS} shapes from physics.collider, nav.blocker and {BLOCKER_COMPONENT} mesh parts)"
                 ),
             ));
         }

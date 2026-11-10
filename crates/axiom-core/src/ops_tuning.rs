@@ -570,12 +570,42 @@ pub fn edit_ability_event(
 // ---------------------------------------------------------------------------------------
 // VFX curves and gradients
 
+/// Keys of an emitter's `size_curve` / stops of its `color_gradient` (the runtime's
+/// `vfx::MAX_CURVE_KEYS`, sized for the GPU uniform).
+pub const MAX_VFX_CURVE_KEYS: usize = 8;
+
 /// The emitter parameters the VFX tab edits: size over life (linear from `size` to
-/// `end_size`) and colour over life (a two-stop gradient from `color` to `end_color`).
+/// `end_size`, or the optional N-key `size_curve`) and colour over life (a two-stop gradient
+/// from `color` to `end_color`, or the optional N-stop `color_gradient`). Curve edits replace
+/// the whole list (the tab's add / remove / drag of one key is one such edit); an empty list
+/// removes the field, back to the two-point values.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VfxEdit {
-    Size { start: f64, end: f64 },
-    Color { start: [f64; 4], end: [f64; 4] },
+    Size {
+        start: f64,
+        end: f64,
+    },
+    Color {
+        start: [f64; 4],
+        end: [f64; 4],
+    },
+    /// `[t, size]` keys.
+    SizeCurve {
+        keys: Vec<[f64; 2]>,
+    },
+    /// `(t, rgba)` stops.
+    ColorGradient {
+        stops: Vec<(f64, [f64; 4])>,
+    },
+}
+
+/// Curve times: 2..=MAX keys, finite, 0..1, strictly increasing.
+fn curve_times_ok(times: &[f64]) -> bool {
+    (2..=MAX_VFX_CURVE_KEYS).contains(&times.len())
+        && times
+            .iter()
+            .all(|t| t.is_finite() && (0.0..=1.0).contains(t))
+        && times.windows(2).all(|w| w[0] < w[1])
 }
 
 pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit>> {
@@ -627,8 +657,87 @@ pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit
             put_field("color", json!(start.map(round)));
             put_field("end_color", json!(end.map(round)));
         }
+        VfxEdit::SizeCurve { keys } => {
+            let field = "size_curve";
+            // Checked as written (rounded), so two keys cannot round onto one time.
+            let keys: Vec<[f64; 2]> = keys.iter().map(|k| k.map(round)).collect();
+            if !keys.is_empty()
+                && !(curve_times_ok(&keys.iter().map(|k| k[0]).collect::<Vec<_>>())
+                    && keys
+                        .iter()
+                        .all(|k| k[1].is_finite() && (0.0..=4.0).contains(&k[1])))
+            {
+                return Err(invalid(
+                    format!("{path}/{field}"),
+                    format!("size_curve: 2..{MAX_VFX_CURVE_KEYS} keys, t 0..1 strictly increasing, size 0..4 (metres)"),
+                ));
+            }
+            let value = json!(keys
+                .iter()
+                .map(|k| json!({"t": k[0], "size": k[1]}))
+                .collect::<Vec<_>>());
+            edits.extend(curve_field(&base, e, field, value));
+        }
+        VfxEdit::ColorGradient { stops } => {
+            let field = "color_gradient";
+            let stops: Vec<(f64, [f64; 4])> = stops
+                .iter()
+                .map(|(t, c)| (round(*t), c.map(round)))
+                .collect();
+            if !stops.is_empty()
+                && !(curve_times_ok(&stops.iter().map(|s| s.0).collect::<Vec<_>>())
+                    && stops
+                        .iter()
+                        .flat_map(|s| s.1)
+                        .all(|c| c.is_finite() && (0.0..=1.0).contains(&c)))
+            {
+                return Err(invalid(
+                    format!("{path}/{field}"),
+                    format!("color_gradient: 2..{MAX_VFX_CURVE_KEYS} stops, t 0..1 strictly increasing, channels 0..1"),
+                ));
+            }
+            let value = json!(stops
+                .iter()
+                .map(|(t, c)| json!({"t": t, "color": c}))
+                .collect::<Vec<_>>());
+            edits.extend(curve_field(&base, e, field, value));
+        }
     }
     Ok(edits)
+}
+
+/// Sets curve `field` of emitter `e` (at `base` in vfx.library) to `value`, or removes it for
+/// an empty list (the whole emitter is rewritten without the key). No edit when unchanged.
+fn curve_field(base: &str, e: &Value, field: &str, value: Value) -> Option<Edit> {
+    // Numeric comparison: authored `1` equals `1.0`.
+    let numbers = |v: &Value| -> Vec<Option<f64>> {
+        fn walk(v: &Value, out: &mut Vec<Option<f64>>) {
+            match v {
+                Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+                x => out.push(x.as_f64()),
+            }
+        }
+        let mut out = vec![];
+        walk(v, &mut out);
+        out
+    };
+    let empty = value.as_array().is_some_and(Vec::is_empty);
+    match e.get(field) {
+        None if empty => None,
+        Some(_) if empty => {
+            let mut without = e.clone();
+            without.as_object_mut()?.remove(field);
+            Some(set_field(VFX_LIBRARY, base.to_owned(), without))
+        }
+        Some(old)
+            if old.as_array().map(Vec::len) == value.as_array().map(Vec::len)
+                && numbers(old) == numbers(&value) =>
+        {
+            None
+        }
+        _ => Some(set_field(VFX_LIBRARY, format!("{base}/{field}"), value)),
+    }
 }
 
 // ---------------------------------------------------------------------------------------

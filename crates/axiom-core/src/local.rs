@@ -497,8 +497,11 @@ pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Va
     match q.from {
         Collection::Entities => {
             let compiled = w.compile(r)?;
-            for (source, e) in w.entities.iter().zip(compiled.entities) {
-                if q.tags.iter().all(|t| e.tags.contains(t))
+            let required = compiled.tag_index.resolve(&q.tags);
+            for (slot, (source, e)) in w.entities.iter().zip(compiled.entities).enumerate() {
+                if required
+                    .as_ref()
+                    .is_some_and(|t| compiled.tag_index.set(slot).contains_all(t))
                     && q.components.iter().all(|c| e.components.contains_key(c))
                 {
                     add(

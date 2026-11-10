@@ -416,18 +416,16 @@ pub struct FsmSystem {
 /// Entities whose health reached 0 are no longer targets; entities without health are.
 fn nearest_slot(state: &RuntimeState, me: usize, tag: &str) -> Option<(f32, Vec3, usize)> {
     let here = Vec3::from_array(state.transforms[me].as_ref()?.position);
-    state
-        .compiled
-        .entities
-        .iter()
-        .enumerate()
-        .filter(|(i, e)| {
-            *i != me
-                && state.compiled.enabled[*i]
-                && e.tags.iter().any(|t| t == tag)
-                && state.health[*i].as_ref().is_none_or(|h| h.value > 0.0)
+    // An uninterned tag is carried by no entity.
+    let id = state.compiled.tag_index.id(tag)?;
+    (0..state.compiled.len())
+        .filter(|&i| {
+            i != me
+                && state.compiled.tag_index.has(i, id)
+                && state.compiled.enabled[i]
+                && state.health[i].as_ref().is_none_or(|h| h.value > 0.0)
         })
-        .filter_map(|(i, _)| {
+        .filter_map(|i| {
             state.transforms[i]
                 .as_ref()
                 .map(|t| (Vec3::from_array(t.position), i))

@@ -110,6 +110,13 @@ enum Command {
         #[arg(long)]
         expected_rev: Option<i64>,
     },
+    /// Replace deprecated authoring in one revision (= `acl -e "migrate camera_blocker"`):
+    /// tag camera_blocker -> camera.blocker component. `verify` lists what is deprecated.
+    Migrate {
+        /// Show the diff without writing a revision.
+        #[arg(long)]
+        preview: bool,
+    },
     /// Drive a running editor (--connect): select/frame objects, switch dock, capture a PNG.
     View {
         #[arg(long)]
@@ -678,6 +685,12 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 propose,
             }
         }
+        Command::Migrate { preview } => Request::Acl {
+            text: "migrate camera_blocker".into(),
+            preview,
+            expected_rev: None,
+            propose: false,
+        },
         Command::Discover { topic, if_hash } => Request::Discover { topic, if_hash },
         Command::ObserveDelta {
             cursor,

@@ -437,6 +437,9 @@ impl Editor {
                 "object.add_component" => {
                     self.notice("Pick it under Inspector › Components › Add component")
                 }
+                "object.camera_blocker" => self.notice(
+                    "Use the Inspector render.mesh checkbox 'Blocks follow cameras', or on|off",
+                ),
                 "event.declare" => {
                     self.show_dock(super::Dock::Problems);
                     self.notice("Undeclared events show a Declare button in Problems");
@@ -467,6 +470,14 @@ impl Editor {
                 self.edit_tags(&add, &remove)
             }
             "object.add_component" => self.add_component(arg),
+            "object.camera_blocker" => match arg {
+                "on" => self.camera_blocker_selection(true),
+                "off" => self.camera_blocker_selection(false),
+                other => {
+                    self.set_error(format!("object.camera_blocker takes on|off, not '{other}'"));
+                    None
+                }
+            },
             "event.declare" => self.declare_event(arg),
             "world.set_id" => self.world_request(WorldRequest::SetId(arg.into())),
             "world.set_title" => self.world_request(WorldRequest::SetTitle(arg.into())),
