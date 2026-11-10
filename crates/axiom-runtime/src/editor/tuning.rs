@@ -98,6 +98,7 @@ impl Editor {
     /// runnable).
     pub(super) fn tuning_blocked(&self, id: &str) -> Option<&'static str> {
         match id {
+            "input.capture" if self.previewing => Some("stop Play first (Play owns the keyboard)"),
             "shader.cancel_check" if self.tuning.shader.job.is_none() => {
                 Some("no shader check is running")
             }
@@ -114,7 +115,7 @@ impl Editor {
     /// While a key is being captured for the Input Map, the editor's shortcuts stand down
     /// (the key goes to the binding instead).
     pub(super) fn keys_captured(&self, ctx: &egui::Context) -> bool {
-        self.tuning.input.capturing(ctx)
+        !self.previewing && self.tuning.input.capturing(ctx)
     }
 
     /// `observe` → `editor.tuning`.

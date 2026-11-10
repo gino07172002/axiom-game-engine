@@ -198,14 +198,15 @@ impl Editor {
         let Some(arg) = arg else {
             return Ok(());
         };
-        let (action, slot) = match arg.strip_suffix('+') {
-            Some(a) => (a, Slot::Positive),
-            None => match arg.strip_suffix('-') {
-                Some(a) => (a, Slot::Negative),
-                None => (arg, Slot::Button),
-            },
-        };
         let b = self.bindings();
+        // A button may itself end in + or - (valid_id allows it): an exact button name wins.
+        let button = b.as_ref().is_some_and(|b| b.buttons.contains_key(arg));
+        let (action, slot) = match (button, arg.strip_suffix('+'), arg.strip_suffix('-')) {
+            (true, ..) => (arg, Slot::Button),
+            (false, Some(a), _) => (a, Slot::Positive),
+            (false, None, Some(a)) => (a, Slot::Negative),
+            (false, None, None) => (arg, Slot::Button),
+        };
         let ok = b.as_ref().is_some_and(|b| match slot {
             Slot::Button => b.buttons.contains_key(action),
             _ => b.axes.contains_key(action),
@@ -262,7 +263,11 @@ impl Editor {
         }
         let model = self.tuning.input.cache.take().expect("built above");
         let mut intents = vec![];
-        self.input_map_body(ui, &model, &mut intents);
+        if self.previewing {
+            // Play pins a revision and owns the keys: no capture survives into it.
+            self.tuning.input.capture = None;
+        }
+        self.input_map_body(ui, &model, &mut intents, actions);
         self.tuning.input.cache = Some(model);
         for intent in intents {
             match intent {
@@ -286,35 +291,53 @@ impl Editor {
         }
     }
 
-    fn input_map_body(&mut self, ui: &mut Ui, model: &Model, intents: &mut Vec<Intent>) {
+    fn input_map_body(
+        &mut self,
+        ui: &mut Ui,
+        model: &Model,
+        intents: &mut Vec<Intent>,
+        actions: &mut Vec<Action>,
+    ) {
         let icons = self.icons;
         let editable = !self.previewing;
         let Some(bindings) = &model.bindings else {
             ui.label(RichText::new("This world has no input map.").color(theme::MUTED));
-            if ui
-                .add_enabled(editable, egui::Button::new("Create Input Map"))
-                .clicked()
-            {
-                if let Err(e) = self.run_command("asset.new_input_map") {
-                    self.set_error(format!("{e:#}"));
+            let create = ui.add_enabled(editable, egui::Button::new("Create Input Map"));
+            mark!(self.rects, "input:create".into(), create.rect);
+            if create.clicked() {
+                match self.run_command("asset.new_input_map") {
+                    Ok(more) => actions.extend(more),
+                    Err(e) => self.set_error(format!("{e:#}")),
                 }
             }
             return;
         };
         // A running capture: the key pressed this frame (the prompt itself is in the row).
         let pass = ui.ctx().cumulative_pass_nr();
+        let typing = ui
+            .ctx()
+            .memory(|m| m.focused())
+            .is_some_and(|f| egui::TextEdit::load_state(ui.ctx(), f).is_some());
         if let Some(c) = self.tuning.input.capture.as_mut() {
-            let fresh = std::mem::take(&mut c.fresh);
+            // Hidden for a while: keys pressed meanwhile went elsewhere; start listening anew.
+            let fresh = std::mem::take(&mut c.fresh) || c.drawn + 2 < pass;
             c.drawn = pass;
-            let got = if fresh {
+            let got = if typing {
+                Some(Err(()))
+            } else if fresh {
                 None
             } else {
                 captured(ui.ctx(), c.modifiers)
             };
             c.modifiers = ui.input(|i| i.modifiers);
-            // An existing axis removed by another revision mid-capture: nothing to keep.
+            // An existing action removed by another revision mid-capture: nothing to rebind.
             let axis = bindings.axes.get(&c.action);
-            let gone = !c.new && c.slot != Slot::Button && axis.is_none();
+            let gone = !c.new
+                && if c.slot == Slot::Button {
+                    !bindings.buttons.contains_key(&c.action)
+                } else {
+                    axis.is_none()
+                };
             match got {
                 Some(Err(())) => intents.push(Intent::Cancel),
                 Some(Ok(_)) if gone => intents.push(Intent::Cancel),

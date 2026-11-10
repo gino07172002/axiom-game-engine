@@ -204,7 +204,10 @@ impl Editor {
             )),
             (state, _) => self.set_error(format!("Shader check {state} after {wall_ms:.0} ms")),
         }
-        self.tuning.shader.checked = Some(checked);
+        // A cancelled / timed-out check keeps the last finished result.
+        if checked.state == "finished" {
+            self.tuning.shader.checked = Some(checked);
+        }
     }
 
     /// Loads `id`'s authored source into the draft when another shader is open, or when the
@@ -360,7 +363,6 @@ impl Editor {
                         ));
                         for issue in &issues {
                             if let Some(line) = issue.line {
-                                // TextEdit's frame insets its text by its margin (4 pt).
                                 let top = gutter.rect.top() + (line - 1) as f32 * row;
                                 let r = Rect::from_min_size(pos2(gutter.rect.left() - 2.0, top), vec2(gutter.rect.width() + 4.0, row));
                                 ui.painter().rect_filled(r, 2.0, theme::ERROR.gamma_multiply(0.45));

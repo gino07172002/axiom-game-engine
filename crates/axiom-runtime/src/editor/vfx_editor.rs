@@ -498,6 +498,8 @@ impl Editor {
                 .is_none_or(|f| egui::TextEdit::load_state(ui.ctx(), f).is_none());
         if released && self.tuning.vfx.drag.is_none() {
             if let Some((id, v)) = self.tuning.vfx.draft.take() {
+                // Both writes of this frame share `expected_rev`; the host's `coalesce` merges
+                // them into one revision (= `vfx ID size ..; vfx ID color ..` in one script).
                 if v.size != authored.size {
                     actions.extend(self.vfx_edit(
                         &id,

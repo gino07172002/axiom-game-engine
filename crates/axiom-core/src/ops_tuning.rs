@@ -81,7 +81,18 @@ pub enum InputEdit {
 /// A key name as the runtime matches it: winit `KeyCode` names (`KeyW`, `Space`, `Digit1`,
 /// `ShiftLeft`, `ArrowUp`, ..) and `MouseLeft`. Only the shape is checked here.
 pub fn valid_key_name(key: &str) -> bool {
-    !key.is_empty() && key.len() <= MAX_INPUT_NAME && key.chars().all(|c| c.is_ascii_alphanumeric())
+    key.len() > 1 && key.len() <= MAX_INPUT_NAME && key.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// What a key name probably meant (`W` → `KeyW`, `1` → `Digit1`).
+fn key_hint(key: &str) -> String {
+    match key.chars().next() {
+        Some(c) if key.len() == 1 && c.is_ascii_alphabetic() => {
+            format!(" (did you mean Key{}?)", c.to_ascii_uppercase())
+        }
+        Some(c) if key.len() == 1 && c.is_ascii_digit() => format!(" (did you mean Digit{c}?)"),
+        _ => String::new(),
+    }
 }
 
 pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
@@ -108,7 +119,10 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
         } else {
             Err(invalid(
                 path(map),
-                format!("'{key}' is not a key name (use KeyW, Space, Digit1, ShiftLeft, ArrowUp, MouseLeft ..)"),
+                format!(
+                    "'{key}' is not a key name{} (use KeyW, Space, Digit1, ShiftLeft, ArrowUp, MouseLeft ..)",
+                    key_hint(key)
+                ),
             ))
         }
     };
@@ -174,7 +188,10 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
             format!("input.bindings holds at most {MAX_INPUT_ACTIONS} actions"),
         ));
     }
-    // Keep fields the typed form does not know about verbatim (none today; future-proof).
+    let before: InputBindings = serde_json::from_value(raw.clone()).expect("parsed above");
+    if before == bindings {
+        return Ok(vec![]);
+    }
     let mut out = raw.clone();
     out["buttons"] = json!(bindings.buttons);
     out["axes"] = json!(bindings.axes);
@@ -570,8 +587,16 @@ pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit
         .ok_or_else(|| Diagnostic::error("not_found", &path, format!("no emitter {emitter}")))?;
     let base = format!("/emitters/{}", escape(emitter));
     let mut edits = vec![];
+    // Numeric comparison: an authored `1` equals `1.0` (JSON values would differ).
+    let same = |a: Option<&Value>, b: &Value| match (a, b) {
+        (Some(Value::Array(x)), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| x.as_f64() == y.as_f64())
+        }
+        (Some(x), y) => x.as_f64().is_some() && x.as_f64() == y.as_f64(),
+        (None, _) => false,
+    };
     let mut put_field = |field: &str, value: Value| {
-        if e.get(field) != Some(&value) {
+        if !same(e.get(field), &value) {
             edits.push(set_field(VFX_LIBRARY, format!("{base}/{field}"), value));
         }
     };

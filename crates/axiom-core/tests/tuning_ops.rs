@@ -152,6 +152,20 @@ fn input_verbs_match_the_ops_and_flag_conflicts() {
             "{edit:?}"
         );
     }
+    let hint = ops::edit_input(
+        &w,
+        &InputEdit::Button {
+            action: "jump".into(),
+            key: "W".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error_response(&hint)
+            .to_string()
+            .contains("did you mean KeyW"),
+        "{hint:#}"
+    );
     // Conflicts: KeyD on a button and an axis half.
     let mut b: axiom_core::InputBindings =
         serde_json::from_value(w.resources["input.bindings"].clone()).unwrap();
@@ -537,6 +551,19 @@ fn ability_vfx_and_shader_verbs_compile_to_the_ops() {
         .unwrap())
     );
     assert_eq!(color[0]["value"], json!([0.2, 0.4, 0.6, 1.0]));
+    // An authored 1 equals 1.0: no edit.
+    let mut ints = w.clone();
+    ints.resources.get_mut("vfx.library").unwrap()["emitters"]["fx/a"]["size"] = json!(1);
+    assert!(ops::edit_vfx(
+        &ints,
+        "fx/a",
+        &VfxEdit::Size {
+            start: 1.0,
+            end: 0.05
+        }
+    )
+    .unwrap()
+    .is_empty());
     // An emitter with defaults gets explicit fields.
     assert_eq!(
         of(ops::edit_vfx(

@@ -31,6 +31,9 @@ pub(crate) struct AnimUi {
     pub visible: bool,
     /// Selected event: (ability, index).
     pub selected: Option<(String, usize)>,
+    /// The (tick, sound) the selection should still find at its index after the next
+    /// revision; another value there (an external edit shifted the events) clears it.
+    selected_value: Option<(u32, String)>,
     /// Marker being dragged: (ability, index, tick).
     pub drag: Option<(String, usize, u32)>,
     /// Ability that "+ Event" adds to, and the cue it uses.
@@ -206,6 +209,24 @@ impl Editor {
             self.tuning.anim.cache = Some(Model::build(key, &self.world));
             self.tuning.anim.builds += 1;
             self.tuning.anim.drag = None;
+            // Event indices may have shifted in the new revision: keep the selection only
+            // where the expected event still is.
+            let a = &mut self.tuning.anim;
+            let still = a
+                .selected
+                .as_ref()
+                .zip(a.selected_value.as_ref())
+                .is_some_and(|((id, i), (tick, sound))| {
+                    a.cache
+                        .as_ref()
+                        .and_then(|m| m.abilities.iter().find(|x| &x.id == id))
+                        .and_then(|x| x.events.get(*i))
+                        .is_some_and(|(t, s)| t == tick && s == sound)
+                });
+            if !still {
+                a.selected = None;
+                a.selected_value = None;
+            }
         }
         let model = self.tuning.anim.cache.take().expect("built above");
         let catalog = &runtime.state.animation_cues.catalog;
@@ -267,21 +288,47 @@ impl Editor {
         self.tuning.anim.cache = Some(model);
         for intent in intents {
             match intent {
-                Intent::Select(s) => self.tuning.anim.selected = s,
+                Intent::Select(s) => {
+                    let a = &mut self.tuning.anim;
+                    a.selected_value = s.as_ref().and_then(|(id, i)| {
+                        a.cache
+                            .as_ref()?
+                            .abilities
+                            .iter()
+                            .find(|x| &x.id == id)?
+                            .events
+                            .get(*i)
+                            .cloned()
+                    });
+                    a.selected = s;
+                }
                 Intent::Edit(ability, edit) => {
-                    if let AbilityEventEdit::Add { .. } = edit {
-                        let n = self
-                            .tuning
-                            .anim
-                            .cache
-                            .as_ref()
-                            .and_then(|m| m.abilities.iter().find(|a| a.id == ability))
-                            .map_or(0, |a| a.events.len());
-                        self.tuning.anim.selected = Some((ability.clone(), n));
-                    }
-                    if let AbilityEventEdit::Remove { .. } = edit {
-                        self.tuning.anim.selected = None;
-                    }
+                    let events = self
+                        .tuning
+                        .anim
+                        .cache
+                        .as_ref()
+                        .and_then(|m| m.abilities.iter().find(|a| a.id == ability))
+                        .map(|a| a.events.clone())
+                        .unwrap_or_default();
+                    // What the edited event looks like once the write lands.
+                    let (selected, value) = match &edit {
+                        AbilityEventEdit::Add { tick, sound } => (
+                            Some((ability.clone(), events.len())),
+                            Some((*tick, sound.clone())),
+                        ),
+                        AbilityEventEdit::Move { index, tick } => (
+                            Some((ability.clone(), *index)),
+                            events.get(*index).map(|(_, s)| (*tick, s.clone())),
+                        ),
+                        AbilityEventEdit::Sound { index, sound } => (
+                            Some((ability.clone(), *index)),
+                            events.get(*index).map(|(t, _)| (*t, sound.clone())),
+                        ),
+                        AbilityEventEdit::Remove { .. } => (None, None),
+                    };
+                    self.tuning.anim.selected = selected;
+                    self.tuning.anim.selected_value = value;
                     actions.extend(self.ability_event_edit(&ability, &edit));
                 }
             }
@@ -411,6 +458,14 @@ impl Editor {
                 })
                 .map(|i| (r as usize - 1, i))
         };
+        // A drag whose release was never seen here (tab switched mid-drag) must not turn the
+        // next press into a move of that old marker.
+        if response.drag_started()
+            || response.clicked()
+            || !(response.dragged() || response.drag_stopped())
+        {
+            self.tuning.anim.drag = None;
+        }
         if response.drag_started() || response.clicked() {
             if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(pointer) {
                 match hit_marker(p) {

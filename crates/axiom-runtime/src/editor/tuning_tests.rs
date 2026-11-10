@@ -236,6 +236,14 @@ fn input_map_captures_keys_flags_conflicts_and_matches_acl() {
     assert_eq!(mouse, acl(&lean, "input button taunt MouseLeft"));
     let actions = h.click("input:remove:taunt");
     assert_eq!(h.commit(actions), acl(&mouse, "input remove taunt"));
+    // A capture ends when the person starts typing into a text field elsewhere (here the
+    // Hierarchy search box, left of its filter icon); the typed text is not a binding.
+    h.click("input:key:attack:button");
+    assert!(h.editor.tuning.input.capture.is_some());
+    let search = h.rect("hierarchy:filter").left_center() - vec2(80.0, 0.0);
+    h.click_at(search);
+    assert!(h.frame(vec![Event::Text("x".into())]).is_empty());
+    assert!(h.editor.tuning.input.capture.is_none());
     // The table model is rebuilt per revision, not per frame.
     let builds = h.editor.tuning.input.builds;
     for _ in 0..10 {
@@ -261,6 +269,15 @@ impl Harness {
         self.time += 1.0 / 60.0;
         actions
     }
+}
+
+#[test]
+fn input_map_create_writes_like_acl() {
+    let start = package("shader-lab");
+    assert!(!start.resources.contains_key("input.bindings"));
+    let mut h = Harness::new(start.clone(), "window.input_map");
+    let actions = h.click("input:create");
+    assert_eq!(h.commit(actions), acl(&start, "asset create input"));
 }
 
 #[test]
