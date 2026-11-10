@@ -1252,6 +1252,73 @@ fn tags_match_acl() {
 }
 
 #[test]
+fn camera_blockers_and_their_migration_match_acl() {
+    // Object ▸ Blocks Follow Cameras… on (= the Inspector render.mesh checkbox) on two meshes,
+    // one with its mesh from the prefab; adds the camera capability once.
+    assert_parity(
+        lab(),
+        |e| {
+            e.select(Some("stage/rack".into()));
+            e.extra.insert("stage/crate".into());
+            vec![e
+                .run_command_with("object.camera_blocker", Some("on"))
+                .unwrap()]
+        },
+        "camera entities[id=stage/rack,id=stage/crate] blocker on",
+    );
+    let blocking = headless(&lab(), "camera stage/rack blocker on");
+    assert!(blocking
+        .entity("stage/rack")
+        .unwrap()
+        .components
+        .contains_key("camera.blocker"));
+    assert_eq!(blocking.capabilities.get("camera"), Some(&1));
+    // The checkbox path (component request) and off.
+    assert_parity(
+        blocking.clone(),
+        |e| {
+            e.select(Some("stage/rack".into()));
+            vec![e.camera_blocker_selection(false).into_iter().collect()]
+        },
+        "camera stage/rack blocker off",
+    );
+    // Already on: no write in either path; a non-mesh is refused.
+    let mut e = Editor::new(blocking.clone(), 1, Some("stage/rack".into()));
+    assert!(e.camera_blocker_selection(true).is_none());
+    let mut e = Editor::new(lab(), 1, Some("stage/camera".into()));
+    assert!(e.camera_blocker_selection(true).is_none());
+    assert_eq!(e.problem_codes(), ["invalid_value"]);
+    // World ▸ Migrate Legacy Camera Blockers: the deprecated tag becomes the component.
+    let legacy = headless(
+        &lab(),
+        "tag entities[id=stage/rack,id=stage/camera] +camera_blocker +keep",
+    );
+    assert_parity(
+        legacy.clone(),
+        |e| {
+            vec![e
+                .run_command_with("world.migrate_camera_blockers", None)
+                .unwrap()]
+        },
+        "migrate camera_blocker",
+    );
+    let migrated = headless(&legacy, "migrate camera_blocker");
+    let rack = migrated.entity("stage/rack").unwrap();
+    assert_eq!(rack.tags, ["keep"]);
+    assert!(rack.components.contains_key("camera.blocker"));
+    // The camera had no mesh: the tag blocked nothing and is only dropped.
+    let camera = migrated.entity("stage/camera").unwrap();
+    assert_eq!(camera.tags, ["keep"]);
+    assert!(!camera.components.contains_key("camera.blocker"));
+    // Nothing left to migrate: the editor writes nothing.
+    let mut e = Editor::new(migrated, 1, None);
+    assert!(e
+        .run_command_with("world.migrate_camera_blockers", None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn world_panel_operations_match_acl() {
     let blank = World::empty("blank");
     // World ▸ ID / Title, capabilities, systems (with their capability and `after` systems),

@@ -160,6 +160,8 @@ impl RuntimeState {
         self.transforms.push(entity.transform.clone());
         self.health.push(entity.health.clone());
         self.ids.push(runtime_id);
+        // By name: the template may come from another compilation with other tag ids.
+        self.compiled.tag_index.push(&entity.tags);
         self.compiled.entities.push(entity);
         self.compiled.indices = indices;
         self.compiled.parents.push(None);
@@ -236,6 +238,12 @@ impl RuntimeState {
         for h in self.health.iter().flatten() {
             h.validate()?;
         }
+        ensure!(
+            self.compiled.tag_index.slots() == self.compiled.len(),
+            "tag index covers {} of {} entity slots",
+            self.compiled.tag_index.slots(),
+            self.compiled.len()
+        );
         Ok(())
     }
     pub fn sync_scenes(&mut self) {

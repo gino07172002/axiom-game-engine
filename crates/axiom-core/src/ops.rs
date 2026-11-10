@@ -949,6 +949,109 @@ pub fn add_camera_follow(
     Ok(edits)
 }
 
+/// Inspector "Blocks follow cameras" / ACL `camera SEL blocker on|off`: puts (`on`) or
+/// removes the `camera.blocker` marker on each entity; `on` adds the `camera` capability when
+/// missing and needs a `render.mesh` (authored or from the prefab). Either way the deprecated
+/// `camera_blocker` tag is dropped (`off` must stop the tag from blocking too). Entities that
+/// already are in the requested state get no edit.
+pub fn set_camera_blocker(world: &World, ids: &[String], on: bool) -> Result<Vec<Edit>> {
+    use crate::camera::{BLOCKER_COMPONENT, BLOCKER_TAG};
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the meshes that should block follow cameras",
+        ));
+    }
+    let mut edits = if on {
+        enable_system(world, Some("camera"), None)
+    } else {
+        vec![]
+    };
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        let entity = world
+            .entity(id)
+            .ok_or_else(|| not_found(entity_path(id), format!("entity '{id}' not found")))?;
+        if !seen.insert(id) {
+            continue;
+        }
+        let resolved = world.resolved_components(entity);
+        if on && !resolved.contains_key("render.mesh") {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                format!("{}/components/{BLOCKER_COMPONENT}", entity_path(id)),
+                format!("'{id}' has no render.mesh; only mesh parts block follow cameras"),
+            ));
+        }
+        if on && !entity.components.contains_key(BLOCKER_COMPONENT) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: BLOCKER_COMPONENT.into(),
+                value: json!(crate::camera::CameraBlocker {}),
+            }));
+        }
+        if !on
+            && !entity.components.contains_key(BLOCKER_COMPONENT)
+            && resolved.contains_key(BLOCKER_COMPONENT)
+        {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                format!("{}/components/{BLOCKER_COMPONENT}", entity_path(id)),
+                format!(
+                    "'{id}' inherits {BLOCKER_COMPONENT} from its prefab; edit the prefab instead"
+                ),
+            ));
+        }
+        if !on && entity.components.contains_key(BLOCKER_COMPONENT) {
+            edits.push(Edit::Core(CoreEdit::RemoveComponent {
+                entity: id.clone(),
+                component: BLOCKER_COMPONENT.into(),
+            }));
+        }
+        if entity.tags.iter().any(|t| t == BLOCKER_TAG) {
+            edits.push(Edit::Core(CoreEdit::SetField {
+                target: Target::Entity { id: id.clone() },
+                field: "/tags".into(),
+                value: json!(entity
+                    .tags
+                    .iter()
+                    .filter(|t| *t != BLOCKER_TAG)
+                    .collect::<Vec<_>>()),
+            }));
+        }
+    }
+    if edits.len() == usize::from(on && !world.capabilities.contains_key("camera")) {
+        // Nothing to change on the entities: do not add the capability on its own either.
+        edits.clear();
+    }
+    Ok(edits)
+}
+
+/// ACL `migrate camera_blocker` / editor World ▸ Migrate legacy camera blockers / `axiom
+/// migrate`: every entity tagged with the deprecated `camera_blocker` gets the
+/// `camera.blocker` component instead (when it has a mesh; without one the tag blocked
+/// nothing and is only dropped). Same blocking result, one batch; no tagged entity = no edits.
+pub fn migrate_camera_blocker_tags(world: &World) -> Result<Vec<Edit>> {
+    let tagged: Vec<&Entity> = world
+        .entities
+        .iter()
+        .filter(|e| e.tags.iter().any(|t| t == crate::camera::BLOCKER_TAG))
+        .collect();
+    let (meshes, bare): (Vec<&Entity>, Vec<&Entity>) = tagged
+        .into_iter()
+        .partition(|e| world.resolved_components(e).contains_key("render.mesh"));
+    let ids = |list: &[&Entity]| list.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    let mut edits = vec![];
+    if !meshes.is_empty() {
+        edits = set_camera_blocker(world, &ids(&meshes), true)?;
+    }
+    if !bare.is_empty() {
+        edits.extend(set_camera_blocker(world, &ids(&bare), false)?);
+    }
+    Ok(edits)
+}
+
 /// Sets an entity's display label. Surrounding whitespace is trimmed; an empty label clears
 /// it (the hierarchy then shows the ID). Labels are 1..128 bytes without control characters.
 pub fn rename(world: &World, id: &str, label: &str) -> Result<Vec<Edit>> {

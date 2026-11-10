@@ -1649,6 +1649,9 @@ impl Editor {
                 edit,
             }) => actions.extend(self.edit_component_array(&component, &pointer, &edit)),
             Some(ComponentRequest::MainCamera) => actions.extend(self.make_main_camera()),
+            Some(ComponentRequest::CameraBlocker(on)) => {
+                actions.extend(self.camera_blocker_selection(on))
+            }
             Some(ComponentRequest::Play(component)) => match self.play_clip(&component) {
                 Some(action) => actions.push(action),
                 None => self.set_error("Nothing to play: pick a clip on the timeline"),
@@ -2497,6 +2500,8 @@ pub(super) enum ComponentRequest {
         edit: axiom_core::ops::ArrayEdit,
     },
     MainCamera,
+    /// render.mesh "Blocks follow cameras" checkbox (`camera SEL blocker on|off`).
+    CameraBlocker(bool),
     Play(String),
     EditGraph,
 }
@@ -3001,6 +3006,23 @@ fn component_body(
             ))
             .color(WARNING),
         );
+    }
+    if draft.component == "render.mesh" {
+        use axiom_core::camera::{BLOCKER_COMPONENT, BLOCKER_TAG};
+        let mut blocks = entity.components.contains_key(BLOCKER_COMPONENT)
+            || inherited.is_some_and(|p| p.components.contains_key(BLOCKER_COMPONENT))
+            || entity.tags.iter().any(|t| t == BLOCKER_TAG);
+        let r = ui
+            .add_enabled_ui(!draft.dirty(), |ui| {
+                ui.checkbox(&mut blocks, "Blocks follow cameras").on_hover_text(
+                    "camera.blocker: every mesh part stops follow cameras (ACL: camera SEL blocker on|off)",
+                )
+            })
+            .inner;
+        rects.insert("form:camera_blocker".into(), r.rect);
+        if r.changed() {
+            request = Some(ComponentRequest::CameraBlocker(blocks));
+        }
     }
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!draft.dirty(), |ui| {

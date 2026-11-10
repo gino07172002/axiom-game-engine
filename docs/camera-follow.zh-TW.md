@@ -51,9 +51,11 @@
 |---|---|
 | `physics.collider` box / capsule | 方塊依實體世界矩陣(含縮放,和導航格子相同);膠囊端點依矩陣、半徑乘最大縮放 |
 | `nav.blocker` | XZ 矩形(和行走者相同:實體編寫的位置 + offset,不旋轉)。高度 = 同一個實體自己的 `render.mesh` 部件包圍盒;**沒有 mesh 時視為無限高**(隱形牆) |
-| 帶 tag `camera_blocker` 的實體的 `render.mesh` 部件 | 每個部件一個有向方塊(單位方塊 × 部件矩陣) |
+| 有 `camera.blocker` 元件(或已棄用的 tag `camera_blocker`)的實體的 `render.mesh` 部件 | 每個部件一個有向方塊(單位方塊 × 部件矩陣) |
 
-不擋相機的:被系統移動的實體(任何 mover 元件、`path.follow`、或在它們底下的子孫)、執行期生成的實體、跟隨目標本身與它的子孫、所在場景未啟用的實體。被 tween 動畫的物件不能當靜態阻擋:`nav.blocker`、`physics.collider` 與 `camera_blocker` mesh 放在被 tween 動畫的階層裡是編寫錯誤 `tween_conflict`。
+`camera.blocker` 是沒有欄位的標記元件(`{}`,capability `camera`),取代舊的魔術 tag:Inspector 的 render.mesh 卡片上的「Blocks follow cameras」勾選 = Object ▸ Blocks Follow Cameras… on|off = ACL `camera SEL blocker on|off`(`ops::set_camera_blocker`;沒有 mesh 時拒絕;關閉時也移除舊 tag;從 prefab 繼承的標記要改 prefab)。舊 tag 仍然有效(行為不變),但 `verify` 會在 `diagnostics` 列出 `deprecated_tag`;`axiom migrate` = ACL `migrate camera_blocker` = World ▸ Migrate Legacy Camera Blockers 在一個修訂裡把 tag 換成元件(沒有 mesh 的實體 tag 本來就不擋任何東西,只移除 tag)。沒有 mesh 的 `camera.blocker` 不擋任何東西(不是錯誤)。
+
+不擋相機的:被系統移動的實體(任何 mover 元件、`path.follow`、或在它們底下的子孫)、執行期生成的實體、跟隨目標本身與它的子孫、所在場景未啟用的實體。被 tween 動畫的物件不能當靜態阻擋:`nav.blocker`、`physics.collider` 與擋相機的 mesh(`camera.blocker` / 舊 tag)放在被 tween 動畫的階層裡是編寫錯誤 `tween_conflict`。
 
 **Sphere cast 的近似**:半徑 r 的球沿線段移動 = 線段對「每個形狀膨脹 r」做射線測試。膠囊是精確的(半徑 + r);方塊膨脹後保留尖角(沒有圓角),所以在邊與角附近會提早最多 r·(√3−1) 停下 —— 保守,不會比真正接觸晚。
 

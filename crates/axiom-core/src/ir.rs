@@ -362,6 +362,7 @@ impl World {
         r.validate_world(self)?;
         Ok(CompiledWorld {
             source: self.clone(),
+            tag_index: crate::tags::TagIndex::build(&entities),
             entities,
             indices: ids,
             parents,
@@ -909,6 +910,8 @@ pub struct CompiledWorld {
     pub columns: BTreeMap<String, ComponentTable>,
     pub enabled: Vec<bool>,
     pub schedule: Vec<crate::SystemDescriptor>,
+    /// Interned entity tags (one set per slot) for runtime tag queries.
+    pub tag_index: crate::tags::TagIndex,
 }
 impl CompiledWorld {
     pub fn len(&self) -> usize {

@@ -245,6 +245,117 @@ fn seeded_cpu_particles_and_plane_collisions_are_reproducible() {
     .is_err());
 }
 #[test]
+fn size_curves_and_gradients_replace_the_two_point_values_and_are_bounded() {
+    let two = Emitter::default();
+    // Absent curves: exactly the old two-point formulas.
+    for i in 0..64 {
+        let p = vfx::evaluate(&two, i, 1.3, Vec3::ZERO);
+        let t = p.misc[2];
+        assert_eq!(p.position_size[3], two.size + (two.end_size - two.size) * t);
+        let old = glam::Vec4::from_array(two.color)
+            .lerp(glam::Vec4::from_array(two.end_color), t)
+            .to_array();
+        assert_eq!(p.color, old);
+    }
+    let e = Emitter {
+        size_curve: Some(vec![
+            vfx::SizeKey { t: 0.2, size: 0.1 },
+            vfx::SizeKey { t: 0.5, size: 0.5 },
+            vfx::SizeKey { t: 0.9, size: 0.0 },
+        ]),
+        color_gradient: Some(vec![
+            vfx::ColorStop {
+                t: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            vfx::ColorStop {
+                t: 0.5,
+                color: [0.0, 1.0, 0.0, 1.0],
+            },
+            vfx::ColorStop {
+                t: 1.0,
+                color: [0.0, 0.0, 1.0, 0.0],
+            },
+        ]),
+        ..Default::default()
+    };
+    e.validate().unwrap();
+    // Held before the first key / after the last, linear between.
+    assert_eq!(vfx::size_at(&e, 0.0), 0.1);
+    assert_eq!(vfx::size_at(&e, 0.95), 0.0);
+    assert!((vfx::size_at(&e, 0.35) - 0.3).abs() < 1e-6);
+    assert_eq!(vfx::color_at(&e, 0.5), [0.0, 1.0, 0.0, 1.0]);
+    assert_eq!(vfx::color_at(&e, 0.75), [0.0, 0.5, 0.5, 0.5]);
+    for i in 0..64 {
+        let p = vfx::evaluate(&e, i, 0.7, Vec3::ZERO);
+        assert_eq!(p.position_size[3], vfx::size_at(&e, p.misc[2]));
+        assert_eq!(p.color, vfx::color_at(&e, p.misc[2]));
+    }
+    // Backward compatible JSON: old emitters parse, new fields round-trip, unknown keys fail.
+    let old: Emitter = serde_json::from_value(json!({"size":0.2})).unwrap();
+    assert!(old.size_curve.is_none() && old.color_gradient.is_none());
+    assert!(serde_json::to_value(&old)
+        .unwrap()
+        .get("size_curve")
+        .is_none());
+    let back: Emitter = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+    assert_eq!(back, e);
+    assert!(serde_json::from_value::<Emitter>(
+        json!({"size_curve":[{"t":0,"size":1,"ease":"in"}]})
+    )
+    .is_err());
+    let keys = |n: usize| {
+        Some(
+            (0..n)
+                .map(|i| vfx::SizeKey {
+                    t: i as f32 / n as f32,
+                    size: 0.1,
+                })
+                .collect(),
+        )
+    };
+    for bad in [
+        keys(1),
+        keys(vfx::MAX_CURVE_KEYS + 1),
+        Some(vec![
+            vfx::SizeKey { t: 0.5, size: 0.1 },
+            vfx::SizeKey { t: 0.4, size: 0.1 },
+        ]),
+        Some(vec![
+            vfx::SizeKey { t: 0.0, size: 0.1 },
+            vfx::SizeKey { t: 1.0, size: 9.0 },
+        ]),
+    ] {
+        assert!(Emitter {
+            size_curve: bad,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+    }
+    assert!(Emitter {
+        size_curve: keys(vfx::MAX_CURVE_KEYS),
+        ..Default::default()
+    }
+    .validate()
+    .is_ok());
+    assert!(Emitter {
+        color_gradient: Some(vec![
+            vfx::ColorStop {
+                t: 0.0,
+                color: [1.0; 4]
+            },
+            vfx::ColorStop {
+                t: 1.0,
+                color: [1.5, 0.0, 0.0, 0.0]
+            },
+        ]),
+        ..Default::default()
+    }
+    .validate()
+    .is_err());
+}
+#[test]
 fn bitmaps_really_control_spawn_and_invalid_masks_fail_before_activation() {
     let e = Emitter {
         field: "texture".into(),

@@ -64,6 +64,8 @@ EDIT (any number, atomic):
   camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS]
         [zoom=AXIS] [radius=M] [collide=on|off]   camera.follow on each camera: orbits TARGET, stops in
                                   front of static blockers (runtime: call camera.follow.set / camera.activate)
+  camera SEL blocker on|off       camera.blocker on each mesh: its parts block follow cameras
+  migrate camera_blocker          deprecated tag camera_blocker -> camera.blocker component (verify lists it)
   rename ID LABEL                 display label (\"quoted\" for spaces/CJK); \"\" clears it
   move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
   prefab create [PID] from ID     ID becomes an instance of new prefab PID (default: ID, ID/2..);
@@ -93,6 +95,8 @@ EDIT (any number, atomic):
   ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
         | ability ID event remove I   action.abilities timeline (TICK < duration, SOUND = audio.library cue)
   vfx ID size START END | vfx ID color r,g,b,a r,g,b,a   vfx.library size curve / colour gradient over life
+  vfx ID size_curve T:S T:S .. | none     2..8 keys (t 0..1 increasing) replace size->end_size; none removes
+  vfx ID gradient T:r,g,b,a .. | none     2..8 stops replace color->end_color; none removes
   shader ID source \"WGSL\"         custom shader surface code (JSON string; refused with line N if invalid)
  state machines (Graphs editor; M = fsm.machines machine; graph positions live in editor.layout):
   fsm M create [INITIAL] | fsm M remove        one stop state (default idle) | refused while used
@@ -358,6 +362,8 @@ enum Statement {
     SceneMember(String, Box<Selection>, bool),
     CameraMain(String),
     CameraFollow(Box<Selection>, String, Box<crate::ops::CameraFollowOptions>),
+    CameraBlocker(Box<Selection>, bool),
+    MigrateCameraBlockers,
     Rename(String, String),
     Move(String, crate::ops::Order),
     PrefabCreate(Option<String>, String),
@@ -539,7 +545,44 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
                 end: rgba(end)?,
             },
         ),
-        ["vfx", ..] => bail!("use: vfx ID size START END | vfx ID color r,g,b,a r,g,b,a"),
+        ["vfx", id, "size_curve", keys @ ..] if !keys.is_empty() => {
+            let keys = if keys == ["none"] {
+                vec![]
+            } else {
+                keys.iter()
+                    .map(|k| -> Result<[f64; 2]> {
+                        let (t, s) = k
+                            .split_once(':')
+                            .with_context(|| format!("size key '{k}' must be T:SIZE"))?;
+                        let n = |x: &str| -> Result<f64> {
+                            x.parse().with_context(|| format!("'{x}' is not a number"))
+                        };
+                        Ok([n(t)?, n(s)?])
+                    })
+                    .collect::<Result<_>>()?
+            };
+            TuningStatement::Vfx((*id).into(), VfxEdit::SizeCurve { keys })
+        }
+        ["vfx", id, "gradient", stops @ ..] if !stops.is_empty() => {
+            let stops = if stops == ["none"] {
+                vec![]
+            } else {
+                stops
+                    .iter()
+                    .map(|s| -> Result<(f64, [f64; 4])> {
+                        let (t, c) = s
+                            .split_once(':')
+                            .with_context(|| format!("gradient stop '{s}' must be T:r,g,b,a"))?;
+                        let t = t.parse().with_context(|| format!("'{t}' is not a number"))?;
+                        Ok((t, rgba(c)?))
+                    })
+                    .collect::<Result<_>>()?
+            };
+            TuningStatement::Vfx((*id).into(), VfxEdit::ColorGradient { stops })
+        }
+        ["vfx", ..] => bail!(
+            "use: vfx ID size START END | vfx ID color r,g,b,a r,g,b,a | vfx ID size_curve T:S .. | none | vfx ID gradient T:r,g,b,a .. | none"
+        ),
         ["shader", id, "source", t] => TuningStatement::Shader((*id).into(), text(t)),
         ["shader", ..] => bail!("use: shader ID source \"WGSL\" (JSON string; \\n for new lines)"),
         _ => bail!("unknown tuning statement"),
@@ -1051,7 +1094,17 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "camera" if tokens.len() == 3 && tokens[1] == "main" => {
             Statement::CameraMain(tokens[2].clone())
         }
+        "camera" if tokens.len() == 4 && tokens[2] == "blocker" => {
+            Statement::CameraBlocker(Box::new(selector(&tokens[1])?), on_off(&tokens[3])?)
+        }
         "camera" => camera_follow(tokens)?,
+        "migrate" => {
+            ensure!(
+                tokens.len() == 2 && tokens[1] == "camera_blocker",
+                "use: migrate camera_blocker"
+            );
+            Statement::MigrateCameraBlockers
+        }
         "rename" => {
             ensure!(
                 tokens.len() == 3,
@@ -1954,6 +2007,9 @@ pub fn run(
             Statement::CameraMain(id) => crate::ops::make_main_camera(w, &id),
             Statement::CameraFollow(select, target, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_camera_follow(w, &ids, &target, &options)),
+            Statement::CameraBlocker(select, on) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::set_camera_blocker(w, &ids, on)),
+            Statement::MigrateCameraBlockers => crate::ops::migrate_camera_blocker_tags(w),
             Statement::Rename(id, label) => crate::ops::rename(w, &id, &label),
             Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
             Statement::PrefabCreate(id, entity) => {

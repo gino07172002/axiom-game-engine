@@ -15,6 +15,37 @@ struct EmitterUniform {
     color_b: [f32; 4],
     size_misc: [f32; 4],
     ids: [u32; 4],
+    /// x = size_curve keys, y = color_gradient stops (0 = the two-point size / colour).
+    curve_counts: [u32; 4],
+    /// Key times / sizes, four per vec4 (MAX_CURVE_KEYS = 8).
+    size_t: [[f32; 4]; 2],
+    size_v: [[f32; 4]; 2],
+    color_t: [[f32; 4]; 2],
+    color_v: [[f32; 4]; vfx::MAX_CURVE_KEYS],
+}
+/// Dynamic-offset stride of one emitter in the uniform bank (>= the struct, a multiple of the
+/// 256-byte uniform offset alignment).
+const EMITTER_STRIDE: u32 = 512;
+const _: () = assert!(std::mem::size_of::<EmitterUniform>() <= EMITTER_STRIDE as usize);
+/// Emitters per frame (the bank holds this many).
+const MAX_EMITTERS: usize = 64;
+
+/// The curve part of an emitter's uniform: counts, then times and values packed four per vec4.
+fn pack_curves(e: &vfx::Emitter, u: &mut EmitterUniform) {
+    if let Some(keys) = &e.size_curve {
+        u.curve_counts[0] = keys.len().min(vfx::MAX_CURVE_KEYS) as u32;
+        for (i, k) in keys.iter().take(vfx::MAX_CURVE_KEYS).enumerate() {
+            u.size_t[i / 4][i % 4] = k.t;
+            u.size_v[i / 4][i % 4] = k.size;
+        }
+    }
+    if let Some(stops) = &e.color_gradient {
+        u.curve_counts[1] = stops.len().min(vfx::MAX_CURVE_KEYS) as u32;
+        for (i, s) in stops.iter().take(vfx::MAX_CURVE_KEYS).enumerate() {
+            u.color_t[i / 4][i % 4] = s.t;
+            u.color_v[i] = s.color;
+        }
+    }
 }
 struct Draw {
     range: Range<u32>,
@@ -53,7 +84,7 @@ impl VfxGpu {
         });
         let emitter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("VFX seeded emitters"),
-            size: 64 * 256,
+            size: (MAX_EMITTERS * EMITTER_STRIDE as usize) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -278,7 +309,10 @@ impl VfxGpu {
         self.draws.clear();
         self.dispatches.clear();
         let mut first = 0u32;
-        ensure!(frame.batches.len() <= 64, "GPU emitter bank exceeded");
+        ensure!(
+            frame.batches.len() <= MAX_EMITTERS,
+            "GPU emitter bank exceeded"
+        );
         for (i, b) in frame.batches.iter().enumerate() {
             let e = &b.emitter;
             let end = first + e.count;
@@ -287,7 +321,7 @@ impl VfxGpu {
                 "GPU particle budget exceeded"
             );
             if e.backend == "gpu" {
-                let uniform = EmitterUniform {
+                let mut uniform = EmitterUniform {
                     origin_time: [b.origin.x, b.origin.y, b.origin.z, b.time],
                     velocity_life: [e.velocity[0], e.velocity[1], e.velocity[2], e.lifetime],
                     accel_spread: [
@@ -305,10 +339,12 @@ impl VfxGpu {
                         0.0,
                     ],
                     ids: [e.count, e.seed, first, e.field_id()],
+                    ..Zeroable::zeroed()
                 };
+                pack_curves(e, &mut uniform);
                 queue.write_buffer(
                     &self.emitter_buffer,
-                    (i * 256) as u64,
+                    i as u64 * u64::from(EMITTER_STRIDE),
                     bytemuck::bytes_of(&uniform),
                 );
                 self.dispatches.push((i as u32, e.count));
@@ -375,7 +411,7 @@ impl VfxGpu {
         pass.set_pipeline(&self.compute);
         pass.set_bind_group(1, &self.storage, &[]);
         for (i, count) in &self.dispatches {
-            pass.set_bind_group(0, &self.emitters, &[*i * 256]);
+            pass.set_bind_group(0, &self.emitters, &[*i * EMITTER_STRIDE]);
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
     }
@@ -446,15 +482,40 @@ pub fn validate_compute() -> Result<serde_json::Value> {
         let mut gpu = VfxGpu::new(&device, wgpu::TextureFormat::Rgba8Unorm, &globals, &depth);
         let mut cases = 0;
         let mut max_error = 0.0f32;
-        for field in ["fountain", "smoke", "snow"] {
+        // Multi-key curves: keys inside 0..1 (held ends) and the full 8-key budget.
+        let size_curve = Some(
+            [(0.1, 0.05), (0.3, 0.4), (0.6, 0.1), (0.9, 0.25)]
+                .map(|(t, size)| vfx::SizeKey { t, size })
+                .to_vec(),
+        );
+        let color_gradient = Some(
+            (0..vfx::MAX_CURVE_KEYS)
+                .map(|i| vfx::ColorStop {
+                    t: i as f32 / 7.0,
+                    color: [(i % 2) as f32, i as f32 / 7.0, 1.0 - i as f32 / 7.0, 0.5],
+                })
+                .collect(),
+        );
+        let mut curves = 0;
+        for (field, curved) in [
+            ("fountain", false),
+            ("smoke", false),
+            ("snow", false),
+            ("fountain", true),
+            ("smoke", true),
+        ] {
             for time in [0.0, 0.25, 2.5] {
                 let e = vfx::Emitter {
                     backend: "gpu".into(),
                     count: 64,
                     seed: 1729,
                     field: field.into(),
+                    size_curve: size_curve.clone().filter(|_| curved),
+                    color_gradient: color_gradient.clone().filter(|_| curved),
                     ..Default::default()
                 };
+                e.validate()?;
+                curves += usize::from(curved);
                 let origin = Vec3::new(1.0, 2.0, -3.0);
                 gpu.prepare(
                     &queue,
@@ -516,7 +577,7 @@ pub fn validate_compute() -> Result<serde_json::Value> {
             "CPU/GPU particle contract mismatch: {max_error}"
         );
         Ok(
-            serde_json::json!({"ok":true,"gpu":adapter.get_info().name,"cases":cases,"particles_compared":cases*64,"max_absolute_error":max_error,"measurement":"GPU compute storage readback; no GPU timing claim"}),
+            serde_json::json!({"ok":true,"gpu":adapter.get_info().name,"cases":cases,"curve_cases":curves,"particles_compared":cases*64,"max_absolute_error":max_error,"measurement":"GPU compute storage readback; no GPU timing claim"}),
         )
     })
 }

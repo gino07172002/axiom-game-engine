@@ -12,6 +12,22 @@ use std::{
 };
 
 pub const MAX_PARTICLES: usize = 8192;
+/// Keys of `size_curve` / stops of `color_gradient` (the GPU uniform has room for this many).
+pub const MAX_CURVE_KEYS: usize = 8;
+/// One `size_curve` key: particle size (m) at normalized age `t`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SizeKey {
+    pub t: f32,
+    pub size: f32,
+}
+/// One `color_gradient` stop: RGBA at normalized age `t`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ColorStop {
+    pub t: f32,
+    pub color: [f32; 4],
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Emitter {
@@ -28,6 +44,13 @@ pub struct Emitter {
     pub end_size: f32,
     pub color: [f32; 4],
     pub end_color: [f32; 4],
+    /// Size over life through 2..=8 keys (linear between keys, held outside them); replaces
+    /// `size` -> `end_size` for particles when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_curve: Option<Vec<SizeKey>>,
+    /// Colour over life through 2..=8 stops; replaces `color` -> `end_color` for particles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_gradient: Option<Vec<ColorStop>>,
     pub field: String,
     pub floor: Option<f32>,
     pub bounce: f32,
@@ -51,6 +74,8 @@ impl Default for Emitter {
             end_size: 0.03,
             color: [0.2, 0.8, 1.0, 0.9],
             end_color: [0.2, 0.5, 1.0, 0.0],
+            size_curve: None,
+            color_gradient: None,
             field: "fountain".into(),
             floor: None,
             bounce: 0.65,
@@ -110,6 +135,30 @@ impl Emitter {
             self.backend != "gpu" || self.texture_mask.is_none(),
             "GPU analytic backend does not sample authored bitmap masks"
         );
+        let times_ok = |ts: &[f32]| {
+            (2..=MAX_CURVE_KEYS).contains(&ts.len())
+                && ts.iter().all(|t| t.is_finite() && (0.0..=1.0).contains(t))
+                && ts.windows(2).all(|w| w[0] < w[1])
+        };
+        if let Some(keys) = &self.size_curve {
+            ensure!(
+                times_ok(&keys.iter().map(|k| k.t).collect::<Vec<_>>())
+                    && keys
+                        .iter()
+                        .all(|k| k.size.is_finite() && (0.0..=4.0).contains(&k.size)),
+                "size_curve needs 2..={MAX_CURVE_KEYS} keys with t 0..1 strictly increasing and size 0..4"
+            );
+        }
+        if let Some(stops) = &self.color_gradient {
+            ensure!(
+                times_ok(&stops.iter().map(|s| s.t).collect::<Vec<_>>())
+                    && stops
+                        .iter()
+                        .flat_map(|s| s.color)
+                        .all(|v| v.is_finite() && (0.0..=1.0).contains(&v)),
+                "color_gradient needs 2..={MAX_CURVE_KEYS} stops with t 0..1 strictly increasing and channels 0..1"
+            );
+        }
         if let Some(mask) = &self.texture_mask {
             ensure!(
                 !mask.is_empty()
@@ -213,6 +262,37 @@ pub fn random(seed: u32, index: u32, salt: u32) -> f32 {
     v = (v >> 22) ^ v;
     (v & 0x00ffffff) as f32 / 16777216.0
 }
+/// Piecewise-linear value at `t` through `(t, value)` keys sorted by `t`: the first value
+/// before the first key, the last after the last. The GPU compute pass (vfx_compute.wgsl,
+/// `curve`) uses the same operations in the same order.
+fn piecewise<const N: usize>(keys: impl Iterator<Item = (f32, [f32; N])>, t: f32) -> [f32; N] {
+    let mut prev: Option<(f32, [f32; N])> = None;
+    for (kt, v) in keys {
+        match prev {
+            None if t <= kt => return v,
+            Some((pt, pv)) if t <= kt => {
+                let u = (t - pt) / (kt - pt);
+                return std::array::from_fn(|i| pv[i] + (v[i] - pv[i]) * u);
+            }
+            _ => prev = Some((kt, v)),
+        }
+    }
+    prev.map_or([0.0; N], |(_, v)| v)
+}
+pub fn size_at(e: &Emitter, t: f32) -> f32 {
+    match &e.size_curve {
+        Some(keys) => piecewise(keys.iter().map(|k| (k.t, [k.size])), t)[0],
+        None => e.size + (e.end_size - e.size) * t,
+    }
+}
+pub fn color_at(e: &Emitter, t: f32) -> [f32; 4] {
+    match &e.color_gradient {
+        Some(stops) => piecewise(stops.iter().map(|s| (s.t, s.color)), t),
+        None => Vec4::from_array(e.color)
+            .lerp(Vec4::from_array(e.end_color), t)
+            .to_array(),
+    }
+}
 pub fn evaluate(e: &Emitter, index: u32, time: f32, origin: Vec3) -> Particle {
     let r = |s| random(e.seed, index, s);
     let age = (time / e.lifetime + r(0)).fract() * e.lifetime;
@@ -283,10 +363,9 @@ pub fn evaluate(e: &Emitter, index: u32, time: f32, origin: Vec3) -> Particle {
         }
         p.y = y.max(floor);
     }
-    let color = Vec4::from_array(e.color).lerp(Vec4::from_array(e.end_color), t);
     Particle {
-        position_size: [p.x, p.y, p.z, e.size + (e.end_size - e.size) * t],
-        color: color.to_array(),
+        position_size: [p.x, p.y, p.z, size_at(e, t)],
+        color: color_at(e, t),
         misc: [
             r(6) * std::f32::consts::TAU + age * 0.6,
             if e.renderer == "mesh" { 1.0 } else { 0.0 },
@@ -455,7 +534,7 @@ impl RuntimeSystem for VfxSystem {
 }
 pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.capabilities.insert("vfx".into(), 1);
-    r.authoring.resource("vfx.library","vfx",json!({"emitters":"stable ID -> seeded emitter: backend cpu|gpu, renderer sprite|mesh|ribbon|light, count, lifetime, origin, velocity, acceleration, color/end_color, size/end_size, field fountain|smoke|snow|texture, optional floor/bounce, attachment/bone and 1-bit texture_mask"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
+    r.authoring.resource("vfx.library","vfx",json!({"emitters":"stable ID -> seeded emitter: backend cpu|gpu, renderer sprite|mesh|ribbon|light, count, lifetime, origin, velocity, acceleration, color/end_color, size/end_size, optional size_curve [{t,size}] and color_gradient [{t,color}] (2..8 keys, t 0..1 increasing; replace the two-point size/colour for particles), field fountain|smoke|snow|texture, optional floor/bounce, attachment/bone and 1-bit texture_mask"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
     r.authoring.systems.insert(
         "vfx.simulate".into(),
         SystemDescriptor {

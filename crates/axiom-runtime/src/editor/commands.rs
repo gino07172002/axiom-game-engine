@@ -206,6 +206,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "",
     ),
     c("object.main_camera", "Set as Main Camera", "Object", ""),
+    a(
+        "object.camera_blocker",
+        "Blocks Follow Cameras…",
+        "Object",
+        "on|off",
+    ),
     c("object.tween_clip", "Add Tween Clip", "Object", ""),
     c(
         "tween.record_key",
@@ -291,6 +297,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "RESOURCE",
     ),
     a("event.declare", "Declare Event…", "World", "NAME"),
+    c(
+        "world.migrate_camera_blockers",
+        "Migrate Legacy Camera Blockers",
+        "World",
+        "",
+    ),
     c("play.start", "Play", "Play", "F5"),
     c("play.stop", "Stop", "Play", "Shift+F5"),
     c("play.pause", "Pause / Resume", "Play", "Ctrl+Alt+P"),
@@ -538,6 +550,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.audio_listener",
     "object.camera_follow",
     "object.main_camera",
+    "object.camera_blocker",
     "object.tween_clip",
     "tween.record_key",
     "tween.remove_key",
@@ -558,6 +571,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "world.resource_create",
     "world.resource_remove",
     "event.declare",
+    "world.migrate_camera_blockers",
     "game.main_camera",
     "input.edit",
     "loc.edit",
@@ -815,6 +829,7 @@ impl Editor {
             | "object.audio_listener"
             | "object.camera_follow"
             | "object.main_camera"
+            | "object.camera_blocker"
             | "object.tween_clip"
             | "object.tag"
             | "object.add_component"
@@ -875,6 +890,7 @@ impl Editor {
             | "object.audio_listener"
             | "object.camera_follow"
             | "object.main_camera"
+            | "object.camera_blocker"
             | "object.tween_clip"
             | "tween.record_key"
             | "tween.remove_key"
@@ -896,6 +912,7 @@ impl Editor {
             | "world.resource_create"
             | "world.resource_remove"
             | "event.declare"
+            | "world.migrate_camera_blockers"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")
@@ -1091,6 +1108,7 @@ impl Editor {
                 actions.extend(self.camera_follow_selection(&Default::default()))
             }
             "object.main_camera" => actions.extend(self.make_main_camera()),
+            "world.migrate_camera_blockers" => actions.extend(self.migrate_camera_blockers()),
             "object.tween_clip" => {
                 let name = axiom_core::ops::free_clip_name(&self.world, &self.selection());
                 actions.extend(self.add_tween_clip(&name, &Default::default()))
@@ -1759,6 +1777,8 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.audio_listener": "audio ID listener",
                 "object.camera_follow": "camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=] [zoom=] [radius=] [collide=]",
                 "object.main_camera": "camera main ID",
+                "object.camera_blocker": "camera SEL blocker on|off (Inspector render.mesh: Blocks follow cameras)",
+                "world.migrate_camera_blockers": "migrate camera_blocker (also: axiom migrate)",
                 "game.main_camera": "camera main ID",
                 "inspector.audio_clip": "set ID audio.source/clip \"CLIP\"",
                 "inspector.new_audio_clip": "audio clip ID tone|engine|fountain|creak|footstep",

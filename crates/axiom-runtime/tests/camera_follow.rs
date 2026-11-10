@@ -232,9 +232,9 @@ fn room() -> (Vec<Value>, Vec<Shape>) {
     entities.push(json!({"id":"room/west","components":{"core.transform":{"position":[-4.15,0,0]},
         "nav.blocker":{"half":[0.15,4.3]},
         "render.mesh":{"parts":[{"transform":{"position":[0,1.5,0],"scale":[0.3,3,8.6]},"color":[0.5,0.5,0.5]}]}}}));
-    // East: a mesh that only blocks the camera (tagged).
-    entities.push(json!({"id":"room/east","tags":["camera_blocker"],"components":{"core.transform":{"position":[4.15,1.5,0]},
-        "render.mesh":{"parts":[{"transform":{"scale":[0.3,3,8.6]},"color":[0.5,0.5,0.5]}]}}}));
+    // East: a mesh that only blocks the camera (camera.blocker).
+    entities.push(json!({"id":"room/east","components":{"core.transform":{"position":[4.15,1.5,0]},
+        "render.mesh":{"parts":[{"transform":{"scale":[0.3,3,8.6]},"color":[0.5,0.5,0.5]}]},"camera.blocker":{}}}));
     let boxes = [
         ([0.0, 1.5, -4.15], [4.3, 1.5, 0.15]),
         ([-2.55, 1.5, 4.15], [1.75, 1.5, 0.15]),
@@ -654,6 +654,14 @@ fn authoring_errors_and_mover_conflicts_are_explicit() {
         e.contains("tween_conflict") && e.contains("render.mesh tagged camera_blocker"),
         "{e}"
     );
+    let door = w.entity_mut("door").unwrap();
+    door.tags.clear();
+    door.components.insert("camera.blocker".into(), json!({}));
+    let e = code(&w);
+    assert!(
+        e.contains("tween_conflict") && e.contains("render.mesh with camera.blocker"),
+        "{e}"
+    );
     // A gameplay session that places its own camera (action.session in axiom-town).
     let mut town: World =
         serde_json::from_str(include_str!("../../../content/axiom-town/world.json")).unwrap();
@@ -762,4 +770,60 @@ fn disabled_follows_spawns_and_checkpoints_are_explicit() {
         error.contains("camera.rig does not implement checkpoints"),
         "{error}"
     );
+}
+
+/// Static blocker shapes of a world (as the rig collects them).
+fn blockers(w: &World) -> Vec<axiom_core::camera::Blocker> {
+    let registry = installed_registry().authoring;
+    let c = w.compile(&registry).unwrap();
+    axiom_core::camera::collect_blockers(&c.entities, &c.parents, &registry.movers).unwrap()
+}
+
+#[test]
+fn the_deprecated_tag_still_blocks_is_reported_and_migrates_to_the_component() {
+    let (mut entities, _) = room();
+    entities.push(hero([0.0; 3]));
+    entities.push(camera("cam", json!({"target":"hero"})));
+    let typed = world(Value::Array(entities));
+    let mut legacy = typed.clone();
+    let east = legacy.entity_mut("room/east").unwrap();
+    east.components.remove("camera.blocker");
+    east.tags = vec!["camera_blocker".into()];
+    // Same shapes either way (5 walls; the east mesh is one part).
+    let shapes = blockers(&typed);
+    assert_eq!(shapes.len(), 5);
+    assert_eq!(blockers(&legacy), shapes);
+    // A mesh without either blocks nothing.
+    let mut plain = typed.clone();
+    plain
+        .entity_mut("room/east")
+        .unwrap()
+        .components
+        .remove("camera.blocker");
+    assert_eq!(blockers(&plain).len(), 4);
+    // verify lists the deprecated tag; the typed world has no diagnostics.
+    let verify = |w: &World| {
+        let mut store =
+            axiom_core::Store::memory_with(installed_registry().authoring, w.clone()).unwrap();
+        store.execute(axiom_core::Request::Verify {}).unwrap()["diagnostics"].clone()
+    };
+    let d = verify(&legacy);
+    assert_eq!(d.as_array().unwrap().len(), 1, "{d}");
+    assert_eq!(d[0]["code"], "deprecated_tag");
+    assert!(d[0]["path"].as_str().unwrap().contains("room~1east"), "{d}");
+    assert_eq!(verify(&typed), json!([]));
+    // `migrate camera_blocker` (= `axiom migrate`) gives the typed world back.
+    let mut store =
+        axiom_core::Store::memory_with(installed_registry().authoring, legacy.clone()).unwrap();
+    store
+        .execute(axiom_core::Request::Acl {
+            text: "migrate camera_blocker".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap();
+    let migrated = store.current().unwrap().1;
+    assert_eq!(migrated, typed);
+    assert_eq!(verify(&migrated), json!([]));
 }

@@ -306,6 +306,12 @@ impl InteractSystem {
     /// Matches entity slots added since the last scan (all of them on construction).
     fn scan(&mut self, state: &RuntimeState, initial: bool) {
         let len = state.compiled.len();
+        // Resolved per scan: spawns may intern tags the filters name.
+        let required: Vec<_> = self
+            .filters
+            .iter()
+            .map(|f| state.compiled.tag_index.resolve(&f.def.tags))
+            .collect();
         for slot in self.scanned..len {
             let e = &state.compiled.entities[slot];
             if !initial && e.interact.is_some() {
@@ -319,8 +325,11 @@ impl InteractSystem {
                 continue;
             }
             let mut any = false;
-            for f in &mut self.filters {
-                if f.def.matches(&e.tags, |c| e.components.contains_key(c)) {
+            let tags = state.compiled.tag_index.set(slot);
+            for (f, required) in self.filters.iter_mut().zip(&required) {
+                if f.def
+                    .matches_interned(required.as_ref(), tags, |c| e.components.contains_key(c))
+                {
                     f.slots.push(slot as u32);
                     any = true;
                 }
