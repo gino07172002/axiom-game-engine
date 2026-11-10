@@ -1650,7 +1650,7 @@ impl Editor {
             }) => actions.extend(self.edit_component_array(&component, &pointer, &edit)),
             Some(ComponentRequest::MainCamera) => actions.extend(self.make_main_camera()),
             Some(ComponentRequest::CameraBlocker(on)) => {
-                actions.extend(self.camera_blocker_selection(on))
+                actions.extend(self.camera_blocker(std::slice::from_ref(&id), on))
             }
             Some(ComponentRequest::Play(component)) => match self.play_clip(&component) {
                 Some(action) => actions.push(action),

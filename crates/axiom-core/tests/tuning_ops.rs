@@ -696,6 +696,10 @@ fn vfx_curve_and_gradient_verbs_write_whole_lists_and_remove_them() {
         VfxEdit::SizeCurve {
             keys: vec![[0.5, 0.1], [0.5, 0.2]],
         },
+        // Distinct as typed, one time once rounded to 4 decimals.
+        VfxEdit::SizeCurve {
+            keys: vec![[0.00001, 0.1], [0.00004, 0.2]],
+        },
         VfxEdit::SizeCurve {
             keys: vec![[0.0, 0.1], [1.2, 0.2]],
         },

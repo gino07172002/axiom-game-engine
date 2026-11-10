@@ -659,6 +659,8 @@ pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit
         }
         VfxEdit::SizeCurve { keys } => {
             let field = "size_curve";
+            // Checked as written (rounded), so two keys cannot round onto one time.
+            let keys: Vec<[f64; 2]> = keys.iter().map(|k| k.map(round)).collect();
             if !keys.is_empty()
                 && !(curve_times_ok(&keys.iter().map(|k| k[0]).collect::<Vec<_>>())
                     && keys
@@ -672,12 +674,16 @@ pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit
             }
             let value = json!(keys
                 .iter()
-                .map(|k| json!({"t": round(k[0]), "size": round(k[1])}))
+                .map(|k| json!({"t": k[0], "size": k[1]}))
                 .collect::<Vec<_>>());
             edits.extend(curve_field(&base, e, field, value));
         }
         VfxEdit::ColorGradient { stops } => {
             let field = "color_gradient";
+            let stops: Vec<(f64, [f64; 4])> = stops
+                .iter()
+                .map(|(t, c)| (round(*t), c.map(round)))
+                .collect();
             if !stops.is_empty()
                 && !(curve_times_ok(&stops.iter().map(|s| s.0).collect::<Vec<_>>())
                     && stops
@@ -692,7 +698,7 @@ pub fn edit_vfx(world: &World, emitter: &str, edit: &VfxEdit) -> Result<Vec<Edit
             }
             let value = json!(stops
                 .iter()
-                .map(|(t, c)| json!({"t": round(*t), "color": c.map(round)}))
+                .map(|(t, c)| json!({"t": t, "color": c}))
                 .collect::<Vec<_>>());
             edits.extend(curve_field(&base, e, field, value));
         }

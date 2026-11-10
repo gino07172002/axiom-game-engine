@@ -1366,7 +1366,13 @@ impl Editor {
     /// Inspector render.mesh "Blocks follow cameras" / Object ▸ Blocks Follow Cameras… on|off
     /// (`ACL: camera SEL blocker on|off`) on the selection.
     pub(super) fn camera_blocker_selection(&mut self, on: bool) -> Option<Action> {
-        let result = ops::set_camera_blocker(&self.world, &self.selection(), on);
+        let ids = self.selection();
+        self.camera_blocker(&ids, on)
+    }
+
+    /// `camera.blocker` on|off on `ids` (the Inspector checkbox passes the inspected object).
+    pub(super) fn camera_blocker(&mut self, ids: &[String], on: bool) -> Option<Action> {
+        let result = ops::set_camera_blocker(&self.world, ids, on);
         if result.as_ref().is_ok_and(Vec::is_empty) {
             return None;
         }

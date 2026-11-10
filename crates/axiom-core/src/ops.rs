@@ -984,17 +984,20 @@ pub fn set_camera_blocker(world: &World, ids: &[String], on: bool) -> Result<Vec
                 format!("'{id}' has no render.mesh; only mesh parts block follow cameras"),
             ));
         }
-        if on && !entity.components.contains_key(BLOCKER_COMPONENT) {
+        let from_prefab = entity
+            .prefab
+            .as_ref()
+            .and_then(|p| world.prefabs.get(p))
+            .is_some_and(|p| p.components.contains_key(BLOCKER_COMPONENT));
+        if on && !resolved.contains_key(BLOCKER_COMPONENT) {
             edits.push(Edit::Core(CoreEdit::SetComponent {
                 entity: id.clone(),
                 component: BLOCKER_COMPONENT.into(),
                 value: json!(crate::camera::CameraBlocker {}),
             }));
         }
-        if !on
-            && !entity.components.contains_key(BLOCKER_COMPONENT)
-            && resolved.contains_key(BLOCKER_COMPONENT)
-        {
+        // Removing an instance's own override would leave the prefab's marker blocking.
+        if !on && from_prefab {
             return Err(Diagnostic::error(
                 "invalid_value",
                 format!("{}/components/{BLOCKER_COMPONENT}", entity_path(id)),
@@ -1041,14 +1044,23 @@ pub fn migrate_camera_blocker_tags(world: &World) -> Result<Vec<Edit>> {
     let (meshes, bare): (Vec<&Entity>, Vec<&Entity>) = tagged
         .into_iter()
         .partition(|e| world.resolved_components(e).contains_key("render.mesh"));
-    let ids = |list: &[&Entity]| list.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    let ids = meshes.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
     let mut edits = vec![];
-    if !meshes.is_empty() {
-        edits = set_camera_blocker(world, &ids(&meshes), true)?;
+    if !ids.is_empty() {
+        edits = set_camera_blocker(world, &ids, true)?;
     }
-    if !bare.is_empty() {
-        edits.extend(set_camera_blocker(world, &ids(&bare), false)?);
-    }
+    // Without a mesh only the tag goes (any authored camera.blocker stays as it is).
+    edits.extend(bare.iter().map(|e| {
+        Edit::Core(CoreEdit::SetField {
+            target: Target::Entity { id: e.id.clone() },
+            field: "/tags".into(),
+            value: json!(e
+                .tags
+                .iter()
+                .filter(|t| *t != crate::camera::BLOCKER_TAG)
+                .collect::<Vec<_>>()),
+        })
+    }));
     Ok(edits)
 }
 

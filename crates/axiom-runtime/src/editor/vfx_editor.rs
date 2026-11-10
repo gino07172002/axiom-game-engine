@@ -175,19 +175,27 @@ fn color_at(v: &OverLife, t: f64) -> [f64; 4] {
     sample(v.color.iter().copied(), t)
 }
 
-/// Where a new key goes: the middle of the widest gap between keys.
-fn widest_gap(times: impl Iterator<Item = f64>) -> f64 {
-    let times: Vec<f64> = times.collect();
-    times
+/// Where a new key goes: the middle of the widest gap between keys (also before the first and
+/// after the last key, which may sit inside 0..1). `None` when no gap leaves `MIN_GAP` on both
+/// sides of the new key.
+fn widest_gap(times: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut edges = vec![0.0];
+    edges.extend(times);
+    edges.push(1.0);
+    edges
         .windows(2)
         .map(|w| (w[1] - w[0], (w[0] + w[1]) / 2.0))
         .max_by(|a, b| a.0.total_cmp(&b.0))
-        .map_or(0.5, |(_, mid)| mid)
+        .filter(|(gap, _)| *gap >= 2.0 * MIN_GAP)
+        .map(|(_, mid)| mid)
 }
 
 /// Life range key `i` may move along (strictly between its neighbours; the end keys stay).
+/// `None` when the neighbours leave no room (authored keys may be closer than `MIN_GAP`).
 fn t_range(times: &[f64], i: usize) -> Option<(f64, f64)> {
-    (i > 0 && i + 1 < times.len()).then(|| (times[i - 1] + MIN_GAP, times[i + 1] - MIN_GAP))
+    (i > 0 && i + 1 < times.len())
+        .then(|| (times[i - 1] + MIN_GAP, times[i + 1] - MIN_GAP))
+        .filter(|(a, b)| a <= b)
 }
 
 fn round3(x: f64) -> f64 {
@@ -213,8 +221,13 @@ impl Editor {
                     .is_some(),
                 "vfx.select: vfx.library has no emitter {id}"
             );
-            self.tuning.vfx.selected = Some(id.to_owned());
-            self.tuning.vfx.draft = None;
+            let vfx = &mut self.tuning.vfx;
+            vfx.selected = Some(id.to_owned());
+            vfx.draft = None;
+            vfx.drag = None;
+            vfx.stop_drag = None;
+            vfx.key = 0;
+            vfx.stop = 0;
         }
         Ok(())
     }
@@ -314,6 +327,11 @@ impl Editor {
             .find(|e| e.id == id)
             .expect("chosen from the model");
         let authored = &e.values;
+        // A drag whose release this widget never saw (tab hidden, focus lost) is over.
+        if ui.input(|i| !i.pointer.any_down()) {
+            self.tuning.vfx.drag = None;
+            self.tuning.vfx.stop_drag = None;
+        }
         let mut work = match &self.tuning.vfx.draft {
             Some((d, v)) if *d == id => v.clone(),
             _ => authored.clone(),
@@ -537,8 +555,10 @@ impl Editor {
                                 .suffix(" m"),
                         );
                         mark!(rects, format!("vfx:size:{k}"), r.rect);
+                        let gap = widest_gap(work.size.iter().map(|k| k[0]))
+                            .filter(|_| work.size.len() < MAX_VFX_CURVE_KEYS);
                         let add = ui
-                            .add_enabled_ui(work.size.len() < MAX_VFX_CURVE_KEYS, |ui| {
+                            .add_enabled_ui(gap.is_some(), |ui| {
                                 theme::icon_button(
                                     ui,
                                     icons,
@@ -549,8 +569,8 @@ impl Editor {
                             })
                             .inner;
                         mark!(rects, "vfx:key_add".into(), add.rect);
-                        if add.clicked() {
-                            let t = round3(widest_gap(work.size.iter().map(|k| k[0])));
+                        if let (true, Some(t)) = (add.clicked(), gap) {
+                            let t = round3(t);
                             let at = work.size.partition_point(|k| k[0] < t);
                             work.size.insert(at, [t, round3(size_at(&work, t))]);
                             vfx.key = at;
@@ -712,7 +732,8 @@ impl Editor {
                                 pos2(x + HANDLE, y + 10.0),
                                 pos2(x - HANDLE, y + 10.0),
                             ],
-                            color32(*c),
+                            // Opaque, so a fully transparent stop stays visible.
+                            color32([c[0], c[1], c[2], 1.0]),
                             Stroke::new(
                                 if selected { 2.0_f32 } else { 1.0 },
                                 if selected { theme::ACCENT } else { theme::TEXT },
@@ -746,8 +767,10 @@ impl Editor {
                             );
                             mark!(rects, "vfx:stop_t".into(), r.rect);
                         }
+                        let gap = widest_gap(work.color.iter().map(|s| s.0))
+                            .filter(|_| work.color.len() < MAX_VFX_CURVE_KEYS);
                         let add = ui
-                            .add_enabled_ui(work.color.len() < MAX_VFX_CURVE_KEYS, |ui| {
+                            .add_enabled_ui(gap.is_some(), |ui| {
                                 theme::icon_button(
                                     ui,
                                     icons,
@@ -758,8 +781,8 @@ impl Editor {
                             })
                             .inner;
                         mark!(rects, "vfx:stop_add".into(), add.rect);
-                        if add.clicked() {
-                            let t = round3(widest_gap(work.color.iter().map(|s| s.0)));
+                        if let (true, Some(t)) = (add.clicked(), gap) {
+                            let t = round3(t);
                             let at = work.color.partition_point(|s| s.0 < t);
                             let c = color_at(&work, t).map(round3);
                             work.color.insert(at, (t, c));
@@ -918,8 +941,14 @@ mod tests {
             }
         );
         assert!(matches!(color_edit(&v), VfxEdit::ColorGradient { .. }));
-        assert_eq!(widest_gap([0.0, 0.2, 1.0].into_iter()), 0.6);
+        assert_eq!(widest_gap([0.0, 0.2, 1.0].into_iter()), Some(0.6));
+        // Gaps at the ends count (keys inside 0..1); no room = no key.
+        assert_eq!(widest_gap([0.1, 0.2, 0.3].into_iter()), Some(0.65));
+        let crowded: Vec<f64> = (0..=60).map(|i| f64::from(i) / 60.0).collect();
+        assert_eq!(widest_gap(crowded.into_iter()), None);
         assert_eq!(t_range(&[0.0, 0.5, 1.0], 1), Some((0.01, 0.99)));
         assert_eq!(t_range(&[0.0, 1.0], 0), None);
+        // Authored keys closer than the editor's gap: no drag range (no inverted clamp).
+        assert_eq!(t_range(&[0.0, 0.005, 0.01, 1.0], 1), None);
     }
 }

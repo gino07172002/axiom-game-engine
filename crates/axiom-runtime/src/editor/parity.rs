@@ -1310,6 +1310,42 @@ fn camera_blockers_and_their_migration_match_acl() {
     let camera = migrated.entity("stage/camera").unwrap();
     assert_eq!(camera.tags, ["keep"]);
     assert!(!camera.components.contains_key("camera.blocker"));
+    // A prefab that already blocks: `on` is a no-op for its instances, `off` must edit the
+    // prefab (even when the instance also has its own marker).
+    let mut prefab = lab();
+    prefab.capabilities.insert("camera".into(), 1);
+    prefab
+        .prefabs
+        .get_mut("cargo-crate")
+        .unwrap()
+        .components
+        .insert("camera.blocker".into(), serde_json::json!({}));
+    let crate_id = ["stage/crate".to_owned()];
+    assert!(
+        axiom_core::ops::set_camera_blocker(&prefab, &crate_id, true)
+            .unwrap()
+            .is_empty()
+    );
+    let mut overridden = prefab.clone();
+    overridden
+        .entity_mut("stage/crate")
+        .unwrap()
+        .components
+        .insert("camera.blocker".into(), serde_json::json!({}));
+    for w in [&prefab, &overridden] {
+        let e = axiom_core::ops::set_camera_blocker(w, &crate_id, false).unwrap_err();
+        assert!(format!("{e:#}").contains("edit the prefab"), "{e:#}");
+    }
+    // Migration only drops the tag of a mesh-less entity, keeping its other components.
+    let mut bare = headless(&lab(), "tag stage/camera +camera_blocker");
+    bare.capabilities.insert("camera".into(), 1);
+    bare.entity_mut("stage/camera")
+        .unwrap()
+        .components
+        .insert("camera.blocker".into(), serde_json::json!({}));
+    let kept = headless(&bare, "migrate camera_blocker");
+    let camera = kept.entity("stage/camera").unwrap();
+    assert!(camera.tags.is_empty() && camera.components.contains_key("camera.blocker"));
     // Nothing left to migrate: the editor writes nothing.
     let mut e = Editor::new(migrated, 1, None);
     assert!(e
