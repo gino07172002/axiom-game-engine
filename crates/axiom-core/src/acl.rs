@@ -53,6 +53,8 @@ EDIT (any number, atomic):
   instantiate PREFAB P            one instance, default id = prefab id (+/2..); spawn = bulk, tags, labels
   duplicate SEL                   copies keep parent+scenes; ids SRC/copy, SRC/copy/2..
                                   (entities[id=a,id=b] keeps that order; otherwise ID order)
+  group SEL [id=ID]               new empty parent (default id group, group/2..) for SEL, world poses kept;
+                                  under their shared parent at their mean position, else at the root
   reparent ID PARENT|root [keep=world|local]   default keeps world pose (editor drag)
   scene create ID [on|off] | scene activate ID on|off | scene delete ID (objects kept)
   scene member SCENE SEL on|off
@@ -336,6 +338,7 @@ enum Statement {
     Create(String, Box<crate::ops::Placement>),
     Instantiate(String, Box<crate::ops::Placement>),
     Duplicate(Box<Selection>),
+    Group(Box<Selection>, Option<String>),
     Reparent(String, Option<String>, bool),
     SceneCreate(String, bool),
     SceneActive(String, bool),
@@ -822,6 +825,18 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "duplicate" => {
             ensure!(tokens.len() == 2, "duplicate takes one selector");
             Statement::Duplicate(Box::new(selector(arg(1)?)?))
+        }
+        "group" => {
+            let id = match tokens.get(2).map(String::as_str) {
+                None => None,
+                Some(t) => Some(
+                    t.strip_prefix("id=")
+                        .with_context(|| format!("unexpected '{t}' (expected id=ID)"))?
+                        .to_owned(),
+                ),
+            };
+            ensure!(tokens.len() <= 3, "use: group SEL [id=ID]");
+            Statement::Group(Box::new(selector(arg(1)?)?), id)
         }
         "reparent" => {
             let parent = arg(2)?;
@@ -1743,6 +1758,9 @@ pub fn run(
             }
             Statement::Duplicate(select) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::duplicate(w, &ids))
+                .map(|c| c.edits),
+            Statement::Group(select, id) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::create_group(w, &ids, id.as_deref()))
                 .map(|c| c.edits),
             Statement::Reparent(id, parent, keep_world) => {
                 crate::ops::reparent(w, &id, parent.as_deref(), keep_world)

@@ -340,9 +340,10 @@ impl MeshRenderer {
         camera: u32,
         shaders: &crate::shader_gpu::ShaderGpu,
         blend: bool,
-    ) {
+    ) -> (u32, u64) {
+        let (mut calls, mut triangles) = (0, 0);
         if self.active.is_empty() {
-            return;
+            return (calls, triangles);
         }
         pass.set_bind_group(0, &self.camera, &[camera * crate::render::GLOBALS_STRIDE]);
         for active in &self.active {
@@ -376,8 +377,11 @@ impl MeshRenderer {
                 }
                 pass.set_bind_group(1, &m.bind, &[((active.first + i) * 256) as u32]);
                 pass.draw_indexed(m.range.clone(), 0, 0..1);
+                calls += 1;
+                triangles += m.range.len() as u64 / 3;
             }
         }
+        (calls, triangles)
     }
 }
 fn upload_texture(

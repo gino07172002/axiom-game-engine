@@ -117,6 +117,11 @@ struct App {
     game_input: bool,
     /// The game context got pointer events last frame (a `PointerGone` follows on leaving).
     game_pointer: bool,
+    /// The game interface style (`ui::configure`); the editor installs its own theme while it
+    /// draws, so Play Maximized puts this one back.
+    game_style: Arc<egui::Style>,
+    /// Seconds since the editor's GPU allocator readout was refreshed (every 2 s).
+    gpu_alloc_elapsed: f32,
 }
 
 /// Play-in-editor debug overlay, projected through the first active game view.
@@ -681,6 +686,7 @@ impl App {
         };
         let ctx = egui::Context::default();
         ui::configure(&ctx);
+        let game_style = ctx.style();
         let ui = UiState {
             playing: editor.is_none() && options.start_play,
             port: options.port,
@@ -733,6 +739,8 @@ impl App {
             game_ctx: None,
             game_input: false,
             game_pointer: false,
+            game_style,
+            gpu_alloc_elapsed: f32::INFINITY,
         })
     }
 
@@ -1975,6 +1983,15 @@ impl App {
                 self.quit = true;
                 Ok(())
             }
+            editor::Action::ToggleFullscreen => {
+                if let Some(window) = &self.window {
+                    let full = window.fullscreen().is_some();
+                    window.set_fullscreen(
+                        (!full).then_some(winit::window::Fullscreen::Borderless(None)),
+                    );
+                }
+                Ok(())
+            }
             editor::Action::PlayClip {
                 capability,
                 action,
@@ -2265,6 +2282,22 @@ impl App {
         self.fps_smooth = self.fps_smooth * 0.95 + elapsed.max(0.001).recip() * 0.05;
         self.ui.fps = self.fps_smooth;
         self.poll_elapsed += elapsed;
+        self.gpu_alloc_elapsed += elapsed;
+        if let Some(editor) = &mut self.editor {
+            // Status-bar readouts: last frame's draw counters, bridge activity (two atomics),
+            // and the wgpu allocator total at a low rate (its report lists every allocation).
+            editor.bridge_activity = self._bridge.as_ref().map_or((0, None), Bridge::activity);
+            if let Some(renderer) = &self.renderer {
+                editor.frame_stats = renderer.stats;
+                if self.gpu_alloc_elapsed >= 2.0 {
+                    self.gpu_alloc_elapsed = 0.0;
+                    editor.gpu_alloc = renderer
+                        .device
+                        .generate_allocator_report()
+                        .map(|r| r.total_allocated_bytes);
+                }
+            }
+        }
         // Proposals load immediately at startup / after a resolve, then follow the poll.
         let proposals_unknown = self
             .editor
@@ -2372,6 +2405,9 @@ impl App {
                 editor.fps = self.ui.fps;
                 editor_actions = editor.draw(ctx, &self.runtime);
             } else {
+                if self.editor.is_some() && !Arc::ptr_eq(&ctx.style(), &self.game_style) {
+                    ctx.set_style(self.game_style.clone());
+                }
                 actions = self.runtime.draw_ui(ctx, &mut self.ui);
                 if self.editor.is_some() {
                     egui::Area::new(egui::Id::new("editor_stop"))
@@ -2670,6 +2706,18 @@ impl ApplicationHandler for App {
                     )
                 })
                 .unwrap_or(winit::dpi::LogicalSize::new(1280.0, 800.0));
+            // QA captures at an exact size: AXIOM_WINDOW_SIZE=1920x1080 (physical pixels).
+            let size: winit::dpi::Size = match std::env::var("AXIOM_WINDOW_SIZE")
+                .ok()
+                .and_then(|v| {
+                    let (w, h) = v.split_once('x')?;
+                    Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?))
+                })
+                .filter(|&(w, h)| (640..=7680).contains(&w) && (480..=4320).contains(&h))
+            {
+                Some((w, h)) => winit::dpi::PhysicalSize::new(w, h).into(),
+                None => size.into(),
+            };
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()

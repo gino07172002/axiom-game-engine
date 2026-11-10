@@ -359,7 +359,10 @@ fn play_keeps_the_editor_routes_input_on_capture_and_esc_releases() {
     // Play focuses the Game tab; the editor chrome (menus, Inspector, Hierarchy) stays.
     assert!(h.editor.game.visible);
     let out = h.frame(vec![]).1;
-    assert!(drawn(&out, "Inspector") && drawn(&out, "Hierarchy") && drawn(&out, "Stop"));
+    assert!(drawn(&out, "Inspector") && drawn(&out, "Hierarchy"));
+    // The top bar Play group: Stop is an icon button.
+    assert!(h.editor.rects.contains_key("play:play.stop"));
+    assert!(h.editor.command_blocked("play.stop").is_none());
     assert!(drawn(&out, "click game for input"));
     // Click in the game area: the host is asked to give the game the input.
     let center = h.editor.game.rect.center();

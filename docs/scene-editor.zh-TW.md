@@ -75,6 +75,22 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 
 父層異動會出現在 `/relations/parent/@ID`，場景成員異動會出現在 `/scenes/@SCENE/entities/@ID`。路徑中的斜線會以 `~1` 跳脫。可用 `diff FROM TO` 分頁檢查完整差異。
 
+## 外觀(M-UI 視覺改版)
+
+- **主題**:深色底、粉紅強調色 `#ff4d6d`、圓角卡片;所有顏色集中在 `editor/theme.rs`(另有 `theme::style` 建出編輯器專用的 egui style,遊戲 UI 仍用自己的 style)。
+- **圖示**:`assets/editor-icons/` 的 106 個原創 SVG,由 `scripts/build-editor-icons.ps1`(Edge 無頭模式)在建置時點陣化成一張 `atlas.png`(40 px 與 20 px 兩層,白色 + alpha)與 `atlas.json`。編輯器把 PNG 內嵌、啟動時解碼並上傳一次,以頂點色著色;查表是 `Icon` 列舉的索引。改了 SVG 要重跑腳本並提交新的 atlas(`icons::tests` 會檢查名稱與 atlas 一致)。
+- **頂列**:Logo + Axiom、選單(File / Edit / View / Object / Assets / World / Play / Window / Help);第二列是圓角膠囊控制項:世界名稱 ▾(World Settings、Verify、Copy Context)、場景 ▾(Hierarchy 的場景篩選,只影響檢視)、`REV n`(Axiom 沒有「未存檔」:每次編輯都是背景寫入器提交的修訂;佇列中有 `writing N`)、Undo / Redo、Run(▾ 選 Game 分頁或 Play Maximized)/ Pause / Step / Stop、Agent API(bridge 連接埠、已處理的請求數、5 秒內有請求為 active;點一下開 AI / Protocol 分頁)、齒輪 = 偏好設定。
+- **Hierarchy**:工具列 Add ▾、Duplicate、Delete、Rename、Create Group(`object.group`,Ctrl+G)、Frame,右側「…」= 場景管理與其他選取指令;搜尋框 + 篩選圖示(依場景篩選);每列有類型圖示(滑鼠提示列出全部元件類別)、眼睛 / 鎖(只在滑鼠經過、選取或已設定時顯示)。Prefab 實例以藍色顯示。
+- **Scene 視口**:工具圖示(Select / Move / Rotate / Scale)、Snap 開關 + 增量下拉、Global / Local、格線、gizmo、視角下拉,分組成膠囊;3D 視圖內縮並畫上圓角外框;左下 FPS 標籤、右下 Frame 與 Fullscreen(`view.fullscreen`,F11,整個視窗無邊框全螢幕);軸向方塊移到右上。沒有 Rect 工具、Pivot 模式與著色模式下拉(renderer 沒有這些功能)。
+- **Inspector**:Entity 卡片(名稱、ID + 複製、Prefab、Tags);Transform、Parent and scenes 為可摺疊卡片;每個元件一張卡片(展開箭頭、強調色的 Enabled 方塊、圖示、名稱;展開的卡片有 Reset、Play / Edit Graph 圖示與「…」選單:Reset、Play、Copy、Paste、Make Main Camera、Remove);一次只展開一張(表單草稿一次只有一個元件)。Components ▸ Advanced 可用 ID 載入任意元件。
+- **Assets**:麵包屑(Assets › 類別或資料夾)、Grid / List、縮圖大小滑桿(48–144)、搜尋、類別篩選;格子標籤依寬度截斷,不再壓到鄰格。
+- **Graphs**:State machine 工具列多一個 Frame(`graph.frame`):平移畫布讓全部狀態可見。沒有縮放。
+- **狀態列**:狀態文字、場景(篩選中的或啟用中的)、物件數、選取數、Draw(世界 draw call + UI 網格數)、Tris(世界三角形 × instance)、GPU alloc(wgpu allocator 報告,每 2 秒更新;Vulkan 沒有報告時顯示 n/a)、Edit / Play Mode、bridge、FPS、版本。Draw / Tris 是 renderer 錄製指令時在 CPU 上計數,不是 GPU 時間。
+- **面板外框**:每個停靠區是圓角、1 px 邊框的面板,面板之間留背景色間隙。分頁標題前有圖示;同一格只有一個分頁時顯示為面板標題,有多個時是膠囊形分頁(如 Scene / Game / Graphs)。分頁上不再有 X:每個面板右上角的「…」選單有 Close 與 Reset Layout(`window.close`、`layout.reset`;浮動視窗裡的分頁也有)。
+- **預設版面(版面版本 2)**:Hierarchy | Scene、Game、Graphs 在上,Assets、Problems、History 在下 | 全高 Inspector。Changes、Proposals、Scenarios、AI / Protocol 預設關閉,從 Window 選單或 `window.*` / `editor_view {dock}` 開啟(開在下方分頁區);Graphs、UI Editor 開在 Scene 旁。舊版存下的目前版面會在第一次啟動時換成新 Default,原本的排列存成具名版面 **Previous**;舊的預設排列是內建的 **Classic**。Window › Layouts › Reset Layout 隨時回到 Default。
+- **密度**:8 pt 間距格線、控制項 24 pt 高、Hierarchy 列高 26 pt、Inspector 欄位為「標籤欄 96 pt + 值」兩欄;收合的物件欄位在名稱後顯示前 36 個字元的摘要。
+- QA:`AXIOM_WINDOW_SIZE=WxH`(實體像素)可指定編輯器 / 遊戲視窗大小,用於固定大小截圖。
+
 ## 驗證
 
 ```powershell

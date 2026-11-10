@@ -86,6 +86,13 @@ impl Harness {
         actions.extend(self.frame(vec![press(at, false)]));
         actions
     }
+    /// Opens the open component card's "…" menu, lets the popup settle (its first frame is
+    /// laid out before it is kept on screen), then clicks `item` in it.
+    fn menu(&mut self, item: &str) -> Vec<Action> {
+        self.click("component:menu");
+        self.frame(vec![]);
+        self.click(item)
+    }
     fn key(&mut self, key: Key) -> Vec<Action> {
         self.frame(vec![Event::Key {
             key,
@@ -428,10 +435,11 @@ fn component_header_reset_copy_paste_enable_and_main_camera_match_acl() {
     let mut h = Harness::new(start.clone());
     h.open("lamp", "render.light");
     // Copy lamp's values, paste them on lamp2.
-    h.click("component:copy");
+    h.menu("component:copy");
+    assert!(h.editor.component_clipboard.is_some());
     let copied = h.value("lamp", "render.light", "");
     h.open("lamp2", "render.light");
-    let pasted = h.click("component:paste");
+    let pasted = h.menu("component:paste");
     h.commit(pasted);
     assert_same(
         &h,
@@ -455,7 +463,7 @@ fn component_header_reset_copy_paste_enable_and_main_camera_match_acl() {
     let cams = acl(&lab(), "create camera id=cam2");
     let mut h = Harness::new(cams.clone());
     h.open("cam2", "render.camera");
-    let main = h.click("component:main_camera");
+    let main = h.menu("component:main_camera");
     h.commit(main);
     assert_same(&h, &cams, "camera main cam2");
 }

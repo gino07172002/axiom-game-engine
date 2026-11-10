@@ -3,18 +3,23 @@
 //! asset dialogs, Find Usages and rename with reference fix-up. Every content change is an
 //! `axiom_core::ops` call that ACL `asset place|create|rename` makes too; the list, usages and
 //! per-cell thumbnail requests are cached per world version, never rebuilt per frame.
+use super::icons::Icon;
+use super::theme::{self, ACCENT, MUTED, WARNING};
 use super::thumbs::{self, Request, Shown, Thumbnails};
 use super::{Action, Dock, Editor};
 use axiom_core::assets::{self, AssetEntry, AssetKind, Owner, Usage};
 use axiom_core::ops::{self, NewAsset};
 use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Ui};
 
-const MUTED: Color32 = Color32::from_rgb(138, 154, 172);
-const ACCENT: Color32 = Color32::from_rgb(105, 222, 195);
-const WARNING: Color32 = Color32::from_rgb(242, 176, 92);
-/// Grid cell: thumbnail square plus a label line.
-const CELL: egui::Vec2 = egui::vec2(84.0, 98.0);
+/// Thumbnail edge in points (Assets toolbar slider); the grid cell adds padding and a label.
+const THUMB_DEFAULT: f32 = 72.0;
+const THUMB_RANGE: std::ops::RangeInclusive<f32> = 48.0..=144.0;
 const LIST_ROW: f32 = 22.0;
+
+/// Grid cell for a thumbnail edge: square plus a label line.
+fn cell_size(thumb: f32) -> egui::Vec2 {
+    vec2(thumb + 12.0, thumb + 30.0)
+}
 
 /// Drag-and-drop payload of an asset cell (the Hierarchy drags entity IDs as `String`).
 #[derive(Clone, Debug, PartialEq)]
@@ -40,8 +45,7 @@ struct Rows {
     haystack: Vec<String>,
     /// Source folder (files only).
     folder: Vec<Option<String>>,
-    /// Grid label (ID, shortened) and list detail (`file · N refs`).
-    label: Vec<String>,
+    /// List detail (`file · N refs`).
     detail: Vec<String>,
     refs: Vec<usize>,
     requests: Vec<Option<Request>>,
@@ -59,7 +63,6 @@ impl Rows {
             version,
             haystack: Vec::with_capacity(entries.len()),
             folder: Vec::with_capacity(entries.len()),
-            label: Vec::with_capacity(entries.len()),
             detail: Vec::with_capacity(entries.len()),
             refs: Vec::with_capacity(entries.len()),
             requests: Vec::with_capacity(entries.len()),
@@ -81,11 +84,6 @@ impl Rows {
             }
             rows.haystack
                 .push(format!("{} {} {}", e.kind.name(), e.id, file.unwrap_or("")).to_lowercase());
-            rows.label.push(if e.id.chars().count() > 14 {
-                format!("{}…", e.id.chars().take(13).collect::<String>())
-            } else {
-                e.id.clone()
-            });
             rows.detail.push(match file {
                 Some(f) => format!("{f} · {refs} ref(s)"),
                 None => format!("{refs} ref(s)"),
@@ -145,6 +143,8 @@ pub(crate) struct AssetBrowser {
     pub query: String,
     /// List instead of grid.
     pub list: bool,
+    /// Thumbnail edge in points (0 = default).
+    pub thumb: f32,
     pub selected: Option<(AssetKind, String)>,
     /// Rename being typed for the selected asset.
     pub rename: Option<String>,
@@ -577,69 +577,138 @@ impl Editor {
                 let _ = &$r;
             };
         }
-        // Toolbar: search, grid / list, New, thumbnails.
+        // Toolbar: breadcrumb, view mode and thumbnail size, search + kind filter, New, thumbnails.
+        let icons = self.icons;
+        if b.thumb <= 0.0 {
+            b.thumb = THUMB_DEFAULT;
+        }
+        let kind_counts: Vec<(AssetKind, usize)> = b
+            .rows
+            .as_ref()
+            .map(|r| r.kind_titles.iter().map(|(k, _, n)| (*k, *n)).collect())
+            .unwrap_or_default();
         ui.horizontal(|ui| {
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut b.query)
-                    .hint_text("Search assets")
-                    .desired_width(180.0),
-            );
-            rect!("assets:search".into(), search.rect);
-            if ui.selectable_label(!b.list, "Grid").clicked() {
-                b.list = false;
+            // Breadcrumb: Assets › kind or folder (the root shows everything).
+            let root = ui.add(egui::Button::new(RichText::new("Assets").color(theme::TEXT)).frame(false));
+            rect!("assets:crumb:root".into(), root.rect);
+            if root.clicked() {
+                b.filter = Filter::All;
             }
-            if ui.selectable_label(b.list, "List").clicked() {
-                b.list = true;
+            let crumb = match &b.filter {
+                Filter::All => None,
+                Filter::Kind(kind) => Some(kind.title().to_owned()),
+                Filter::Folder(folder) => Some(folder.clone()),
+            };
+            if let Some(crumb) = crumb {
+                icons.show(ui, Icon::ChevronRight, 12.0, MUTED);
+                ui.label(RichText::new(crumb).color(theme::TEXT));
             }
-            ui.add_enabled_ui(!busy, |ui| {
-                ui.menu_button("New…", |ui| {
-                    for (command, title) in [
-                        ("asset.new_material", "Material…"),
-                        ("asset.new_prefab", "Prefab…"),
-                        ("asset.new_machine", "FSM Machine…"),
-                        ("asset.new_ui_document", "UI Document…"),
-                        ("asset.new_input_map", "Input Map…"),
-                    ] {
-                        let blocked = self.asset_command_blocked(command);
-                        if ui
-                            .add_enabled(blocked.is_none(), egui::Button::new(title))
-                            .on_disabled_hover_text(blocked.unwrap_or_default())
-                            .clicked()
-                        {
-                            intents.push(Intent::Command(command));
-                            ui.close_menu();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Right to left: the first widget is the rightmost.
+                let generate = ui
+                    .add_enabled_ui(!b.thumbs.explicit_running(), |ui| {
+                        theme::icon_button(
+                            ui,
+                            icons,
+                            Icon::Texture,
+                            "Generate every model / image / material thumbnail in the background (cached by content hash)",
+                            false,
+                        )
+                    })
+                    .inner;
+                rect!("assets:thumbnails".into(), generate.rect);
+                if generate.clicked() {
+                    intents.push(Intent::Command("asset.thumbnails"));
+                }
+                if let Some(job) = b.thumbs.running() {
+                    let (done, total) = job.progress();
+                    let cancel = ui.small_button("Cancel");
+                    rect!("assets:cancel".into(), cancel.rect);
+                    if cancel.clicked() {
+                        intents.push(Intent::Command("asset.cancel_thumbnails"));
+                    }
+                    ui.add(
+                        egui::ProgressBar::new(if total == 0 {
+                            0.0
+                        } else {
+                            done as f32 / total as f32
+                        })
+                        .desired_width(90.0)
+                        .text(format!("{done}/{total}")),
+                    );
+                }
+                ui.add_enabled_ui(!busy, |ui| {
+                    ui.menu_button("New…", |ui| {
+                        for (command, title) in [
+                            ("asset.new_material", "Material…"),
+                            ("asset.new_prefab", "Prefab…"),
+                            ("asset.new_machine", "FSM Machine…"),
+                            ("asset.new_ui_document", "UI Document…"),
+                            ("asset.new_input_map", "Input Map…"),
+                        ] {
+                            let blocked = self.asset_command_blocked(command);
+                            if ui
+                                .add_enabled(blocked.is_none(), egui::Button::new(title))
+                                .on_disabled_hover_text(blocked.unwrap_or_default())
+                                .clicked()
+                            {
+                                intents.push(Intent::Command(command));
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                });
+                theme::divider(ui);
+                let filter = theme::icon_button(
+                    ui,
+                    icons,
+                    Icon::Filter,
+                    "Filter by kind",
+                    !matches!(b.filter, Filter::All),
+                );
+                rect!("assets:filter".into(), filter.rect);
+                let id = ui.make_persistent_id("assets_filter");
+                theme::dropdown(ui, id, &filter, |ui| {
+                    if ui.selectable_label(b.filter == Filter::All, "All kinds").clicked() {
+                        b.filter = Filter::All;
+                        theme::close_dropdown(ui, id);
+                    }
+                    for (kind, n) in &kind_counts {
+                        let text = format!("{}  {n}", kind.title());
+                        if ui.selectable_label(b.filter == Filter::Kind(*kind), text).clicked() {
+                            b.filter = Filter::Kind(*kind);
+                            theme::close_dropdown(ui, id);
                         }
                     }
                 });
-            });
-            let generate = ui
-                .add_enabled(
-                    !b.thumbs.explicit_running(),
-                    egui::Button::new("Thumbnails"),
-                )
-                .on_hover_text("Generate every model / image / material thumbnail in the background (cached by content hash)");
-            rect!("assets:thumbnails".into(), generate.rect);
-            if generate.clicked() {
-                intents.push(Intent::Command("asset.thumbnails"));
-            }
-            if let Some(job) = b.thumbs.running() {
-                let (done, total) = job.progress();
-                ui.add(
-                    egui::ProgressBar::new(if total == 0 {
-                        0.0
-                    } else {
-                        done as f32 / total as f32
-                    })
-                    .desired_width(120.0)
-                    .text(format!("{done}/{total}")),
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut b.query)
+                        // Stable ID: the breadcrumb before it comes and goes.
+                        .id_salt("assets_search")
+                        .hint_text("Search assets…")
+                        .desired_width(160.0),
                 );
-                let cancel = ui.small_button("Cancel");
-                rect!("assets:cancel".into(), cancel.rect);
-                if cancel.clicked() {
-                    intents.push(Intent::Command("asset.cancel_thumbnails"));
+                rect!("assets:search".into(), search.rect);
+                icons.show(ui, Icon::Search, 16.0, MUTED);
+                theme::divider(ui);
+                if !b.list {
+                    ui.add(
+                        egui::Slider::new(&mut b.thumb, THUMB_RANGE)
+                            .show_value(false)
+                            .trailing_fill(true),
+                    )
+                    .on_hover_text("Thumbnail size");
                 }
-            }
+                for (list, icon, tip) in [(true, Icon::List, "List"), (false, Icon::Grid, "Grid")] {
+                    let r = theme::icon_button(ui, icons, icon, tip, b.list == list);
+                    rect!(format!("assets:view:{tip}"), r.rect);
+                    if r.clicked() {
+                        b.list = list;
+                    }
+                }
+            });
         });
+        let thumb = b.thumb;
         let rows = b.rows.take().expect("asset_rows built it");
         rect!("assets:clip".into(), ui.clip_rect());
         // Tree: all, kinds, folders.
@@ -858,7 +927,8 @@ impl Editor {
                 if ui.is_rect_visible(r) {
                     let painter = ui.painter();
                     if is_selected {
-                        painter.rect_filled(r, 4.0, Color32::from_rgba_unmultiplied(105, 222, 195, 40));
+                        painter.rect_filled(r, theme::RADIUS, theme::ACCENT_SOFT);
+                        painter.rect_stroke(r, theme::RADIUS, egui::Stroke::new(1.0_f32, ACCENT), egui::StrokeKind::Inside);
                     } else if response.hovered() {
                         painter.rect_filled(r, 4.0, Color32::from_white_alpha(10));
                     }
@@ -879,7 +949,7 @@ impl Editor {
                             );
                         }
                         other => {
-                            painter.rect_filled(square, 6.0, Color32::from_rgb(28, 34, 42));
+                            painter.rect_filled(square, 6.0, theme::CARD);
                             painter.text(
                                 square.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -913,13 +983,16 @@ impl Editor {
                             MUTED,
                         );
                     } else {
-                        painter.text(
-                            pos2(r.center().x, square.bottom() + 9.0),
-                            egui::Align2::CENTER_CENTER,
-                            &rows.label[i],
-                            egui::FontId::proportional(11.5),
-                            Color32::LIGHT_GRAY,
+                        // One line, elided to the cell width (long and CJK IDs no longer run
+                        // into the neighbours); egui caches the laid-out text.
+                        let mut job = egui::text::LayoutJob::single_section(
+                            entry.id.clone(),
+                            egui::TextFormat::simple(egui::FontId::proportional(11.5), theme::TEXT),
                         );
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - 6.0);
+                        let galley = ui.fonts(|f| f.layout_job(job));
+                        let at = pos2(r.center().x - galley.size().x / 2.0, square.bottom() + 4.0);
+                        painter.galley(at, galley, theme::TEXT);
                     }
                 }
                 if response.drag_started_by(egui::PointerButton::Primary) {
@@ -1012,17 +1085,18 @@ impl Editor {
                     });
             } else {
                 let spacing = ui.spacing().item_spacing.x;
-                let columns = (((ui.available_width() + spacing) / (CELL.x + spacing)).floor() as usize).max(1);
+                let cell_size = cell_size(thumb);
+                let columns = (((ui.available_width() + spacing) / (cell_size.x + spacing)).floor() as usize).max(1);
                 let lines = shown.len().div_ceil(columns);
                 egui::ScrollArea::vertical()
                     .id_salt("asset_grid")
                     .auto_shrink([false, false])
-                    .show_rows(ui, CELL.y, lines, |ui, range| {
+                    .show_rows(ui, cell_size.y, lines, |ui, range| {
                         for line in range {
                             ui.horizontal(|ui| {
                                 for c in 0..columns {
                                     if let Some(&i) = shown.get(line * columns + c) {
-                                        cell(ui, i as usize, CELL, false);
+                                        cell(ui, i as usize, cell_size, false);
                                     }
                                 }
                             });

@@ -1,0 +1,846 @@
+{
+  "version": 1,
+  "size": 24,
+  "icons": [
+    {
+      "name": "select",
+      "file": "select.svg",
+      "tags": [
+        "tool",
+        "pointer"
+      ]
+    },
+    {
+      "name": "move",
+      "file": "move.svg",
+      "tags": [
+        "tool",
+        "transform"
+      ]
+    },
+    {
+      "name": "rotate",
+      "file": "rotate.svg",
+      "tags": [
+        "tool",
+        "transform"
+      ]
+    },
+    {
+      "name": "scale",
+      "file": "scale.svg",
+      "tags": [
+        "tool",
+        "transform"
+      ]
+    },
+    {
+      "name": "rect-tool",
+      "file": "rect-tool.svg",
+      "tags": [
+        "tool",
+        "bounds"
+      ]
+    },
+    {
+      "name": "snap",
+      "file": "snap.svg",
+      "tags": [
+        "tool",
+        "magnet"
+      ]
+    },
+    {
+      "name": "grid",
+      "file": "grid.svg",
+      "tags": [
+        "tool",
+        "viewport"
+      ]
+    },
+    {
+      "name": "list",
+      "file": "list.svg",
+      "tags": [
+        "tool",
+        "viewport",
+        "list-view"
+      ]
+    },
+    {
+      "name": "pivot",
+      "file": "pivot.svg",
+      "tags": [
+        "tool",
+        "origin"
+      ]
+    },
+    {
+      "name": "center",
+      "file": "center.svg",
+      "tags": [
+        "tool",
+        "focus"
+      ]
+    },
+    {
+      "name": "global",
+      "file": "global.svg",
+      "tags": [
+        "tool",
+        "coordinates"
+      ]
+    },
+    {
+      "name": "local",
+      "file": "local.svg",
+      "tags": [
+        "tool",
+        "coordinates"
+      ]
+    },
+    {
+      "name": "frame",
+      "file": "frame.svg",
+      "tags": [
+        "tool",
+        "focus"
+      ]
+    },
+    {
+      "name": "fullscreen",
+      "file": "fullscreen.svg",
+      "tags": [
+        "tool",
+        "viewport"
+      ]
+    },
+    {
+      "name": "screenshot",
+      "file": "screenshot.svg",
+      "tags": [
+        "tool",
+        "capture"
+      ]
+    },
+    {
+      "name": "play",
+      "file": "play.svg",
+      "tags": [
+        "playback"
+      ]
+    },
+    {
+      "name": "pause",
+      "file": "pause.svg",
+      "tags": [
+        "playback"
+      ]
+    },
+    {
+      "name": "stop",
+      "file": "stop.svg",
+      "tags": [
+        "playback"
+      ]
+    },
+    {
+      "name": "step",
+      "file": "step.svg",
+      "tags": [
+        "playback",
+        "frame"
+      ]
+    },
+    {
+      "name": "time-scale",
+      "file": "time-scale.svg",
+      "tags": [
+        "playback",
+        "speed"
+      ]
+    },
+    {
+      "name": "record",
+      "file": "record.svg",
+      "tags": [
+        "playback",
+        "capture"
+      ]
+    },
+    {
+      "name": "undo",
+      "file": "undo.svg",
+      "tags": [
+        "edit"
+      ]
+    },
+    {
+      "name": "redo",
+      "file": "redo.svg",
+      "tags": [
+        "edit"
+      ]
+    },
+    {
+      "name": "save",
+      "file": "save.svg",
+      "tags": [
+        "edit",
+        "disk"
+      ]
+    },
+    {
+      "name": "add",
+      "file": "add.svg",
+      "tags": [
+        "edit",
+        "plus"
+      ]
+    },
+    {
+      "name": "duplicate",
+      "file": "duplicate.svg",
+      "tags": [
+        "edit",
+        "clone"
+      ]
+    },
+    {
+      "name": "delete",
+      "file": "delete.svg",
+      "tags": [
+        "edit",
+        "trash"
+      ]
+    },
+    {
+      "name": "rename",
+      "file": "rename.svg",
+      "tags": [
+        "edit",
+        "pencil"
+      ]
+    },
+    {
+      "name": "copy",
+      "file": "copy.svg",
+      "tags": [
+        "edit",
+        "clipboard"
+      ]
+    },
+    {
+      "name": "paste",
+      "file": "paste.svg",
+      "tags": [
+        "edit",
+        "clipboard"
+      ]
+    },
+    {
+      "name": "reset",
+      "file": "reset.svg",
+      "tags": [
+        "edit",
+        "restore"
+      ]
+    },
+    {
+      "name": "more",
+      "file": "more.svg",
+      "tags": [
+        "edit",
+        "menu"
+      ]
+    },
+    {
+      "name": "search",
+      "file": "search.svg",
+      "tags": [
+        "edit",
+        "find"
+      ]
+    },
+    {
+      "name": "filter",
+      "file": "filter.svg",
+      "tags": [
+        "edit",
+        "funnel"
+      ]
+    },
+    {
+      "name": "close",
+      "file": "close.svg",
+      "tags": [
+        "edit",
+        "dismiss"
+      ]
+    },
+    {
+      "name": "check",
+      "file": "check.svg",
+      "tags": [
+        "edit",
+        "confirm"
+      ]
+    },
+    {
+      "name": "chevron-down",
+      "file": "chevron-down.svg",
+      "tags": [
+        "edit",
+        "disclosure"
+      ]
+    },
+    {
+      "name": "chevron-right",
+      "file": "chevron-right.svg",
+      "tags": [
+        "edit",
+        "disclosure"
+      ]
+    },
+    {
+      "name": "chevron-up",
+      "file": "chevron-up.svg",
+      "tags": [
+        "edit",
+        "disclosure"
+      ]
+    },
+    {
+      "name": "drag-handle",
+      "file": "drag-handle.svg",
+      "tags": [
+        "edit",
+        "reorder"
+      ]
+    },
+    {
+      "name": "external-link",
+      "file": "external-link.svg",
+      "tags": [
+        "edit",
+        "open"
+      ]
+    },
+    {
+      "name": "link",
+      "file": "link.svg",
+      "tags": [
+        "edit",
+        "reference"
+      ]
+    },
+    {
+      "name": "unlink",
+      "file": "unlink.svg",
+      "tags": [
+        "edit",
+        "reference"
+      ]
+    },
+    {
+      "name": "eye",
+      "file": "eye.svg",
+      "tags": [
+        "visibility"
+      ]
+    },
+    {
+      "name": "eye-off",
+      "file": "eye-off.svg",
+      "tags": [
+        "visibility"
+      ]
+    },
+    {
+      "name": "lock",
+      "file": "lock.svg",
+      "tags": [
+        "visibility",
+        "secure"
+      ]
+    },
+    {
+      "name": "unlock",
+      "file": "unlock.svg",
+      "tags": [
+        "visibility",
+        "secure"
+      ]
+    },
+    {
+      "name": "hierarchy",
+      "file": "hierarchy.svg",
+      "tags": [
+        "panel",
+        "tree"
+      ]
+    },
+    {
+      "name": "inspector",
+      "file": "inspector.svg",
+      "tags": [
+        "panel",
+        "properties"
+      ]
+    },
+    {
+      "name": "assets",
+      "file": "assets.svg",
+      "tags": [
+        "panel",
+        "archive"
+      ]
+    },
+    {
+      "name": "console",
+      "file": "console.svg",
+      "tags": [
+        "panel",
+        "terminal"
+      ]
+    },
+    {
+      "name": "history",
+      "file": "history.svg",
+      "tags": [
+        "panel",
+        "clock"
+      ]
+    },
+    {
+      "name": "proposals",
+      "file": "proposals.svg",
+      "tags": [
+        "panel",
+        "inbox"
+      ]
+    },
+    {
+      "name": "problems",
+      "file": "problems.svg",
+      "tags": [
+        "panel",
+        "diagnostics"
+      ]
+    },
+    {
+      "name": "scenarios",
+      "file": "scenarios.svg",
+      "tags": [
+        "panel",
+        "clapperboard"
+      ]
+    },
+    {
+      "name": "graphs",
+      "file": "graphs.svg",
+      "tags": [
+        "panel",
+        "nodes"
+      ]
+    },
+    {
+      "name": "game",
+      "file": "game.svg",
+      "tags": [
+        "panel",
+        "gamepad"
+      ]
+    },
+    {
+      "name": "scene",
+      "file": "scene.svg",
+      "tags": [
+        "panel",
+        "viewport"
+      ]
+    },
+    {
+      "name": "world",
+      "file": "world.svg",
+      "tags": [
+        "panel",
+        "globe"
+      ]
+    },
+    {
+      "name": "layout",
+      "file": "layout.svg",
+      "tags": [
+        "panel",
+        "panes"
+      ]
+    },
+    {
+      "name": "settings",
+      "file": "settings.svg",
+      "tags": [
+        "panel",
+        "gear"
+      ]
+    },
+    {
+      "name": "agent",
+      "file": "agent.svg",
+      "tags": [
+        "panel",
+        "robot"
+      ]
+    },
+    {
+      "name": "build",
+      "file": "build.svg",
+      "tags": [
+        "panel",
+        "hammer"
+      ]
+    },
+    {
+      "name": "help",
+      "file": "help.svg",
+      "tags": [
+        "panel",
+        "question"
+      ]
+    },
+    {
+      "name": "entity",
+      "file": "entity.svg",
+      "tags": [
+        "component",
+        "cube"
+      ]
+    },
+    {
+      "name": "group",
+      "file": "group.svg",
+      "tags": [
+        "component",
+        "folder"
+      ]
+    },
+    {
+      "name": "folder",
+      "file": "folder.svg",
+      "tags": [
+        "component",
+        "directory"
+      ]
+    },
+    {
+      "name": "folder-open",
+      "file": "folder-open.svg",
+      "tags": [
+        "component",
+        "directory"
+      ]
+    },
+    {
+      "name": "file",
+      "file": "file.svg",
+      "tags": [
+        "component",
+        "document"
+      ]
+    },
+    {
+      "name": "mesh",
+      "file": "mesh.svg",
+      "tags": [
+        "component",
+        "wireframe"
+      ]
+    },
+    {
+      "name": "material",
+      "file": "material.svg",
+      "tags": [
+        "component",
+        "surface"
+      ]
+    },
+    {
+      "name": "texture",
+      "file": "texture.svg",
+      "tags": [
+        "component",
+        "image"
+      ]
+    },
+    {
+      "name": "animation",
+      "file": "animation.svg",
+      "tags": [
+        "component",
+        "motion"
+      ]
+    },
+    {
+      "name": "skeleton",
+      "file": "skeleton.svg",
+      "tags": [
+        "component",
+        "bone"
+      ]
+    },
+    {
+      "name": "audio",
+      "file": "audio.svg",
+      "tags": [
+        "component",
+        "speaker"
+      ]
+    },
+    {
+      "name": "audio-listener",
+      "file": "audio-listener.svg",
+      "tags": [
+        "component",
+        "headphones"
+      ]
+    },
+    {
+      "name": "light-point",
+      "file": "light-point.svg",
+      "tags": [
+        "component",
+        "bulb"
+      ]
+    },
+    {
+      "name": "light-spot",
+      "file": "light-spot.svg",
+      "tags": [
+        "component",
+        "cone"
+      ]
+    },
+    {
+      "name": "light-directional",
+      "file": "light-directional.svg",
+      "tags": [
+        "component",
+        "sun"
+      ]
+    },
+    {
+      "name": "light-area",
+      "file": "light-area.svg",
+      "tags": [
+        "component",
+        "rectangle"
+      ]
+    },
+    {
+      "name": "camera",
+      "file": "camera.svg",
+      "tags": [
+        "component",
+        "movie"
+      ]
+    },
+    {
+      "name": "camera-follow",
+      "file": "camera-follow.svg",
+      "tags": [
+        "component",
+        "target"
+      ]
+    },
+    {
+      "name": "trigger",
+      "file": "trigger.svg",
+      "tags": [
+        "component",
+        "volume"
+      ]
+    },
+    {
+      "name": "path",
+      "file": "path.svg",
+      "tags": [
+        "component",
+        "curve"
+      ]
+    },
+    {
+      "name": "nav",
+      "file": "nav.svg",
+      "tags": [
+        "component",
+        "route"
+      ]
+    },
+    {
+      "name": "interact",
+      "file": "interact.svg",
+      "tags": [
+        "component",
+        "hand"
+      ]
+    },
+    {
+      "name": "tween",
+      "file": "tween.svg",
+      "tags": [
+        "component",
+        "keyframe"
+      ]
+    },
+    {
+      "name": "fsm",
+      "file": "fsm.svg",
+      "tags": [
+        "component",
+        "state-machine"
+      ]
+    },
+    {
+      "name": "behavior",
+      "file": "behavior.svg",
+      "tags": [
+        "component",
+        "flowchart"
+      ]
+    },
+    {
+      "name": "ui-document",
+      "file": "ui-document.svg",
+      "tags": [
+        "component",
+        "widgets"
+      ]
+    },
+    {
+      "name": "prefab",
+      "file": "prefab.svg",
+      "tags": [
+        "component",
+        "instance"
+      ]
+    },
+    {
+      "name": "collider",
+      "file": "collider.svg",
+      "tags": [
+        "component",
+        "capsule"
+      ]
+    },
+    {
+      "name": "vfx",
+      "file": "vfx.svg",
+      "tags": [
+        "component",
+        "sparkles"
+      ]
+    },
+    {
+      "name": "script",
+      "file": "script.svg",
+      "tags": [
+        "component",
+        "braces"
+      ]
+    },
+    {
+      "name": "tag",
+      "file": "tag.svg",
+      "tags": [
+        "component",
+        "label"
+      ]
+    },
+    {
+      "name": "layers",
+      "file": "layers.svg",
+      "tags": [
+        "component",
+        "stack"
+      ]
+    },
+    {
+      "name": "input",
+      "file": "input.svg",
+      "tags": [
+        "component",
+        "keyboard"
+      ]
+    },
+    {
+      "name": "localization",
+      "file": "localization.svg",
+      "tags": [
+        "component",
+        "language"
+      ]
+    },
+    {
+      "name": "event",
+      "file": "event.svg",
+      "tags": [
+        "component",
+        "signal"
+      ]
+    },
+    {
+      "name": "chip",
+      "file": "chip.svg",
+      "tags": [
+        "status",
+        "gpu",
+        "memory",
+        "allocation"
+      ]
+    },
+    {
+      "name": "info",
+      "file": "info.svg",
+      "tags": [
+        "status"
+      ]
+    },
+    {
+      "name": "warning",
+      "file": "warning.svg",
+      "tags": [
+        "status"
+      ]
+    },
+    {
+      "name": "error",
+      "file": "error.svg",
+      "tags": [
+        "status"
+      ]
+    },
+    {
+      "name": "success",
+      "file": "success.svg",
+      "tags": [
+        "status"
+      ]
+    },
+    {
+      "name": "loading",
+      "file": "loading.svg",
+      "tags": [
+        "status",
+        "progress"
+      ]
+    },
+    {
+      "name": "dot",
+      "file": "dot.svg",
+      "tags": [
+        "status",
+        "indicator"
+      ]
+    }
+  ]
+}

@@ -383,7 +383,7 @@ impl Editor {
         let Some(doc) = &preview.doc else {
             caption(
                 ui,
-                "This world has no ui.document. World ▸ Create Resource… ui.document (it needs behavior.program).",
+                "This world has no ui.document. World › Create Resource… ui.document (it needs behavior.program).",
             );
             return;
         };

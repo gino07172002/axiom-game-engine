@@ -1,4 +1,5 @@
-use super::{viewport, Action, Dock, Draft, Editor, Tool};
+use super::icons::Icon;
+use super::{theme, viewport, Action, Dock, Draft, Editor, Tool};
 use crate::world::WorldRuntime;
 use axiom_core::{
     merge_json, scene_edit::Hierarchy, CoreEdit, Edit, Entity, Request, Transform, World,
@@ -6,18 +7,11 @@ use axiom_core::{
 use egui::{Color32, Frame, Layout, Margin, RichText, ScrollArea, Ui};
 use serde_json::{json, Value};
 
-pub(super) const SURFACE: Color32 = Color32::from_rgb(23, 28, 37);
-const HEADER: Color32 = Color32::from_rgb(18, 22, 30);
-pub(super) const CARD: Color32 = Color32::from_rgb(32, 40, 52);
-pub(super) const MUTED: Color32 = Color32::from_rgb(155, 174, 194);
-pub(super) const ACCENT: Color32 = Color32::from_rgb(105, 222, 195);
-pub(super) const WARNING: Color32 = Color32::from_rgb(255, 178, 111);
+pub(super) use super::theme::{ACCENT, MUTED, SURFACE, WARNING};
+use super::theme::{BACKDROP, HEADER};
 
 pub(super) fn panel(color: Color32, padding: i8) -> Frame {
     Frame::new().fill(color).inner_margin(Margin::same(padding))
-}
-pub(super) fn heading(ui: &mut Ui, title: &str) {
-    ui.label(RichText::new(title).strong().size(13.0));
 }
 pub(super) fn caption(ui: &mut Ui, text: impl Into<String>) {
     ui.label(RichText::new(text.into()).size(11.0).color(MUTED));
@@ -101,58 +95,27 @@ impl Editor {
         }
         // Filled again by whichever tabs are drawn this frame.
         self.rects.clear();
+        self.chrome_setup(ctx);
         egui::TopBottomPanel::top("editor_menu")
-            .frame(panel(HEADER, 4))
-            .show(ctx, |ui| self.menu_bar(ui, &mut actions));
+            .frame(panel(BACKDROP, 3))
+            .show_separator_line(false)
+            .show(ctx, |ui| self.menu_row(ui, &mut actions));
         egui::TopBottomPanel::top("editor_toolbar")
-            .frame(panel(HEADER, 9))
-            .show(ctx, |ui| {
-                if self.logo.is_none() {
-                    self.logo = crate::branding::egui_icon().map(|image| {
-                        ctx.load_texture("axiom-logo", image, egui::TextureOptions::LINEAR)
-                    });
-                }
-                let logo = self.logo.clone();
-                ui.horizontal(|ui| {
-                    if let Some(logo) = &logo {
-                        ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(24.0, 24.0)));
-                    }
-                    ui.label(
-                        RichText::new("AXIOM")
-                            .strong()
-                            .size(17.0)
-                            .color(egui::Color32::from_rgb(240, 72, 72)),
-                    );
-                    ui.label(RichText::new("EDITOR").monospace().size(10.0).color(MUTED));
-                    ui.separator();
-                    ui.label(RichText::new(truncate(&self.world.title, 32)).strong())
-                        .on_hover_text(&self.world.title);
-                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.play_toolbar(ui, &mut actions);
-                        ui.label(
-                            RichText::new(format!("REV  {:04}", self.rev))
-                                .monospace()
-                                .color(ACCENT),
-                        );
-                        ui.separator();
-                        for (title, redo) in [("Redo", true), ("Undo", false)] {
-                            let action = self.restore_action(redo);
-                            if ui
-                                .add_enabled(
-                                    !self.dirty() && action.is_some(),
-                                    egui::Button::new(title),
-                                )
-                                .clicked()
-                            {
-                                actions.extend(action);
-                            }
-                        }
-                    });
-                });
-            });
+            .frame(
+                Frame::new()
+                    .fill(HEADER)
+                    .inner_margin(Margin::symmetric(8, 5)),
+            )
+            .show_separator_line(false)
+            .show(ctx, |ui| self.top_bar(ui, &mut actions));
         egui::TopBottomPanel::bottom("editor_status")
-            .frame(panel(HEADER, 4))
-            .show(ctx, |ui| self.status_bar(ui));
+            .frame(
+                Frame::new()
+                    .fill(HEADER)
+                    .inner_margin(Margin::symmetric(8, 3)),
+            )
+            .show_separator_line(false)
+            .show(ctx, |ui| self.status_bar(ui, &mut actions));
         // Play preview: the timeline playhead follows the runtime.
         self.tween_ui.live = if self.previewing {
             self.selected
@@ -192,6 +155,41 @@ impl Editor {
             scene: false,
             game: false,
             inspector_floating,
+            alone: dock
+                .main_surface()
+                .iter()
+                .filter_map(|n| match n {
+                    egui_dock::Node::Leaf { tabs, .. } if tabs.len() == 1 => Some(tabs[0]),
+                    _ => None,
+                })
+                .fold(0, |bits, tab| bits | tab_bit(tab)),
+            bars: {
+                // Each leaf's tab strip (last frame's rectangles), keyed by its active tab.
+                let mut bars = [None; 16];
+                // Every surface (floating windows too: their tabs close from this menu).
+                let leaves = dock.iter_all_nodes().filter_map(|(_, n)| match n {
+                    egui_dock::Node::Leaf {
+                        rect,
+                        viewport,
+                        tabs,
+                        active,
+                        collapsed,
+                        ..
+                    } if !*collapsed && rect.is_positive() && viewport.min.y > rect.min.y => {
+                        let bar = egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(rect.max.x, viewport.min.y),
+                        );
+                        tabs.get(active.0).map(|t| (*t, bar))
+                    }
+                    _ => None,
+                });
+                for (slot, leaf) in bars.iter_mut().zip(leaves) {
+                    *slot = Some(leaf);
+                }
+                bars
+            },
+            panel_command: None,
         };
         egui_dock::DockArea::new(&mut dock)
             .id(egui::Id::new("editor_dock_area"))
@@ -199,10 +197,19 @@ impl Editor {
             .show_leaf_collapse_buttons(false)
             // One click must not close a whole group (e.g. all eight bottom tabs).
             .show_leaf_close_all_buttons(false)
+            // Tabs close from the panel "…" menu (window.close), not an X on every tab.
+            .show_close_buttons(false)
             .show(ctx, &mut host);
         let (scene, game) = (host.scene, host.game);
+        let panel_command = host.panel_command.take();
+        self.panel_icons(ctx, &dock);
         self.layout.dock = Some(dock);
         self.layout.apply_pending();
+        if let Some((id, arg)) = panel_command {
+            if let Err(e) = self.run_command_with(id, arg.as_deref()) {
+                self.set_error(format!("{e:#}"));
+            }
+        }
         self.scene_visible = scene;
         if !scene {
             self.scene_hidden();
@@ -244,106 +251,220 @@ impl Editor {
 
     /// Scene tab: tool strip and the viewport (composited by the renderer under the UI).
     fn scene_tab(&mut self, ui: &mut Ui, runtime: &WorldRuntime, actions: &mut Vec<Action>) {
+        let icons = self.icons;
         ui.spacing_mut().item_spacing.y = 0.0;
-        panel(CARD, 6).show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    // Wraps instead of widening the central panel (which would push the viewport
-                    // under the inspector).
-                    ui.horizontal_wrapped(|ui| {
-                        heading(ui, "SCENE");
-                        ui.separator();
-                        for (key, tool) in [
-                            ("Q", Tool::Select),
-                            ("W", Tool::Move),
-                            ("E", Tool::Rotate),
-                            ("R", Tool::Scale),
-                        ] {
+        let mut run: Option<&'static str> = None;
+        Frame::new()
+            .fill(SURFACE)
+            .inner_margin(Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                // Wraps instead of widening the central panel (which would push the viewport
+                // under the inspector).
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    theme::pill_group(ui, |ui| for (tool, icon, cmd) in [
+                        (Tool::Select, Icon::Select, "tool.select"),
+                        (Tool::Move, Icon::Move, "tool.move"),
+                        (Tool::Rotate, Icon::Rotate, "tool.rotate"),
+                        (Tool::Scale, Icon::Scale, "tool.scale"),
+                    ] {
+                        let tip = format!("{} tool  {}", tool.name(), self.shortcut_text(cmd));
+                        let r = theme::icon_button_sized(ui, icons, icon, &tip, self.tool == tool, 28.0);
+                        self.rects.insert(format!("scene:{cmd}"), r.rect);
+                        if r.clicked() {
+                            run = Some(cmd);
+                        }
+                    });
+                    // Snap: toggle + increments drop-down.
+                    theme::pill_group(ui, |ui| {
+                    let r = theme::icon_button_sized(
+                        ui,
+                        icons,
+                        Icon::Snap,
+                        "Snap while dragging gizmos (hold Ctrl to invert)",
+                        self.prefs.snap,
+                        28.0,
+                    );
+                    self.rects.insert("scene:view.snap".into(), r.rect);
+                    if r.clicked() {
+                        run = Some("view.snap");
+                    }
+                    let steps = ui
+                        .add(egui::Button::image_and_text(
+                            icons.image(ui.ctx(), Icon::ChevronDown, 14.0, MUTED),
+                            RichText::new(format!("Snap {} m", self.prefs.snap_move)),
+                        ).frame(false))
+                        .on_hover_text(format!(
+                            "Snap increments: {} m · {}° · {} scale",
+                            self.prefs.snap_move,
+                            self.prefs.snap_rotate_degrees,
+                            self.prefs.snap_scale
+                        ));
+                    let id = ui.make_persistent_id("scene_snap_steps");
+                    theme::dropdown(ui, id, &steps, |ui| {
+                        ui.label(RichText::new("SNAP INCREMENTS").small().color(MUTED));
+                        ui.add(egui::DragValue::new(&mut self.prefs.snap_move).speed(0.01).range(0.001..=100.0).prefix("Move ").suffix(" m"));
+                        ui.add(egui::DragValue::new(&mut self.prefs.snap_rotate_degrees).speed(0.5).range(0.1..=180.0).prefix("Rotate ").suffix("°"));
+                        ui.add(egui::DragValue::new(&mut self.prefs.snap_scale).speed(0.01).range(0.001..=10.0).prefix("Scale "));
+                    });
+                    });
+                    // Gizmo axes: Global / Local.
+                    let (icon, space) = if self.prefs.local_space {
+                        (Icon::Local, "Local")
+                    } else {
+                        (Icon::Global, "Global")
+                    };
+                    let r = theme::pill(ui, |ui| {
+                        icons.show(ui, icon, 16.0, theme::TEXT);
+                        ui.label(space);
+                    })
+                        .on_hover_text(format!(
+                            "Move/Rotate gizmo axes: world (Global) or the object's own (Local). Scale is always local.  {}",
+                            self.shortcut_text("view.space")
+                        ));
+                    self.rects.insert("scene:view.space".into(), r.rect);
+                    if r.clicked() {
+                        run = Some("view.space");
+                    }
+                    theme::pill_group(ui, |ui| for (on, icon, cmd, tip) in [
+                        (self.prefs.grid, Icon::Grid, "view.grid", "Always draw the ground grid"),
+                        (
+                            self.prefs.gizmos,
+                            Icon::Layers,
+                            "view.gizmos",
+                            "Component gizmos: camera frusta, nav.blocker, colliders and FSM agents (editor view only)",
+                        ),
+                    ] {
+                        let r = theme::icon_button_sized(ui, icons, icon, tip, on, 28.0);
+                        self.rects.insert(format!("scene:{cmd}"), r.rect);
+                        if r.clicked() {
+                            run = Some(cmd);
+                        }
+                    });
+                    let mode = self.orbit.mode;
+                    let view = theme::pill(ui, |ui| {
+                        icons.show(ui, Icon::Scene, 16.0, MUTED);
+                        ui.label(mode.name());
+                        icons.show(ui, Icon::ChevronDown, 14.0, MUTED);
+                    })
+                        .on_hover_text("Perspective / orthographic axis views and camera bookmarks");
+                    self.rects.insert("scene:view_mode".into(), view.rect);
+                    let id = ui.make_persistent_id("scene_view_mode");
+                    theme::dropdown(ui, id, &view, |ui| {
+                        for m in super::viewport::ViewMode::ALL {
+                            let text = format!(
+                                "{}{}",
+                                m.name(),
+                                if m == super::viewport::ViewMode::Perspective { "" } else { " (ortho)" }
+                            );
                             if ui
-                                .selectable_label(self.tool == tool, tool.name())
-                                .on_hover_text(key)
+                                .add(
+                                    egui::Button::new(text)
+                                        .selected(m == mode)
+                                        .shortcut_text(self.shortcut_text(m.command())),
+                                )
                                 .clicked()
-                                && self.drag.is_none()
                             {
-                                self.tool = tool;
+                                run = Some(m.command());
+                                theme::close_dropdown(ui, id);
                             }
                         }
-                        if ui.small_button("Frame").on_hover_text("F").clicked() {
-                            self.frame_selection = true;
-                        }
                         ui.separator();
-                        ui.toggle_value(&mut self.prefs.snap, "Snap").on_hover_text(format!(
-                            "{} m · {}° · {} scale. Hold Ctrl while dragging to invert.",
-                            self.prefs.snap_move, self.prefs.snap_rotate_degrees, self.prefs.snap_scale
-                        ));
-                        ui.menu_button("…", |ui| {
-                            ui.label(RichText::new("Snap increments").small());
-                            ui.add(egui::DragValue::new(&mut self.prefs.snap_move).speed(0.01).range(0.001..=100.0).prefix("Move ").suffix(" m"));
-                            ui.add(egui::DragValue::new(&mut self.prefs.snap_rotate_degrees).speed(0.5).range(0.1..=180.0).prefix("Rotate ").suffix("°"));
-                            ui.add(egui::DragValue::new(&mut self.prefs.snap_scale).speed(0.01).range(0.001..=10.0).prefix("Scale "));
-                        })
-                        .response
-                        .on_hover_text("Snap increments");
-                        let space = if self.prefs.local_space { "Local" } else { "Global" };
-                        if ui
-                            .button(space)
-                            .on_hover_text("Move/Rotate gizmo axes: world (Global) or the object's own (Local). Scale is always local.")
-                            .clicked()
-                            && self.drag.is_none()
-                        {
-                            self.prefs.local_space = !self.prefs.local_space;
-                        }
-                        ui.toggle_value(&mut self.prefs.grid, "Grid")
-                            .on_hover_text("Always draw the ground grid");
-                        ui.toggle_value(&mut self.prefs.gizmos, "Gizmos").on_hover_text(
-                            "Camera frusta, nav.blocker, colliders and FSM agents (editor view only)",
-                        );
-                        ui.separator();
-                        let mode = self.orbit.mode;
-                        ui.menu_button(format!("View: {}", mode.name()), |ui| {
-                            for m in super::viewport::ViewMode::ALL {
-                                let text = format!(
-                                    "{}{}",
-                                    m.name(),
-                                    if m == super::viewport::ViewMode::Perspective { "" } else { " (ortho)" }
-                                );
+                        for n in 1..=4 {
+                            ui.horizontal(|ui| {
+                                let save = format!("view.bookmark.save.{n}");
+                                let recall = format!("view.bookmark.recall.{n}");
+                                if ui.button(format!("Save {n}")).on_hover_text(self.shortcut_text(&save)).clicked() {
+                                    self.run_into(&save, actions);
+                                    theme::close_dropdown(ui, id);
+                                }
+                                let blocked = self.command_blocked(&recall);
                                 if ui
-                                    .add(
-                                        egui::Button::new(text)
-                                            .selected(m == mode)
-                                            .shortcut_text(self.shortcut_text(m.command())),
-                                    )
+                                    .add_enabled(blocked.is_none(), egui::Button::new(format!("Recall {n}")))
+                                    .on_hover_text(self.shortcut_text(&recall))
                                     .clicked()
                                 {
-                                    self.run_into(m.command(), actions);
-                                    ui.close_menu();
+                                    self.run_into(&recall, actions);
+                                    theme::close_dropdown(ui, id);
                                 }
-                            }
-                            ui.separator();
-                            for n in 1..=4 {
-                                ui.horizontal(|ui| {
-                                    let save = format!("view.bookmark.save.{n}");
-                                    let recall = format!("view.bookmark.recall.{n}");
-                                    if ui.button(format!("Save {n}")).on_hover_text(self.shortcut_text(&save)).clicked() {
-                                        self.run_into(&save, actions);
-                                        ui.close_menu();
-                                    }
-                                    let blocked = self.command_blocked(&recall);
-                                    if ui
-                                        .add_enabled(blocked.is_none(), egui::Button::new(format!("Recall {n}")))
-                                        .on_hover_text(self.shortcut_text(&recall))
-                                        .clicked()
-                                    {
-                                        self.run_into(&recall, actions);
-                                        ui.close_menu();
-                                    }
-                                });
-                            }
-                        })
-                        .response
-                        .on_hover_text("Perspective / orthographic axis views and camera bookmarks");
+                            });
+                        }
                     });
                 });
+            });
+        if let Some(cmd) = run.filter(|cmd| self.command_blocked(cmd).is_none()) {
+            self.run_into(cmd, actions);
+        }
         self.scene_view(ui, runtime, actions);
+        self.viewport_overlay(ui, actions);
+    }
+
+    /// Over the scene view: FPS chip (top left; the hint line is bottom left), Frame and
+    /// Fullscreen (bottom right).
+    fn viewport_overlay(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let rect = self.viewport;
+        if !rect.is_positive() || rect.height() < 80.0 {
+            return;
+        }
+        let painter = ui.painter_at(rect);
+        // Rounded frame: the view is composited as a rectangle; the panel colour masks its
+        // corners and a 1 px border outlines it.
+        theme::round_corners(&painter, rect, 10.0, SURFACE);
+        painter.rect_stroke(
+            rect,
+            10.0,
+            egui::Stroke::new(1.0_f32, theme::BORDER),
+            egui::StrokeKind::Inside,
+        );
+        let ms = if self.fps > 0.0 {
+            1000.0 / self.fps
+        } else {
+            0.0
+        };
+        let galley = painter.layout_no_wrap(
+            format!("FPS {:.0}  |  {ms:.1} ms", self.fps),
+            egui::FontId::proportional(12.0),
+            theme::TEXT,
+        );
+        let size = galley.size() + egui::vec2(20.0, 12.0);
+        let chip = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 12.0, rect.bottom() - 12.0 - size.y),
+            size,
+        );
+        painter.rect_filled(chip, 8.0, Color32::from_black_alpha(170));
+        painter.galley(chip.min + egui::vec2(10.0, 6.0), galley, theme::TEXT);
+        let icons = self.icons;
+        let mut run = None;
+        for (i, (icon, cmd)) in [
+            (Icon::Fullscreen, "view.fullscreen"),
+            (Icon::Frame, "edit.frame"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 40.0 - i as f32 * 36.0, rect.bottom() - 40.0),
+                egui::vec2(30.0, 30.0),
+            );
+            painter.rect_filled(at, 6.0, Color32::from_black_alpha(150));
+            let blocked = self.command_blocked(cmd);
+            let title = super::commands::command(cmd).map_or(cmd, |c| c.title);
+            let tip = format!("{title}  {}", self.shortcut_text(cmd));
+            let r = ui.put(at, |ui: &mut Ui| {
+                ui.add_enabled_ui(blocked.is_none(), |ui| {
+                    theme::icon_button_sized(ui, icons, icon, &tip, false, 30.0)
+                })
+                .inner
+            });
+            self.rects.insert(format!("scene:{cmd}"), r.rect);
+            if r.clicked() {
+                run = Some(cmd);
+            }
+        }
+        if let Some(cmd) = run {
+            self.run_into(cmd, actions);
+        }
     }
 
     /// Undo / redo. While writes are saving, the step they will push may not exist yet; the
@@ -358,112 +479,257 @@ impl Editor {
         Some(Action::Restore { rev, redo })
     }
 
+    /// Scenes: create, and (de)activate / delete the one the Hierarchy is filtered to.
+    fn scene_menu(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        ui.label(RichText::new("SCENES").small().color(MUTED));
+        ui.add(egui::TextEdit::singleline(&mut self.new_scene).hint_text("New scene ID"));
+        let exists = self
+            .world
+            .scenes
+            .iter()
+            .any(|s| s.id == self.new_scene.trim());
+        if exists {
+            ui.label(RichText::new("Scene ID already exists").color(WARNING));
+        }
+        if ui
+            .add_enabled(
+                !self.new_scene.trim().is_empty() && !exists,
+                egui::Button::new("Create scene"),
+            )
+            .clicked()
+        {
+            let id = self.new_scene.trim().to_owned();
+            actions.extend(self.scene_create(&id));
+            self.new_scene.clear();
+        }
+        let filtered_scene = self
+            .scene
+            .as_ref()
+            .and_then(|id| self.world.scenes.iter().find(|s| &s.id == id))
+            .map(|s| (s.id.clone(), s.active));
+        let Some((scene, active)) = filtered_scene else {
+            caption(ui, "Filter to a scene to (de)activate or delete it.");
+            return;
+        };
+        let title = if active {
+            "Deactivate scene"
+        } else {
+            "Activate scene"
+        };
+        if ui.button(title).clicked() {
+            actions.extend(self.scene_set_active(&scene, !active));
+        }
+        // Two clicks: Delete scene… arms, the red button deletes.
+        let armed_id = ui.make_persistent_id(("scene_delete", &scene));
+        let mut armed = ui.data(|d| d.get_temp::<bool>(armed_id).unwrap_or(false));
+        if ui.button("Delete scene…").clicked() {
+            armed = !armed;
+        }
+        if armed {
+            caption(ui, "Removes membership. Objects are kept.");
+            if ui
+                .button(RichText::new(format!("Delete scene {scene}")).color(WARNING))
+                .clicked()
+            {
+                actions.extend(self.scene_delete(&scene));
+                armed = false;
+            }
+        }
+        ui.data_mut(|d| d.insert_temp(armed_id, armed));
+    }
+
     fn hierarchy(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let icons = self.icons;
+        let busy = self.dirty();
         ui.horizontal(|ui| {
-            heading(ui, "HIERARCHY");
+            // Toolbar: Add ▾ and the selection commands (registry commands, same as the
+            // menus); the "…" menu on the right.
+            let add = ui
+                .add_enabled_ui(!busy, |ui| {
+                    theme::icon_text_button(
+                        ui,
+                        icons,
+                        Icon::Add,
+                        "Add",
+                        Some(theme::ACCENT_SOFT),
+                        theme::TEXT,
+                    )
+                })
+                .inner
+                .on_hover_text("Create an object");
+            self.rects.insert("hierarchy:add".into(), add.rect);
+            let id = ui.make_persistent_id("hierarchy_add");
+            let mut preset_picked = None;
+            theme::dropdown(ui, id, &add, |ui| {
+                // The Object menu's create commands (same validators; refused while busy).
+                for (preset, cmd, label, icon) in [
+                    ("empty", "object.empty", "Empty object", Icon::Entity),
+                    ("cube", "object.cube", "Cube", Icon::Mesh),
+                    ("camera", "object.camera", "Camera", Icon::Camera),
+                    (
+                        "light.directional",
+                        "object.light_directional",
+                        "Directional light",
+                        Icon::LightDirectional,
+                    ),
+                    (
+                        "light.point",
+                        "object.light_point",
+                        "Point light",
+                        Icon::LightPoint,
+                    ),
+                    (
+                        "light.spot",
+                        "object.light_spot",
+                        "Spot light",
+                        Icon::LightSpot,
+                    ),
+                    (
+                        "light.area",
+                        "object.light_area",
+                        "Area light (approximate)",
+                        Icon::LightArea,
+                    ),
+                    (
+                        "trigger.box",
+                        "object.trigger_box",
+                        "Box trigger",
+                        Icon::Trigger,
+                    ),
+                    (
+                        "trigger.sphere",
+                        "object.trigger_sphere",
+                        "Sphere trigger",
+                        Icon::Trigger,
+                    ),
+                    ("path", "object.path", "Path", Icon::Path),
+                    (
+                        "obstacle",
+                        "object.obstacle",
+                        "Obstacle (nav.blocker)",
+                        Icon::Nav,
+                    ),
+                ] {
+                    let blocked = self.command_blocked(cmd);
+                    let image = icons.image(ui.ctx(), icon, 16.0, MUTED);
+                    let r = ui
+                        .add_enabled(
+                            blocked.is_none(),
+                            egui::Button::image_and_text(image, label).frame(false),
+                        )
+                        .on_disabled_hover_text(blocked.unwrap_or_default());
+                    self.rects.insert(format!("hierarchy:add:{preset}"), r.rect);
+                    if r.clicked() {
+                        preset_picked = Some(cmd);
+                        theme::close_dropdown(ui, id);
+                    }
+                }
+            });
+            if let Some(cmd) = preset_picked {
+                self.run_into(cmd, actions);
+            }
+            theme::divider(ui);
+            for (icon, cmd) in [
+                (Icon::Duplicate, "edit.duplicate"),
+                (Icon::Delete, "edit.delete"),
+                (Icon::Rename, "edit.rename"),
+                (Icon::Group, "object.group"),
+                (Icon::Frame, "edit.frame"),
+            ] {
+                let blocked = self.command_blocked(cmd);
+                let title = super::commands::command(cmd).map_or(cmd, |c| c.title);
+                let tip = match blocked {
+                    Some(reason) => format!("{title} · {reason}"),
+                    None => format!("{title}  {}", self.shortcut_text(cmd)),
+                };
+                let r = ui
+                    .add_enabled_ui(blocked.is_none(), |ui| {
+                        theme::icon_button_sized(ui, icons, icon, &tip, false, 22.0)
+                    })
+                    .inner;
+                self.rects.insert(format!("hierarchy:{cmd}"), r.rect);
+                if r.clicked() {
+                    self.run_into(cmd, actions);
+                }
+            }
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(!self.dirty(), |ui| {
-                    ui.menu_button("+ Object", |ui| {
-                        for (preset, label) in [
-                            ("empty", "Empty object"),
-                            ("cube", "Cube"),
-                            ("camera", "Camera"),
-                            ("light.directional", "Directional light"),
-                            ("light.point", "Point light"),
-                            ("light.spot", "Spot light"),
-                            ("light.area", "Area light (approximate)"),
-                            ("trigger.box", "Box trigger"),
-                            ("trigger.sphere", "Sphere trigger"),
-                            ("path", "Path"),
-                            ("obstacle", "Obstacle (nav.blocker)"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                actions.extend(self.create_object(preset));
-                                ui.close_menu();
-                            }
+                let more =
+                    theme::icon_button_sized(ui, icons, Icon::More, "Scenes and more", false, 22.0);
+                self.rects.insert("hierarchy:more".into(), more.rect);
+                let id = ui.make_persistent_id("hierarchy_more");
+                let mut run = None;
+                theme::dropdown(ui, id, &more, |ui| {
+                    ui.add_enabled_ui(!busy, |ui| self.scene_menu(ui, actions));
+                    ui.separator();
+                    for cmd in [
+                        "edit.select_children",
+                        "object.create_prefab",
+                        "edit.copy",
+                        "edit.toggle_hidden",
+                        "edit.toggle_locked",
+                    ] {
+                        let blocked = self.command_blocked(cmd);
+                        let title = super::commands::command(cmd).map_or(cmd, |c| c.title);
+                        let r = ui
+                            .add_enabled(
+                                blocked.is_none(),
+                                egui::Button::new(title).shortcut_text(self.shortcut_text(cmd)),
+                            )
+                            .on_disabled_hover_text(blocked.unwrap_or_default());
+                        if r.clicked() {
+                            run = Some(cmd);
+                            theme::close_dropdown(ui, id);
                         }
-                    });
+                    }
                 });
+                if let Some(cmd) = run {
+                    self.run_into(cmd, actions);
+                }
             });
         });
-        ui.add_space(6.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.search)
-                .hint_text("Search…  tag: has: prefab:")
-                .desired_width(f32::INFINITY),
-        )
-        .on_hover_text("Space-separated filters that must all match: tag:NAME, has:COMPONENT (includes prefab-inherited), prefab:ID, or text in the ID/label");
-        ui.add_space(3.0);
+        // Search + scene filter.
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("scene_filter")
-                .selected_text(
-                    self.scene
-                        .as_deref()
-                        .map_or_else(|| "All scenes".into(), |s| truncate(s, 19)),
-                )
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.scene, None, "All scenes");
-                    for scene in &self.world.scenes {
-                        let name = if scene.active {
-                            scene.id.clone()
-                        } else {
-                            format!("{} · inactive", scene.id)
-                        };
-                        ui.selectable_value(&mut self.scene, Some(scene.id.clone()), name);
+            let filter_on = self.scene.is_some();
+            let width = (ui.available_width() - 40.0).max(60.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("Search…  tag: has: prefab:")
+                    .desired_width(width),
+            )
+            .on_hover_text("Space-separated filters that must all match: tag:NAME, has:COMPONENT (includes prefab-inherited), prefab:ID, or text in the ID/label");
+            let tip = match &self.scene {
+                Some(scene) => format!("Scene filter: {scene}"),
+                None => "Scene filter: all scenes".to_owned(),
+            };
+            let filter = theme::icon_button(ui, icons, Icon::Filter, &tip, filter_on);
+            self.rects.insert("hierarchy:filter".into(), filter.rect);
+            let id = ui.make_persistent_id("hierarchy_filter");
+            theme::dropdown(ui, id, &filter, |ui| {
+                ui.label(RichText::new("SHOW SCENE").small().color(MUTED));
+                let mut picked = None;
+                if ui
+                    .selectable_label(self.scene.is_none(), "All scenes")
+                    .clicked()
+                {
+                    picked = Some(None);
+                }
+                for scene in &self.world.scenes {
+                    let name = if scene.active {
+                        scene.id.clone()
+                    } else {
+                        format!("{} · inactive", scene.id)
+                    };
+                    let on = self.scene.as_deref() == Some(scene.id.as_str());
+                    let r = ui.selectable_label(on, name);
+                    self.rects.insert(format!("hierarchy:scene:{}", scene.id), r.rect);
+                    if r.clicked() {
+                        picked = Some(Some(scene.id.clone()));
                     }
-                });
-            ui.add_enabled_ui(!self.dirty(), |ui| {
-                ui.menu_button("Scene", |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_scene).hint_text("New scene ID"),
-                    );
-                    let exists = self
-                        .world
-                        .scenes
-                        .iter()
-                        .any(|s| s.id == self.new_scene.trim());
-                    if exists {
-                        ui.label(RichText::new("Scene ID already exists").color(WARNING));
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.new_scene.trim().is_empty() && !exists,
-                            egui::Button::new("Create scene"),
-                        )
-                        .clicked()
-                    {
-                        let id = self.new_scene.trim().to_owned();
-                        actions.extend(self.scene_create(&id));
-                        self.new_scene.clear();
-                        ui.close_menu();
-                    }
-                    let filtered_scene = self
-                        .scene
-                        .as_ref()
-                        .and_then(|id| self.world.scenes.iter().find(|s| &s.id == id))
-                        .map(|s| (s.id.clone(), s.active));
-                    if let Some((scene, active)) = filtered_scene {
-                        let title = if active {
-                            "Deactivate scene"
-                        } else {
-                            "Activate scene"
-                        };
-                        if ui.button(title).clicked() {
-                            actions.extend(self.scene_set_active(&scene, !active));
-                            ui.close_menu();
-                        }
-                        ui.menu_button("Delete scene…", |ui| {
-                            caption(ui, "Removes membership. Objects are kept.");
-                            if ui
-                                .button(RichText::new("Delete scene").color(WARNING))
-                                .clicked()
-                            {
-                                actions.extend(self.scene_delete(&scene));
-                                ui.close_menu();
-                            }
-                        });
-                    }
-                });
+                }
+                if let Some(scene) = picked {
+                    self.scene = scene;
+                    theme::close_dropdown(ui, id);
+                }
             });
         });
         ui.separator();
@@ -501,21 +767,19 @@ impl Editor {
                 }
             }
         }
-        ui.horizontal(|ui| {
-            caption(ui, format!("{} OBJECTS", rows.len()));
-            let extra = self.selection().len();
-            if extra > 1 {
-                caption(ui, format!("· {extra} selected"));
-            }
-        });
-        // Dropping a dragged row here makes it a root object.
+        // The count line is also where a dragged row is dropped to become a root object.
         let (_, root_drop) = ui.dnd_drop_zone::<String, ()>(egui::Frame::NONE, |ui| {
-            ui.label(
-                RichText::new(
-                    "Drop on a row = child · on its top/bottom edge = reorder · here = root",
-                )
-                .small()
-                .color(MUTED),
+            ui.horizontal(|ui| {
+                caption(ui, format!("{} objects", rows.len()));
+                let extra = self.selection().len();
+                if extra > 1 {
+                    caption(ui, format!("· {extra} selected"));
+                }
+                caption(ui, "· drop here = root");
+            })
+            .response
+            .on_hover_text(
+                "Drag a row: onto a row = child · onto its top/bottom edge = reorder · here = root",
             );
         });
         let mut reparent = root_drop.map(|id| ((*id).clone(), None));
@@ -556,34 +820,51 @@ impl Editor {
         scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
             for (id, depth, branch) in rows[range].iter().copied() {
                 ui.push_id(id, |ui| {
+                    let selected =
+                        self.selected.as_deref() == Some(id) || self.extra.contains(id);
+                    // Row background (selection) goes under everything drawn in the row.
+                    let background = ui.painter().add(egui::Shape::Noop);
+                    let top = ui.cursor().top();
+                    let hovered = pointer.is_some_and(|p| {
+                        ui.max_rect().x_range().contains(p.x) && (top..top + ROW_HEIGHT).contains(&p.y)
+                    });
                     let row = ui.horizontal(|ui| {
                         ui.set_min_height(ROW_HEIGHT);
-                        ui.add_space(depth.min(7) as f32 * 9.0);
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        ui.add_space(depth.min(7) as f32 * 12.0);
+                        let entity = graph.objects[id];
                         if branch {
-                            let text = if self.collapsed.contains(id) {
-                                "+"
+                            let collapsed = self.collapsed.contains(id);
+                            let icon = if collapsed {
+                                Icon::ChevronRight
                             } else {
-                                "-"
+                                Icon::ChevronDown
                             };
-                            if ui.small_button(text).clicked() {
+                            let r = theme::icon_button_sized(
+                                ui,
+                                icons,
+                                icon,
+                                if collapsed { "Expand" } else { "Collapse" },
+                                false,
+                                16.0,
+                            );
+                            rects.insert(format!("fold:{id}"), r.rect);
+                            if r.clicked() {
                                 toggle = Some(id.to_owned());
                             }
                         } else {
-                            ui.add_space(17.0);
+                            ui.add_space(16.0);
                         }
-                        let eye = view_toggle(ui, own_hidden.contains(id), hidden.contains(id), false)
-                            .on_hover_text("Hide / show in the editor view (H). Play and content are unaffected.");
-                        rects.insert(format!("eye:{id}"), eye.rect);
-                        if eye.clicked() {
-                            flag_toggle = Some((id.to_owned(), false));
-                        }
-                        let lock = view_toggle(ui, own_locked.contains(id), locked.contains(id), true)
-                            .on_hover_text("Lock / unlock in the editor view (L): not pickable or draggable in the scene view.");
-                        rects.insert(format!("lock:{id}"), lock.rect);
-                        if lock.clicked() {
-                            flag_toggle = Some((id.to_owned(), true));
-                        }
-                        let entity = graph.objects[id];
+                        let (icon, tip) = entity_icon(&self.world, entity, branch);
+                        let tint = if selected { theme::TEXT } else { MUTED };
+                        let (rect, r) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        icons.paint(ui.painter(), rect, icon, tint);
+                        r.on_hover_ui(|ui| {
+                            ui.label(tip);
+                            for (text, _) in badges(&self.world, entity) {
+                                ui.label(RichText::new(badge_meaning(text)).small());
+                            }
+                        });
                         if let Some(r) = renaming.as_mut().filter(|r| r.id == id) {
                             let edit = ui.add(
                                 egui::TextEdit::singleline(&mut r.text)
@@ -605,8 +886,10 @@ impl Editor {
                         }
                         let color = if hidden.contains(id) {
                             MUTED.gamma_multiply(0.6)
-                        } else if graph.active(id) {
-                            Color32::from_rgb(227, 234, 242)
+                        } else if !graph.active(id) {
+                            MUTED
+                        } else if entity.prefab.is_some() {
+                            theme::PREFAB
                         } else {
                             MUTED
                         };
@@ -627,8 +910,6 @@ impl Editor {
                         } else {
                             String::new()
                         };
-                        let selected =
-                            self.selected.as_deref() == Some(id) || self.extra.contains(id);
                         let shown = format!("{crumb}{}", truncate(label, 24));
                         // One widget senses click *and* drag. (egui's `dnd_drag_source` lays a
                         // drag-only widget over the label, and egui 0.31 then routes clicks to
@@ -689,6 +970,7 @@ impl Editor {
                             item(ui, "edit.rename", "Rename");
                             item(ui, "edit.duplicate", "Duplicate");
                             item(ui, "edit.delete", "Delete");
+                            item(ui, "object.group", "Create Group");
                             ui.separator();
                             item(ui, "edit.copy", "Copy ID");
                             item(ui, "edit.select_children", "Select Children");
@@ -698,12 +980,39 @@ impl Editor {
                             item(ui, "edit.toggle_hidden", "Hide / Show (Editor View)");
                             item(ui, "edit.toggle_locked", "Lock / Unlock (Editor View)");
                         });
-                        for (text, badge) in badges(&self.world, entity) {
-                            ui.label(RichText::new(text).monospace().size(9.0).color(badge))
-                                .on_hover_text(badge_meaning(text));
-                        }
+                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(6.0);
+                            let show = selected || hovered;
+                            let lock = view_toggle(ui, icons, own_locked.contains(id), locked.contains(id), true, show)
+                                .on_hover_text("Lock / unlock in the editor view (L): not pickable or draggable in the scene view.");
+                            rects.insert(format!("lock:{id}"), lock.rect);
+                            if lock.clicked() {
+                                flag_toggle = Some((id.to_owned(), true));
+                            }
+                            let eye = view_toggle(ui, icons, own_hidden.contains(id), hidden.contains(id), false, show)
+                                .on_hover_text("Hide / show in the editor view (H). Play and content are unaffected.");
+                            rects.insert(format!("eye:{id}"), eye.rect);
+                            if eye.clicked() {
+                                flag_toggle = Some((id.to_owned(), false));
+                            }
+                        });
                     });
                     let rect = row.response.rect;
+                    if selected {
+                        let full = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), rect.y_range());
+                        ui.painter().set(
+                            background,
+                            egui::Shape::rect_filled(full, theme::RADIUS, theme::ACCENT_SOFT),
+                        );
+                        if self.selected.as_deref() == Some(id) {
+                            ui.painter().rect_stroke(
+                                full,
+                                theme::RADIUS,
+                                egui::Stroke::new(1.0_f32, ACCENT),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
                     rects.insert(format!("row:{id}"), rect);
                     let zone = |y: f32| {
                         let edge = rect.height() * 0.28;
@@ -799,7 +1108,6 @@ impl Editor {
         actions: &mut Vec<Action>,
         floating: bool,
     ) {
-        heading(ui, "INSPECTOR");
         if self.resource.is_some() {
             self.resource_inspector(ui, actions);
             return;
@@ -868,13 +1176,6 @@ impl Editor {
         let mut copy = false;
         let mut write = None;
         let mut issue = None;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(truncate(&id, 28)).monospace().color(ACCENT))
-                .on_hover_text(&id);
-            if ui.small_button("Copy ID").clicked() {
-                ui.ctx().copy_text(id.clone());
-            }
-        });
         if stale && !playing {
             ui.label(RichText::new(format!("Stale draft · revision {}", draft.rev)).color(WARNING));
         }
@@ -889,6 +1190,11 @@ impl Editor {
             ui.checkbox(&mut self.prefs.live_inspector, "Live").on_hover_text(
                 "On: edits commit on release / Enter / focus loss (one revision each); Esc cancels. Off: edit a draft, then Apply.",
             );
+            // With Live on, the draft buttons only matter while something is unapplied.
+            if self.prefs.live_inspector && !draft.dirty() {
+                caption(ui, "edits commit as you go");
+                return;
+            }
             for (title, preview) in [("Apply", false), ("Preview", true)] {
                 if ui
                     .add_enabled(
@@ -907,7 +1213,6 @@ impl Editor {
                 .add_enabled(draft.dirty(), egui::Button::new("Copy JSON"))
                 .clicked();
         }));
-        ui.separator();
         let mut duplicate = false;
         let mut delete = false;
         let mut structural = None;
@@ -937,24 +1242,61 @@ impl Editor {
                         self.live.shown = true;
                         super::game::live_panel(ui, &self.live, runtime, &id);
                     }
-                    ui.add_enabled_ui(!stale && self.drag.is_none() && !playing, |ui| {
-                        caption(ui, "DISPLAY LABEL");
-                        draft.label_dirty |= ui
-                            .add(
-                                egui::TextEdit::singleline(&mut draft.label)
-                                    .hint_text("Uses stable ID if blank")
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .changed();
-                        if let Some(prefab) = &entity.prefab {
-                            caption(ui, format!("Prefab · {prefab}"));
+                    let editable = !stale && self.drag.is_none() && !playing;
+                    let icons = self.icons;
+                    theme::card().show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            icons.show(ui, Icon::Entity, 16.0, ACCENT);
+                            ui.label(RichText::new("Entity").strong().color(theme::TEXT));
+                        });
+                        // Label column by fixed width, not a Grid: a new egui Grid discards
+                        // its first pass, which would drop that frame's input.
+                        let field = |ui: &mut Ui, name: &str| {
+                            ui.add_sized([62.0, 20.0], egui::Label::new(RichText::new(name).color(MUTED)));
+                        };
+                        {
+                            {
+                                ui.horizontal(|ui| {
+                                field(ui, "Name");
+                                ui.add_enabled_ui(editable, |ui| {
+                                    draft.label_dirty |= ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut draft.label)
+                                                .hint_text("Uses stable ID if blank")
+                                                .desired_width(f32::INFINITY),
+                                        )
+                                        .changed();
+                                });
+                                });
+                                ui.horizontal(|ui| {
+                                    field(ui, "ID");
+                                    ui.label(RichText::new(truncate(&id, 30)).monospace().color(theme::TEXT))
+                                        .on_hover_text(&id);
+                                    let r = theme::icon_button_sized(ui, icons, Icon::Copy, "Copy ID", false, 20.0);
+                                    self.rects.insert("inspector:copy_id".into(), r.rect);
+                                    if r.clicked() {
+                                        ui.ctx().copy_text(id.clone());
+                                    }
+                                });
+                                if let Some(prefab) = &entity.prefab {
+                                    ui.horizontal(|ui| {
+                                        field(ui, "Prefab");
+                                        ui.label(RichText::new(prefab).color(theme::PREFAB));
+                                    });
+                                }
+                            }
                         }
-                        tag_request = super::world_panel::tag_chips(
-                            ui,
-                            &mut self.tag_ui,
-                            !draft.dirty(),
-                            &mut self.rects,
-                        );
+                        ui.add_enabled_ui(editable, |ui| {
+                            tag_request = super::world_panel::tag_chips(
+                                ui,
+                                &mut self.tag_ui,
+                                !draft.dirty(),
+                                &mut self.rects,
+                            );
+                        });
+                    });
+                    ui.add_enabled_ui(editable, |ui| {
                         if !self.extra.is_empty() {
                             ui.label(
                                 RichText::new(
@@ -968,9 +1310,7 @@ impl Editor {
                         // First for animated objects: the inspector is short on laptop screens
                         // and the timeline is what one edits on them (Transform follows).
                         if let Some(clips) = &tween {
-                            egui::CollapsingHeader::new("Tween timeline")
-                                .default_open(true)
-                                .show(ui, |ui| {
+                            theme::section(ui, icons, Icon::Tween, "Tween timeline", true, |ui| {
                                     let live = tween_ui.live.clone();
                                     let editable = !draft.dirty() && live.is_none();
                                     tween_request = super::timeline::timeline(
@@ -984,9 +1324,7 @@ impl Editor {
                                     );
                                 });
                         }
-                        egui::CollapsingHeader::new("Transform")
-                            .default_open(true)
-                            .show(ui, |ui| {
+                        theme::section(ui, icons, Icon::Move, "Transform", true, |ui| {
                                 if let Some(t) = &mut draft.transform {
                                     // "—" on an axis whose value differs across the selection,
                                     // until it is edited.
@@ -1033,9 +1371,7 @@ impl Editor {
                                     draft.transform_dirty = true;
                                 }
                             });
-                        egui::CollapsingHeader::new("Parent and scenes")
-                            .default_open(true)
-                            .show(ui, |ui| {
+                        theme::section(ui, icons, Icon::Hierarchy, "Parent and scenes", true, |ui| {
                                 caption(ui, "PARENT ID · EMPTY FOR ROOT");
                                 draft.parent_dirty |= ui
                                     .add(
@@ -1073,9 +1409,7 @@ impl Editor {
                                     }
                                 });
                             });
-                        egui::CollapsingHeader::new("Components")
-                            .default_open(true)
-                            .show(ui, |ui| {
+                        ui.scope(|ui| {
                                 let panel = ComponentPanel {
                                     world: &self.world,
                                     world_version: self.world_version,
@@ -1089,14 +1423,13 @@ impl Editor {
                                     clipboard: self.component_clipboard.as_ref().map(|c| c.0.as_str()),
                                     live,
                                     scroll: &mut self.scroll_component,
+                                    icons: self.icons,
                                 };
                                 component_request =
                                     component_editor(ui, panel, entity, draft, &mut add_component);
                             });
                         if let Some((clips, current)) = &audio {
-                            egui::CollapsingHeader::new("Audio source")
-                                .default_open(true)
-                                .show(ui, |ui| {
+                            theme::section(ui, icons, Icon::Audio, "Audio source", true, |ui| {
                                     ui.add_enabled_ui(!draft.dirty(), |ui| {
                                         ui.horizontal(|ui| {
                                             ui.label("Clip");
@@ -1121,14 +1454,12 @@ impl Editor {
                                     });
                                     caption(
                                         ui,
-                                        "Edit volume, loop, distances and rolloff under Components ▸ audio.source; play with call audio.play in Play",
+                                        "Edit volume, loop, distances and rolloff under Components › audio.source; play with call audio.play in Play",
                                     );
                                 });
                         }
                         if let Some(spline) = &path {
-                            egui::CollapsingHeader::new("Path points")
-                                .default_open(true)
-                                .show(ui, |ui| {
+                            theme::section(ui, icons, Icon::Path, "Path points", true, |ui| {
                                     caption(
                                         ui,
                                         format!(
@@ -1638,27 +1969,35 @@ struct TabHost<'a> {
     game: bool,
     /// The Inspector is in a floating window (no camera preview hole there).
     inspector_floating: bool,
+    /// Tabs alone in their leaf (bits by `Dock::ALL` index): their tab is the panel's title,
+    /// not a pill.
+    alone: u32,
+    /// Active tab -> its leaf's tab strip, for the "…" panel menu.
+    bars: [Option<(Dock, egui::Rect)>; 16],
+    /// A layout command picked in a panel menu (runs once the dock state is back).
+    panel_command: Option<(&'static str, Option<String>)>,
 }
 
 impl egui_dock::TabViewer for TabHost<'_> {
     type Tab = Dock;
     fn title(&mut self, tab: &mut Dock) -> egui::WidgetText {
-        let count = match tab {
-            Dock::Problems => self.editor.problems.len(),
-            Dock::Proposals => self.editor.proposals.len(),
-            _ => 0,
-        };
-        if count == 0 {
-            tab.title().into()
-        } else {
-            format!("{} ({count})", tab.title()).into()
-        }
+        // Room for the tab icon, painted over the leading spaces (panels.rs).
+        self.editor.tab_label(*tab).into()
     }
     /// Stable per tab (the default uses the title, which changes with the counts).
     fn id(&mut self, tab: &mut Dock) -> egui::Id {
         egui::Id::new(("editor_tab", tab.name()))
     }
     fn ui(&mut self, ui: &mut Ui, tab: &mut Dock) {
+        let bar = self
+            .bars
+            .iter()
+            .flatten()
+            .find(|(t, _)| t == tab)
+            .map(|(_, r)| *r);
+        if let Some(command) = self.editor.panel_menu(ui, *tab, bar) {
+            self.panel_command = Some(command);
+        }
         let (editor, actions) = (&mut *self.editor, &mut *self.actions);
         match *tab {
             Dock::Hierarchy => {
@@ -1736,9 +2075,17 @@ impl egui_dock::TabViewer for TabHost<'_> {
         tab: &Dock,
         global: &egui_dock::TabStyle,
     ) -> Option<egui_dock::TabStyle> {
-        matches!(tab, Dock::Scene | Dock::Game).then(|| {
-            let mut style = global.clone();
-            style.tab_body.inner_margin = Margin::ZERO;
+        let alone = self.alone & tab_bit(*tab) != 0;
+        let canvas = matches!(tab, Dock::Scene | Dock::Game);
+        (alone || canvas).then(|| {
+            let mut style = if alone {
+                header_tab_style(global)
+            } else {
+                global.clone()
+            };
+            if canvas {
+                style.tab_body.inner_margin = Margin::ZERO;
+            }
             style
         })
     }
@@ -1747,18 +2094,102 @@ impl egui_dock::TabViewer for TabHost<'_> {
 /// The dock look: the editor's panel colors on the egui-derived defaults.
 fn dock_style(style: &egui::Style) -> egui_dock::Style {
     let mut dock = egui_dock::Style::from_egui(style);
-    dock.tab_bar.bg_fill = HEADER;
+    // Each leaf is a rounded, bordered panel; the strip on top is its header (pill tabs).
+    dock.tab_bar.bg_fill = SURFACE;
+    dock.tab_bar.height = 36.0;
+    dock.tab_bar.hline_color = theme::BORDER;
+    dock.tab_bar.corner_radius = egui::CornerRadius {
+        nw: 8,
+        ne: 8,
+        sw: 0,
+        se: 0,
+    };
     dock.tab.tab_body.bg_fill = SURFACE;
-    dock.tab.tab_body.inner_margin = Margin::same(8);
-    dock.tab.active.bg_fill = SURFACE;
-    dock.tab.focused.bg_fill = SURFACE;
-    dock.tab.active.text_color = ACCENT;
-    dock.tab.focused.text_color = ACCENT;
+    dock.tab.tab_body.inner_margin = Margin::same(10);
+    dock.tab.tab_body.stroke = egui::Stroke::new(1.0_f32, theme::BORDER);
+    dock.tab.tab_body.corner_radius = egui::CornerRadius {
+        nw: 0,
+        ne: 0,
+        sw: 8,
+        se: 8,
+    };
+    for (tab, fill, outline, text) in [
+        (
+            &mut dock.tab.active,
+            theme::ACCENT_SOFT,
+            theme::ACCENT_EDGE,
+            Color32::WHITE,
+        ),
+        (
+            &mut dock.tab.focused,
+            theme::ACCENT_SOFT,
+            theme::ACCENT_EDGE,
+            Color32::WHITE,
+        ),
+        (
+            &mut dock.tab.active_with_kb_focus,
+            theme::ACCENT_SOFT,
+            ACCENT,
+            Color32::WHITE,
+        ),
+        (
+            &mut dock.tab.focused_with_kb_focus,
+            theme::ACCENT_SOFT,
+            ACCENT,
+            Color32::WHITE,
+        ),
+        (&mut dock.tab.inactive, SURFACE, SURFACE, MUTED),
+        (
+            &mut dock.tab.inactive_with_kb_focus,
+            SURFACE,
+            theme::BORDER,
+            MUTED,
+        ),
+        (
+            &mut dock.tab.hovered,
+            theme::CONTROL,
+            theme::CONTROL,
+            theme::TEXT,
+        ),
+    ] {
+        tab.bg_fill = fill;
+        tab.text_color = text;
+        tab.outline_color = outline;
+        tab.corner_radius = egui::CornerRadius::same(7);
+    }
+    // Gaps between panels show the window backdrop.
+    dock.separator.width = 6.0;
+    dock.separator.color_idle = BACKDROP;
+    dock.separator.color_hovered = theme::BORDER;
+    dock.separator.color_dragged = ACCENT;
+    dock.main_surface_border_stroke = egui::Stroke::NONE;
     dock
 }
 
+fn tab_bit(tab: Dock) -> u32 {
+    1 << Dock::ALL.iter().position(|d| *d == tab).unwrap_or(31)
+}
+
+/// The tab of a single-tab leaf is drawn as a plain panel title (no pill).
+fn header_tab_style(global: &egui_dock::TabStyle) -> egui_dock::TabStyle {
+    let mut style = global.clone();
+    for tab in [
+        &mut style.active,
+        &mut style.focused,
+        &mut style.active_with_kb_focus,
+        &mut style.focused_with_kb_focus,
+        &mut style.hovered,
+        &mut style.inactive,
+    ] {
+        tab.bg_fill = SURFACE;
+        tab.outline_color = SURFACE;
+        tab.text_color = theme::TEXT;
+    }
+    style
+}
+
 /// Hierarchy row height (also the virtualization step of `show_rows`).
-const ROW_HEIGHT: f32 = 20.0;
+const ROW_HEIGHT: f32 = 26.0;
 
 /// Where a dragged hierarchy row lands relative to the row under the pointer.
 #[derive(Clone, Copy)]
@@ -1827,56 +2258,98 @@ fn badge_meaning(text: &str) -> &'static str {
     }
 }
 
-/// A 14 px painted toggle (eye or padlock), so it does not depend on symbol glyphs.
-/// `own` = flag set on this row, `inherited` = set on an ancestor.
-fn view_toggle(ui: &mut Ui, own: bool, inherited: bool, lock: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+/// Eye or padlock toggle of a Hierarchy row. `own` = flag set on this row, `inherited` = set
+/// on an ancestor. Unflagged toggles are drawn only on hovered / selected rows (`show`) but
+/// always take their place, so a click lands the same way.
+fn view_toggle(
+    ui: &mut Ui,
+    icons: super::icons::Icons,
+    own: bool,
+    inherited: bool,
+    lock: bool,
+    show: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
     let on = own || inherited;
     let color = if own {
         WARNING
     } else if inherited {
         WARNING.gamma_multiply(0.5)
     } else if response.hovered() {
-        Color32::from_gray(210)
+        theme::TEXT
+    } else if show {
+        MUTED
     } else {
-        Color32::from_gray(95)
+        return response;
     };
-    let stroke = egui::Stroke::new(1.2_f32, color);
-    let painter = ui.painter();
-    let c = rect.center();
-    if lock {
-        let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 2.5), egui::vec2(9.0, 6.0));
-        if on {
-            painter.rect_filled(body, 1.0, color);
-        } else {
-            painter.rect_stroke(body, 1.0, stroke, egui::StrokeKind::Inside);
-        }
-        let (left, right, top) = (c.x - 2.5, c.x + 2.5, c.y - 4.5);
-        painter.line_segment(
-            [egui::pos2(left, body.top()), egui::pos2(left, top)],
-            stroke,
-        );
-        painter.line_segment([egui::pos2(left, top), egui::pos2(right, top)], stroke);
-        // An open padlock has a shorter right leg.
-        let leg = if on { body.top() } else { top + 2.0 };
-        painter.line_segment([egui::pos2(right, top), egui::pos2(right, leg)], stroke);
-    } else {
-        let points = (0..16)
-            .map(|i| {
-                let a = i as f32 / 16.0 * std::f32::consts::TAU;
-                c + egui::vec2(6.0 * a.cos(), 3.4 * a.sin())
-            })
-            .collect();
-        painter.add(egui::Shape::closed_line(points, stroke));
-        painter.circle_filled(c, 1.7, color);
-        if on {
-            painter.line_segment(
-                [c + egui::vec2(-6.0, -5.0), c + egui::vec2(6.0, 5.0)],
-                stroke,
-            );
-        }
-    }
+    let icon = match (lock, on) {
+        (true, true) => Icon::Lock,
+        (true, false) => Icon::Unlock,
+        (false, true) => Icon::EyeOff,
+        (false, false) => Icon::Eye,
+    };
+    icons.paint(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(15.0, 15.0)),
+        icon,
+        color,
+    );
     response
+}
+
+/// The type icon of a Hierarchy row (most telling component first) and its tooltip.
+fn entity_icon(world: &World, e: &Entity, branch: bool) -> (Icon, &'static str) {
+    let prefab = e.prefab.as_ref().and_then(|p| world.prefabs.get(p));
+    let has = |c: &str| {
+        e.components.contains_key(c) || prefab.is_some_and(|p| p.components.contains_key(c))
+    };
+    let light_kind = || {
+        [
+            e.components.get("render.light"),
+            prefab.and_then(|p| p.components.get("render.light")),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|v| v.get("kind")?.as_str())
+    };
+    if has("camera.follow") {
+        (Icon::CameraFollow, "Follow camera")
+    } else if has("render.camera") {
+        (Icon::Camera, "Camera")
+    } else if has("render.light") {
+        match light_kind() {
+            Some("directional") => (Icon::LightDirectional, "Directional light"),
+            Some("spot") => (Icon::LightSpot, "Spot light"),
+            Some("area") => (Icon::LightArea, "Area light"),
+            _ => (Icon::LightPoint, "Point light"),
+        }
+    } else if has("trigger.zone") {
+        (Icon::Trigger, "Trigger zone")
+    } else if has("path.spline") {
+        (Icon::Path, "Path")
+    } else if has("audio.source") {
+        (Icon::Audio, "Audio source")
+    } else if has("audio.listener") {
+        (Icon::AudioListener, "Audio listener")
+    } else if has("animation.player") {
+        (Icon::Skeleton, "Animated model")
+    } else if has("render.mesh") || has("render.geometry") {
+        (Icon::Mesh, "Mesh")
+    } else if has("nav.agent") {
+        (Icon::Nav, "Navigation agent")
+    } else if has("fsm.agent") {
+        (Icon::Fsm, "State machine agent")
+    } else if has("interact.target") {
+        (Icon::Interact, "Interactable")
+    } else if has("tween.clips") {
+        (Icon::Tween, "Tweened object")
+    } else if e.prefab.is_some() {
+        (Icon::Prefab, "Prefab instance")
+    } else if branch {
+        (Icon::Folder, "Group (parent of other objects)")
+    } else {
+        (Icon::Entity, "Object")
+    }
 }
 
 /// Hierarchy search: whitespace-separated tokens that must all match. `tag:x` (exact tag),
@@ -1936,8 +2409,42 @@ struct ComponentPanel<'a> {
     live: bool,
     /// Scroll the Inspector so the open component starts at the top (once).
     scroll: &'a mut bool,
+    icons: super::icons::Icons,
 }
 
+/// Icon of a component card (by the component's family).
+fn component_icon(key: &str) -> Icon {
+    let family = key.split('.').next().unwrap_or(key);
+    match key {
+        "render.camera" => Icon::Camera,
+        "render.light" => Icon::LightPoint,
+        "render.material" => Icon::Material,
+        "render.mesh" | "render.geometry" => Icon::Mesh,
+        "audio.listener" => Icon::AudioListener,
+        "camera.follow" => Icon::CameraFollow,
+        "fsm.agent" => Icon::Fsm,
+        _ => match family {
+            "animation" => Icon::Animation,
+            "audio" => Icon::Audio,
+            "trigger" => Icon::Trigger,
+            "path" => Icon::Path,
+            "nav" => Icon::Nav,
+            "interact" => Icon::Interact,
+            "tween" => Icon::Tween,
+            "physics" | "combat" => Icon::Collider,
+            "vfx" | "postfx" => Icon::Vfx,
+            "ui" => Icon::UiDocument,
+            "input" => Icon::Input,
+            "behavior" | "fsm" => Icon::Behavior,
+            "render" => Icon::Mesh,
+            _ => Icon::Entity,
+        },
+    }
+}
+
+/// Component cards: one row per component (authored or prefab-inherited); the open one shows
+/// its form. Header: fold, enabled, icon, title, then reset / play / edit graph and a "…" menu
+/// (copy, paste, remove, make main camera). Add Component / Behavior pickers on top.
 fn component_editor(
     ui: &mut Ui,
     panel: ComponentPanel,
@@ -1958,6 +2465,7 @@ fn component_editor(
         clipboard,
         live,
         scroll,
+        icons,
     } = panel;
     let inherited = entity.prefab.as_ref().and_then(|p| world.prefabs.get(p));
     let keys: std::collections::BTreeSet<_> = entity
@@ -1970,94 +2478,413 @@ fn component_editor(
     let mut request = None;
     // Picking in Add component writes at once, so any unapplied draft edit blocks it.
     ui.add_enabled_ui(!draft.dirty(), |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for key in &keys {
-                let r = ui.selectable_label(draft.component == *key, key.as_str());
-                rects.insert(format!("component:{key}"), r.rect);
-                if r.clicked() {
-                    draft.open_component(world, entity, key);
-                }
-            }
-        });
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut draft.component_input)
-                    .hint_text("Component ID")
-                    .desired_width(135.0),
-            );
-            if ui.small_button("Load").clicked() {
-                let id = draft.component_input.trim().to_owned();
-                draft.open_component(world, entity, &id);
+            icons.show(ui, Icon::Layers, 16.0, ACCENT);
+            ui.label(RichText::new("Components").strong().color(theme::TEXT));
+        });
+        ui.horizontal_wrapped(|ui| {
+            // Picker over every installed component the object lacks. Picking one writes it with
+            // its default and whatever capability/systems it needs (ops::add_component).
+            egui::ComboBox::from_id_salt("add_component")
+                .selected_text("Add Component…")
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    let mut available: Vec<&String> = registry
+                        .components
+                        .keys()
+                        .chain(world.component_schemas.keys())
+                        .filter(|id| !keys.contains(*id) && id.as_str() != "core.transform")
+                        .collect();
+                    available.sort();
+                    available.dedup();
+                    for id in available {
+                        let needs = axiom_core::ops::requirements(registry, id);
+                        let missing: Vec<&str> = needs
+                            .capabilities
+                            .iter()
+                            .filter(|c| !world.capabilities.contains_key(*c))
+                            .chain(needs.systems.iter().filter(|s| !world.systems.contains(s)))
+                            .map(String::as_str)
+                            .collect();
+                        let text = if missing.is_empty() {
+                            RichText::new(id.as_str())
+                        } else {
+                            RichText::new(format!("{id}   + {}", missing.join(", "))).color(MUTED)
+                        };
+                        let response = ui.selectable_label(false, text);
+                        let response = if missing.is_empty() {
+                            response
+                        } else {
+                            response.on_hover_text(
+                                "Adds what it needs to the world in the same revision",
+                            )
+                        };
+                        if response.clicked() {
+                            *add_component = Some(id.clone());
+                        }
+                    }
+                });
+            // Behavior ▸ templates: option dialogs (`command:ID` runs the registered command).
+            let menu = egui::ComboBox::from_id_salt("add_behavior")
+                .selected_text("Behavior…")
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for (id, title) in [
+                        ("behavior.fsm_agent", "FSM Agent…"),
+                        ("behavior.patrol", "Patrol…"),
+                        ("behavior.guard", "Guard…"),
+                        ("behavior.dialogue", "NPC Dialogue…"),
+                    ] {
+                        let r = ui.selectable_label(false, title);
+                        rects.insert(format!("behavior:{id}"), r.rect);
+                        if r.clicked() {
+                            *add_component = Some(format!("command:{id}"));
+                        }
+                    }
+                });
+            rects.insert("behavior:menu".into(), menu.response.rect);
+        });
+    });
+    // A component loaded by ID that the object neither authors nor inherits gets a card too
+    // (stage it with JSON).
+    let staged = (!draft.component.is_empty()
+        && draft.component != "core.transform"
+        && !keys.contains(&draft.component))
+    .then(|| draft.component.clone());
+    for key in keys.iter().chain(staged.iter()) {
+        let open = draft.component == *key;
+        theme::card().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let fold = theme::icon_button_sized(
+                    ui,
+                    icons,
+                    if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    if open { "Close" } else { "Open" },
+                    false,
+                    18.0,
+                );
+                rects.insert(format!("component:fold:{key}"), fold.rect);
+                // Enabled: a live form edit on the open card; read-only on the others.
+                let mut shown_enabled = false;
+                if open {
+                    let base_enabled = draft.form_base.get("enabled").cloned();
+                    if let Some(Value::Bool(enabled)) =
+                        draft.form.as_mut().and_then(|f| f.get_mut("enabled"))
+                    {
+                        let shown_mixed = mixed.contains("/enabled")
+                            && base_enabled == Some(Value::Bool(*enabled));
+                        let r = theme::accent_check(ui, icons, enabled, shown_mixed)
+                            .on_hover_text("Enabled");
+                        rects.insert("component:enabled".into(), r.rect);
+                        if r.changed() {
+                            draft.form_dirty = true;
+                        }
+                        shown_enabled = true;
+                    }
+                }
+                if !shown_enabled {
+                    let enabled = entity
+                        .components
+                        .get(key)
+                        .and_then(|v| v.get("enabled"))
+                        .or_else(|| inherited?.components.get(key)?.get("enabled"))
+                        .and_then(Value::as_bool);
+                    if let Some(mut enabled) = enabled {
+                        ui.add_enabled_ui(false, |ui| {
+                            theme::accent_check(ui, icons, &mut enabled, false)
+                                .on_disabled_hover_text("Open the component to toggle it")
+                        });
+                    }
+                }
+                icons.show(
+                    ui,
+                    component_icon(key),
+                    16.0,
+                    if open { ACCENT } else { MUTED },
+                );
+                let title = ui
+                    .add_enabled(
+                        !draft.dirty() || open,
+                        egui::Button::new(RichText::new(key.as_str()).color(theme::TEXT))
+                            .frame(false),
+                    )
+                    .on_hover_text(if open {
+                        "Open component"
+                    } else {
+                        "Open component (edit its fields)"
+                    });
+                rects.insert(format!("component:{key}"), title.rect);
+                if (title.clicked() || fold.clicked()) && !open && !draft.dirty() {
+                    draft.open_component(world, entity, key);
+                } else if fold.clicked() && open && !draft.dirty() {
+                    draft.open_component(world, entity, "");
+                }
+                if open {
+                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(r) = component_actions(
+                            ui, icons, draft, rects, spec, clipboard, key, entity, inherited,
+                        ) {
+                            request = Some(r);
+                        }
+                    });
+                }
+            });
+            if open {
+                if std::mem::take(scroll) {
+                    ui.scroll_to_cursor(Some(egui::Align::TOP));
+                }
+                let body = ComponentBody {
+                    world,
+                    world_version,
+                    hints,
+                    mixed,
+                    filter: &mut *filter,
+                    picker: &mut *picker,
+                    rects: &mut *rects,
+                    live,
+                    spec,
+                };
+                if let Some(r) = component_body(ui, body, entity, inherited, draft) {
+                    request = Some(r);
+                }
             }
         });
-        // Picker over every installed component the object lacks. Picking one writes it with
-        // its default and whatever capability/systems it needs (ops::add_component).
-        egui::ComboBox::from_id_salt("add_component")
-            .selected_text("Add component…")
-            .width(220.0)
-            .show_ui(ui, |ui| {
-                let mut available: Vec<&String> = registry
-                    .components
-                    .keys()
-                    .chain(world.component_schemas.keys())
-                    .filter(|id| !keys.contains(*id) && id.as_str() != "core.transform")
-                    .collect();
-                available.sort();
-                available.dedup();
-                for id in available {
-                    let needs = axiom_core::ops::requirements(registry, id);
-                    let missing: Vec<&str> = needs
-                        .capabilities
-                        .iter()
-                        .filter(|c| !world.capabilities.contains_key(*c))
-                        .chain(needs.systems.iter().filter(|s| !world.systems.contains(s)))
-                        .map(String::as_str)
-                        .collect();
-                    let text = if missing.is_empty() {
-                        RichText::new(id.as_str())
-                    } else {
-                        RichText::new(format!("{id}   + {}", missing.join(", "))).color(MUTED)
-                    };
-                    let response = ui.selectable_label(false, text);
-                    let response = if missing.is_empty() {
-                        response
-                    } else {
-                        response
-                            .on_hover_text("Adds what it needs to the world in the same revision")
-                    };
-                    if response.clicked() {
-                        *add_component = Some(id.clone());
-                    }
-                }
-            });
-        // Behavior ▸ templates: option dialogs (`command:ID` runs the registered command).
-        let menu = egui::ComboBox::from_id_salt("add_behavior")
-            .selected_text("Behavior…")
-            .width(220.0)
-            .show_ui(ui, |ui| {
-                for (id, title) in [
-                    ("behavior.fsm_agent", "FSM Agent…"),
-                    ("behavior.patrol", "Patrol…"),
-                    ("behavior.guard", "Guard…"),
-                    ("behavior.dialogue", "NPC Dialogue…"),
-                ] {
-                    let r = ui.selectable_label(false, title);
-                    rects.insert(format!("behavior:{id}"), r.rect);
-                    if r.clicked() {
-                        *add_component = Some(format!("command:{id}"));
-                    }
-                }
-            });
-        rects.insert("behavior:menu".into(), menu.response.rect);
-    });
-    if draft.component.is_empty() || draft.component == "core.transform" {
-        return request;
+        ui.add_space(6.0);
     }
+    egui::CollapsingHeader::new(RichText::new("Advanced").color(MUTED))
+        .id_salt("components_advanced")
+        .show(ui, |ui| {
+            ui.add_enabled_ui(!draft.dirty(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.component_input)
+                            .hint_text("Component ID")
+                            .desired_width(150.0),
+                    );
+                    if ui
+                        .small_button("Load")
+                        .on_hover_text(
+                            "Open any component by ID (one the object lacks can be staged as JSON)",
+                        )
+                        .clicked()
+                    {
+                        let id = draft.component_input.trim().to_owned();
+                        draft.open_component(world, entity, &id);
+                    }
+                });
+            });
+        });
+    request
+}
+
+/// Header actions of the open component card, right to left: "…" menu (Copy, Paste, Remove,
+/// Make Main Camera), Reset, then Play / Edit Graph where they apply.
+#[allow(clippy::too_many_arguments)]
+fn component_actions(
+    ui: &mut Ui,
+    icons: super::icons::Icons,
+    draft: &Draft,
+    rects: &mut std::collections::HashMap<String, egui::Rect>,
+    spec: Option<&super::form::Spec>,
+    clipboard: Option<&str>,
+    key: &str,
+    entity: &Entity,
+    inherited: Option<&axiom_core::Prefab>,
+) -> Option<ComponentRequest> {
+    let own = entity.components.contains_key(key);
+    let inherits = inherited.is_some_and(|p| p.components.contains_key(key));
+    if !(own || inherits) {
+        return None;
+    }
+    let mut request = None;
+    let component = key.to_owned();
+    let resettable = own && (inherits || spec.is_some_and(|s| s.resettable));
+    let playable = matches!(component.as_str(), "tween.clips" | "audio.source");
+    ui.add_enabled_ui(!draft.dirty(), |ui| {
+        let more = theme::icon_button_sized(ui, icons, Icon::More, "More actions", false, 22.0);
+        rects.insert("component:menu".into(), more.rect);
+        let id = ui.make_persistent_id(("component_menu", key));
+        theme::dropdown(ui, id, &more, |ui| {
+            let mut item =
+                |ui: &mut Ui, name: &str, icon: Icon, text: &str, tip: &str, enabled: bool| {
+                    let image = icons.image(ui.ctx(), icon, 16.0, MUTED);
+                    let r = ui
+                        .add_enabled(
+                            enabled,
+                            egui::Button::image_and_text(image, text).frame(false),
+                        )
+                        .on_hover_text(tip);
+                    rects.insert(format!("component:{name}"), r.rect);
+                    let clicked = r.clicked();
+                    if clicked {
+                        theme::close_dropdown(ui, id);
+                    }
+                    clicked
+                };
+            if item(
+                ui,
+                "menu:reset",
+                Icon::Reset,
+                "Reset",
+                "Back to the default values, or the prefab's (ACL: reset SEL COMPONENT)",
+                resettable,
+            ) {
+                request = Some(ComponentRequest::Reset(component.clone()));
+            }
+            if playable
+                && item(
+                    ui,
+                    "menu:play",
+                    Icon::Play,
+                    "Play",
+                    "Start Play preview and play this clip / source",
+                    true,
+                )
+            {
+                request = Some(ComponentRequest::Play(component.clone()));
+            }
+            if item(
+                ui,
+                "copy",
+                Icon::Copy,
+                "Copy values",
+                "Copy the values (Paste on the same component of other objects)",
+                true,
+            ) {
+                request = Some(ComponentRequest::Copy(component.clone()));
+            }
+            if item(
+                ui,
+                "paste",
+                Icon::Paste,
+                "Paste values",
+                "Paste the copied values on every selected object with this component",
+                clipboard == Some(component.as_str()),
+            ) {
+                request = Some(ComponentRequest::Paste(component.clone()));
+            }
+            if component == "render.camera"
+                && item(
+                    ui,
+                    "main_camera",
+                    Icon::Camera,
+                    "Make Main Camera",
+                    "active=true here, false on every other camera (ACL: camera main ID)",
+                    draft.form.as_ref().is_some_and(|f| f["active"] != true),
+                )
+            {
+                request = Some(ComponentRequest::MainCamera);
+            }
+            ui.separator();
+            if item(
+                ui,
+                "remove",
+                Icon::Delete,
+                "Remove component",
+                "Remove the authored component (ACL: remove SEL COMPONENT)",
+                own,
+            ) {
+                request = Some(ComponentRequest::Remove(component.clone()));
+            }
+        });
+        let tip = if inherits {
+            "Reset: drop the override, back to the prefab's values"
+        } else {
+            "Reset to the default values (ACL: reset SEL COMPONENT)"
+        };
+        let r = ui
+            .add_enabled_ui(resettable, |ui| {
+                theme::icon_button_sized(ui, icons, Icon::Reset, tip, false, 22.0)
+            })
+            .inner;
+        rects.insert("component:reset".into(), r.rect);
+        if r.clicked() {
+            request = Some(ComponentRequest::Reset(component.clone()));
+        }
+        if component == "fsm.agent" {
+            let enabled = draft
+                .form
+                .as_ref()
+                .is_some_and(|f| f["machine"].is_string());
+            let r = ui
+                .add_enabled_ui(enabled, |ui| {
+                    theme::icon_button_sized(
+                        ui,
+                        icons,
+                        Icon::Graphs,
+                        "Edit Graph: open this agent's state machine in the Graphs tab",
+                        false,
+                        22.0,
+                    )
+                })
+                .inner;
+            rects.insert("component:edit_graph".into(), r.rect);
+            if r.clicked() {
+                request = Some(ComponentRequest::EditGraph);
+            }
+        }
+        if playable {
+            let r = theme::icon_button_sized(
+                ui,
+                icons,
+                Icon::Play,
+                "Play: start Play preview and play this clip / source",
+                false,
+                22.0,
+            );
+            rects.insert("component:play".into(), r.rect);
+            if r.clicked() {
+                request = Some(ComponentRequest::Play(component.clone()));
+            }
+        }
+    });
+    request
+}
+
+/// What the open card's body reads.
+struct ComponentBody<'a> {
+    world: &'a World,
+    world_version: u64,
+    hints: &'a std::collections::BTreeMap<String, Value>,
+    mixed: &'a std::collections::HashSet<String>,
+    filter: &'a mut String,
+    picker: &'a mut Option<super::form::Picker>,
+    rects: &'a mut std::collections::HashMap<String, egui::Rect>,
+    live: bool,
+    spec: Option<&'a super::form::Spec>,
+}
+
+/// The open card's body: typed form (with Form / JSON switch and field filter) or JSON.
+fn component_body(
+    ui: &mut Ui,
+    body: ComponentBody,
+    entity: &Entity,
+    inherited: Option<&axiom_core::Prefab>,
+    draft: &mut Draft,
+) -> Option<ComponentRequest> {
+    let ComponentBody {
+        world,
+        world_version,
+        hints,
+        mixed,
+        filter,
+        picker,
+        rects,
+        live,
+        spec,
+    } = body;
+    let mut request = None;
     let own = entity.components.contains_key(&draft.component);
     let inherits = inherited.is_some_and(|p| p.components.contains_key(&draft.component));
     let known = hints.contains_key(&draft.component)
         || world.component_schemas.contains_key(&draft.component);
-    if !known && !keys.contains(&draft.component) {
+    if !known && !own && !inherits {
         ui.label(
             RichText::new(format!(
                 "Unknown component '{}'. Check the ID (schema components lists them).",
@@ -2065,113 +2892,6 @@ fn component_editor(
             ))
             .color(WARNING),
         );
-    }
-    if std::mem::take(scroll) {
-        ui.scroll_to_cursor(Some(egui::Align::TOP));
-    }
-    // Component header: enabled toggle (a form edit, so it is live and multi-object), then
-    // the actions that write at once.
-    if own || inherits {
-        ui.horizontal_wrapped(|ui| {
-            let base_enabled = draft.form_base.get("enabled").cloned();
-            if let Some(Value::Bool(enabled)) =
-                draft.form.as_mut().and_then(|f| f.get_mut("enabled"))
-            {
-                let shown_mixed =
-                    mixed.contains("/enabled") && base_enabled == Some(Value::Bool(*enabled));
-                let r = ui.add(egui::Checkbox::new(enabled, "Enabled").indeterminate(shown_mixed));
-                rects.insert("component:enabled".into(), r.rect);
-                if r.changed() {
-                    draft.form_dirty = true;
-                }
-            }
-            let component = draft.component.clone();
-            ui.add_enabled_ui(!draft.dirty(), |ui| {
-                let mut button = |ui: &mut Ui, key: &str, text: &str, tip: &str, enabled: bool| {
-                    let r = ui
-                        .add_enabled(enabled, egui::Button::new(text).small())
-                        .on_hover_text(tip);
-                    rects.insert(format!("component:{key}"), r.rect);
-                    r.clicked()
-                };
-                if button(
-                    ui,
-                    "reset",
-                    "Reset",
-                    if inherits {
-                        "Drop the override: back to the prefab's values"
-                    } else {
-                        "Back to the default values (ACL: reset SEL COMPONENT)"
-                    },
-                    own && (inherits || spec.is_some_and(|s| s.resettable)),
-                ) {
-                    request = Some(ComponentRequest::Reset(component.clone()));
-                }
-                if button(
-                    ui,
-                    "copy",
-                    "Copy",
-                    "Copy the values (Paste on the same component of other objects)",
-                    true,
-                ) {
-                    request = Some(ComponentRequest::Copy(component.clone()));
-                }
-                if button(
-                    ui,
-                    "paste",
-                    "Paste",
-                    "Paste the copied values on every selected object with this component",
-                    clipboard == Some(component.as_str()),
-                ) {
-                    request = Some(ComponentRequest::Paste(component.clone()));
-                }
-                if button(
-                    ui,
-                    "remove",
-                    "Remove",
-                    "Remove the authored component (ACL: remove SEL COMPONENT)",
-                    own,
-                ) {
-                    request = Some(ComponentRequest::Remove(component.clone()));
-                }
-                if component == "render.camera"
-                    && button(
-                        ui,
-                        "main_camera",
-                        "Make Main Camera",
-                        "active=true here, false on every other camera (ACL: camera main ID)",
-                        draft.form.as_ref().is_some_and(|f| f["active"] != true),
-                    )
-                {
-                    request = Some(ComponentRequest::MainCamera);
-                }
-                if component == "fsm.agent"
-                    && button(
-                        ui,
-                        "edit_graph",
-                        "Edit Graph",
-                        "Open this agent's state machine in the Graphs tab",
-                        draft
-                            .form
-                            .as_ref()
-                            .is_some_and(|f| f["machine"].is_string()),
-                    )
-                {
-                    request = Some(ComponentRequest::EditGraph);
-                }
-                if matches!(component.as_str(), "tween.clips" | "audio.source")
-                    && button(
-                        ui,
-                        "play",
-                        "▶ Play",
-                        "Start Play preview and play this clip / source",
-                        true,
-                    )
-                {
-                    request = Some(ComponentRequest::Play(component.clone()));
-                }
-            });
-        });
     }
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!draft.dirty(), |ui| {
@@ -2297,8 +3017,13 @@ fn vector(
     mixed: [bool; 3],
 ) -> bool {
     let mut changed = false;
-    caption(ui, name);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_sized(
+            [62.0, 20.0],
+            egui::Label::new(RichText::new(name).color(MUTED)),
+        );
+        let width = ((ui.available_width() - 8.0) / 3.0).clamp(52.0, 96.0);
         for ((v, axis), mixed) in value.iter_mut().zip(["X ", "Y ", "Z "]).zip(mixed) {
             let mut drag = egui::DragValue::new(v)
                 .prefix(axis)
@@ -2308,7 +3033,7 @@ fn vector(
             if mixed {
                 drag = drag.custom_formatter(|_, _| super::form::MIXED.to_owned());
             }
-            changed |= ui.add_sized([68.0, 20.0], drag).changed();
+            changed |= ui.add_sized([width, 20.0], drag).changed();
         }
     });
     changed

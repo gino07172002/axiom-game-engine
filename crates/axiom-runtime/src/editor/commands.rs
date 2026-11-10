@@ -89,6 +89,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("view.snap", "Toggle Snap", "View", ""),
     c("view.grid", "Toggle Grid", "View", ""),
     c("view.palette", "Command Palette…", "View", "Ctrl+Shift+P"),
+    c("view.fullscreen", "Toggle Fullscreen Window", "View", "F11"),
     c("view.gizmos", "Toggle Component Gizmos", "View", ""),
     c(
         "view.camera_preview",
@@ -222,6 +223,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Object",
         "",
     ),
+    c("object.group", "Create Group", "Object", "Ctrl+G"),
     c("object.drop_to_ground", "Drop to Ground", "Object", "End"),
     a("object.tag", "Edit Tags…", "Object", "+TAG -TAG …"),
     a(
@@ -258,6 +260,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "",
     ),
     c("graph.delete", "Graph: Delete Selection", "Object", ""),
+    c("graph.frame", "Graph: Frame All States", "View", ""),
     c("window.world", "World Settings…", "World", "Ctrl+9"),
     a("world.set_id", "Set World ID…", "World", "ID"),
     a("world.set_title", "Set World Title…", "World", "TEXT"),
@@ -441,6 +444,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.child_cube",
     "object.child_camera",
     "object.create_prefab",
+    "object.group",
     "object.drop_to_ground",
     "object.tag",
     "object.add_component",
@@ -536,6 +540,10 @@ pub(crate) struct Prefs {
     pub camera_preview: bool,
     /// Play in the whole window (editor panels hidden) instead of the Game tab.
     pub play_maximized: bool,
+    /// `layout::LAYOUT_VERSION` the saved `layout` was made under; 0 = before M-UI (a
+    /// missing field reads as 0, so older files are migrated once).
+    #[serde(default)]
+    pub layout_version: u32,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -546,7 +554,7 @@ impl Default for Prefs {
             snap_scale: 0.1,
             grid: false,
             local_space: false,
-            dock: "changes".into(),
+            dock: "assets".into(),
             layout: serde_json::Value::Null,
             layouts: BTreeMap::new(),
             shortcuts: BTreeMap::new(),
@@ -560,6 +568,7 @@ impl Default for Prefs {
             game_aspect: "free".into(),
             camera_preview: true,
             play_maximized: false,
+            layout_version: layout::LAYOUT_VERSION,
         }
     }
 }
@@ -672,6 +681,7 @@ impl Editor {
             | "object.child_cube"
             | "object.child_camera"
             | "object.create_prefab"
+            | "object.group"
             | "object.follow_path"
             | "object.nav_agent"
             | "object.interactable"
@@ -748,6 +758,7 @@ impl Editor {
             | "object.child_cube"
             | "object.child_camera"
             | "object.create_prefab"
+            | "object.group"
             | "object.tag"
             | "object.add_component"
             | "world.set_id"
@@ -886,6 +897,7 @@ impl Editor {
             "object.child_cube" => actions.extend(self.create_child("cube")),
             "object.child_camera" => actions.extend(self.create_child("camera")),
             "object.create_prefab" => actions.extend(self.create_prefab_from_selection()),
+            "object.group" => actions.extend(self.group_selection()),
             "edit.preferences" => self.show_prefs = true,
             "tool.select" => self.tool = Tool::Select,
             "tool.move" => self.tool = Tool::Move,
@@ -894,6 +906,7 @@ impl Editor {
             "view.space" => self.prefs.local_space = !self.prefs.local_space,
             "view.snap" => self.prefs.snap = !self.prefs.snap,
             "view.grid" => self.prefs.grid = !self.prefs.grid,
+            "view.fullscreen" => actions.push(Action::ToggleFullscreen),
             "view.palette" => {
                 self.palette = Some(Palette::default());
             }
@@ -1033,13 +1046,13 @@ impl Editor {
                 self.notice(format!("Saved layout {name}"));
             }
             ("layout.load", None) | ("layout.delete", None) => {
-                self.notice("Pick a layout under Window ▸ Layouts");
+                self.notice("Pick a layout under Window › Layouts");
             }
             ("layout.load", Some(name)) => {
                 let spec = match layout::builtin(name) {
                     Some(spec) => spec,
                     None => self.prefs.layouts.get(name).cloned().ok_or_else(|| {
-                        anyhow::anyhow!("no layout named {name}; see Window ▸ Layouts")
+                        anyhow::anyhow!("no layout named {name}; see Window › Layouts")
                     })?,
                 };
                 let (state, dropped) = layout::from_spec(&spec)
@@ -1412,62 +1425,6 @@ impl Editor {
         }
     }
 
-    pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let color = if self.error {
-                egui::Color32::from_rgb(255, 178, 111)
-            } else {
-                egui::Color32::from_rgb(155, 174, 194)
-            };
-            ui.label(RichText::new(&self.status).small().color(color))
-                .on_hover_text(&self.status);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let item = |ui: &mut egui::Ui, text: String| {
-                    ui.label(RichText::new(text).small().monospace());
-                    ui.separator();
-                };
-                item(ui, format!("{:.0} FPS", self.fps));
-                if self.saving > 0 {
-                    ui.label(
-                        RichText::new(format!("saving {}…", self.saving))
-                            .small()
-                            .monospace()
-                            .color(egui::Color32::from_rgb(255, 214, 120)),
-                    )
-                    .on_hover_text(
-                        "Edits are committed in order on the background writer; the scene shows them already",
-                    );
-                    ui.separator();
-                }
-                if let Some(job) = self.assets.thumbs.running() {
-                    let (done, total) = job.progress();
-                    item(ui, format!("thumbnails {done}/{total}"));
-                }
-                if let Some(job) = &self.scenario_job {
-                    let (done, total) = job.progress();
-                    item(
-                        ui,
-                        format!(
-                            "scenario {done}/{total} ticks · {:.1} s",
-                            job.elapsed().as_secs_f32()
-                        ),
-                    );
-                }
-                item(
-                    ui,
-                    match self.bridge {
-                        Some(port) => format!("bridge 127.0.0.1:{port}"),
-                        None => "bridge off".into(),
-                    },
-                );
-                item(ui, format!("REV {}", self.rev));
-                item(ui, format!("{} proposal(s)", self.proposals.len()));
-                item(ui, format!("{} problem(s)", self.problems.len()));
-                item(ui, format!("{} selected", self.selection().len()));
-            });
-        });
-    }
-
     pub(crate) fn snap_steps(&self) -> [f32; 3] {
         [
             self.prefs.snap_move,
@@ -1502,7 +1459,25 @@ impl Editor {
     pub fn set_prefs_path(&mut self, path: std::path::PathBuf) {
         self.prefs = Prefs::load(&path);
         // A bad saved layout falls back to Default with a notice; the other preferences stay.
-        let (state, problem) = if self.prefs.layout.is_null() {
+        // A layout saved under an older built-in Default is replaced by the new Default once
+        // (the old arrangement is the built-in "Classic"; named layouts are untouched).
+        let outdated =
+            !self.prefs.layout.is_null() && self.prefs.layout_version < layout::LAYOUT_VERSION;
+        self.prefs.layout_version = self.prefs.layout_version.max(layout::LAYOUT_VERSION);
+        let (state, problem) = if outdated {
+            // The replaced arrangement stays available as a named layout.
+            let kept = self.prefs.layouts.len() < 32 || self.prefs.layouts.contains_key("Previous");
+            if kept {
+                let previous = self.prefs.layout.clone();
+                self.prefs.layouts.insert("Previous".into(), previous);
+            }
+            self.notice(if kept {
+                "Editor layout updated to the new Default (your previous one: Window › Layouts › Previous)"
+            } else {
+                "Editor layout updated to the new Default (Window › Layouts › Classic is the old default)"
+            });
+            (layout::default_state(), None)
+        } else if self.prefs.layout.is_null() {
             let mut state = layout::default_state();
             // Older preferences only stored the active bottom-dock tab.
             if let Some(tab) = Dock::from_name(&self.prefs.dock) {
@@ -1525,7 +1500,7 @@ impl Editor {
                 ),
             }
         };
-        self.layout.replace(state, problem.is_none());
+        self.layout.replace(state, problem.is_none() && !outdated);
         if let Some(problem) = problem {
             self.set_error(problem);
         }
@@ -1797,7 +1772,10 @@ mod tests {
         let actions = key_frame(&ctx, &mut editor, &runtime, Key::D, ctrl);
         assert!(
             matches!(actions.as_slice(), [Action::Write { .. }]),
-            "Ctrl+D duplicates"
+            "Ctrl+D duplicates: {} actions, status {} {:?}",
+            actions.len(),
+            editor.status,
+            editor.draft.as_ref().map(|d| d.dirty())
         );
         key_frame(&ctx, &mut editor, &runtime, Key::Num3, ctrl);
         assert!(editor.dock_shows(Dock::History), "Ctrl+3 opens History");

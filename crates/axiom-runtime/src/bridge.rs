@@ -8,7 +8,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
     thread::JoinHandle,
@@ -19,6 +19,16 @@ pub struct Bridge {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     address: std::net::SocketAddr,
+    activity: Arc<Activity>,
+}
+/// Requests the bridge accepted (one per connection) and when the last one arrived, read by
+/// the editor status bar without locking.
+#[derive(Default)]
+struct Activity {
+    requests: AtomicU64,
+    /// Milliseconds after `started` of the last request + 1 (0 = none yet).
+    last_ms: AtomicU64,
+    started: Option<std::time::Instant>,
 }
 pub struct RuntimeRequest {
     pub deadline: std::time::Instant,
@@ -52,11 +62,19 @@ impl Bridge {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
+        let activity = Arc::new(Activity {
+            started: Some(std::time::Instant::now()),
+            ..Default::default()
+        });
+        let seen = activity.clone();
         let handle = std::thread::spawn(move || {
             let mut history = axiom_core::observe::ObservationHistory::default();
             while !stopped.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        seen.requests.fetch_add(1, Ordering::Relaxed);
+                        let since = seen.started.map_or(0, |t| t.elapsed().as_millis() as u64);
+                        seen.last_ms.store(since + 1, Ordering::Relaxed);
                         let result = (|| -> Result<Value> {
                             // Accepted sockets inherit nonblocking mode on Windows.
                             // A JSON line may arrive in several packets; wait up to the budget.
@@ -129,10 +147,24 @@ impl Bridge {
             stop,
             handle: Some(handle),
             address,
+            activity,
         })
     }
     pub fn address(&self) -> std::net::SocketAddr {
         self.address
+    }
+    /// Requests accepted so far and the time since the last one (None before the first).
+    pub fn activity(&self) -> (u64, Option<Duration>) {
+        let requests = self.activity.requests.load(Ordering::Relaxed);
+        let last = self.activity.last_ms.load(Ordering::Relaxed);
+        let since = (last > 0).then(|| {
+            let now = self
+                .activity
+                .started
+                .map_or(0, |t| t.elapsed().as_millis() as u64);
+            Duration::from_millis(now.saturating_sub(last - 1))
+        });
+        (requests, since)
     }
 }
 impl Drop for Bridge {

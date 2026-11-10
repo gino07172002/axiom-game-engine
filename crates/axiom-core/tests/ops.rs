@@ -1830,3 +1830,96 @@ fn undeclared_events_carry_the_fix() {
         "id_taken"
     );
 }
+
+#[test]
+fn group_verb_matches_the_op_and_keeps_world_poses() {
+    let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let parent = |world: &World, id: &str| {
+        world
+            .relations
+            .iter()
+            .find(|r| r.kind == "parent" && r.source == id)
+            .map(|r| r.target.clone())
+    };
+    let position = |world: &World, id: &str| -> [f32; 3] {
+        serde_json::from_value(
+            world.entity(id).unwrap().components["core.transform"]["position"].clone(),
+        )
+        .unwrap()
+    };
+    // Two root objects: a root group at their mean position, before the first of them.
+    let created = ops::create_group(&lab(), &ids(&["stage/beacon", "stage/crate"]), None).unwrap();
+    assert_eq!(created.ids, ["group"]);
+    let via_op = apply(created.edits);
+    let mut headless = store();
+    acl(
+        &mut headless,
+        "group entities[id=stage/crate,id=stage/beacon]",
+    )
+    .unwrap();
+    assert_eq!(headless.current().unwrap().1, via_op);
+    let center = [(1.42 + 2.85) / 2.0, 0.63 / 2.0, (0.82 - 1.38) / 2.0];
+    let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+    assert!(close(position(&via_op, "group"), center));
+    for (id, world) in [
+        ("stage/crate", [1.42, 0.63, 0.82]),
+        ("stage/beacon", [2.85, 0.0, -1.38]),
+    ] {
+        assert_eq!(parent(&via_op, id).as_deref(), Some("group"));
+        let local = position(&via_op, id);
+        assert!(close(
+            [
+                local[0] + center[0],
+                local[1] + center[1],
+                local[2] + center[2]
+            ],
+            world
+        ));
+    }
+    let order: Vec<&str> = via_op.entities.iter().map(|e| e.id.as_str()).collect();
+    let at = |id: &str| order.iter().position(|e| *e == id).unwrap();
+    assert!(at("group") < at("stage/crate"));
+    // The group joins the scene every grouped object is in.
+    let scene = via_op
+        .scenes
+        .iter()
+        .find(|s| s.id == "assembly-yard")
+        .unwrap();
+    assert!(scene.entities.iter().any(|e| e == "group"));
+    // A listed descendant stays under its listed ancestor; mixed parents -> root at origin.
+    let nested = apply(
+        ops::create_group(
+            &lab(),
+            &ids(&["stage/rack", "stage/rack/cargo"]),
+            Some("kit"),
+        )
+        .unwrap()
+        .edits,
+    );
+    assert_eq!(parent(&nested, "stage/rack").as_deref(), Some("kit"));
+    assert_eq!(
+        parent(&nested, "stage/rack/cargo").as_deref(),
+        Some("stage/rack")
+    );
+    let mixed =
+        ops::create_group(&lab(), &ids(&["stage/crate", "stage/rack/cargo"]), None).unwrap();
+    let mixed = apply(mixed.edits);
+    assert_eq!(parent(&mixed, "group"), None);
+    assert!(close(position(&mixed, "group"), [0.0; 3]));
+    assert_eq!(parent(&mixed, "stage/rack/cargo").as_deref(), Some("group"));
+    // A second group gets the next free ID; bad input is a structured error.
+    let mut store = store();
+    acl(&mut store, "group stage/crate").unwrap();
+    acl(&mut store, "group stage/beacon").unwrap();
+    assert!(store.current().unwrap().1.entity("group/2").is_some());
+    assert_eq!(
+        code(acl(&mut store, "group stage/floor id=group").unwrap_err()),
+        "id_taken"
+    );
+    assert_eq!(
+        code(acl(&mut store, "group missing").unwrap_err()),
+        "no_match"
+    );
+    assert!(ops::create_group(&lab(), &ids(&["missing"]), None).is_err());
+    assert!(ops::create_group(&lab(), &[], None).is_err());
+}

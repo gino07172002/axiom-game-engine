@@ -47,6 +47,22 @@ struct Globals {
     fog: [f32; 4],
 }
 
+/// Draw commands the last `Renderer::render` recorded, counted on the CPU while recording (no
+/// GPU queries). World draws include shadow, sky, cubes, meshes, effects and post passes;
+/// `triangles` counts their primitives x instances. Interface draws are egui clipped meshes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameStats {
+    pub draw_calls: u32,
+    pub triangles: u64,
+    pub ui_draw_calls: u32,
+}
+impl FrameStats {
+    pub(crate) fn add(&mut self, calls: u32, triangles: u64) {
+        self.draw_calls += calls;
+        self.triangles += triangles;
+    }
+}
+
 pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
@@ -75,6 +91,8 @@ pub struct Renderer {
     /// Time the last `render` waited for the swapchain image (part of its wall time, not CPU
     /// work); reported separately in slow-frame phases.
     pub last_acquire: std::time::Duration,
+    /// Counters of the last presented frame.
+    pub stats: FrameStats,
 }
 
 impl Renderer {
@@ -363,6 +381,7 @@ impl Renderer {
             meshes,
             shaders,
             last_acquire: std::time::Duration::ZERO,
+            stats: FrameStats::default(),
         })
     }
 
@@ -559,6 +578,7 @@ impl Renderer {
             }
         };
         let view = frame.texture.create_view(&Default::default());
+        let mut stats = FrameStats::default();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -591,6 +611,7 @@ impl Renderer {
                 use crate::shader::Alpha;
                 if material.is_none_or(|m| matches!(m.alpha, Alpha::Inherit | Alpha::Opaque)) {
                     pass.draw(0..36, range.clone());
+                    stats.add(1, 12 * range.len() as u64);
                 }
             }
         }
@@ -641,6 +662,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
             pass.set_pipeline(&self.sky_pipeline);
             pass.draw(0..3, 0..1);
+            stats.add(1, 1);
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -665,12 +687,16 @@ impl Renderer {
                         pass.set_pipeline(&self.pipeline);
                     }
                     pass.draw(0..36, range.clone());
+                    stats.add(1, 12 * range.len() as u64);
                 }
                 if !blend && !ranges[i].is_empty() {
                     pass.set_pipeline(&self.pipeline);
                     pass.draw(0..36, ranges[i].clone());
+                    stats.add(1, 12 * ranges[i].len() as u64);
                 }
-                self.meshes.draw(&mut pass, i as u32, &self.shaders, blend);
+                let (calls, triangles) =
+                    self.meshes.draw(&mut pass, i as u32, &self.shaders, blend);
+                stats.add(calls, triangles);
             }
             drop(pass);
             if !snapshot.vfx.batches.is_empty() || !snapshot.vfx.ribbons.is_empty() {
@@ -694,7 +720,8 @@ impl Renderer {
                 });
                 effects.set_viewport(x * width, y * height, w * width, h * height, 0.0, 1.0);
                 effects.set_scissor_rect(sx, sy, sw, sh);
-                self.vfx.draw(&mut effects, i as u32);
+                let (calls, triangles) = self.vfx.draw(&mut effects, i as u32);
+                stats.add(calls, triangles);
             }
             if !snapshot.postfx.is_empty() {
                 self.post.draw(
@@ -705,6 +732,7 @@ impl Renderer {
                     self.config.width,
                     self.config.height,
                 );
+                stats.add(1, 1);
             }
         }
         // No world pass wrote the frame: the first interface pass starts from a cleared one.
@@ -717,6 +745,7 @@ impl Renderer {
                 pixels_per_point: game.pixels_per_point,
             };
             let jobs = game_ctx.tessellate(game.shapes, game.pixels_per_point);
+            stats.ui_draw_calls += jobs.len() as u32;
             extra.extend(renderer.update_buffers(
                 &self.device,
                 &self.queue,
@@ -751,6 +780,7 @@ impl Renderer {
             pixels_per_point: output.pixels_per_point,
         };
         let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);
+        stats.ui_draw_calls += jobs.len() as u32;
         extra.extend(self.egui.update_buffers(
             &self.device,
             &self.queue,
@@ -820,6 +850,7 @@ impl Renderer {
         self.queue
             .submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
         frame.present();
+        self.stats = stats;
         if let Some((buffer, row)) = capture {
             let slice = buffer.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();

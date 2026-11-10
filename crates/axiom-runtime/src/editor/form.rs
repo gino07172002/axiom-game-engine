@@ -12,9 +12,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-const MUTED: Color32 = Color32::from_rgb(138, 154, 172);
-const WARNING: Color32 = Color32::from_rgb(255, 178, 111);
-const ERROR: Color32 = Color32::from_rgb(240, 96, 96);
+use super::theme::{ACCENT, ERROR, MUTED, WARNING};
 /// "—": the selected objects have different values here.
 pub(super) const MIXED: &str = "—";
 /// Array items drawn per page; longer arrays page so a frame never lays out thousands.
@@ -363,12 +361,69 @@ fn object_fields(
     }
 }
 
+/// Up to `limit` characters of `v` as compact text (… when cut), without serializing the
+/// whole value: closed object headers draw this every frame.
+fn summarize(v: &Value, out: &mut String, limit: usize) {
+    if out.chars().count() >= limit {
+        return;
+    }
+    match v {
+        Value::Object(map) => {
+            out.push('{');
+            for (i, (k, child)) in map.iter().enumerate() {
+                if out.chars().count() >= limit {
+                    break;
+                }
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(k);
+                out.push_str(": ");
+                summarize(child, out, limit);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, child) in items.iter().enumerate() {
+                if out.chars().count() >= limit {
+                    break;
+                }
+                if i > 0 {
+                    out.push(',');
+                }
+                summarize(child, out, limit);
+            }
+            out.push(']');
+        }
+        Value::String(s) => out.extend(s.chars().take(limit)),
+        other => out.push_str(&other.to_string()),
+    }
+    if out.chars().count() > limit {
+        let cut: String = out.chars().take(limit).collect();
+        *out = cut;
+        out.push('…');
+    }
+}
+
+/// Width of the label column (fields form a two-column label / value grid).
+const LABEL_WIDTH: f32 = 96.0;
+
 fn label(ui: &mut Ui, key: &str, spec: &Spec) {
-    let mut text = RichText::new(key).small().color(MUTED);
+    let mut text = RichText::new(key).color(MUTED);
     if spec.desc.is_some() {
         text = text.underline();
     }
-    let response = ui.label(text);
+    let response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(LABEL_WIDTH);
+                ui.add(egui::Label::new(text).truncate())
+            },
+        )
+        .inner;
     if let Some(desc) = &spec.desc {
         response.on_hover_text(desc);
     }
@@ -389,7 +444,30 @@ fn field(
     match kind {
         Kind::Object if depth < 8 => {
             let open = (!ctx.filter.is_empty()).then_some(true);
-            let response = egui::CollapsingHeader::new(RichText::new(key).color(MUTED))
+            // A closed object shows a one-line summary of its values after its name.
+            let closed = open.is_none()
+                && !egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    ui.make_persistent_id(pointer),
+                    depth == 0,
+                )
+                .is_open();
+            let mut title = egui::text::LayoutJob::default();
+            let body = ui.style().text_styles[&egui::TextStyle::Body].clone();
+            title.append(key, 0.0, egui::TextFormat::simple(body.clone(), MUTED));
+            if closed {
+                let mut short = String::new();
+                summarize(v, &mut short, 36);
+                title.append(
+                    &short,
+                    12.0,
+                    egui::TextFormat::simple(
+                        egui::FontId::proportional(11.5),
+                        MUTED.gamma_multiply(0.75),
+                    ),
+                );
+            }
+            let response = egui::CollapsingHeader::new(title)
                 .id_salt(pointer)
                 .default_open(depth == 0)
                 .open(open)
@@ -866,7 +944,7 @@ fn entity(
     let color = match problem {
         Some("missing") => ERROR,
         Some(_) => WARNING,
-        None => Color32::from_rgb(105, 222, 195),
+        None => ACCENT,
     };
     let r = ui
         .add(
@@ -894,7 +972,7 @@ fn entity(
         ui.painter().rect_stroke(
             r.rect.expand(2.0),
             3.0,
-            egui::Stroke::new(1.5f32, Color32::from_rgb(105, 222, 195)),
+            egui::Stroke::new(1.5f32, ACCENT),
             egui::StrokeKind::Outside,
         );
     }
@@ -1055,7 +1133,7 @@ fn reference(
         ui.painter().rect_stroke(
             r.rect.expand(2.0),
             3.0,
-            egui::Stroke::new(1.5f32, Color32::from_rgb(105, 222, 195)),
+            egui::Stroke::new(1.5f32, ACCENT),
             egui::StrokeKind::Outside,
         );
     }

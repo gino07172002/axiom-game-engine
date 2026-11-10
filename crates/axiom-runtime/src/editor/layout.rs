@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
 
 /// Built-in named layouts (not stored in the preferences file).
-pub(crate) const BUILTIN: [&str; 2] = ["Default", "Tall Inspector"];
+pub(crate) const BUILTIN: [&str; 3] = ["Default", "Tall Inspector", "Classic"];
+/// Version of the built-in Default. A saved current layout from an older Default is replaced
+/// by the new one once (named layouts are kept; Classic is the previous arrangement).
+pub(crate) const LAYOUT_VERSION: u32 = 2;
 /// The tabs that shared the old bottom dock; a reopened one joins the others.
 const BOTTOM: [Dock; 8] = [
     Dock::Changes,
@@ -395,20 +398,31 @@ pub(crate) fn from_spec(spec: &Value) -> Result<(DockState<Dock>, Vec<String>), 
 pub(crate) fn builtin(name: &str) -> Option<Value> {
     let bottom: Vec<&str> = BOTTOM.iter().map(|d| d.name()).collect();
     match name {
-        // The pre-dock arrangement: hierarchy | scene | inspector above a full-width tab strip.
+        // Hierarchy | Scene, Game, Graphs over Assets, Problems, History | full-height
+        // Inspector. Changes, Proposals, Scenarios and AI / Protocol open from the Window menu
+        // (into the bottom leaf).
         "Default" => Some(json!({"v":1,"main":{
+            "split":"h","fraction":0.17,
+            "a":{"tabs":["hierarchy"]},
+            "b":{"split":"h","fraction":0.77,
+                "a":{"split":"v","fraction":0.7,
+                    "a":{"tabs":["scene","game","graphs"],"active":0},
+                    "b":{"tabs":["assets","problems","history"],"active":0}},
+                "b":{"tabs":["inspector"]}}},"windows":[]})),
+        // The inspector gets the full window height (long component forms on 1080p screens).
+        "Tall Inspector" => Some(json!({"v":1,"main":{
+            "split":"h","fraction":0.72,
+            "a":{"split":"v","fraction":0.7,
+                "a":{"split":"h","fraction":0.24,"a":{"tabs":["hierarchy"]},"b":{"tabs":["scene","game","graphs"],"active":0}},
+                "b":{"tabs":["assets","problems","history"],"active":0}},
+            "b":{"tabs":["inspector"]}},"windows":[]})),
+        // The arrangement before M-UI: every tool tab in one full-width bottom strip.
+        "Classic" => Some(json!({"v":1,"main":{
             "split":"v","fraction":0.72,
             "a":{"split":"h","fraction":0.18,
                 "a":{"tabs":["hierarchy"]},
                 "b":{"split":"h","fraction":0.71,"a":{"tabs":["scene","game"]},"b":{"tabs":["inspector"]}}},
             "b":{"tabs":bottom,"active":0}},"windows":[]})),
-        // The inspector gets the full window height (long component forms on 1080p screens).
-        "Tall Inspector" => Some(json!({"v":1,"main":{
-            "split":"h","fraction":0.75,
-            "a":{"split":"v","fraction":0.7,
-                "a":{"split":"h","fraction":0.24,"a":{"tabs":["hierarchy"]},"b":{"tabs":["scene","game"]}},
-                "b":{"tabs":bottom,"active":0}},
-            "b":{"tabs":["inspector"]}},"windows":[]})),
         _ => None,
     }
 }
@@ -433,8 +447,9 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
         state.set_focused_node_and_surface((surface, node));
         return;
     }
-    if tab.bottom() {
-        if let Some((surface, node, _)) = BOTTOM.iter().find_map(|b| state.find_tab(b)) {
+    // Canvas tabs (UI Editor, Graphs) open beside Scene.
+    if matches!(tab, Dock::UiEditor | Dock::Graphs) {
+        if let Some((surface, node, _)) = state.find_tab(&Dock::Scene) {
             if let Node::Leaf { tabs, active, .. } = &mut state[surface][node] {
                 tabs.push(tab);
                 *active = TabIndex(tabs.len() - 1);
@@ -443,9 +458,8 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
             return;
         }
     }
-    // The UI Editor is a canvas like the scene: it opens as a tab beside Scene.
-    if tab == Dock::UiEditor {
-        if let Some((surface, node, _)) = state.find_tab(&Dock::Scene) {
+    if tab.bottom() {
+        if let Some((surface, node, _)) = BOTTOM.iter().find_map(|b| state.find_tab(b)) {
             if let Node::Leaf { tabs, active, .. } = &mut state[surface][node] {
                 tabs.push(tab);
                 *active = TabIndex(tabs.len() - 1);
@@ -642,12 +656,16 @@ mod tests {
             );
             assert_eq!(to_spec(&from_spec(&saved).unwrap().0), saved, "{name}");
             for tab in Dock::ALL {
-                // World floats and the UI Editor opens beside Scene on demand.
-                assert_eq!(
-                    is_open(&state, tab),
-                    !matches!(tab, Dock::World | Dock::UiEditor),
-                    "{name} {tab:?}"
-                );
+                // World floats and the UI Editor opens beside Scene on demand; Default and Tall
+                // Inspector keep only Assets, Problems and History in the bottom strip (the
+                // other tool tabs open from the Window menu); Classic has them all.
+                let on_demand = matches!(tab, Dock::World | Dock::UiEditor)
+                    || (name != "Classic"
+                        && matches!(
+                            tab,
+                            Dock::Changes | Dock::Proposals | Dock::Scenarios | Dock::Agent
+                        ));
+                assert_eq!(is_open(&state, tab), !on_demand, "{name} {tab:?}");
             }
         }
     }
@@ -703,12 +721,22 @@ mod tests {
                 "{tab:?}"
             );
         }
-        // History rejoined the other bottom tabs.
+        // History rejoined the other bottom tabs; Changes (closed by default) opens there too,
+        // and Graphs opens beside Scene.
         let (s, n, _) = state.find_tab(&Dock::History).unwrap();
+        assert_eq!(
+            state.find_tab(&Dock::Assets).map(|f| (f.0, f.1)),
+            Some((s, n))
+        );
+        show(&mut state, Dock::Changes);
         assert_eq!(
             state.find_tab(&Dock::Changes).map(|f| (f.0, f.1)),
             Some((s, n))
         );
+        assert!(close(&mut state, Dock::Graphs));
+        show(&mut state, Dock::Graphs);
+        let scene = state.find_tab(&Dock::Scene).map(|f| (f.0, f.1));
+        assert_eq!(state.find_tab(&Dock::Graphs).map(|f| (f.0, f.1)), scene);
         // World opens as a floating window; closing it removes the window.
         show(&mut state, Dock::World);
         assert!(!state.find_tab(&Dock::World).unwrap().0.is_main());

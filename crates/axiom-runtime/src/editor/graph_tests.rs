@@ -74,7 +74,7 @@ impl Harness {
         let (editor, runtime) = (&mut self.editor, &self.runtime);
         let _ = self.ctx.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1000.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1300.0))),
                 events,
                 ..Default::default()
             },

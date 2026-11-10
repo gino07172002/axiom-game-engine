@@ -452,6 +452,112 @@ pub fn duplicate(world: &World, ids: &[String]) -> Result<Created> {
     Ok(created)
 }
 
+/// Creates an empty group object and moves `ids` under it, keeping their world poses, in one
+/// batch (`ACL: group SEL [id=ID]`). An object whose ancestor is also listed stays under that
+/// ancestor. When every grouped object has the same parent the group goes under it, at the
+/// mean of their local positions, just before the first of them in the authored order;
+/// otherwise it is a root object at the origin. The group joins every scene that all grouped
+/// objects belong to. The default ID is `group` (`group/2`, ...).
+pub fn create_group(world: &World, ids: &[String], id: Option<&str>) -> Result<Created> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "nothing to group",
+        ));
+    }
+    for id in ids {
+        require_entity(world, id)?;
+    }
+    let graph = crate::scene_edit::Hierarchy::new(world);
+    let listed: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    let covered = |id: &str| {
+        let mut cursor = graph.parents.get(id).copied();
+        while let Some(ancestor) = cursor {
+            if listed.contains(ancestor) {
+                return true;
+            }
+            cursor = graph.parents.get(ancestor).copied();
+        }
+        false
+    };
+    // Authored order, top-most objects only.
+    let members: Vec<&str> = world
+        .entities
+        .iter()
+        .map(|e| e.id.as_str())
+        .filter(|id| listed.contains(id) && !covered(id))
+        .collect();
+    let parents: BTreeSet<Option<&str>> = members
+        .iter()
+        .map(|m| graph.parents.get(m).copied())
+        .collect();
+    let shared = parents.len() == 1;
+    let parent = if shared {
+        parents.into_iter().next().flatten()
+    } else {
+        None
+    };
+    let mut position = [0.0_f32; 3];
+    if shared {
+        for m in &members {
+            let local = world
+                .entity(m)
+                .and_then(|e| world.resolved_components(e).remove("core.transform"))
+                .and_then(|v| serde_json::from_value::<Transform>(v).ok())
+                .unwrap_or_default();
+            for (sum, v) in position.iter_mut().zip(local.position) {
+                *sum += v / members.len() as f32;
+            }
+        }
+    }
+    let place = Placement {
+        id: id.map(str::to_owned),
+        position: Some(position),
+        rotation: None,
+        parent: parent.map(str::to_owned),
+        scene: None,
+    };
+    let group = placement_id(world, "group", &place)?;
+    let mut entity = Entity::new(&group);
+    entity.set(
+        "core.transform",
+        Transform {
+            position,
+            ..Default::default()
+        },
+    )?;
+    let mut edits = place_entity(entity, &place);
+    if shared {
+        edits.push(Edit::Core(CoreEdit::MoveEntity {
+            id: group.clone(),
+            before: Some(members[0].to_owned()),
+        }));
+    }
+    for scene in world
+        .scenes
+        .iter()
+        .filter(|s| members.iter().all(|m| s.entities.iter().any(|e| e == m)))
+    {
+        edits.push(Edit::Core(CoreEdit::SetSceneMembership {
+            scene: scene.id.clone(),
+            entity: group.clone(),
+            member: true,
+        }));
+    }
+    for m in &members {
+        edits.push(Edit::Core(CoreEdit::Reparent {
+            entity: (*m).to_owned(),
+            parent: Some(group.clone()),
+            keep_world: true,
+        }));
+    }
+    Ok(Created {
+        edits,
+        ids: vec![group],
+    })
+}
+
 /// Drops entities onto the ground: each moves vertically so its lowest point rests on the
 /// highest surface below it, or on the y = 0 plane when nothing is below.
 ///

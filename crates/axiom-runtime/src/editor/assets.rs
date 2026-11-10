@@ -384,7 +384,7 @@ impl Editor {
                             .collect();
                         let ending = node["ending"]
                             .as_str()
-                            .map(|e| format!("  ⟂ ending {e}"))
+                            .map(|e| format!("  end: {e}"))
                             .unwrap_or_default();
                         ui.label(
                             RichText::new(format!(

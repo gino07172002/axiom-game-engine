@@ -64,6 +64,8 @@ pub(crate) struct GraphUi {
     link: Option<Option<usize>>,
     panning: bool,
     pan: Vec2,
+    /// Graph ▸ Frame: pan so every state is in view on the next drawn frame (no zoom).
+    fit: bool,
     /// State name being typed in the inspector (rename).
     name: String,
     element: Option<Draft>,
@@ -576,6 +578,24 @@ impl GraphUi {
             Sense::hover()
         };
         let (rect, response) = ui.allocate_exact_size(size, sense);
+        if interactive && std::mem::take(&mut self.fit) {
+            let mut bounds = (0..model.nodes.len())
+                .map(|i| self.node_at(model, Pos2::ZERO, i))
+                .fold(Rect::NOTHING, |a, b| a.union(b));
+            if model.any {
+                bounds = bounds.union(Self::any_rect(Pos2::ZERO));
+            }
+            if bounds.is_positive() {
+                // Centered when it fits; otherwise its top-left corner just inside the canvas.
+                self.pan = if bounds.width() + 32.0 <= rect.width()
+                    && bounds.height() + 32.0 <= rect.height()
+                {
+                    rect.size() / 2.0 - bounds.center().to_vec2()
+                } else {
+                    vec2(16.0, 16.0) - bounds.min.to_vec2()
+                };
+            }
+        }
         let origin = rect.min + self.pan;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4.0, CANVAS);
@@ -1377,6 +1397,9 @@ impl Editor {
         });
         Some(match id {
             "graph.open" => None,
+            // View only: allowed while a draft is open.
+            "graph.frame" if !open => Some("open a state machine in the Graphs tab"),
+            "graph.frame" => None,
             "graph.add_state" | "graph.set_initial" | "graph.delete" if !open => {
                 Some("open a state machine in the Graphs tab")
             }
@@ -1415,6 +1438,10 @@ impl Editor {
             ("graph.open", None) => {
                 self.show_dock(Dock::Graphs);
                 self.notice("Pick a state machine in the Graphs tab");
+                None
+            }
+            ("graph.frame", _) => {
+                self.graph.fit = true;
                 None
             }
             ("graph.add_state", _) => {
@@ -1496,6 +1523,7 @@ impl Editor {
             ("graph.add_state", "+ State"),
             ("graph.set_initial", "Set initial"),
             ("graph.delete", "Delete"),
+            ("graph.frame", "Frame"),
         ]
         .map(|(cmd, title)| (cmd, title, self.command_blocked(cmd)));
         let mut view = self.graph.view;
@@ -2080,7 +2108,7 @@ impl Editor {
         let Some(program) = world.resources.get("behavior.program") else {
             ui.label(
                 RichText::new(
-                    "No behavior.program. Declare an event (World ▸ Declare Event…) to create one.",
+                    "No behavior.program. Declare an event (World › Declare Event…) to create one.",
                 )
                 .small()
                 .color(MUTED),

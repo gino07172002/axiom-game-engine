@@ -44,6 +44,7 @@
 | 大量生成(帶 tag、label、step 間距) | `spawn PREFAB count=N …`(只有 ACL 有;編輯器只能一次一個) | — |
 | `edit.duplicate`(Ctrl+D)、Inspector 的 Duplicate | `duplicate SEL`(ID 依序為 `SRC/copy`、`/copy/2`;`entities[id=a,id=b]` 照書寫順序處理;每個複本緊接在來源**之後**,也就是同層的下一列) | ✅ `duplicate_and_paste_match_acl`(含順序檢查) |
 | `edit.paste`(Ctrl+V,複製剪貼簿裡的 ID) | `duplicate SEL` | ✅ 同上 |
+| `object.group`(Ctrl+G)、Hierarchy 工具列的 Create Group 圖示、右鍵 ▸ Create Group | `group SEL [id=ID]`(`ops::create_group`:新的空物件當父層,預設 ID `group`、`group/2`…;選取物件保留世界姿勢;都在同一父層時新群組放在該父層下、位置為各物件本地位置平均、排在第一個物件前面;否則放在根層原點;加入所有被群組物件共同所屬的場景;子孫若與祖先同時被選,只有祖先移入) | ✅ `create_group_matches_acl`、`chrome_tests::group_command_commits_like_acl_through_the_toolbar`、core `group_verb_matches_the_op_and_keeps_world_poses` |
 | `edit.delete`(Delete)、Inspector 的 Delete | `delete SEL` | ✅ `delete_matches_acl` |
 | Hierarchy 拖曳到列的中間 = 改 parent(保留世界姿態) | `reparent ID PARENT\|root`(預設 `keep=world`) | ✅ `reparent_drag_matches_acl` |
 | Hierarchy 拖曳到列的上緣 / 下緣 = 同層排序(青色細線指示);來源 parent 不同時先改 parent 再排序,同一筆 revision | `move ID before OTHER\|after OTHER\|end`(必要時前面加 `reparent ID P\|root`) | ✅ `hierarchy_reorder_drop_matches_acl` |
@@ -171,3 +172,5 @@
 - 編輯器隱藏旗標也作用在 `render.light`:隱藏的燈光(含隱藏物件底下的子燈光)在場景視口不照明、不畫 gizmo;Play 照常。
 - M4:Play 改在編輯器裡進行(Game 分頁),編輯器 UI 在 Play 時仍然顯示,因此**Play 期間編輯器唯讀**:會改內容的編輯器指令(`CONTENT_COMMANDS`,含 Undo / Redo、核准提案)回報「stop Play first」,host 也拒絕 Play 期間的編輯器寫入(`play_read_only`)。以前 Play 時沒有編輯器 UI,但 bridge 的 `editor_view {command}` 仍可寫入(寫進修訂、Play 看不到);現在同樣被拒。AI 直接送的 `apply` / ACL 不受影響。遊戲 HUD 的 EXIT 在編輯器裡改為停止 Play(以前會關掉整個編輯器)。舊的整窗預覽保留為 `play.maximize`。
 - Inspector 的 Remove component 改走 `ops::remove_component`(和 ACL `remove` 同一份程式)。以前直接送出 `remove_component` edit;結果相同,但現在對「物件沒有自己編寫這個元件」會回報原因而不是送出一定失敗的交易(按鈕本來就只對自己編寫的元件啟用)。
+- M-UI(視覺改版):工具列與卡片按鈕只是指令的另一個入口,沒有新增或改變任何寫入。Hierarchy 工具列(新增、複製、刪除、改名、群組、Frame)、頂列(Run / Pause / Step / Stop、Undo / Redo、偏好設定、Agent API → AI / Protocol 分頁)、狀態列的 Edit / Play Mode、Scene 工具列(工具、Snap、Global / Local、格線、gizmo、Fullscreen)都呼叫同一個 `COMMANDS` 指令;`chrome_tests` 逐一比對寫入與 `run_command` 相同。元件卡片的 Copy / Paste / Remove / Make Main Camera 移到「…」選單,Reset、Play、Edit Graph 是卡片標題上的圖示,寫入內容不變(`inspector_tests` 仍以 ACL 對照)。新的檢視指令 `view.fullscreen`(F11,視窗全螢幕,不寫內容)與 `graph.frame`(Graphs 畫布平移到全部狀態可見,不寫內容)。
+- M-UI 版面:內建 Default 改為版面版本 2(下方只有 Assets、Problems、History;Graphs 在 Scene 旁;Changes、Proposals、Scenarios、AI / Protocol 預設關閉,`window.*` 與 `editor_view {dock}` 照常開啟)。舊的 Default 是新的內建版面 Classic;已存的目前版面在第一次啟動時換成新 Default,原排列存成具名版面 Previous。分頁上的 X 拿掉,改由面板「…」選單的 Close(= `window.close TAB`)。Hierarchy 的 Add ▾ 項目改走 `object.*` 指令(以前直接呼叫同一個建立函式,結果相同,但現在 Play 中或草稿未套用時會依指令規則停用)。

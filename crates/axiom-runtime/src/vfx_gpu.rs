@@ -379,7 +379,8 @@ impl VfxGpu {
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
     }
-    pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: u32) {
+    pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: u32) -> (u32, u64) {
+        let (mut calls, mut triangles) = (0, 0);
         pass.set_bind_group(
             0,
             &self.draw_bind,
@@ -389,12 +390,17 @@ impl VfxGpu {
         for d in &self.draws {
             pass.set_pipeline(&self.pipelines[usize::from(d.mesh) * 2 + usize::from(d.additive)]);
             pass.draw(0..if d.mesh { 36 } else { 6 }, d.range.clone());
+            calls += 1;
+            triangles += if d.mesh { 12 } else { 2 } * d.range.len() as u64;
         }
         if self.ribbon_count > 0 {
             pass.set_pipeline(&self.pipelines[5]);
             pass.set_vertex_buffer(0, self.ribbons.slice(..));
             pass.draw(0..self.ribbon_count, 0..1);
+            calls += 1;
+            triangles += u64::from(self.ribbon_count / 3);
         }
+        (calls, triangles)
     }
 }
 /// An actual storage-buffer readback, separate from transport observations and timing claims.

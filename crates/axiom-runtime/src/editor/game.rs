@@ -4,7 +4,7 @@
 //! (`camera.viewport`, decision 5 of the editor plan): the tab body (or the Inspector preview
 //! hole) stays transparent and the world drawn underneath shows through. Nothing here renders
 //! offscreen or allocates per-view targets.
-use super::ui::{caption, heading, panel, ACCENT, CARD, MUTED, WARNING};
+use super::ui::{caption, ACCENT, MUTED, WARNING};
 use super::{Action, Editor};
 use crate::presentation::{RenderFrame, RenderView};
 use crate::world::WorldRuntime;
@@ -381,7 +381,7 @@ impl Editor {
         let arg = arg.map(str::trim).filter(|a| !a.is_empty());
         match (id, arg) {
             ("play.time_scale", None) => {
-                self.notice("Pick a time scale in the toolbar or under Play ▸ Time Scale");
+                self.notice("Pick a time scale in the toolbar or under Play › Time Scale");
             }
             ("play.time_scale", Some(text)) => {
                 let scale = text
@@ -452,96 +452,98 @@ impl Editor {
         ui.spacing_mut().item_spacing.y = 0.0;
         let aspect = self.aspect();
         let mut run: Option<(&'static str, Option<String>)> = None;
-        panel(CARD, 6).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                heading(ui, "GAME");
-                ui.separator();
-                egui::ComboBox::from_id_salt("game_aspect")
-                    .selected_text(aspect.label())
-                    .show_ui(ui, |ui| {
-                        for a in Aspect::ALL {
-                            if ui.selectable_label(a == aspect, a.label()).clicked() {
-                                run = Some(("game.aspect", Some(a.name().into())));
+        egui::Frame::new()
+            .fill(super::theme::HEADER)
+            .inner_margin(egui::Margin::symmetric(6, 4))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("game_aspect")
+                        .selected_text(aspect.label())
+                        .show_ui(ui, |ui| {
+                            for a in Aspect::ALL {
+                                if ui.selectable_label(a == aspect, a.label()).clicked() {
+                                    run = Some(("game.aspect", Some(a.name().into())));
+                                }
                             }
-                        }
-                    });
-                let compiled = &runtime.state.compiled;
-                let shown = self.game.camera.as_deref().unwrap_or("Active camera");
-                egui::ComboBox::from_id_salt("game_camera")
-                    .selected_text(super::ui::truncate(shown, 22))
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(self.game.camera.is_none(), "Active camera")
-                            .clicked()
-                        {
-                            run = Some(("game.camera", Some("active".into())));
-                        }
-                        for e in compiled.entities.iter().filter(|e| e.camera.is_some()) {
-                            let active = e.camera.as_ref().is_some_and(|c| c.active);
-                            let text = if active {
-                                format!("{} · main", e.id)
-                            } else {
-                                e.id.clone()
-                            };
-                            let chosen = self.game.camera.as_deref() == Some(e.id.as_str());
-                            if ui.selectable_label(chosen, text).clicked() {
-                                run = Some(("game.camera", Some(e.id.clone())));
+                        });
+                    let compiled = &runtime.state.compiled;
+                    let shown = self.game.camera.as_deref().unwrap_or("Active camera");
+                    egui::ComboBox::from_id_salt("game_camera")
+                        .selected_text(super::ui::truncate(shown, 22))
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(self.game.camera.is_none(), "Active camera")
+                                .clicked()
+                            {
+                                run = Some(("game.camera", Some("active".into())));
                             }
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "View only: what this tab shows. Set as Main Camera writes the choice.",
-                    );
-                let blocked = self.command_blocked("game.main_camera");
-                let chosen_is_main = self
-                    .game
-                    .camera
-                    .as_deref()
-                    .and_then(|id| compiled.indices.get(id))
-                    .and_then(|&i| compiled.entities.get(i)?.camera.as_ref())
-                    .is_some_and(|c| c.active);
-                let can_set = self.game.camera.is_some() && !chosen_is_main && blocked.is_none();
-                if ui
-                    .add_enabled(can_set, egui::Button::new("Set as Main Camera"))
-                    .on_hover_text("camera main ID (one revision)")
-                    .on_disabled_hover_text(
-                        blocked.unwrap_or("pick a camera that is not the main one"),
-                    )
-                    .clicked()
-                {
-                    run = Some(("game.main_camera", None));
-                }
-                if self.previewing {
+                            for e in compiled.entities.iter().filter(|e| e.camera.is_some()) {
+                                let active = e.camera.as_ref().is_some_and(|c| c.active);
+                                let text = if active {
+                                    format!("{} · main", e.id)
+                                } else {
+                                    e.id.clone()
+                                };
+                                let chosen = self.game.camera.as_deref() == Some(e.id.as_str());
+                                if ui.selectable_label(chosen, text).clicked() {
+                                    run = Some(("game.camera", Some(e.id.clone())));
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "View only: what this tab shows. Set as Main Camera writes the choice.",
+                        );
+                    let blocked = self.command_blocked("game.main_camera");
+                    let chosen_is_main = self
+                        .game
+                        .camera
+                        .as_deref()
+                        .and_then(|id| compiled.indices.get(id))
+                        .and_then(|&i| compiled.entities.get(i)?.camera.as_ref())
+                        .is_some_and(|c| c.active);
+                    let can_set =
+                        self.game.camera.is_some() && !chosen_is_main && blocked.is_none();
+                    if ui
+                        .add_enabled(can_set, egui::Button::new("Set as Main Camera"))
+                        .on_hover_text("camera main ID (one revision)")
+                        .on_disabled_hover_text(
+                            blocked.unwrap_or("pick a camera that is not the main one"),
+                        )
+                        .clicked()
+                    {
+                        run = Some(("game.main_camera", None));
+                    }
+                    if self.previewing {
+                        ui.separator();
+                        ui.checkbox(&mut self.overlay, "Behavior overlay");
+                        ui.separator();
+                        let (hint, color) = if self.game.input {
+                            ("input: game · Esc releases", ACCENT)
+                        } else {
+                            ("click game for input", MUTED)
+                        };
+                        ui.label(RichText::new(hint).size(11.0).color(color));
+                    }
                     ui.separator();
-                    ui.checkbox(&mut self.overlay, "Behavior overlay");
-                    ui.separator();
-                    let (hint, color) = if self.game.input {
-                        ("input: game · Esc releases", ACCENT)
-                    } else {
-                        ("click game for input", MUTED)
+                    let mut active = compiled
+                        .entities
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, e)| {
+                            compiled.enabled.get(*i).copied().unwrap_or(false)
+                                && e.camera.as_ref().is_some_and(|c| c.active)
+                        })
+                        .map(|(_, e)| e.id.as_str());
+                    let label = match (active.next(), active.count()) {
+                        (None, _) => "no active camera".to_owned(),
+                        (Some(id), 0) => format!("main: {id}"),
+                        (Some(id), more) => format!("main: {id} +{more}"),
                     };
-                    ui.label(RichText::new(hint).size(11.0).color(color));
-                }
-                ui.separator();
-                let mut active = compiled
-                    .entities
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, e)| {
-                        compiled.enabled.get(*i).copied().unwrap_or(false)
-                            && e.camera.as_ref().is_some_and(|c| c.active)
-                    })
-                    .map(|(_, e)| e.id.as_str());
-                let label = match (active.next(), active.count()) {
-                    (None, _) => "no active camera".to_owned(),
-                    (Some(id), 0) => format!("main: {id}"),
-                    (Some(id), more) => format!("main: {id} +{more}"),
-                };
-                caption(ui, label);
+                    caption(ui, label);
+                });
             });
-        });
         if let Some((id, arg)) = run {
             match self.run_command_with(id, arg.as_deref()) {
                 Ok(more) => actions.extend(more),
@@ -567,7 +569,7 @@ impl Editor {
             ),
         ] {
             if bar.is_positive() {
-                painter.rect_filled(bar, 0.0, Color32::from_rgb(8, 10, 14));
+                painter.rect_filled(bar, 0.0, super::theme::BACKDROP);
             }
         }
         self.game.rect = if rect.width() >= MIN_VIEW && rect.height() >= MIN_VIEW {
@@ -588,7 +590,7 @@ impl Editor {
                 .iter()
                 .any(|e| e.camera.as_ref().is_some_and(|c| c.active));
         if !has_view {
-            painter.rect_filled(rect, 0.0, Color32::from_rgb(14, 17, 23));
+            painter.rect_filled(rect, 0.0, super::theme::FIELD);
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -615,43 +617,118 @@ impl Editor {
         }
     }
 
-    /// Play toolbar buttons (registry commands) for the top bar, which lays out right to left:
-    /// the first widget added is the rightmost.
+    /// Play group of the top bar (left to right): Run (with the Game tab / Maximized choice),
+    /// Pause / Resume, Step, Stop, time scale and the tick. Every button is a registry command.
     pub(super) fn play_toolbar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        use super::icons::Icon;
+        use super::theme::{icon_button_sized, ACCENT_SOFT, PILL_H, TEXT};
+        let icons = self.icons;
         let mut run: Option<(&'static str, Option<String>)> = None;
+        let blocked = self.command_blocked("play.start");
+        let (fill, tint) = if self.previewing {
+            (ACCENT_SOFT, TEXT)
+        } else {
+            (ACCENT, Color32::WHITE)
+        };
+        let title = if self.previewing { "Running" } else { "Run" };
+        let r = ui
+            .add_enabled_ui(blocked.is_none(), |ui| {
+                let image = icons.image(ui.ctx(), Icon::Play, 18.0, tint);
+                ui.add(
+                    egui::Button::image_and_text(
+                        image,
+                        RichText::new(title).strong().size(15.0).color(tint),
+                    )
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0_f32, super::theme::ACCENT_EDGE))
+                    .corner_radius(8)
+                    .min_size(egui::vec2(104.0, PILL_H)),
+                )
+            })
+            .inner
+            .on_hover_text(format!(
+                "Play in the {} ({})",
+                if self.prefs.play_maximized {
+                    "whole window"
+                } else {
+                    "Game tab"
+                },
+                self.shortcut_text("play.start")
+            ))
+            .on_disabled_hover_text(blocked.unwrap_or_default());
+        self.rects.insert("play:start".into(), r.rect);
+        if r.clicked() {
+            run = Some(("play.start", None));
+        }
+        // Where Play runs (the Play Maximized preference), chosen before starting.
+        let target = ui
+            .add_enabled_ui(!self.previewing, |ui| {
+                icon_button_sized(
+                    ui,
+                    icons,
+                    Icon::ChevronDown,
+                    "Play in the Game tab or the whole window",
+                    false,
+                    PILL_H - 6.0,
+                )
+            })
+            .inner;
+        self.rects.insert("play:target".into(), target.rect);
+        let id = ui.make_persistent_id("play_target");
+        let maximized = self.prefs.play_maximized;
+        super::theme::dropdown(ui, id, &target, |ui| {
+            for (on, title) in [
+                (false, "Play in Game tab"),
+                (true, "Play Maximized (whole window)"),
+            ] {
+                let r = ui.selectable_label(maximized == on, title);
+                self.rects.insert(format!("play:maximized:{on}"), r.rect);
+                if r.clicked() {
+                    if maximized != on {
+                        run = Some(("play.maximize", None));
+                    }
+                    super::theme::close_dropdown(ui, id);
+                }
+            }
+        });
+        let paused = self.play.paused;
+        super::theme::pill_group(ui, |ui| {
+            for (icon, cmd, tip, selected) in [
+                (
+                    if paused && self.previewing {
+                        Icon::Play
+                    } else {
+                        Icon::Pause
+                    },
+                    "play.pause",
+                    if paused { "Resume" } else { "Pause" },
+                    self.previewing && paused,
+                ),
+                (
+                    Icon::Step,
+                    "play.step",
+                    "Step one fixed tick (1/120 s)",
+                    false,
+                ),
+                (Icon::Stop, "play.stop", "Stop (back to editing)", false),
+            ] {
+                let blocked = self.command_blocked(cmd);
+                let tip = format!("{tip}  {}", self.shortcut_text(cmd));
+                let r = ui
+                    .add_enabled_ui(blocked.is_none(), |ui| {
+                        icon_button_sized(ui, icons, icon, &tip, selected, PILL_H - 4.0)
+                    })
+                    .inner;
+                self.rects.insert(format!("play:{cmd}"), r.rect);
+                if r.clicked() {
+                    run = Some((cmd, None));
+                }
+            }
+        });
         if self.previewing {
-            if ui
-                .button(RichText::new("■  Stop").color(WARNING))
-                .on_hover_text(self.shortcut_text("play.stop"))
-                .clicked()
-            {
-                run = Some(("play.stop", None));
-            }
-            if ui
-                .button("Step")
-                .on_hover_text(format!(
-                    "One fixed step (1/120 s) · {}",
-                    self.shortcut_text("play.step")
-                ))
-                .clicked()
-            {
-                run = Some(("play.step", None));
-            }
-            let pause = if self.play.paused {
-                "▶  Resume"
-            } else {
-                "Pause"
-            };
-            if ui
-                .add(egui::Button::new(pause).selected(self.play.paused))
-                .on_hover_text(self.shortcut_text("play.pause"))
-                .clicked()
-            {
-                run = Some(("play.pause", None));
-            }
             let scale = self.play.time_scale;
             egui::ComboBox::from_id_salt("play_time_scale")
-                .width(64.0)
+                .width(56.0)
                 .selected_text(format!("{scale}×"))
                 .show_ui(ui, |ui| {
                     for s in TIME_SCALES {
@@ -662,39 +739,18 @@ impl Editor {
                 })
                 .response
                 .on_hover_text("Time scale: steps per real second (each step stays 1/120 s)");
-            ui.label(
-                RichText::new(format!(
+            super::theme::chip(
+                ui,
+                format!(
                     "{} · tick {}",
-                    if self.play.paused {
-                        "PAUSED"
-                    } else {
-                        "PLAYING"
-                    },
+                    if paused { "PAUSED" } else { "PLAYING" },
                     self.play.tick
-                ))
-                .monospace()
-                .color(if self.play.paused { WARNING } else { ACCENT }),
+                ),
+                if paused { WARNING } else { ACCENT },
             );
-        } else {
-            let blocked = self.command_blocked("play.start");
-            if ui
-                .add_enabled(
-                    blocked.is_none(),
-                    egui::Button::new(RichText::new("▶  Play  F5").color(ACCENT)),
-                )
-                .on_disabled_hover_text(blocked.unwrap_or_default())
-                .clicked()
-            {
-                run = Some(("play.start", None));
-            }
-            let mut maximized = self.prefs.play_maximized;
-            if ui
-                .toggle_value(&mut maximized, "Maximized")
-                .on_hover_text("Play in the whole window (editor panels hidden, F8 stops)")
-                .changed()
-            {
-                run = Some(("play.maximize", None));
-            }
+        } else if self.prefs.play_maximized {
+            super::theme::chip(ui, "Maximized", MUTED)
+                .on_hover_text("Play uses the whole window (the editor panels hide; F8 stops)");
         }
         if let Some((id, arg)) = run {
             match self.run_command_with(id, arg.as_deref()) {

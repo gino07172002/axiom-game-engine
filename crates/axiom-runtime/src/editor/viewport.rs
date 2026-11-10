@@ -733,8 +733,14 @@ impl CubeLabel {
     }
 }
 
+/// Center of the axis view cube: the top-right corner of the view (the bottom-right one holds
+/// the Frame / Fullscreen buttons).
+fn cube_origin(rect: Rect) -> Pos2 {
+    rect.right_top() + vec2(-37.0, 60.0)
+}
+
 fn view_cube(orbit: &Orbit, rect: Rect) -> Vec<CubeLabel> {
-    let origin = rect.right_bottom() + vec2(-37.0, -32.0);
+    let origin = cube_origin(rect);
     let (_, right, up) = orbit.basis();
     let pairs = [
         (ViewMode::Right, ViewMode::Left),
@@ -1527,7 +1533,17 @@ impl Editor {
         runtime: &WorldRuntime,
         actions: &mut Vec<Action>,
     ) {
-        let rect = ui.available_rect_before_wrap();
+        // Inset from the tab edges: the view gets a rounded frame (Editor::viewport_overlay).
+        let rect = {
+            // Within the tab even when a wide toolbar row overflowed a narrow panel.
+            let r = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+            let inset = Rect::from_min_max(r.min + vec2(8.0, 2.0), r.max - vec2(8.0, 8.0));
+            if inset.width() >= 32.0 && inset.height() >= 32.0 {
+                inset
+            } else {
+                r
+            }
+        };
         self.viewport = rect;
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         let painter = ui.painter_at(rect);
@@ -2027,17 +2043,18 @@ impl Editor {
                 }
             }
         }
-        let anchor = rect.left_bottom() + vec2(12.0, -12.0);
+        // Right of the FPS chip (Editor::viewport_overlay), quieter than the scene.
+        let anchor = rect.left_bottom() + vec2(176.0, -16.0);
         painter.text(
             anchor,
             egui::Align2::LEFT_BOTTOM,
             "RMB orbit  RMB+WASD/QE fly  MMB pan  Wheel zoom  F frame  Drag box-select",
-            egui::FontId::monospace(11.0),
-            Color32::from_rgb(216, 225, 238),
+            egui::FontId::proportional(11.5),
+            Color32::from_rgba_unmultiplied(216, 225, 238, 170),
         );
         // Axis view cube: click X/Y/Z for Right/Top/Front (again for the opposite side), the
         // mode caption for Perspective.
-        let axes = rect.right_bottom() + vec2(-37.0, -32.0);
+        let axes = cube_origin(rect);
         for label in &cube {
             if label.key == "mode" {
                 painter.text(

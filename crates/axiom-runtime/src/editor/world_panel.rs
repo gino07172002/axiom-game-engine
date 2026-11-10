@@ -413,9 +413,9 @@ impl Editor {
     pub(super) fn run_with_arg(&mut self, id: &str, arg: Option<&str>) -> Vec<Action> {
         let Some(arg) = arg.map(str::trim) else {
             match id {
-                "object.tag" => self.notice("Type a tag under Inspector ▸ Tags (Enter adds it)"),
+                "object.tag" => self.notice("Type a tag under Inspector › Tags (Enter adds it)"),
                 "object.add_component" => {
-                    self.notice("Pick it under Inspector ▸ Components ▸ Add component")
+                    self.notice("Pick it under Inspector › Components › Add component")
                 }
                 "event.declare" => {
                     self.show_dock(super::Dock::Problems);

@@ -50,7 +50,8 @@ impl Harness {
         out.shapes
             .iter()
             .find_map(|c| match &c.shape {
-                Shape::Text(t) if t.galley.text() == needle => {
+                // Tab titles start with spaces where the tab icon is painted.
+                Shape::Text(t) if t.galley.text().trim() == needle => {
                     Some(t.pos + t.galley.rect.center().to_vec2())
                 }
                 _ => None,
@@ -131,10 +132,11 @@ fn dragging_a_tab_onto_the_scene_splits_it_and_saves_the_layout_on_release() {
             "nothing is written while the button is held"
         );
     });
+    h.frame(vec![]);
     let (scene_node, _) = h.leaf(Dock::Scene);
     let (history_node, history_rect) = h.leaf(Dock::History);
-    let (changes_node, _) = h.leaf(Dock::Changes);
-    assert_ne!(history_node, changes_node, "History left the bottom tabs");
+    let (assets_node, _) = h.leaf(Dock::Assets);
+    assert_ne!(history_node, assets_node, "History left the bottom tabs");
     let parent = scene_node.parent().unwrap();
     assert_eq!(history_node.parent(), Some(parent));
     assert!(history_node.is_right() && scene_node.is_left());
@@ -144,8 +146,11 @@ fn dragging_a_tab_onto_the_scene_splits_it_and_saves_the_layout_on_release() {
     ));
     // The scene view now covers the left part only, and History sits to its right.
     let after = h.editor.viewport;
-    assert!(after.width() < before.width() * 0.7, "{after:?}");
-    assert!(history_rect.min.x >= after.max.x - 1.0);
+    assert!(after.width() < before.width() * 0.75, "{after:?}");
+    assert!(
+        history_rect.min.x >= after.max.x - 1.0,
+        "{history_rect:?} {after:?}"
+    );
     assert!(h.editor.scene_visible);
     // Saved on release: a new editor with the same preferences shows the same layout.
     let saved: super::commands::Prefs =
@@ -198,7 +203,7 @@ fn tabs_close_and_reopen_through_commands_and_bridge_names_and_the_scene_stops_r
         .is_err_and(|e| e.to_string().contains("not open")));
     h.editor.run_command("window.history").unwrap();
     assert!(h.editor.dock_shows(Dock::History));
-    assert_eq!(h.leaf(Dock::History).0, h.leaf(Dock::Changes).0);
+    assert_eq!(h.leaf(Dock::History).0, h.leaf(Dock::Assets).0);
     // Without an argument the focused tab closes.
     h.editor.run_command("window.problems").unwrap();
     h.editor.run_command("window.close").unwrap();
@@ -344,7 +349,7 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
     ] {
         std::fs::write(
             &path,
-            serde_json::to_vec(&json!({"snap":true,"snap_move":0.5,"layout":layout_json})).unwrap(),
+            serde_json::to_vec(&json!({"snap":true,"snap_move":0.5,"layout":layout_json,"layout_version":layout::LAYOUT_VERSION})).unwrap(),
         )
         .unwrap();
         let mut c = Harness::new();
@@ -358,6 +363,30 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
         c.frame(vec![]);
         assert!(layout::is_open(c.state(), Dock::Scene));
     }
+    // A layout saved under the previous built-in Default (no layout_version): replaced by the
+    // new Default once, with a notice (not an error); the old one is kept as "Previous".
+    let classic = layout::builtin("Classic").unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"snap":true,"layout":classic.clone()})).unwrap(),
+    )
+    .unwrap();
+    let mut m = Harness::new();
+    m.editor.set_prefs_path(path.clone());
+    assert!(
+        !m.editor.error && m.editor.status.contains("layout updated"),
+        "{}",
+        m.editor.status
+    );
+    assert!(m.editor.prefs.snap);
+    assert!(!layout::is_open(m.state(), Dock::Changes) && layout::is_open(m.state(), Dock::Assets));
+    m.frame(vec![]);
+    let migrated: super::commands::Prefs =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(migrated.layout_version, layout::LAYOUT_VERSION);
+    // The replaced arrangement is kept as the named layout Previous.
+    assert_eq!(migrated.layouts.get("Previous"), Some(&classic));
+    assert_eq!(migrated.layout, layout::to_spec(m.state()));
     // Preferences from before the dock: only the active bottom tab. Default + that tab, and
     // the file is not rewritten just for loading it.
     std::fs::write(&path, r#"{"dock":"history"}"#).unwrap();
@@ -392,6 +421,7 @@ fn steady_state_frames_do_not_grow_or_resync_the_dock() {
     assert_eq!(layout::fingerprint(h.state()), print);
     // The open-tab list for observe is cached, not rebuilt per call.
     let a = h.editor.observation()["tabs"].clone();
-    assert_eq!(a.as_array().unwrap().len(), 12, "every tab but World");
+    // Hierarchy, Scene, Game, Graphs, Inspector, Assets, Problems, History.
+    assert_eq!(a.as_array().unwrap().len(), 8, "the Default layout's tabs");
     assert_eq!(h.editor.observation()["tabs"], a);
 }

@@ -758,6 +758,37 @@ fn instantiate_prefab_matches_acl() {
 }
 
 #[test]
+fn create_group_matches_acl() {
+    assert_parity(
+        lab(),
+        |e| {
+            e.select(Some("stage/crate".into()));
+            e.extra.insert("stage/beacon".into());
+            vec![e.run_command("object.group").unwrap()]
+        },
+        "group entities[id=stage/crate,id=stage/beacon]",
+    );
+    // The new group is selected; a listed child stays under its listed parent.
+    let mut editor = Editor::new(lab(), 1, None);
+    let mut store = store(&lab());
+    editor.select(Some("stage/rack".into()));
+    editor.extra.insert("stage/rack/cargo".into());
+    let actions = editor.run_command("object.group").unwrap();
+    assert!(matches!(
+        actions.as_slice(),
+        [Action::Write { select: Some(id), .. }] if id == "group"
+    ));
+    commit(&mut editor, &mut store, actions);
+    assert_eq!(
+        store.current().unwrap().1,
+        headless(&lab(), "group entities[id=stage/rack,id=stage/rack/cargo]")
+    );
+    assert!(Editor::new(lab(), 1, None)
+        .run_command("object.group")
+        .is_err());
+}
+
+#[test]
 fn duplicate_and_paste_match_acl() {
     let select = |e: &mut Editor| {
         e.select(Some("stage/crate".into()));

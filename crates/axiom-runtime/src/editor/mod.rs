@@ -1,14 +1,18 @@
 mod asset_browser;
 mod assets;
+mod chrome;
 mod commands;
 mod form;
 pub(crate) mod game;
 mod graph;
+mod icons;
 pub use commands::register_topics;
 pub use thumbs::validate_thumbnails_gpu;
 mod layout;
 mod options;
+mod panels;
 mod resource;
+mod theme;
 mod thumbs;
 mod timeline;
 mod ui;
@@ -19,6 +23,8 @@ mod world_panel;
 use crate::world::WorldRuntime;
 #[cfg(test)]
 mod asset_browser_tests;
+#[cfg(test)]
+mod chrome_tests;
 #[cfg(test)]
 mod dock_tests;
 #[cfg(test)]
@@ -78,6 +84,8 @@ pub(crate) enum Action {
     CancelScenario,
     /// Close the editor window (File ▸ Exit).
     Quit,
+    /// View ▸ Toggle Fullscreen Window (borderless on the current monitor).
+    ToggleFullscreen,
     /// Inspector ▸ ▶ Play clip: start Play preview, then run `capability.action {args}` once
     /// (e.g. `tween.play {id, clip}`, `audio.play {id}`).
     PlayClip {
@@ -468,6 +476,19 @@ pub(crate) struct Editor {
     frame_selection: bool,
     scroll_selection: bool,
     logo: Option<egui::TextureHandle>,
+    /// Icon atlas uploaded to the editor context (None until the first frame or if the
+    /// embedded atlas failed to decode, which is reported once).
+    icon_atlas: Option<icons::Atlas>,
+    icons_tried: bool,
+    /// Copy handle of the atlas for drawing.
+    icons: icons::Icons,
+    /// The editor egui style (theme), built once.
+    theme: Option<std::sync::Arc<egui::Style>>,
+    /// Last frame's renderer counters and the GPU allocator total (host-supplied).
+    pub(crate) frame_stats: crate::render::FrameStats,
+    pub(crate) gpu_alloc: Option<u64>,
+    /// Bridge requests accepted so far and the time since the last one (host-supplied).
+    pub(crate) bridge_activity: (u64, Option<std::time::Duration>),
     /// Registry component descriptors, used as form hints.
     component_hints: std::collections::BTreeMap<String, Value>,
     /// Newest-first revision rows `{rev, reason, created_at}`; refreshed on revision change.
@@ -619,6 +640,13 @@ impl Editor {
             frame_selection: false,
             scroll_selection: false,
             logo: None,
+            icon_atlas: None,
+            icons_tried: false,
+            icons: Default::default(),
+            theme: None,
+            frame_stats: Default::default(),
+            gpu_alloc: None,
+            bridge_activity: (0, None),
             component_hints: Default::default(),
             history: Vec::new(),
             needs_history: true,
@@ -1463,6 +1491,12 @@ impl Editor {
             return None;
         }
         let result = ops::duplicate(&self.world, &ids);
+        self.created(result)
+    }
+
+    /// Create Group (`ACL: group SEL`): a new empty parent for the selection, world poses kept.
+    fn group_selection(&mut self) -> Option<Action> {
+        let result = ops::create_group(&self.world, &self.selection(), None);
         self.created(result)
     }
 
