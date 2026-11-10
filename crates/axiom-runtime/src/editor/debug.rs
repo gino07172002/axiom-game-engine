@@ -11,6 +11,7 @@ use super::record::Recorder;
 use super::theme::{self, ACCENT, CARD, ERROR, MUTED, SUCCESS, TEXT, WARNING};
 use super::ui::caption;
 use super::{Action, Editor};
+use crate::gpu_timing::{GpuFrame, Section, SECTIONS};
 use crate::world::WorldRuntime;
 use egui::{RichText, Ui};
 use serde_json::{json, Value};
@@ -761,8 +762,16 @@ pub(crate) struct Profiler {
     systems: Vec<SystemRow>,
     systems_session: String,
     window: u32,
-    /// `TIMESTAMP_QUERY` offered by the adapter (`None` without a GPU), supplied by the host.
-    pub timestamp_query: Option<bool>,
+    /// GPU timing as the host reports it: `None` without a GPU renderer, `Some(Err(why))`
+    /// when timestamp queries cannot run, `Some(Ok(()))` when they do.
+    pub gpu_timing: Option<Result<(), &'static str>>,
+    /// Measured GPU frames (timestamp queries), a ring like `frames`; they arrive a few
+    /// frames late and not for every frame.
+    gpu: Box<[GpuFrame; FRAMES]>,
+    gpu_head: usize,
+    pub gpu_len: usize,
+    /// Frames the renderer could not measure (readbacks still pending) or discarded.
+    pub gpu_dropped: u64,
 }
 
 impl Default for Profiler {
@@ -778,7 +787,11 @@ impl Default for Profiler {
             systems: vec![],
             systems_session: String::new(),
             window: 0,
-            timestamp_query: None,
+            gpu_timing: None,
+            gpu: Box::new([GpuFrame::default(); FRAMES]),
+            gpu_head: 0,
+            gpu_len: 0,
+            gpu_dropped: 0,
         }
     }
 }
@@ -862,7 +875,88 @@ impl Profiler {
         (0..self.len).map(move |i| &self.frames[(start + i) % FRAMES])
     }
 
+    /// One GPU-measured frame (ignored while paused).
+    pub(crate) fn push_gpu(&mut self, frame: &GpuFrame) {
+        if self.paused {
+            return;
+        }
+        self.gpu[self.gpu_head] = *frame;
+        self.gpu_head = (self.gpu_head + 1) % FRAMES;
+        self.gpu_len = (self.gpu_len + 1).min(FRAMES);
+    }
+
+    /// GPU section means over the window: (`[mean ms; SECTIONS]`, mean total, max of each,
+    /// max total). `None` before the first measured frame.
+    fn gpu_stats(&self) -> Option<([f32; SECTIONS], f32, [f32; SECTIONS], f32)> {
+        if self.gpu_len == 0 {
+            return None;
+        }
+        let start = (self.gpu_head + FRAMES - self.gpu_len) % FRAMES;
+        let (mut mean, mut max, mut total, mut worst) =
+            ([0.0f32; SECTIONS], [0.0f32; SECTIONS], 0.0f32, 0.0f32);
+        for i in 0..self.gpu_len {
+            let f = &self.gpu[(start + i) % FRAMES];
+            for s in 0..SECTIONS {
+                mean[s] += f.ms[s];
+                max[s] = max[s].max(f.ms[s]);
+            }
+            total += f.total;
+            worst = worst.max(f.total);
+        }
+        let n = self.gpu_len as f32;
+        Some((mean.map(|v| v / n), total / n, max, worst))
+    }
+
+    fn gpu_last(&self) -> &GpuFrame {
+        &self.gpu[(self.gpu_head + FRAMES - 1) % FRAMES]
+    }
+
+    /// `observe` → `editor.debug.profiler.cpu`: window means of the main-thread phases and of
+    /// the frame without the swapchain wait (`null` before the first measured frame).
+    fn cpu_observation(&self) -> Value {
+        if self.len == 0 {
+            return Value::Null;
+        }
+        let (mut sum, mut cpu) = ([0.0f32; PHASES], 0.0f32);
+        for s in self.samples() {
+            for (total, v) in sum.iter_mut().zip(s.phases).take(self.phase_count) {
+                *total += v;
+            }
+            cpu += (s.total - s.acquire).max(0.0);
+        }
+        let n = self.len as f32;
+        let phases: serde_json::Map<String, Value> = (0..self.phase_count)
+            .map(|i| (self.names[i].to_owned(), json!(round3(sum[i] / n))))
+            .collect();
+        json!({"frame_mean_ms":round3(cpu / n),"phase_mean_ms":phases})
+    }
+
+    /// `observe` → `editor.debug.profiler.gpu`.
+    fn gpu_observation(&self) -> Value {
+        match self.gpu_timing {
+            None => json!({"available":false,"reason":"no GPU renderer"}),
+            Some(Err(why)) => json!({"available":false,"reason":why}),
+            Some(Ok(())) => {
+                let mut out = json!({"available":true,"source":"timestamp_queries","frames":self.gpu_len,"dropped":self.gpu_dropped});
+                if let Some((mean, total, _, worst)) = self.gpu_stats() {
+                    let sections: serde_json::Map<String, Value> = Section::ALL
+                        .iter()
+                        .filter(|s| mean[**s as usize] > 0.0)
+                        .map(|s| (s.name().to_owned(), json!(round3(mean[*s as usize]))))
+                        .collect();
+                    out["mean_ms"] = Value::Object(sections);
+                    out["total_mean_ms"] = json!(round3(total));
+                    out["total_max_ms"] = json!(round3(worst));
+                    out["last_total_ms"] = json!(round3(self.gpu_last().total));
+                }
+                out
+            }
+        }
+    }
+
     pub(crate) fn reset(&mut self) {
+        self.gpu_len = 0;
+        self.gpu_dropped = 0;
         self.len = 0;
         self.systems.clear();
         self.systems_session.clear();
@@ -929,7 +1023,7 @@ impl Debug {
         json!({
             "console":{"entries":c.len(),"errors":c.count(Level::Error),"warnings":c.count(Level::Warn),"dropped":c.dropped,"last_error":last_error},
             "trace":{"entries":self.trace.len(),"paused":self.trace.paused,"skipped":self.trace.skipped,"dropped":self.trace.dropped,"missed":self.trace.missed},
-            "profiler":{"measuring":self.profiler.wants(),"paused":self.profiler.paused,"frames":self.profiler.len},
+            "profiler":{"measuring":self.profiler.wants(),"paused":self.profiler.paused,"frames":self.profiler.len,"cpu":self.profiler.cpu_observation(),"gpu":self.profiler.gpu_observation()},
             "recording":self.recorder.as_ref().map(Recorder::observation),
             "last_recording":self.last_recording,
         })
@@ -1415,6 +1509,16 @@ impl Editor {
                 .color(MUTED),
             )
             .on_hover_text(MEASURED);
+            if let Some((_, gpu, _, worst)) = self.debug.profiler.gpu_stats() {
+                ui.label(
+                    RichText::new(format!(
+                        "GPU {gpu:.2} ms mean · {worst:.2} max (timestamp queries)"
+                    ))
+                    .size(11.0)
+                    .color(ACCENT),
+                )
+                .on_hover_text(GPU_MEASURED);
+            }
         });
         let previewing = self.previewing;
         let (debug, rects) = (&self.debug, &mut self.rects);
@@ -1423,12 +1527,23 @@ impl Editor {
             .auto_shrink([false, false])
             .show(ui, |ui| {
         let p = &debug.profiler;
-        let gpu = match p.timestamp_query {
-            Some(true) => "GPU timing unavailable: the renderer issues no timestamp queries (the adapter supports TIMESTAMP_QUERY; the device does not request it).",
-            Some(false) => "GPU timing unavailable: the adapter has no TIMESTAMP_QUERY.",
-            None => "GPU timing unavailable: no GPU renderer.",
-        };
-        ui.label(RichText::new(gpu).size(11.0).color(WARNING));
+        match p.gpu_timing {
+            Some(Ok(())) => {}
+            Some(Err(why)) => {
+                ui.label(
+                    RichText::new(format!("GPU timing unavailable: {why}."))
+                        .size(11.0)
+                        .color(WARNING),
+                );
+            }
+            None => {
+                ui.label(
+                    RichText::new("GPU timing unavailable: no GPU renderer.")
+                        .size(11.0)
+                        .color(WARNING),
+                );
+            }
+        }
         // Rolling graph: CPU (frame minus swapchain wait) per frame, 16.7 ms budget line.
         caption(ui, "CPU ms per frame, last 240 frames (grey = swapchain wait; red line = 16.7 ms; bars over it are red)");
         let height = 64.0;
@@ -1471,48 +1586,20 @@ impl Editor {
                 );
             }
         }
-        if p.len == 0 {
-            caption(ui, if p.paused { "Paused." } else { "Collecting…" });
+        let gpu_on = p.gpu_timing == Some(Ok(()));
+        // Wide dock: CPU phases and GPU pass groups side by side, both above the fold.
+        if gpu_on && ui.available_width() >= 760.0 {
+            ui.columns(2, |columns| {
+                cpu_table(p, &mut columns[0]);
+                let rect = gpu_table(p, &mut columns[1]);
+                rects.insert("profiler:gpu".into(), rect);
+            });
         } else {
-            // Phase table: last, mean and max over the window.
-            let mut sum = [0.0f32; PHASES];
-            let mut max = [0.0f32; PHASES];
-            let (mut total, mut acquire, mut steps, mut worst) = (0.0f32, 0.0f32, 0u32, 0.0f32);
-            for s in p.samples() {
-                for i in 0..p.phase_count {
-                    sum[i] += s.phases[i];
-                    max[i] = max[i].max(s.phases[i]);
-                }
-                total += s.total;
-                acquire += s.acquire;
-                steps += u32::from(s.steps);
-                worst = worst.max(s.total - s.acquire);
+            cpu_table(p, ui);
+            if gpu_on {
+                let rect = gpu_table(p, ui);
+                rects.insert("profiler:gpu".into(), rect);
             }
-            let n = p.len as f32;
-            let last = p.frames[(p.head + FRAMES - 1) % FRAMES];
-            ui.add_space(4.0);
-            table_row(ui, "phase", ["last ms", "mean ms", "max ms"], MUTED);
-            for i in 0..p.phase_count {
-                let v = [last.phases[i], sum[i] / n, max[i]];
-                table_row(ui, p.names[i], v.map(|v| format!("{v:.2}")), TEXT);
-            }
-            let v = [last.acquire, acquire / n];
-            table_row(
-                ui,
-                "acquire wait",
-                [
-                    format!("{:.2}", v[0]),
-                    format!("{:.2}", v[1]),
-                    String::new(),
-                ],
-                MUTED,
-            );
-            let v = [last.total - last.acquire, (total - acquire) / n, worst];
-            table_row(ui, "frame CPU", v.map(|v| format!("{v:.2}")), ACCENT);
-            caption(
-                ui,
-                format!("{:.2} fixed steps / frame (mean)", steps as f32 / n),
-            );
         }
         ui.add_space(4.0);
         if p.systems.is_empty() || !previewing {
@@ -1534,6 +1621,102 @@ impl Editor {
             }
         }
     }
+}
+
+/// The main-thread phase table (last, mean and max over the window).
+fn cpu_table(p: &Profiler, ui: &mut Ui) {
+    if p.len == 0 {
+        caption(ui, if p.paused { "Paused." } else { "Collecting…" });
+    } else {
+        // Phase table: last, mean and max over the window.
+        let mut sum = [0.0f32; PHASES];
+        let mut max = [0.0f32; PHASES];
+        let (mut total, mut acquire, mut steps, mut worst) = (0.0f32, 0.0f32, 0u32, 0.0f32);
+        for s in p.samples() {
+            for i in 0..p.phase_count {
+                sum[i] += s.phases[i];
+                max[i] = max[i].max(s.phases[i]);
+            }
+            total += s.total;
+            acquire += s.acquire;
+            steps += u32::from(s.steps);
+            worst = worst.max(s.total - s.acquire);
+        }
+        let n = p.len as f32;
+        let last = p.frames[(p.head + FRAMES - 1) % FRAMES];
+        ui.add_space(4.0);
+        table_row(ui, "phase", ["last ms", "mean ms", "max ms"], MUTED);
+        for i in 0..p.phase_count {
+            let v = [last.phases[i], sum[i] / n, max[i]];
+            table_row(ui, p.names[i], v.map(|v| format!("{v:.2}")), TEXT);
+        }
+        let v = [last.acquire, acquire / n];
+        table_row(
+            ui,
+            "acquire wait",
+            [
+                format!("{:.2}", v[0]),
+                format!("{:.2}", v[1]),
+                String::new(),
+            ],
+            MUTED,
+        );
+        let v = [last.total - last.acquire, (total - acquire) / n, worst];
+        table_row(ui, "frame CPU", v.map(|v| format!("{v:.2}")), ACCENT);
+        caption(
+            ui,
+            format!("{:.2} fixed steps / frame (mean)", steps as f32 / n),
+        );
+    }
+}
+
+/// The GPU pass-group table (timestamp queries); returns its title's rect.
+fn gpu_table(p: &Profiler, ui: &mut Ui) -> egui::Rect {
+    ui.add_space(4.0);
+    let r = ui.label(
+        RichText::new(format!(
+            "GPU (timestamp queries) · {} frames measured · {} not measured · hover for scope",
+            p.gpu_len, p.gpu_dropped
+        ))
+        .size(11.0)
+        .color(MUTED),
+    );
+    let rect = r.rect;
+    r.on_hover_text(GPU_MEASURED);
+    match p.gpu_stats() {
+        None => caption(
+            ui,
+            if p.paused {
+                "Paused."
+            } else {
+                "Waiting for the first readback…"
+            },
+        ),
+        Some((mean, total, max, worst)) => {
+            let last = p.gpu_last();
+            table_row(
+                ui,
+                "GPU pass group",
+                ["last ms", "mean ms", "max ms"],
+                MUTED,
+            );
+            for s in Section::ALL {
+                let i = s as usize;
+                if max[i] > 0.0 {
+                    let v = [last.ms[i], mean[i], max[i]];
+                    table_row(ui, s.name(), v.map(|v| format!("{v:.3}")), TEXT);
+                }
+            }
+            let v = [last.total, total, worst];
+            table_row(ui, "frame GPU", v.map(|v| format!("{v:.3}")), ACCENT);
+        }
+    }
+    rect
+}
+
+/// Milliseconds with three decimals for `observe` (f32 noise trimmed).
+fn round3(v: f32) -> f64 {
+    (f64::from(v) * 1000.0).round() / 1000.0
 }
 
 /// One profiler table row: a name column and three right-aligned value columns (fixed
@@ -1585,3 +1768,4 @@ fn kinds_arg(kinds: &[bool; 5]) -> String {
 
 /// What the Profiler measures (its header's tooltip).
 const MEASURED: &str = "Main-thread wall time of each frame phase (Instant). render_present = world + UI encoding, submit and present, including the swapchain wait shown separately as \"acquire wait\" (grey in the graph). Systems = each runtime system's step(), summed over this frame's fixed steps (Play only). Not GPU time.";
+const GPU_MEASURED: &str = "GPU time from timestamp queries the renderer writes between its pass groups (only while this tab is visible): vfx_compute, shadows (sun depth), world (each camera view), vfx_draw, post, game_ui (Game tab interface), ui (editor interface). Each value is the GPU time between the previous timestamp and the one after that group, summed per frame. Results are read back asynchronously a few frames late; a frame is not measured while every readback slot is still busy. Not CPU time.";

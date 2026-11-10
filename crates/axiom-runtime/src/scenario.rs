@@ -35,7 +35,25 @@ pub enum ScenarioOperation {
     Assert {
         assertion: Assertion,
     },
+    /// Mouse-look deltas (raw device units, as the window delivered them), applied in order
+    /// with `WorldRuntime::pointer`. One op holds the consecutive deltas between two other
+    /// operations of the same tick, at most `MAX_LOOK_DELTAS`.
+    Look {
+        deltas: Vec<[f32; 2]>,
+    },
+    /// A screen pointer event: `screen` is the game area's normalized position (0..1, y
+    /// down) and `aspect` its width / height; the ray is derived from the camera state at
+    /// replay time exactly as live (`WorldRuntime::screen_pointer`).
+    Pointer {
+        kind: crate::world::PointerKind,
+        screen: [f32; 2],
+        aspect: f32,
+        #[serde(default)]
+        additive: bool,
+    },
 }
+/// Deltas one `look` operation may hold.
+pub const MAX_LOOK_DELTAS: usize = 256;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioInput {
@@ -97,6 +115,16 @@ pub fn state_hash(runtime: &WorldRuntime) -> Result<String> {
     for volatile in ["fps", "frame_ms_cpu", "gpu"] {
         metrics.remove(volatile);
     }
+    // The navigation grid's build wall time and process-cache hit describe this process, not
+    // the simulation (an editor Play and a fresh `axiom scenario` process differ there).
+    if let Some(grid) = metrics
+        .get_mut("nav")
+        .and_then(|nav| nav.get_mut("grid"))
+        .and_then(Value::as_object_mut)
+    {
+        grid.remove("build_ms");
+        grid.remove("cached");
+    }
     axiom_core::local::fingerprint(&(
         runtime.state.tick,
         runtime.state.rng,
@@ -137,10 +165,27 @@ pub fn run_observed(
     let mut previous = None;
     for command in &scenario.commands {
         ensure!(
-            command.tick < scenario.ticks && previous.is_none_or(|p| p <= command.tick),
-            "scenario command ticks must be ordered and in range"
+            command.tick <= scenario.ticks && previous.is_none_or(|p| p <= command.tick),
+            "scenario command ticks must be ordered and in range (0..=ticks)"
         );
         previous = Some(command.tick);
+        match &command.operation {
+            ScenarioOperation::Look { deltas } => ensure!(
+                !deltas.is_empty()
+                    && deltas.len() <= MAX_LOOK_DELTAS
+                    && deltas.iter().flatten().all(|v| v.is_finite()),
+                "scenario look needs 1..={MAX_LOOK_DELTAS} finite deltas"
+            ),
+            ScenarioOperation::Pointer { screen, aspect, .. } => ensure!(
+                aspect.is_finite()
+                    && *aspect > 0.0
+                    && screen
+                        .iter()
+                        .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+                "scenario pointer needs screen in 0..1 and a positive aspect"
+            ),
+            _ => {}
+        }
     }
     previous = None;
     for input in &scenario.inputs {
@@ -189,8 +234,9 @@ pub fn run_observed(
         p.set_total(u64::from(scenario.ticks));
     }
     let mut intermediate = vec![];
-    for tick in 0..scenario.ticks {
-        if let Some(p) = progress {
+    // Commands at tick `ticks` run after the last step, before the final assertions.
+    for tick in 0..=scenario.ticks {
+        if let Some(p) = progress.filter(|_| tick < scenario.ticks) {
             if p.cancelled() {
                 return Err(axiom_core::Diagnostic::error(
                     "scenario_cancelled",
@@ -225,7 +271,21 @@ pub fn run_observed(
                 ScenarioOperation::Assert { assertion } => {
                     intermediate.push(check(&mut runtime, assertion)?);
                 }
+                ScenarioOperation::Look { deltas } => {
+                    for [dx, dy] in deltas {
+                        runtime.pointer(*dx, *dy);
+                    }
+                }
+                ScenarioOperation::Pointer {
+                    kind,
+                    screen,
+                    aspect,
+                    additive,
+                } => runtime.screen_pointer(*kind, *screen, *aspect, *additive)?,
             }
+        }
+        if tick == scenario.ticks {
+            break;
         }
         if let Some(event) = scenario.inputs.get(next) {
             if event.tick == tick {
@@ -418,4 +478,64 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
         }
     };
     Ok(json!({"assertion":a,"actual":actual,"passed":true}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_json(text: &str) -> Result<Value> {
+        let registry = crate::installed_registry();
+        let world = axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/fps"),
+            &registry.authoring,
+        )?
+        .world;
+        run(world, 1, registry, serde_json::from_str(text)?)
+    }
+
+    #[test]
+    fn look_and_pointer_operations_are_validated_and_may_follow_the_last_step() {
+        let ok = run_json(
+            r#"{"ticks":2,"commands":[
+            {"tick":0,"operation":{"op":"look","deltas":[[4.0,-1.0],[2.5,0.0]]}},
+            {"tick":1,"operation":{"op":"pointer","kind":"primary_down","screen":[0.5,0.5],"aspect":1.5}},
+            {"tick":2,"operation":{"op":"look","deltas":[[-9.0,3.0]]}}],
+            "assertions":[{"kind":"finite"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ok["ticks"], 2);
+        // The deltas before the steps turned the player (FPS publishes its view in `step`).
+        let without = run_json(
+            r#"{"ticks":2,"commands":[
+            {"tick":1,"operation":{"op":"pointer","kind":"primary_down","screen":[0.5,0.5],"aspect":1.5}},
+            {"tick":2,"operation":{"op":"look","deltas":[[-9.0,3.0]]}}],
+            "assertions":[]}"#,
+        )
+        .unwrap();
+        assert_ne!(ok["state_hash"], without["state_hash"]);
+        for bad in [
+            r#"{"op":"look","deltas":[]}"#,
+            r#"{"op":"look","deltas":[[1e40,0.0]]}"#,
+            r#"{"op":"pointer","kind":"move","screen":[1.5,0.5],"aspect":1.0}"#,
+            r#"{"op":"pointer","kind":"move","screen":[0.5,0.5],"aspect":0.0}"#,
+            r#"{"op":"pointer","kind":"hover","screen":[0.5,0.5],"aspect":1.0}"#,
+        ] {
+            let text = format!(
+                r#"{{"ticks":1,"commands":[{{"tick":0,"operation":{bad}}}],"assertions":[]}}"#
+            );
+            assert!(run_json(&text).is_err(), "{bad}");
+        }
+        let many: Vec<String> = (0..=MAX_LOOK_DELTAS).map(|_| "[1.0,0.0]".into()).collect();
+        let text = format!(
+            r#"{{"ticks":1,"commands":[{{"tick":0,"operation":{{"op":"look","deltas":[{}]}}}}],"assertions":[]}}"#,
+            many.join(",")
+        );
+        assert!(run_json(&text).is_err(), "too many deltas in one op");
+        // Past `ticks` is still refused.
+        assert!(run_json(
+            r#"{"ticks":1,"commands":[{"tick":2,"operation":{"op":"look","deltas":[[1.0,0.0]]}}],"assertions":[]}"#
+        )
+        .is_err());
+    }
 }

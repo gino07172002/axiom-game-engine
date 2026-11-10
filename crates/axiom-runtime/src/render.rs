@@ -93,8 +93,10 @@ pub struct Renderer {
     pub last_acquire: std::time::Duration,
     /// Counters of the last presented frame.
     pub stats: FrameStats,
-    /// The adapter offers `TIMESTAMP_QUERY` (the device does not request it).
+    /// The adapter offers `TIMESTAMP_QUERY`.
     pub timestamp_query_supported: bool,
+    /// Pass-group GPU times (editor Profiler); writes timestamps only while enabled.
+    pub timer: crate::gpu_timing::GpuTimer,
 }
 
 impl Renderer {
@@ -111,15 +113,16 @@ impl Renderer {
             .await
             .context("no compatible GPU adapter")?;
         let info = adapter.get_info();
-        // Reported by the editor Profiler; the device is created without it (no GPU timing).
+        // Reported by the editor Profiler, which measures pass times when the device has them.
         let timestamp_query_supported =
             adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let timing_features = crate::gpu_timing::GpuTimer::features(adapter.features());
         let gpu = format!("{} / {:?}", info.name, info.backend);
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("axiom device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features: timing_features,
                     required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
@@ -150,6 +153,7 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        let timer = crate::gpu_timing::GpuTimer::new(adapter.features(), device.features(), &queue);
         let depth = depth_view(&device, config.width, config.height, "scene depth", true);
         let shadow = depth_view(&device, 2048, 2048, "sun shadow", true);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -388,6 +392,7 @@ impl Renderer {
             last_acquire: std::time::Duration::ZERO,
             stats: FrameStats::default(),
             timestamp_query_supported,
+            timer,
         })
     }
 
@@ -590,8 +595,11 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
+        self.timer.begin(&self.device, &mut encoder);
         if snapshot.draw_world {
             self.vfx.compute(&mut encoder);
+            self.timer
+                .mark(&mut encoder, crate::gpu_timing::Section::VfxCompute);
         }
         // Sun 0 without shadows: the shadow map is not sampled, so skip its depth pass.
         if lighting.shadow && snapshot.draw_world {
@@ -620,6 +628,9 @@ impl Renderer {
                     stats.add(1, 12 * range.len() as u64);
                 }
             }
+            drop(pass);
+            self.timer
+                .mark(&mut encoder, crate::gpu_timing::Section::Shadows);
         }
         let world_color = if snapshot.postfx.is_empty() {
             &view
@@ -705,6 +716,8 @@ impl Renderer {
                 stats.add(calls, triangles);
             }
             drop(pass);
+            self.timer
+                .mark(&mut encoder, crate::gpu_timing::Section::World);
             if !snapshot.vfx.batches.is_empty() || !snapshot.vfx.ribbons.is_empty() {
                 let mut effects = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("VFX transparent read-only depth"),
@@ -728,6 +741,9 @@ impl Renderer {
                 effects.set_scissor_rect(sx, sy, sw, sh);
                 let (calls, triangles) = self.vfx.draw(&mut effects, i as u32);
                 stats.add(calls, triangles);
+                drop(effects);
+                self.timer
+                    .mark(&mut encoder, crate::gpu_timing::Section::VfxDraw);
             }
             if !snapshot.postfx.is_empty() {
                 self.post.draw(
@@ -739,6 +755,8 @@ impl Renderer {
                     self.config.height,
                 );
                 stats.add(1, 1);
+                self.timer
+                    .mark(&mut encoder, crate::gpu_timing::Section::Post);
             }
         }
         // No world pass wrote the frame: the first interface pass starts from a cleared one.
@@ -778,6 +796,8 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             renderer.render(&mut pass.forget_lifetime(), &jobs, &screen);
+            self.timer
+                .mark(&mut encoder, crate::gpu_timing::Section::GameUi);
             cleared = true;
             game_free = game.textures_delta.free;
         }
@@ -816,6 +836,8 @@ impl Renderer {
             self.egui
                 .render(&mut pass.forget_lifetime(), &jobs, &screen);
         }
+        self.timer
+            .mark(&mut encoder, crate::gpu_timing::Section::Ui);
         let capture = if screenshot.is_some() {
             anyhow::ensure!(
                 self.can_capture,
@@ -853,8 +875,10 @@ impl Renderer {
         } else {
             None
         };
+        self.timer.end(&mut encoder);
         self.queue
             .submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
+        self.timer.submitted();
         frame.present();
         self.stats = stats;
         if let Some((buffer, row)) = capture {

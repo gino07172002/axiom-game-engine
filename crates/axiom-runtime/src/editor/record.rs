@@ -3,8 +3,10 @@
 //!
 //! Tick numbering follows `scenario::run`: inputs and commands with tick `t` apply before the
 //! simulation's step `t` (0-based), i.e. with the runtime's tick at `t` before that step.
-use crate::scenario::{Assertion, Scenario, ScenarioCommand, ScenarioInput, ScenarioOperation};
-use crate::world::ActionMap;
+use crate::scenario::{
+    Assertion, Scenario, ScenarioCommand, ScenarioInput, ScenarioOperation, MAX_LOOK_DELTAS,
+};
+use crate::world::{ActionMap, PointerKind};
 use anyhow::{ensure, Context, Result};
 use axiom_core::gameplay::RuntimeCommand;
 use serde_json::{json, Value};
@@ -16,6 +18,14 @@ const MAX_TICKS: u32 = 1_000_000;
 const MAX_ENTRIES: usize = 4096;
 const MAX_ACTIONS: usize = 64;
 const MAX_BYTES: usize = 1_048_576;
+/// Upper bounds of the bytes elements add to the file: an f32 prints in at most 17
+/// characters (`-0.00000123456789`), so a look delta `[x,y],` takes at most 40 and a pointer
+/// operation line (or the fixed part of any line) at most 160. Every element is charged
+/// against `BYTE_BUDGET` before it is recorded; the recording stops instead of growing past
+/// what `axiom scenario` reads (the rest of `MAX_BYTES` is the header and assertions).
+const LOOK_DELTA_BYTES: usize = 40;
+const OPERATION_BYTES: usize = 160;
+const BYTE_BUDGET: usize = MAX_BYTES - 4096;
 
 /// Compact JSON of one scenario element (one line of the file).
 fn line<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -31,8 +41,13 @@ pub(crate) struct Recorder {
     inputs: Vec<ScenarioInput>,
     commands: Vec<ScenarioCommand>,
     saves: BTreeSet<String>,
-    /// Mouse-look / screen-pointer events: not representable in a scenario.
+    /// Mouse-look deltas and screen-pointer events recorded (`look` / `pointer` operations).
     pub pointer_events: u64,
+    /// Upper bound of the file bytes recorded so far (inputs and operations).
+    bytes: usize,
+    /// A primary press reached the runtime and its release has not: moves are recorded only
+    /// then (see `PointerKind`).
+    dragging: bool,
     /// Why the file will not replay to the same state (first reason).
     pub inexact: Option<String>,
     /// A budget was reached: nothing more is recorded; the host saves the file.
@@ -96,6 +111,8 @@ impl Recorder {
             commands: vec![],
             saves: BTreeSet::new(),
             pointer_events: 0,
+            bytes: 0,
+            dragging: false,
             inexact: None,
             full: None,
         })
@@ -171,6 +188,14 @@ impl Recorder {
                 ));
                 return;
             }
+            let bytes = OPERATION_BYTES
+                + actions
+                    .keys()
+                    .map(|k| k.len() + LOOK_DELTA_BYTES)
+                    .sum::<usize>();
+            if !self.room(bytes) {
+                return;
+            }
             for (k, v) in &actions {
                 self.last.insert(k.clone(), *v);
             }
@@ -182,12 +207,16 @@ impl Recorder {
         self.ticks += 1;
     }
 
-    fn operation(&mut self, operation: ScenarioOperation) {
+    /// Appends an operation of at most `bytes` file bytes (or ends the recording at a limit).
+    fn operation(&mut self, operation: ScenarioOperation, bytes: usize) {
         if self.full.is_some() {
             return;
         }
         if self.commands.len() >= MAX_ENTRIES {
             self.stop(format!("{MAX_ENTRIES} commands recorded (scenario limit)"));
+            return;
+        }
+        if !self.room(bytes) {
             return;
         }
         self.commands.push(ScenarioCommand {
@@ -196,11 +225,36 @@ impl Recorder {
         });
     }
 
+    /// Charges `bytes` against the file budget; false (and the recording ends) when the file
+    /// could grow past what `axiom scenario` reads.
+    fn room(&mut self, bytes: usize) -> bool {
+        if self.full.is_some() {
+            return false;
+        }
+        if self.bytes + bytes > BYTE_BUDGET {
+            self.stop(format!(
+                "the recording reached the {} KiB scenario file budget",
+                MAX_BYTES / 1024
+            ));
+            return false;
+        }
+        self.bytes += bytes;
+        true
+    }
+
     /// A runtime command that succeeded (game UI, bridge `command`).
     pub(crate) fn command(&mut self, command: &RuntimeCommand) {
-        self.operation(ScenarioOperation::Command {
-            command: command.clone(),
-        });
+        if self.full.is_some() {
+            return;
+        }
+        // Commands are rare (UI clicks, bridge requests): measure the actual line.
+        let bytes = OPERATION_BYTES + serde_json::to_string(command).map_or(MAX_BYTES, |s| s.len());
+        self.operation(
+            ScenarioOperation::Command {
+                command: command.clone(),
+            },
+            bytes,
+        );
     }
 
     pub(crate) fn save(&mut self, slot: &str) {
@@ -215,7 +269,10 @@ impl Recorder {
             return;
         }
         self.saves.insert(slot.to_owned());
-        self.operation(ScenarioOperation::Save { slot: slot.into() });
+        self.operation(
+            ScenarioOperation::Save { slot: slot.into() },
+            OPERATION_BYTES + slot.len(),
+        );
     }
 
     /// A load: replayable only from a save made earlier in this recording.
@@ -227,7 +284,10 @@ impl Recorder {
             self.stop(format!("load of {slot} (made outside the recording)"));
             return;
         }
-        self.operation(ScenarioOperation::Load { slot: slot.into() });
+        self.operation(
+            ScenarioOperation::Load { slot: slot.into() },
+            OPERATION_BYTES + slot.len(),
+        );
     }
 
     pub(crate) fn inputs_len(&self) -> usize {
@@ -237,10 +297,89 @@ impl Recorder {
         self.commands.len()
     }
 
-    pub(crate) fn pointer(&mut self) {
+    /// A mouse-look delta the runtime just applied (`WorldRuntime::pointer`). Consecutive
+    /// deltas of one tick share a `look` operation and replay in the same order.
+    pub(crate) fn look(&mut self, dx: f32, dy: f32) {
+        let ticks = self.ticks;
+        let extends = matches!(
+            self.commands.last(),
+            Some(ScenarioCommand { tick, operation: ScenarioOperation::Look { deltas } })
+                if *tick == ticks && deltas.len() < MAX_LOOK_DELTAS
+        );
+        if !extends {
+            self.operation(
+                ScenarioOperation::Look {
+                    deltas: vec![[dx, dy]],
+                },
+                OPERATION_BYTES + LOOK_DELTA_BYTES,
+            );
+        } else if self.room(LOOK_DELTA_BYTES) {
+            if let Some(ScenarioCommand {
+                operation: ScenarioOperation::Look { deltas },
+                ..
+            }) = self.commands.last_mut()
+            {
+                deltas.push([dx, dy]);
+            }
+        }
         if self.full.is_none() {
             self.pointer_events += 1;
         }
+    }
+
+    /// A screen pointer event the runtime just applied (`WorldRuntime::screen_pointer`) with
+    /// these arguments. Moves count only during a drag, and a move right after a move of the
+    /// same tick replaces it (see `PointerKind`).
+    pub(crate) fn pointer(
+        &mut self,
+        kind: PointerKind,
+        screen: [f32; 2],
+        aspect: f32,
+        additive: bool,
+    ) {
+        if self.full.is_some() {
+            return;
+        }
+        match kind {
+            PointerKind::PrimaryDown => self.dragging = true,
+            PointerKind::PrimaryUp => self.dragging = false,
+            PointerKind::Move if !self.dragging => return,
+            _ => {}
+        }
+        self.pointer_events += 1;
+        let ticks = self.ticks;
+        if kind == PointerKind::Move {
+            if let Some(ScenarioCommand {
+                tick,
+                operation:
+                    ScenarioOperation::Pointer {
+                        kind: PointerKind::Move,
+                        screen: last,
+                        aspect: last_aspect,
+                        additive: last_additive,
+                    },
+            }) = self.commands.last_mut()
+            {
+                if *tick == ticks && *last_aspect == aspect && *last_additive == additive {
+                    *last = screen;
+                    return;
+                }
+            }
+        }
+        self.operation(
+            ScenarioOperation::Pointer {
+                kind,
+                screen,
+                aspect,
+                additive,
+            },
+            OPERATION_BYTES,
+        );
+    }
+    /// A pointer event failed part-way in the live runtime: the state it left cannot be
+    /// reproduced (a replay stops at the error).
+    pub(crate) fn pointer_failed(&mut self, error: &str) {
+        self.inexact(format!("a pointer event failed during Play: {error}"));
     }
 
     pub(crate) fn observation(&self) -> Value {
@@ -256,24 +395,8 @@ impl Recorder {
             self.ticks > 0,
             "nothing recorded: no fixed step ran (paused the whole time?)"
         );
-        // Commands after the last step would need one more step to replay.
-        let trailing = self
-            .commands
-            .iter()
-            .filter(|c| c.tick >= self.ticks)
-            .count();
-        self.commands.retain(|c| c.tick < self.ticks);
-        if trailing > 0 {
-            self.inexact(format!(
-                "{trailing} command(s) after the last tick were dropped (pause, command, stop)"
-            ));
-        }
-        if self.pointer_events > 0 {
-            self.inexact(format!(
-                "{} mouse-look / pointer event(s) are not part of the scenario format",
-                self.pointer_events
-            ));
-        }
+        // Operations after the last step keep tick `ticks`: `scenario::run` applies them
+        // after its last step, before the assertions.
         let exact = self.inexact.is_none();
         let mut assertions = vec![Assertion::Finite {}];
         if exact {
@@ -364,11 +487,95 @@ mod tests {
             locale: "ja".into(),
         });
         let (text, summary) = r.scenario("abc").unwrap();
-        // The trailing command (after the last step) is dropped: no hash assertion.
-        assert_eq!(summary["exact"], false);
+        // The trailing command (after the last step) keeps tick 4 = ticks: replayed after
+        // the last step, so the recording stays exact.
+        assert_eq!(summary["exact"], true);
         let s: Scenario = serde_json::from_str(&text).unwrap();
-        assert_eq!((s.ticks, s.inputs.len(), s.commands.len()), (4, 2, 1));
-        assert!(!text.contains("state_hash"));
+        assert_eq!((s.ticks, s.inputs.len(), s.commands.len()), (4, 2, 2));
+        assert_eq!(s.commands[1].tick, 4);
+        assert!(text.contains("state_hash"));
+    }
+
+    #[test]
+    fn mouse_look_and_pointer_events_become_ordered_operations() {
+        let dir = std::env::temp_dir().join(format!("axiom-rec4-{}", std::process::id()));
+        let mut r = Recorder::new(&dir, "mouse").unwrap();
+        // Tick 0: two deltas share one op; a click splits the run; a third delta after it.
+        r.look(1.5, -2.0);
+        r.look(0.1, 0.0);
+        r.pointer(PointerKind::PrimaryDown, [0.25, 0.5], 1.5, false);
+        r.look(-3.0, 1e-7);
+        // Moves of one tick coalesce (last wins); a move in the next tick is new.
+        r.pointer(PointerKind::Move, [0.3, 0.5], 1.5, false);
+        r.pointer(PointerKind::Move, [0.4, 0.5], 1.5, false);
+        r.step(&ActionMap::default());
+        r.pointer(PointerKind::Move, [0.5, 0.5], 1.5, false);
+        r.pointer(PointerKind::PrimaryUp, [0.5, 0.5], 1.5, true);
+        assert_eq!(r.pointer_events, 8);
+        let (text, summary) = r.scenario("h").unwrap();
+        assert_eq!(summary["exact"], true, "{summary}");
+        let s: Scenario = serde_json::from_str(&text).unwrap();
+        let ops: Vec<(u32, String)> = s
+            .commands
+            .iter()
+            .map(|c| (c.tick, serde_json::to_string(&c.operation).unwrap()))
+            .collect();
+        assert_eq!(ops.len(), 6, "{text}");
+        assert_eq!(ops[0].1, r#"{"op":"look","deltas":[[1.5,-2.0],[0.1,0.0]]}"#);
+        assert!(ops[1].1.contains(r#""kind":"primary_down""#));
+        // f32 values round-trip exactly through the file.
+        match &s.commands[2].operation {
+            ScenarioOperation::Look { deltas } => assert_eq!(deltas, &vec![[-3.0, 1e-7]]),
+            other => panic!("{other:?}"),
+        }
+        assert!(ops[3].1.contains(r#""screen":[0.4,0.5]"#), "{}", ops[3].1);
+        assert_eq!((ops[4].0, ops[5].0), (1, 1));
+        assert!(ops[5].1.contains(r#""additive":true"#));
+        // A run of look deltas splits at the per-op limit.
+        let mut r = Recorder::new(&dir, "long").unwrap();
+        for _ in 0..MAX_LOOK_DELTAS + 1 {
+            r.look(1.0, 0.0);
+        }
+        assert_eq!(r.commands.len(), 2);
+        // Endless mouse input ends the recording before the file outgrows `axiom scenario`.
+        let mut r = Recorder::new(&dir, "flood").unwrap();
+        for i in 0..200_000 {
+            r.look(1.0, 0.0);
+            if i % 16 == 0 {
+                r.step(&ActionMap::default());
+            }
+        }
+        assert!(r.full.is_some() && r.inexact.is_some());
+        let (text, _) = r.scenario("h").unwrap();
+        assert!(text.len() <= MAX_BYTES && !text.contains("state_hash"));
+        // Inputs and commands share the budget: worst-case floats plus big commands and
+        // many input changes still end in a file `axiom scenario` reads.
+        let mut r = Recorder::new(&dir, "mixed").unwrap();
+        let big = RuntimeCommand::Locale {
+            locale: "x".repeat(2000),
+        };
+        for i in 0..100_000 {
+            r.look(-1.234_567_9e-6, f32::MIN_POSITIVE);
+            if i % 5 == 0 {
+                r.command(&big);
+            }
+            let held = if i % 2 == 0 { 1.0 } else { 0.0 };
+            r.step(&map(&[("move_z", held), ("move_x", -held)]));
+        }
+        assert!(r.full.is_some());
+        let (text, _) = r.scenario("h").unwrap();
+        assert!(text.len() <= MAX_BYTES, "{}", text.len());
+        // Moves without a held primary button change nothing and are not recorded.
+        let mut r = Recorder::new(&dir, "hover").unwrap();
+        r.pointer(PointerKind::Move, [0.1, 0.1], 1.0, false);
+        r.pointer(PointerKind::SecondaryDown, [0.1, 0.1], 1.0, false);
+        r.pointer(PointerKind::Move, [0.2, 0.1], 1.0, false);
+        assert_eq!((r.commands.len(), r.pointer_events), (1, 1));
+        // A failed pointer event makes the recording inexact.
+        let mut r = Recorder::new(&dir, "failed").unwrap();
+        r.step(&ActionMap::default());
+        r.pointer_failed("boom");
+        assert_eq!(r.scenario("h").unwrap().1["exact"], false);
     }
 
     #[test]

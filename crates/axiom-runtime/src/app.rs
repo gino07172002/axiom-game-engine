@@ -1603,16 +1603,38 @@ impl App {
                 cursor = cursor.map(|v| v.clamp(0.0, 1.0));
                 aspect = rect.width() / rect.height();
             }
-            let additive =
-                self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
-            let used = self.runtime.uses_screen_pointer();
-            if let Err(e) = self.runtime.screen_pointer(kind, cursor, aspect, additive) {
-                self.ui.output.push(format!("{e:#}"));
-            } else if used {
-                if let Some(recorder) = self.recorder() {
-                    recorder.pointer();
-                }
+            self.send_screen_pointer(kind, cursor, aspect);
+        }
+    }
+
+    /// A screen pointer event at `cursor` (game area, 0..1) to the runtime, recorded into the
+    /// scenario being recorded when a system acts on it.
+    fn send_screen_pointer(
+        &mut self,
+        kind: crate::world::PointerKind,
+        cursor: [f32; 2],
+        aspect: f32,
+    ) {
+        let additive =
+            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        let used = self.runtime.uses_screen_pointer();
+        let result = self.runtime.screen_pointer(kind, cursor, aspect, additive);
+        if let (true, Some(recorder)) = (used, self.recorder()) {
+            match &result {
+                Ok(()) => recorder.pointer(kind, cursor, aspect, additive),
+                Err(e) => recorder.pointer_failed(&format!("{e:#}")),
             }
+        }
+        if let Err(e) = result {
+            self.ui.output.push(format!("{e:#}"));
+        }
+    }
+
+    /// Raw mouse motion while the pointer is captured (mouse-look), recorded as it applies.
+    fn mouse_look(&mut self, dx: f32, dy: f32) {
+        self.runtime.pointer(dx, dy);
+        if let Some(recorder) = self.recorder() {
+            recorder.look(dx, dy);
         }
     }
     fn runtime_request(&mut self, request: Request) -> Result<serde_json::Value> {
@@ -2451,9 +2473,14 @@ impl App {
             // Status-bar readouts: last frame's draw counters, bridge activity (two atomics),
             // and the wgpu allocator total at a low rate (its report lists every allocation).
             editor.bridge_activity = self._bridge.as_ref().map_or((0, None), Bridge::activity);
-            if let Some(renderer) = &self.renderer {
+            if let Some(renderer) = &mut self.renderer {
                 editor.frame_stats = renderer.stats;
-                editor.debug.profiler.timestamp_query = Some(renderer.timestamp_query_supported);
+                // GPU pass timing only while the Profiler is shown (and not paused).
+                let profiler = &mut editor.debug.profiler;
+                profiler.gpu_timing = Some(renderer.timer.unavailable().map_or(Ok(()), Err));
+                renderer.timer.set_enabled(profiler.wants());
+                let unmeasured = renderer.timer.take(|frame| profiler.push_gpu(frame));
+                profiler.gpu_dropped += unmeasured;
                 if self.gpu_alloc_elapsed >= 2.0 {
                     self.gpu_alloc_elapsed = 0.0;
                     editor.gpu_alloc = renderer
@@ -3117,10 +3144,7 @@ impl ApplicationHandler for App {
     ) {
         if self.captured {
             if let DeviceEvent::MouseMotion { delta } = event {
-                self.runtime.pointer(delta.0 as f32, delta.1 as f32);
-                if let Some(recorder) = self.recorder() {
-                    recorder.pointer();
-                }
+                self.mouse_look(delta.0 as f32, delta.1 as f32);
             }
         }
     }
@@ -4284,5 +4308,153 @@ mod tests {
         // Never overwritten: the same name is refused while the file exists.
         assert!(command(&mut app, "play.record", Some("town-take")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Records one Play session of `content` driven by `drive`, replays the file the way
+    /// `axiom scenario` does and checks the state hash; then checks that the same file
+    /// without its `look` / `pointer` operations ends elsewhere (they carried state).
+    fn mouse_recording_replays(content: &str, drive: impl FnOnce(&mut App)) -> Value {
+        let registry = crate::installed_registry();
+        let world = axiom_core::ContentPackage::load(
+            format!("{}/../../content/{content}", env!("CARGO_MANIFEST_DIR")),
+            &registry.authoring,
+        )
+        .unwrap()
+        .world;
+        let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
+        let mut app = App::new(
+            RunOptions {
+                mode: RunMode::Editor { selected: None },
+                load_slot: None,
+                replace_world: false,
+                db: PathBuf::new(),
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: false,
+            },
+            registry.clone(),
+            store,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "axiom-mouse-replay-{content}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        app.editor.as_mut().unwrap().debug.record_dir = dir.clone();
+        command(&mut app, "play.record", Some("mouse")).unwrap();
+        drive(&mut app);
+        command(&mut app, "play.stop", None).unwrap();
+        let summary = app
+            .editor
+            .as_ref()
+            .unwrap()
+            .debug
+            .last_recording
+            .clone()
+            .expect("recording saved");
+        assert_eq!(summary["exact"], true, "{summary}");
+        let raw = std::fs::read_to_string(dir.join("mouse.scenario.json")).unwrap();
+        let scenario: crate::scenario::Scenario = serde_json::from_str(&raw).unwrap();
+        let (rev, world) = app.store.current().unwrap();
+        let replay =
+            crate::scenario::run(world.clone(), rev, registry.clone(), scenario.clone()).unwrap();
+        assert_eq!(replay["state_hash"], summary["state_hash"], "{raw}");
+        let mut stripped = scenario;
+        let before = stripped.commands.len();
+        stripped.commands.retain(|c| {
+            !matches!(
+                c.operation,
+                crate::scenario::ScenarioOperation::Look { .. }
+                    | crate::scenario::ScenarioOperation::Pointer { .. }
+            )
+        });
+        assert!(stripped.commands.len() < before, "{raw}");
+        stripped.assertions.clear();
+        let without = crate::scenario::run(world, rev, registry, stripped).unwrap();
+        assert_ne!(without["state_hash"], summary["state_hash"], "{raw}");
+        let _ = std::fs::remove_dir_all(&dir);
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    fn frames(app: &mut App, keys: &[KeyCode], n: usize) {
+        app.keys = keys.iter().copied().collect();
+        for _ in 0..n {
+            app.advance(1.0 / 60.0);
+        }
+    }
+
+    /// FPS mouse-look (many raw deltas per frame, also after the last step) and fire clicks.
+    #[test]
+    fn a_recording_with_mouse_look_replays_to_the_same_state_hash() {
+        let raw = mouse_recording_replays("fps", |app| {
+            for frame in 0..90 {
+                for i in 0..5 {
+                    app.mouse_look(3.0 + (frame % 7) as f32 * 0.37, (i as f32 - 2.0) * 0.61);
+                }
+                app.mouse_down = frame % 30 < 4;
+                frames(app, &[KeyCode::KeyW], 1);
+            }
+            app.mouse_down = false;
+            app.mouse_look(-40.0, 5.5);
+        });
+        let ops = raw["commands"].as_array().unwrap();
+        assert!(ops.iter().all(|c| c["operation"]["op"] == "look"), "{raw}");
+        assert_eq!(ops.len(), 91, "one op per frame plus the trailing one");
+        assert_eq!(ops[90]["tick"], raw["ticks"], "after the last step");
+    }
+
+    /// Axiom Street click-to-walk: a primary click on the ground sends the hero there.
+    #[test]
+    fn a_recording_with_click_to_walk_replays_to_the_same_state_hash() {
+        mouse_recording_replays("street", |app| {
+            frames(app, &[], 10);
+            app.send_screen_pointer(
+                crate::world::PointerKind::PrimaryDown,
+                [0.62, 0.7],
+                16.0 / 9.0,
+            );
+            app.send_screen_pointer(
+                crate::world::PointerKind::PrimaryUp,
+                [0.62, 0.7],
+                16.0 / 9.0,
+            );
+            frames(app, &[], 90);
+            app.send_screen_pointer(
+                crate::world::PointerKind::PrimaryDown,
+                [0.35, 0.8],
+                16.0 / 9.0,
+            );
+            frames(app, &[], 60);
+        });
+    }
+
+    /// RTS box selection (down, moves, up) and a right-click order.
+    #[test]
+    fn a_recording_with_rts_selection_replays_to_the_same_state_hash() {
+        use crate::world::PointerKind;
+        let raw = mouse_recording_replays("rts", |app| {
+            let aspect = 16.0 / 9.0;
+            frames(app, &[], 5);
+            app.send_screen_pointer(PointerKind::PrimaryDown, [0.05, 0.05], aspect);
+            for i in 0..12 {
+                let t = 0.05 + i as f32 * 0.075;
+                app.send_screen_pointer(PointerKind::Move, [t, t], aspect);
+                app.send_screen_pointer(PointerKind::Move, [t + 0.01, t + 0.01], aspect);
+                frames(app, &[], 1);
+            }
+            app.send_screen_pointer(PointerKind::PrimaryUp, [0.95, 0.95], aspect);
+            frames(app, &[], 2);
+            app.send_screen_pointer(PointerKind::SecondaryDown, [0.3, 0.6], aspect);
+            frames(app, &[], 120);
+        });
+        let moves = raw["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["operation"]["kind"] == "move")
+            .count();
+        assert_eq!(moves, 12, "two moves per tick coalesce: {raw}");
     }
 }
