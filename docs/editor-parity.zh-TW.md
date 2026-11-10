@@ -106,6 +106,8 @@
 | Graphs ▸ Rules(`behavior.program` 規則表):+ Rule、Up / Down、x;選取規則後 event 下拉、when(巢狀條件與 operand 各有 kind 下拉)、actions(+ Action ▸ kind、Up / Down / x、各自的型別化表單) | `append resources[id=behavior.program] rules {"id":"rule","event":E,"actions":[]}`;`reorder … rules FROM TO`;`remove … rules I`;`set rules[id=ID] event\|when\|actions VALUE`(改了幾個欄位就幾行,同一 revision) | ✅ `graph_tests::rule_table_edits_match_array_and_set_acl` |
 | Inspector ▸ Behavior ▸ FSM Agent…(Machine 下拉 + Radius;選單 `behavior.fsm_agent`) | `fsm SEL agent MACHINE [radius=M]`(機器不存在時建立一個 `idle` 狀態的機器) | ✅ `graph_tests::behavior_menu_dialogs_write_what_their_acl_line_says`(Lumi 移除後再加回 = 原本的 town) |
 | Inspector ▸ Behavior ▸ Patrol… / Guard… / NPC Dialogue…(對話框顯示 ACL 行;快捷鍵 / bridge 用預設) | `behavior SEL patrol\|guard\|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]`(新機器 + `fsm.agent`;dialogue 另宣告事件 `near_MACHINE`,欄位 `agent:text`) | ✅ 三個對話框的 Create = 顯示的 ACL 行;預設值走指令 = ACL |
+| Proposals ▸ Merge…(過期的提案:逐欄選「Proposal / Current」,Commit merge = 一筆 revision,提案標成 approved);`merge.open proposal:N`、`merge.pick PATH=mine\|theirs\|all=…`、`merge.commit`、`merge.cancel` | `acl -e "conflicts N"`(列出衝突欄位)→ `{"op":"resolve_proposal","id":N,"approve":true,"keep":[PATH..],"expected_rev":R}`(CLI:`resolve N --approve --merge --keep PATH --expected-rev R`);`keep` 列出的衝突保留目前值,其餘取提案值。合併是 `ops::merge_view` / `ops::merge`(`axiom-core/src/ops_merge.rs`),store 在同一個交易內重算 | ✅ `coedit_tests::stale_proposal_merge_picks_per_field_and_approves_as_one_revision`(UI 點選 = `resolve_proposal {keep}` 的世界);core `tests/coediting.rs`(衝突判定、`unknown_conflict`、物件新增 / 刪除、相對順序、一筆 revision) |
+| Inspector 過期草稿 ▸ Merge…(其他寫入者先提交了;逐欄選 Mine / Theirs,Commit merge = 一筆 apply);`merge.open draft` | 等價:在草稿的基準 revision 上 `propose` 同樣的 edit,之後 `resolve_proposal {keep}`(同一個 `ops::merge`) | ✅ `coedit_tests::stale_inspector_draft_merges_field_by_field_like_a_proposal`(編輯器結果 = propose + resolve keep 的世界) |
 
 ## 反方向:AI 做得到、編輯器還做不到(街道驗收時記錄)
 
@@ -125,6 +127,9 @@
 
 | 編輯器功能 | 說明 / 無頭替代 |
 |---|---|
+| Scene 視口的變更幽靈框(focused 提案或 History 選的 revision:白框 = 原位置、天藍框 = 新位置、綠 = 新增、紅 = 刪除、橘 = 原地改其他欄位;背景 job 算一次,最多畫 64 個);`ghost.show proposal:N|rev:N|off`、`view.ghosts`;Proposals 的 Ghosts 切換、點 History 列 | 只是畫面;`observe` 的 `editor.ghosts`(source / state / boxes / total / drawn),`editor_view --capture` 截圖;內容差異用 `diff A B` 或 `proposals` |
+| History 的作者標記(You / AI / #提案 / —) | 唯讀;`history [N]` 每行結尾 `by=human|agent`、`proposal=#N`(協定 `history` 的 `author` / `proposal` 欄位) |
+| Hierarchy 與 Scene 視口的右鍵 ▸ Copy Context for AI(`file.copy_context`,Ctrl+Shift+C);視口右鍵也有 Copy ID、Focus、Rename、Duplicate、Delete、Create Group、Hide / Lock(都是既有指令) | 只是剪貼簿;無頭 `inspect ID` 是同樣的內容 |
 | `tool.select/move/rotate/scale`、`view.space`、`view.snap`、`view.grid` | 工具與偏好設定 |
 | `view.palette`、`help.shortcuts`、`edit.preferences`、`file.exit` | 只是 UI |
 | `window.*`(dock 分頁:Hierarchy、Scene、Game、Inspector、World 與原本的底部分頁)、拖曳分頁 / 分割 / 浮動視窗、`window.close`、`layout.save_as` / `layout.load` / `layout.delete` / `layout.reset`、Window ▸ Layouts(內建 Default、Tall Inspector) | **只是版面(和 hidden / locked 一樣是視圖偏好)**:存在 `*.editor-prefs.json` 的 `layout` / `layouts`(使用者層級,不分世界),不進 revision、不影響 Play 與內容。遠端:`editor_view {dock:"inspector"}` 開啟並聚焦分頁(舊的 dock 名稱就是分頁名稱)、`{command:"window.close", arg:"history"}`、`{command:"layout.load", arg:"Tall Inspector"}`;`editor_view` 回覆與 `observe` 的 `editor.tabs` 列出開著的分頁(active / focused / floating)與 `scene_visible`;`discover editor_layout` 說明全部。Scene 分頁關閉或被同一格的其他分頁蓋住時,編輯器視圖不渲染(只畫介面) |

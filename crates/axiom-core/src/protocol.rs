@@ -39,12 +39,20 @@ pub enum Request {
         limit: Option<usize>,
     },
     /// Approve (apply against the proposal's base revision, or the current one with
-    /// `rebase`) or reject a pending proposal.
+    /// `rebase`) or reject a pending proposal. `keep` approves by a field-wise three-way
+    /// merge onto the current revision instead: fields both the proposal and newer
+    /// revisions changed take the proposal's value unless their path is listed in `keep`
+    /// (see `acl: conflicts ID`). `expected_rev`, when given, must be the current revision
+    /// (the one the conflicts were listed against), so no unseen conflict is decided.
     ResolveProposal {
         id: i64,
         approve: bool,
         #[serde(default)]
         rebase: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_rev: Option<i64>,
     },
     Discover {
         #[serde(default)]

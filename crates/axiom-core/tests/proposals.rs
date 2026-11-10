@@ -27,6 +27,8 @@ fn resolve(store: &mut Store, id: i64, approve: bool, rebase: bool) -> Result<Va
             id,
             approve,
             rebase,
+            keep: None,
+            expected_rev: None,
         })
         .map_err(|e| error_response(&e))
 }

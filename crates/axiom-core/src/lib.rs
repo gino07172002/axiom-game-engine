@@ -17,6 +17,7 @@ pub mod observe;
 pub mod ops;
 mod ops_assets;
 mod ops_graph;
+mod ops_merge;
 mod ops_tuning;
 mod ops_ui;
 mod ops_world;

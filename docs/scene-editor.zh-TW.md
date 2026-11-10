@@ -75,6 +75,13 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 
 父層異動會出現在 `/relations/parent/@ID`，場景成員異動會出現在 `/scenes/@SCENE/entities/@ID`。路徑中的斜線會以 `~1` 跳脫。可用 `diff FROM TO` 分頁檢查完整差異。
 
+### 共編強化(M10)
+
+- **History 標示作者**:每筆修訂前面有標記,**You**(編輯器裡的人)、**AI**(bridge、CLI、或透過 bridge 送來的 `editor_view {command}`)、**#N**(核准的提案 N;滑鼠提示寫出核准者)、**—**(initialize、遷移、舊版資料庫沒有記錄)。作者存在 `revisions.author` 欄位(舊資料庫開啟時自動加上可為 NULL 的欄位,舊版程式照常寫入);提案由既有的 `proposals.resolved_rev` 對應,沒有新欄位。協定 `history` 的列多了 `author` / `proposal`(沒有時省略),ACL `history` 每行結尾 `by=human|agent proposal=#N`。
+- **幽靈框**:Proposals 分頁 focus 的提案(新提案進來時自動 focus)或 History 點選的 revision,在 Scene 視口畫出變更物件的邊界:白框 = 原本的位置、天藍框 = 之後的位置(中間一條線)、綠 = 新增、紅 = 刪除、橘 = 位置沒變但其他欄位變了;左上角寫出來源與物件數。只是預覽,不寫入。提案的「之後」= 目前 revision 套用提案的 edit(就是核准會得到的結果)。計算(解碼、套用、編譯兩份世界)在背景 job 裡,依(來源, revision)只算一次;每幀只畫線段,最多 64 個框(其餘只計數)。沒有 `render.mesh` 零件的物件(glTF 模型、空物件)畫 0.5 m 的樞紐框。開關:Proposals 的 **Ghosts**、`view.ghosts`(偏好 `ghosts`);AI:`editor_view {command:"ghost.show", arg:"proposal:N"|"rev:N"|"off"}`,`observe` 的 `editor.ghosts`(source / state / boxes / total / drawn)。
+- **逐欄衝突合併**:兩種情況。(1) 過期的提案(base 落後):Proposals ▸ **Merge…**。(2) Inspector 的草稿(批次模式或未提交)在其他寫入者提交後過期:Inspector 的「Stale draft」旁 **Merge…**。合併視窗列出雙方都改了、而且改得不一樣的欄位(Field / Base / Mine 或 Proposal / Theirs 或 Current),點格子選要保留哪一邊,All mine / All theirs,**Commit merge** = 一筆 revision(提案 = `resolve_proposal {keep}` 並標成 approved;草稿 = 一筆 apply)。只有一方改的欄位直接合併。合併單位:物件的 label / prefab / tags、元件與資源的每個頂層欄位(一方新增或刪除整個元件 / 資源 / 物件時是整個)、一條父層或關係、物件的相對順序,其餘頂層項目(場景、prefab、schema、capability、systems)整個算一個。列出衝突與建立合併都在背景 job;按 Commit 時(或背景算好、要送出寫入時)若又有新 revision、還有編輯正在存、或草稿在列出衝突後又被改過,會重新列出衝突而不是寫入;編輯正在存時不能開始合併。協定的 `keep` 一定要帶 `expected_rev`(列出衝突時的 revision),之後又有新 revision 就拒絕(`revision_conflict`),不會替人決定沒看過的衝突。AI:`acl -e "conflicts N"`,再送 `{"op":"resolve_proposal","id":N,"approve":true,"keep":[PATH..],"expected_rev":R}`(CLI `resolve N --approve --merge --keep PATH --expected-rev R`);編輯器指令 `merge.open proposal:N|draft`、`merge.pick PATH=mine|theirs|all=mine|all=theirs`、`merge.commit`、`merge.cancel`;`observe` 的 `editor.merge`。
+- **把選取交給 AI**:Hierarchy 列與 Scene 視口物件的右鍵選單都有 **Copy Context for AI**(`file.copy_context`,Ctrl+Shift+C),內容與 `inspect ID` 相同的精簡描述加上編輯提示。視口右鍵(沒有拖曳環繞、這次按住期間沒有 WASD 飛行)會先選取該物件,選單另有 Copy ID、Focus、Rename、Duplicate、Delete、Create Group、Hide / Lock;Esc 或點選單外關閉。
+
 ## 外觀(M-UI 視覺改版)
 
 - **主題**:深色底、粉紅強調色 `#ff4d6d`、圓角卡片;所有顏色集中在 `editor/theme.rs`(另有 `theme::style` 建出編輯器專用的 egui style,遊戲 UI 仍用自己的 style)。

@@ -7,7 +7,7 @@
 //! commit are built against an optimistic world staged off the main thread by `stage`.
 //! The bridge/AI path and the CLI keep their own synchronous stores.
 use anyhow::Result;
-use axiom_core::{Edit, Interrupt, LatestRevision, Registry, Request, Store, World};
+use axiom_core::{Author, Edit, Interrupt, LatestRevision, Registry, Request, Store, World};
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -42,6 +42,7 @@ pub struct Finished {
 struct Op {
     seq: u64,
     request: Request,
+    author: Author,
 }
 
 /// The writer thread. Requests run strictly in the order they are sent.
@@ -90,7 +91,10 @@ impl Writer {
                         ))
                     } else {
                         match &mut store {
-                            Ok(store) => store.execute(op.request),
+                            Ok(store) => {
+                                store.set_author(Some(op.author));
+                                store.execute(op.request)
+                            }
                             Err(error) => Err(anyhow::anyhow!(
                                 "editor writer could not open the database: {error}"
                             )),
@@ -115,11 +119,15 @@ impl Writer {
         })
     }
 
-    pub fn send(&self, seq: u64, request: Request) -> Result<()> {
+    pub fn send(&self, seq: u64, request: Request, author: Author) -> Result<()> {
         self.ops
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("editor writer is closed"))?
-            .send(Op { seq, request })
+            .send(Op {
+                seq,
+                request,
+                author,
+            })
             .map_err(|_| anyhow::anyhow!("editor writer thread has stopped"))
     }
 
@@ -243,6 +251,7 @@ mod tests {
                         expected_rev: Some(1 + i as i64),
                         edits: vec![Edit::set("title", json!(title))],
                     },
+                    if i == 1 { Author::Agent } else { Author::Human },
                 )
                 .unwrap();
         }
@@ -254,6 +263,16 @@ mod tests {
         // The main connection sees the commits through the shared decoded cache.
         let (rev, world) = main.current_shared().unwrap();
         assert_eq!((rev, world.title.as_str()), (4, "c"));
+        // Each revision records the author it was sent with.
+        let mut main = main;
+        let history = main.execute(Request::History { limit: Some(3) }).unwrap();
+        let authors: Vec<&str> = history["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["author"].as_str().unwrap())
+            .collect();
+        assert_eq!(authors, ["human", "agent", "human"]);
         assert!(writer.shutdown(Duration::from_secs(5)));
     }
 
@@ -277,6 +296,7 @@ mod tests {
                     expected_rev: Some(1),
                     edits: vec![Edit::set("title", json!("never"))],
                 },
+                Author::Human,
             )
             .unwrap();
         writer.abort();

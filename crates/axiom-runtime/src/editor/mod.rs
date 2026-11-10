@@ -28,12 +28,17 @@ mod localization;
 mod shader_editor;
 mod tuning;
 mod vfx_editor;
+// AI co-editing (M10): change ghosts in the Scene view, field-wise conflict merge.
+pub(crate) mod ghost;
+pub(crate) mod merge;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
 mod asset_browser_tests;
 #[cfg(test)]
 mod chrome_tests;
+#[cfg(test)]
+mod coedit_tests;
 #[cfg(test)]
 mod debug_tests;
 #[cfg(test)]
@@ -86,10 +91,24 @@ pub(crate) enum Action {
         rev: i64,
     },
     Verify,
+    /// `keep`: approve by a field-wise merge onto the current revision; listed conflicting
+    /// fields keep the current value (`resolve_proposal {keep, expected_rev}`).
     ResolveProposal {
         id: i64,
         approve: bool,
         rebase: bool,
+        keep: Option<Vec<String>>,
+        expected_rev: Option<i64>,
+    },
+    /// Start the Scene-view ghost boxes of a proposal / revision (reads the store, then a
+    /// background job; no write).
+    LoadGhosts {
+        source: ghost::GhostSource,
+    },
+    /// List the conflicts of a pending proposal against the current revision (reads the
+    /// store, then a background job; no write).
+    PrepareMerge {
+        proposal: i64,
     },
     /// Run a scenario file headless against the current revision (background job).
     RunScenario {
@@ -613,6 +632,12 @@ pub(crate) struct Editor {
     pub(crate) debug: debug::Debug,
     /// Input Map, Localization, Animation, VFX tabs and the shader source (editor state).
     tuning: tuning::Tuning,
+    /// Scene-view ghost boxes of a proposal or a revision.
+    pub(crate) ghost: ghost::GhostState,
+    /// The open field-wise merge (stale draft or proposal against the newer revision).
+    pub(crate) merge: merge::MergeState,
+    /// The revision a stale, dirty Inspector draft was made on (kept for Merge…).
+    merge_base: Option<(i64, std::sync::Arc<World>)>,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -729,6 +754,9 @@ impl Editor {
             graph: Default::default(),
             assets: Default::default(),
             debug: Default::default(),
+            ghost: Default::default(),
+            merge: Default::default(),
+            merge_base: None,
         };
         if selected
             .as_ref()
@@ -762,8 +790,19 @@ impl Editor {
             return None;
         }
         let diff = !local || self.changes.is_empty();
-        self.rev = rev;
+        let previous_rev = std::mem::replace(&mut self.rev, rev);
         let previous = std::mem::replace(&mut self.world, world);
+        // A dirty draft made on the replaced revision goes stale: keep that revision so the
+        // draft can be merged field by field onto the new one (Merge…).
+        if !local
+            && self.merge_base.is_none()
+            && self
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.dirty() && d.rev == previous_rev)
+        {
+            self.merge_base = Some((previous_rev, previous.clone()));
+        }
         self.world_version += 1;
         self.needs_history = true;
         self.forget_missing();
@@ -1933,6 +1972,8 @@ impl Editor {
         use crate::jobs::Outcome;
         self.poll_assets();
         self.poll_shader_check();
+        self.poll_ghosts();
+        self.poll_merge();
         let Some(job) = &mut self.scenario_job else {
             return;
         };
@@ -1983,6 +2024,7 @@ impl Editor {
             .map(|job| job.observation())
             .chain(self.asset_job_observation())
             .chain(self.tuning.shader.job.as_ref().map(|j| j.observation()))
+            .chain(self.merge_jobs_observation())
             .collect::<Vec<_>>())
     }
 
@@ -1995,6 +2037,11 @@ impl Editor {
             .is_none_or(|id| !self.proposals.iter().any(|p| p["id"] == id))
         {
             self.proposal_focus = self.proposals.first().and_then(|p| p["id"].as_i64());
+        }
+        // Ghosts follow the focused proposal (a resolved one disappears) unless a History
+        // revision is shown.
+        if !self.ghost.off && !matches!(self.ghost.source, Some(ghost::GhostSource::Revision(_))) {
+            self.set_ghost_source(self.proposal_focus.map(ghost::GhostSource::Proposal));
         }
         if self.proposals.len() > previous && !self.error {
             self.status = format!(
@@ -2077,6 +2124,11 @@ impl Editor {
     }
 
     pub fn reset_draft(&mut self) {
+        // The stale draft is gone: nothing left to merge.
+        self.merge_base = None;
+        if self.merge.source == Some(merge::MergeSource::Draft) && self.merge.write.is_none() {
+            self.close_merge();
+        }
         if let Some(id) = self.material.as_ref().map(|d| d.id.clone()) {
             self.open_material(&id);
         } else if let Some(id) = self.prefab.as_ref().map(|d| d.id.clone()) {
@@ -2289,7 +2341,9 @@ impl Editor {
             "writes":self.writes,
             "graph":self.graph_observation(),
             "debug":self.debug.observation(),
-            "tuning":self.tuning_observation()
+            "tuning":self.tuning_observation(),
+            "ghosts":self.ghost_observation(),
+            "merge":self.merge_observation()
         })
     }
 

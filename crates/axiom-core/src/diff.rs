@@ -15,7 +15,7 @@ pub struct Change {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<Value>,
 }
-fn preview(v: &Value) -> Value {
+pub(crate) fn preview(v: &Value) -> Value {
     let bytes = serde_json::to_vec(v).unwrap();
     if bytes.len() <= 256 {
         v.clone()

@@ -12,6 +12,25 @@ impl Interrupt {
         self.0.interrupt();
     }
 }
+/// Who committed a revision (`revisions.author`). Revisions without one (initialize,
+/// migrations, databases from before the column) are reported without an author. An
+/// approved proposal is recognizable from `proposals.resolved_rev`; its author is whoever
+/// approved it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Author {
+    /// A person in the editor.
+    Human,
+    /// An agent: the bridge, the CLI, or editor commands sent over the bridge.
+    Agent,
+}
+impl Author {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Author::Human => "human",
+            Author::Agent => "agent",
+        }
+    }
+}
 pub struct Store {
     connection: Connection,
     pub registry: Registry,
@@ -19,6 +38,8 @@ pub struct Store {
     /// so a cached revision never goes stale; a newer row (from any connection) is
     /// detected by `MAX(rev)`. Connections to the same database in one process may share it.
     latest: LatestRevision,
+    /// Recorded on every revision this connection commits.
+    author: Option<Author>,
 }
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -46,6 +67,22 @@ impl Store {
         connection.execute_batch("CREATE TABLE IF NOT EXISTS request_receipts(request_id TEXT PRIMARY KEY,payload TEXT NOT NULL,response TEXT NOT NULL);")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS proposals(id INTEGER PRIMARY KEY AUTOINCREMENT,status TEXT NOT NULL DEFAULT 'pending',note TEXT NOT NULL,base_rev INTEGER NOT NULL,edits TEXT NOT NULL,preview TEXT NOT NULL,resolved_rev INTEGER,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));")?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Databases from before `author`: add the column (nullable, so older builds keep
+        // writing). Inside the write transaction, so connections opening at once cannot
+        // both add it.
+        let has_author: bool = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('revisions') WHERE name='author'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_author {
+            tx.execute_batch("ALTER TABLE revisions ADD COLUMN author TEXT")?;
+        }
+        // `history` looks up the approved proposal of each revision; without an index that is
+        // a scan of every proposal row (edits and previews included) per revision listed.
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS proposals_resolved_rev ON proposals(resolved_rev)",
+        )?;
         let old: Option<(i64, String)> = tx
             .query_row(
                 "SELECT rev,world FROM revisions ORDER BY rev DESC LIMIT 1",
@@ -76,7 +113,61 @@ impl Store {
             connection,
             registry,
             latest: Default::default(),
+            author: None,
         })
+    }
+    /// The author recorded on revisions this connection commits from now on.
+    pub fn set_author(&mut self, author: Option<Author>) {
+        self.author = author;
+    }
+    pub fn author(&self) -> Option<Author> {
+        self.author
+    }
+    /// The stored JSON of revision `rev` (decode it off the main thread when it is large).
+    pub fn revision_json(&self, rev: i64) -> Result<String> {
+        self.connection
+            .query_row("SELECT world FROM revisions WHERE rev=?1", [rev], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| {
+                Diagnostic::error("not_found", "/rev", format!("revision {rev} not found"))
+            })
+    }
+    /// A proposal's base revision, edits and status.
+    pub fn proposal_edits(&self, id: i64) -> Result<(i64, Vec<Edit>, String)> {
+        let (base, edits, status) = self.proposal_raw(id)?;
+        Ok((base, serde_json::from_str(&edits)?, status))
+    }
+    /// `proposal_edits` with the edits still as stored JSON (decode them off the main thread).
+    pub fn proposal_raw(&self, id: i64) -> Result<(i64, String, String)> {
+        let (base, edits, status): (i64, String, String) = self
+            .connection
+            .query_row(
+                "SELECT base_rev,edits,status FROM proposals WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                Diagnostic::error("not_found", "/id", format!("proposal {id} not found"))
+            })?;
+        Ok((base, edits, status))
+    }
+    /// Conflicts between pending proposal `id` (its edits on its base revision) and the
+    /// current revision, for `resolve_proposal {keep}`.
+    pub fn proposal_conflicts(&self, id: i64) -> Result<Value> {
+        let (base_rev, edits, status) = self.proposal_edits(id)?;
+        ensure!(status == "pending", "proposal {id} is already {status}");
+        let (rev, theirs) = self.current()?;
+        let base = self
+            .registry
+            .decode(serde_json::from_str(&self.revision_json(base_rev)?)?)?;
+        let mine = crate::ops::apply_edits(&base, &edits, &self.registry)?;
+        let view = crate::ops::merge_view(&base, &mine, &theirs);
+        Ok(
+            json!({"ok":true,"proposal":id,"base_rev":base_rev,"rev":rev,"conflicts":view.conflicts,"proposal_only":view.mine_only,"current_only":view.theirs_only}),
+        )
     }
     /// Newest revision as a shared world. After a commit through this store, or a
     /// repeated read, this costs one `MAX(rev)` query instead of a read and JSON decode.
@@ -149,6 +240,7 @@ impl Store {
             edits,
             commit,
             &mut committed,
+            self.author,
         )?;
         if commit {
             tx.commit()?;
@@ -165,6 +257,7 @@ impl Store {
         edits: Vec<Edit>,
         commit: bool,
         committed: &mut Option<World>,
+        author: Option<Author>,
     ) -> Result<Value> {
         ensure!(
             !edits.is_empty() && edits.len() <= 256,
@@ -231,8 +324,8 @@ impl Store {
             return Ok(json!({"ok":true,"rev":rev,"changed":false,"entities_delta":0,"diff":diff}));
         }
         tx.execute(
-            "INSERT INTO revisions(world,reason) VALUES (?1,'apply')",
-            [serde_json::to_string(&next)?],
+            "INSERT INTO revisions(world,reason,author) VALUES (?1,'apply',?2)",
+            params![serde_json::to_string(&next)?, author.map(Author::as_str)],
         )?;
         let rev = tx.last_insert_rowid();
         *committed = Some(next);
@@ -323,10 +416,31 @@ impl Store {
                 id,
                 approve,
                 rebase,
+                keep,
+                expected_rev,
             } => {
+                ensure!(
+                    keep.is_none() || (approve && !rebase),
+                    "keep merges an approval onto the current revision; it cannot be combined with rebase or a rejection"
+                );
+                ensure!(
+                    keep.is_none() || expected_rev.is_some(),
+                    "keep needs expected_rev: the revision the conflicts were listed against (acl: conflicts N prints rev=)"
+                );
                 let tx = self
                     .connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                if let Some(e) = expected_rev {
+                    let current: i64 =
+                        tx.query_row("SELECT MAX(rev) FROM revisions", [], |r| r.get(0))?;
+                    if e != current {
+                        return Err(Diagnostic::error(
+                            "revision_conflict",
+                            "/expected_rev",
+                            format!("revision conflict: expected {e}, current {current}"),
+                        ));
+                    }
+                }
                 let (status, base, edits): (String, i64, String) = tx
                     .query_row(
                         "SELECT status,base_rev,edits FROM proposals WHERE id=?1",
@@ -349,17 +463,47 @@ impl Store {
                     tx.commit()?;
                     return Ok(json!({"ok":true,"proposal":id,"status":"rejected"}));
                 }
-                let expected = if rebase {
+                let expected = if rebase || keep.is_some() {
                     tx.query_row("SELECT MAX(rev) FROM revisions", [], |r| r.get(0))?
                 } else {
                     base
                 };
-                let edits: Vec<Edit> = serde_json::from_str(&edits)?;
-                let mut result =
-                    Self::edit_in(&tx, &self.registry, Some(expected), edits, true, &mut None)?;
+                let mut edits: Vec<Edit> = serde_json::from_str(&edits)?;
+                if let Some(keep) = &keep {
+                    let raw: String =
+                        tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
+                            r.get(0)
+                        })?;
+                    let base_world = self.registry.decode(serde_json::from_str(&raw)?)?;
+                    let (_, theirs) = Self::latest_in(&tx, &self.registry)?;
+                    let mine = crate::ops::apply_edits(&base_world, &edits, &self.registry)?;
+                    edits = crate::ops::merge(&base_world, &mine, &theirs, keep)?;
+                    if edits.is_empty() {
+                        // Everything the proposal changes is already in the current revision.
+                        tx.execute("UPDATE proposals SET status='approved' WHERE id=?1", [id])?;
+                        tx.commit()?;
+                        return Ok(
+                            json!({"ok":true,"proposal":id,"status":"approved","changed":false,"rev":expected}),
+                        );
+                    }
+                }
+                let mut result = Self::edit_in(
+                    &tx,
+                    &self.registry,
+                    Some(expected),
+                    edits,
+                    true,
+                    &mut None,
+                    self.author,
+                )?;
+                // `resolved_rev` names the revision the approval created (none when it changed
+                // nothing), so History never credits a proposal with someone else's revision.
                 tx.execute(
                     "UPDATE proposals SET status='approved',resolved_rev=?2 WHERE id=?1",
-                    params![id, result["rev"].as_i64()],
+                    params![
+                        id,
+                        result["rev"].as_i64().filter(|_| result["changed"] == true)
+                    ],
                 )?;
                 tx.commit()?;
                 result["proposal"] = json!(id);
@@ -422,7 +566,7 @@ impl Store {
                 let tx = self
                     .connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let result = Self::undo_in(&tx, &self.registry, rev, expected_rev)?;
+                let result = Self::undo_in(&tx, &self.registry, rev, expected_rev, self.author)?;
                 tx.commit()?;
                 Ok(result)
             }
@@ -470,10 +614,20 @@ impl Store {
                 )
             }
             Request::History { limit } => {
+                // `author` and the approved `proposal` are left out when there is none.
                 let mut s = self.connection.prepare(
-                    "SELECT rev,reason,created_at FROM revisions ORDER BY rev DESC LIMIT ?1",
+                    "SELECT r.rev,r.reason,r.created_at,r.author,(SELECT p.id FROM proposals p WHERE p.resolved_rev=r.rev AND p.status='approved' LIMIT 1) FROM revisions r ORDER BY r.rev DESC LIMIT ?1",
                 )?;
-                let rows=s.query_map([limit.unwrap_or(12).min(100) as i64],|r|Ok(json!({"rev":r.get::<_,i64>(0)?,"reason":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?})))?;
+                let rows = s.query_map([limit.unwrap_or(12).min(100) as i64], |r| {
+                    let mut row = json!({"rev":r.get::<_,i64>(0)?,"reason":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?});
+                    if let Some(author) = r.get::<_, Option<String>>(3)? {
+                        row["author"] = json!(author);
+                    }
+                    if let Some(proposal) = r.get::<_, Option<i64>>(4)? {
+                        row["proposal"] = json!(proposal);
+                    }
+                    Ok(row)
+                })?;
                 Ok(json!({"revisions":rows.collect::<rusqlite::Result<Vec<_>>>()?}))
             }
         }
@@ -483,6 +637,7 @@ impl Store {
         registry: &Registry,
         rev: i64,
         expected_rev: Option<i64>,
+        author: Option<Author>,
     ) -> Result<Value> {
         let current: i64 = tx.query_row("SELECT MAX(rev) FROM revisions", [], |r| r.get(0))?;
         if let Some(e) = expected_rev {
@@ -502,10 +657,22 @@ impl Store {
         let world = registry.decode(serde_json::from_str(&raw)?)?;
         world.compile(registry)?;
         tx.execute(
-            "INSERT INTO revisions(world,reason) VALUES (?1,?2)",
-            params![serde_json::to_string(&world)?, format!("restore:{rev}")],
+            "INSERT INTO revisions(world,reason,author) VALUES (?1,?2,?3)",
+            params![
+                serde_json::to_string(&world)?,
+                format!("restore:{rev}"),
+                author.map(Author::as_str)
+            ],
         )?;
         Ok(json!({"ok":true,"rev":tx.last_insert_rowid(),"restored_from":rev}))
+    }
+    fn latest_in(tx: &Connection, registry: &Registry) -> Result<(i64, World)> {
+        let (rev, raw): (i64, String) = tx.query_row(
+            "SELECT rev,world FROM revisions ORDER BY rev DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok((rev, registry.decode(serde_json::from_str(&raw)?)?))
     }
     fn execute_once(&mut self, id: &str, request: Request) -> Result<Value> {
         crate::retry::validate_id(id)?;
@@ -537,9 +704,17 @@ impl Store {
             Request::Apply {
                 expected_rev,
                 edits,
-            } => Self::edit_in(&tx, &self.registry, expected_rev, edits, true, &mut None)?,
+            } => Self::edit_in(
+                &tx,
+                &self.registry,
+                expected_rev,
+                edits,
+                true,
+                &mut None,
+                self.author,
+            )?,
             Request::Undo { rev, expected_rev } => {
-                Self::undo_in(&tx, &self.registry, rev, expected_rev)?
+                Self::undo_in(&tx, &self.registry, rev, expected_rev, self.author)?
             }
             _ => unreachable!(),
         };

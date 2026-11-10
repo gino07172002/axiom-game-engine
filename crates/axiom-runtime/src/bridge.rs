@@ -56,6 +56,8 @@ impl Bridge {
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
         let mut store = Store::open_with(db, registry, axiom_core::World::empty("world"))?;
+        // Everything committed through the bridge connection is an agent's.
+        store.set_author(Some(axiom_core::Author::Agent));
         if let Some(latest) = latest {
             // Revisions committed here reach the host app without a second JSON decode.
             store.share_latest_cache(latest);
@@ -235,6 +237,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(applied["rev"], 2);
+        // Revisions committed over the bridge are an agent's.
+        let history = call(&address, &Request::History { limit: Some(1) }).unwrap();
+        assert_eq!(history["revisions"][0]["author"], "agent");
         let queried = call(
             &address,
             &Request::Query {

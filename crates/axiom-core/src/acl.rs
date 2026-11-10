@@ -15,6 +15,8 @@ READ (alone in a script):
   select SEL [where F OP V [and ...]] [fields F,F] [limit N] [cursor C]
   inspect ID                      full compiled record of one entity
   history [N] | diff REV REV | undo REV
+  conflicts PROPOSAL              fields a pending proposal and newer revisions both changed
+                                  (approve with resolve_proposal {keep:[PATH..]}: listed keep the current value)
   assets [KIND]                   models, images, materials, shaders, prefabs, machines, audio, ui, input
   usages KIND:ID                  every field that names the asset (Find Usages; e.g. usages model:hero)
 EDIT (any number, atomic):
@@ -340,6 +342,7 @@ enum Statement {
     History(usize),
     Diff(i64, i64),
     Undo(i64),
+    Conflicts(i64),
     Set(Box<Selection>, String, Value),
     Spawn(Vec<(String, String)>, String),
     Delete(Box<Selection>),
@@ -700,6 +703,7 @@ impl Statement {
                 | Self::History(_)
                 | Self::Diff(..)
                 | Self::Undo(_)
+                | Self::Conflicts(_)
                 | Self::Assets(_)
                 | Self::Usages(..)
         )
@@ -805,6 +809,12 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             arg(2)?.parse().context("diff needs revision numbers")?,
         ),
         "undo" => Statement::Undo(arg(1)?.parse().context("undo needs a revision number")?),
+        "conflicts" => Statement::Conflicts(
+            arg(1)?
+                .trim_start_matches('#')
+                .parse()
+                .context("conflicts needs a proposal number")?,
+        ),
         "set" => {
             let mut s = selector(arg(1)?)?;
             let f = field(arg(2)?, s.from);
@@ -1858,7 +1868,7 @@ pub fn run(
         if statements.len() != 1 {
             return Err(diag(
                 statements[0].0,
-                "read statements (select/inspect/history/diff/undo/assets/usages) must be alone in a script",
+                "read statements (select/inspect/history/diff/undo/conflicts/assets/usages) must be alone in a script",
             ));
         }
         let (line, stmt) = statements.pop().unwrap();
@@ -2235,12 +2245,19 @@ fn read(store: &mut Store, stmt: Statement, expected_rev: Option<i64>) -> Result
             lines(
                 rows.iter()
                     .map(|r| {
-                        format!(
+                        let mut line = format!(
                             "{} {} {}",
                             r["rev"],
                             r["reason"].as_str().unwrap_or(""),
                             r["created_at"].as_str().unwrap_or("")
-                        )
+                        );
+                        if let Some(author) = r["author"].as_str() {
+                            line.push_str(&format!(" by={author}"));
+                        }
+                        if let Some(proposal) = r["proposal"].as_i64() {
+                            line.push_str(&format!(" proposal=#{proposal}"));
+                        }
+                        line
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -2269,6 +2286,29 @@ fn read(store: &mut Store, stmt: Statement, expected_rev: Option<i64>) -> Result
             }
             if let Some(next) = out["next_offset"].as_u64() {
                 text.push_str(&format!("\n… more from offset {next}"));
+            }
+            lines(text)
+        }
+        Statement::Conflicts(id) => {
+            let out = store.proposal_conflicts(id)?;
+            let missing = || "(none)".to_owned();
+            let mut text = format!(
+                "conflicts proposal=#{id} base_rev={} rev={} count={} proposal_only={} current_only={}",
+                out["base_rev"],
+                out["rev"],
+                out["conflicts"].as_array().map_or(0, Vec::len),
+                out["proposal_only"],
+                out["current_only"]
+            );
+            for c in out["conflicts"].as_array().into_iter().flatten() {
+                let value = |key: &str| c.get(key).map_or_else(missing, short);
+                text.push_str(&format!(
+                    "\n{} base={} proposal={} current={}",
+                    c["path"].as_str().unwrap_or("?"),
+                    value("base"),
+                    value("mine"),
+                    value("theirs")
+                ));
             }
             lines(text)
         }

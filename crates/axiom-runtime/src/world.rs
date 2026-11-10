@@ -41,6 +41,20 @@ pub struct RuntimeEntityId {
     pub slot: u32,
     pub generation: u64,
 }
+/// World matrices of `len` slots of `compiled`, parents before children, from each slot's
+/// local matrix (slots outside the transform order stay identity).
+pub(crate) fn compose_matrices(
+    compiled: &CompiledWorld,
+    len: usize,
+    local: impl Fn(usize) -> Mat4,
+) -> Vec<Mat4> {
+    let mut out = vec![Mat4::IDENTITY; len];
+    for &i in &compiled.transform_order {
+        let local = local(i);
+        out[i] = compiled.parents[i].map_or(local, |p| out[p] * local);
+    }
+    out
+}
 #[derive(Clone)]
 pub struct RuntimeState {
     pub registry: Registry,
@@ -192,14 +206,11 @@ impl RuntimeState {
         self.ids.iter().position(|&v| v == id)
     }
     pub fn matrices(&self) -> Vec<Mat4> {
-        let mut out = vec![Mat4::IDENTITY; self.transforms.len()];
-        for &i in &self.compiled.transform_order {
-            let local = self.transforms[i]
+        compose_matrices(&self.compiled, self.transforms.len(), |i| {
+            self.transforms[i]
                 .as_ref()
-                .map_or(Mat4::IDENTITY, Transform::matrix);
-            out[i] = self.compiled.parents[i].map_or(local, |p| out[p] * local);
-        }
-        out
+                .map_or(Mat4::IDENTITY, Transform::matrix)
+        })
     }
     pub fn set_position(&mut self, id: &str, p: [f32; 3]) {
         if let Some(&i) = self.compiled.indices.get(id) {

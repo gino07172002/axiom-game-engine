@@ -485,6 +485,27 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("shader.check", "Check Shader Source", "Assets", ""),
     a("shader.draft", "Shader: Replace Unsaved Draft…", "Assets", "\"WGSL\""),
     c("shader.cancel_check", "Cancel Shader Check", "Assets", ""),
+    c("view.ghosts", "Toggle Change Ghosts", "View", ""),
+    a(
+        "ghost.show",
+        "Show Change Ghosts of…",
+        "View",
+        "proposal:N|rev:N|off",
+    ),
+    a(
+        "merge.open",
+        "Merge Conflicting Fields…",
+        "Edit",
+        "proposal:N|draft",
+    ),
+    a(
+        "merge.pick",
+        "Merge: Keep Mine / Theirs…",
+        "Edit",
+        "PATH=mine|PATH=theirs|all=mine|all=theirs",
+    ),
+    c("merge.commit", "Commit Merge", "Edit", ""),
+    c("merge.cancel", "Cancel Merge", "Edit", ""),
 ];
 /// Commands that write authoring revisions (refused during Play with the reason).
 pub(crate) const CONTENT_COMMANDS: &[&str] = &[
@@ -543,6 +564,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ability.edit",
     "vfx.edit",
     "shader.edit",
+    "merge.commit",
 ];
 pub(crate) fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
@@ -612,6 +634,8 @@ pub(crate) struct Prefs {
     pub fly_speed: f32,
     /// Draw component gizmos (camera frusta, nav.blocker, colliders, FSM agents).
     pub gizmos: bool,
+    /// Scene view: ghost boxes of the focused proposal / selected History revision.
+    pub ghosts: bool,
     /// Scene view: outline the navigation grid cells the selected agent cannot enter.
     pub nav_grid: bool,
     /// Per world ID: saved scene-view cameras by slot ("1".."4").
@@ -647,6 +671,7 @@ impl Default for Prefs {
             locked: BTreeMap::new(),
             fly_speed: 6.0,
             gizmos: true,
+            ghosts: true,
             nav_grid: false,
             bookmarks: BTreeMap::new(),
             live_inspector: true,
@@ -739,6 +764,13 @@ impl Editor {
     pub(crate) fn command_blocked(&self, id: &str) -> Option<&'static str> {
         if let Some(reason) = self.graph_blocked(id) {
             return reason;
+        }
+        if let Some(reason) = id
+            .starts_with("merge.")
+            .then(|| self.merge_blocked(id))
+            .flatten()
+        {
+            return Some(reason);
         }
         if super::tuning::is_tuning(id) && !(self.previewing && CONTENT_COMMANDS.contains(&id)) {
             return self.tuning_blocked(id);
@@ -951,6 +983,17 @@ impl Editor {
         {
             return self.debug_command(id, arg);
         }
+        if id.starts_with("merge.") || id == "ghost.show" {
+            anyhow::ensure!(
+                !cmd.arg.is_empty() || arg.is_none(),
+                "{id} takes no argument"
+            );
+            return if id == "ghost.show" {
+                self.ghost_command(arg)
+            } else {
+                self.merge_command(id, arg)
+            };
+        }
         if super::tuning::is_tuning(id) {
             anyhow::ensure!(
                 !cmd.arg.is_empty() || arg.is_none(),
@@ -1075,6 +1118,7 @@ impl Editor {
                 self.notice("Copied editor discovery request");
             }
             "view.gizmos" => self.prefs.gizmos = !self.prefs.gizmos,
+            "view.ghosts" => self.prefs.ghosts = !self.prefs.ghosts,
             "object.drop_to_ground" => actions.extend(self.drop_selection_to_ground()),
             id if ViewMode::from_command(id).is_some() => {
                 let mode = ViewMode::from_command(id).unwrap();
@@ -1224,6 +1268,7 @@ impl Editor {
                             "view.grid" => Some(self.prefs.grid),
                             "view.space" => Some(self.prefs.local_space),
                             "view.gizmos" => Some(self.prefs.gizmos),
+                            "view.ghosts" => Some(self.prefs.ghosts),
                             "view.nav_grid" => Some(self.prefs.nav_grid),
                             "view.camera_preview" => Some(self.prefs.camera_preview),
                             "play.maximize" => Some(self.prefs.play_maximized),
@@ -1759,6 +1804,9 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "behavior.patrol": "behavior SEL patrol [machine=] [range=] [speed=] (also guard [tag=], dialogue [tag=] [event=])",
                 "graph": "Graphs tab (editor_view {open: graph:MACHINE | rules:}): fsm M state add|remove|rename|set, fsm M initial S, fsm M transition add|remove|move|set, fsm M node S x,y (node drag), fsm M create|remove",
                 "graph.rules": "append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] event|when|actions VALUE",
+                "merge": "conflicts PROPOSAL (ACL read), then {op:resolve_proposal,id,approve:true,keep:[PATH..],expected_rev:R (rev= printed by conflicts)} (Proposals ▸ Merge…, Inspector stale draft ▸ Merge…; editor_view {command: merge.open|merge.pick|merge.commit})",
+                "ghost.show": "view only: editor_view {command:\"ghost.show\", arg:\"proposal:N\"|\"rev:N\"|\"off\"}; observe editor.ghosts",
+                "history.author": "history [N] lines end with by=human|agent and proposal=#N",
                 "docs": "docs/editor-parity.zh-TW.md"
             },
         }),

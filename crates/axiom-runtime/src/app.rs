@@ -6,7 +6,7 @@ use crate::{
     world::{ActionMap, Observation, RuntimeRegistry, WorldRuntime, FIXED_DT},
 };
 use anyhow::{Context, Result};
-use axiom_core::{parse_request, Request, Store, World};
+use axiom_core::{parse_request, Author, Request, Store, World};
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -108,6 +108,9 @@ struct App {
     /// A bridge request postponed to the next frame because the write queue cannot take it
     /// yet (its order relative to later requests is kept).
     deferred_command: Option<crate::bridge::RuntimeRequest>,
+    /// Who the editor writes being queued now are recorded as: the person, or an agent while
+    /// a bridge request (`editor_view {command}`) is handled.
+    requester: Author,
     /// Closing: pending commits are flushed, no new runtime builds start.
     closing: bool,
     /// Game interface during Play in the editor's Game tab: its own egui context whose screen
@@ -289,6 +292,8 @@ struct PendingWrite {
     stage: Stage,
     /// The request as sent (CAS revision resolved) and its expected revision.
     sent: Option<(Request, i64)>,
+    /// Recorded on the revision it commits.
+    author: Author,
     /// Bridge `editor_view` replies waiting for this write: (reply, response so far).
     replies: Vec<(
         std::sync::mpsc::SyncSender<serde_json::Value>,
@@ -313,6 +318,8 @@ enum WriteKind {
         id: i64,
         approve: bool,
         rebase: bool,
+        keep: Option<Vec<String>>,
+        expected_rev: Option<i64>,
     },
 }
 
@@ -638,7 +645,10 @@ pub fn measure_edit_live(
 }
 
 impl App {
-    fn new(options: RunOptions, registry: RuntimeRegistry, store: Store) -> Result<Self> {
+    fn new(options: RunOptions, registry: RuntimeRegistry, mut store: Store) -> Result<Self> {
+        // Commits on this connection (and the editor writer's) come from the person at the
+        // editor unless a bridge request is being handled (`requester`).
+        store.set_author(Some(Author::Human));
         let (rev, world) = store.current()?;
         let editor = match &options.mode {
             RunMode::Play => None,
@@ -745,6 +755,7 @@ impl App {
             last_slow_frame: None,
             writes: None,
             deferred_command: None,
+            requester: Author::Human,
             closing: false,
             audio: crate::audio::Output::new(),
             game_ctx: None,
@@ -851,6 +862,7 @@ impl App {
             view_rev: editor.rev,
             stage,
             sent: None,
+            author: self.requester,
             replies: vec![],
         });
         let pending = writes.queue.len();
@@ -913,16 +925,20 @@ impl App {
                 id,
                 approve,
                 rebase,
+                keep,
+                expected_rev,
             } => Ok(Request::ResolveProposal {
                 id: *id,
                 approve: *approve,
                 rebase: *rebase,
+                keep: keep.clone(),
+                expected_rev: *expected_rev,
             }),
         };
-        let seq = item.seq;
+        let (seq, author) = (item.seq, item.author);
         let sent = request.and_then(|request| {
             let what = crate::writer::describe(&request);
-            writes.writer.send(seq, request.clone())?;
+            writes.writer.send(seq, request.clone(), author)?;
             item.sent = Some((request, base));
             writes.in_flight = Some(InFlight {
                 seq,
@@ -1054,7 +1070,11 @@ impl App {
                     }
                     WriteKind::Resolve { id, approve, .. } => {
                         editor.proposal_signature = None;
-                        if approve {
+                        if approve && value["changed"] == false {
+                            editor.notice(format!(
+                                "Approved proposal #{id}: the current revision already has its changes; nothing was written"
+                            ));
+                        } else if approve {
                             editor.record_apply(expected);
                             editor.notice(format!(
                                 "Approved proposal #{id} · committed revision {}",
@@ -2037,10 +2057,14 @@ impl App {
                     id,
                     approve,
                     rebase,
+                    keep,
+                    expected_rev,
                 } => WriteKind::Resolve {
                     id,
                     approve,
                     rebase,
+                    keep,
+                    expected_rev,
                 },
                 other => return self.editor_action_now(other),
             };
@@ -2051,6 +2075,7 @@ impl App {
 
     /// Editor actions on this thread (all of them without a background writer).
     fn editor_action_now(&mut self, action: editor::Action) -> Result<()> {
+        self.store.set_author(Some(self.requester));
         let editor = self.editor.as_mut().unwrap();
         match action {
             editor::Action::Play => {
@@ -2147,6 +2172,19 @@ impl App {
                 self.editor.as_mut().unwrap().set_history_diff(rev, diff);
                 Ok(())
             }
+            editor::Action::LoadGhosts { source } => {
+                if let Err(error) = editor::ghost::load(editor, &self.store, source) {
+                    editor.ghost_failed(source, &error);
+                }
+                Ok(())
+            }
+            editor::Action::PrepareMerge { proposal } => {
+                if let Err(error) = editor::merge::prepare_proposal(editor, &self.store, proposal) {
+                    // Shown in the merge window (e.g. the proposal was resolved meanwhile).
+                    editor.merge.error = Some(format!("{error:#}"));
+                }
+                Ok(())
+            }
             editor::Action::RestoreTo { rev } => {
                 let request = Request::Undo {
                     rev,
@@ -2160,15 +2198,24 @@ impl App {
                 id,
                 approve,
                 rebase,
+                keep,
+                expected_rev,
             } => {
                 let result = self.store.execute(Request::ResolveProposal {
                     id,
                     approve,
                     rebase,
+                    keep,
+                    expected_rev,
                 })?;
                 let editor = self.editor.as_mut().unwrap();
                 editor.proposal_signature = None;
-                if approve {
+                if approve && result["changed"] == false {
+                    editor.notice(format!(
+                        "Approved proposal #{id}: the current revision already has its changes; nothing was written"
+                    ));
+                    Ok(())
+                } else if approve {
                     editor.record_apply(editor.rev);
                     editor.notice(format!(
                         "Approved proposal #{id} · committed revision {}",
@@ -2340,6 +2387,8 @@ impl App {
         }
         let editor_view = matches!(command.request, Request::EditorView { .. });
         let before = self.writes.as_ref().map_or(0, |w| w.next_seq);
+        // Editor writes this request makes (`editor_view {command}`) are an agent's.
+        self.requester = Author::Agent;
         let result = self
             .reload()
             .and_then(|_| {
@@ -2350,6 +2399,8 @@ impl App {
                 }
             })
             .and_then(|_| self.runtime_request(command.request));
+        self.requester = Author::Human;
+        self.store.set_author(Some(Author::Human));
         match result {
             Ok(response) => {
                 // An editor command that queued a write answers when that write is committed
@@ -3084,7 +3135,7 @@ impl ApplicationHandler for App {
 mod tests {
     use super::*;
     use axiom_core::Edit;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn editor_preview_pins_authoring_and_discards_simulation_on_stop() {
@@ -3980,6 +4031,84 @@ mod tests {
             app.editor.as_ref().unwrap().world.entities.len(),
             entities + 2
         );
+    }
+
+    #[test]
+    fn revisions_record_the_person_the_agent_and_the_approved_proposal() {
+        let mut app = writer_app("authors.sqlite", None);
+        let base = app.store.revision().unwrap();
+        // The person: an editor write on the background writer.
+        let action = move_box(&app, 2.0);
+        app.editor_action(action).unwrap();
+        drain(&mut app);
+        // An agent through the bridge: editor_view {command} queues on the same writer.
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        let request = crate::bridge::RuntimeRequest {
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            request: Request::EditorView {
+                select: vec![],
+                focus: false,
+                dock: None,
+                capture: None,
+                play: None,
+                open: None,
+                command: Some("object.cube".into()),
+                arg: None,
+            },
+            reply,
+        };
+        assert!(app.handle_command(request).is_none());
+        drain(&mut app);
+        assert_eq!(response.recv().unwrap()["ok"], true);
+        assert_eq!(
+            app.requester,
+            Author::Human,
+            "back to the person after the request"
+        );
+        // A proposal approved in the editor's Proposals tab.
+        app.store
+            .execute(Request::Propose {
+                expected_rev: None,
+                edits: vec![Edit::set("title", json!("Proposed"))],
+                note: "title".into(),
+            })
+            .unwrap();
+        app.editor_action(editor::Action::ResolveProposal {
+            id: 1,
+            approve: true,
+            rebase: false,
+            keep: None,
+            expected_rev: None,
+        })
+        .unwrap();
+        drain(&mut app);
+        let rows = app
+            .store
+            .execute(Request::History { limit: Some(3) })
+            .unwrap()["revisions"]
+            .clone();
+        let who: Vec<(Value, Value)> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["author"].clone(),
+                    r.get("proposal").cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect();
+        assert_eq!(
+            who,
+            [
+                (json!("human"), json!(1)),
+                (json!("agent"), Value::Null),
+                (json!("human"), Value::Null)
+            ]
+        );
+        assert_eq!(rows[2]["rev"], base + 1);
+        // The History tab gets the same rows.
+        app.editor.as_mut().unwrap().set_history(&rows);
     }
 
     #[test]

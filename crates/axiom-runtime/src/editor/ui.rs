@@ -230,6 +230,8 @@ impl Editor {
                 self.game.release_request = true;
             }
         }
+        self.merge_window(ctx, &mut actions);
+        actions.extend(self.ghost_request());
         self.command_windows(ctx, &mut actions);
         // Not while a button is held (dragging a separator or a window would write the
         // preferences file every frame); the change is saved on release.
@@ -246,6 +248,7 @@ impl Editor {
         self.scene_input.marquee = None;
         self.scene_input.flying = false;
         self.scene_input.point_drag = None;
+        self.scene_input.menu = None;
         if self.drag.is_some() {
             // Same as Escape during a gizmo drag: back to the committed transform.
             self.select(self.selected.clone());
@@ -991,6 +994,7 @@ impl Editor {
                             item(ui, "object.group", "Create Group");
                             ui.separator();
                             item(ui, "edit.copy", "Copy ID");
+                            item(ui, "file.copy_context", "Copy Context for AI");
                             item(ui, "edit.select_children", "Select Children");
                             item(ui, "object.create_prefab", "Create Prefab From Selection");
                             item(ui, "edit.frame", "Focus");
@@ -1194,8 +1198,18 @@ impl Editor {
         let mut copy = false;
         let mut write = None;
         let mut issue = None;
+        let mut merge_draft = false;
         if stale && !playing {
-            ui.label(RichText::new(format!("Stale draft · revision {}", draft.rev)).color(WARNING));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Stale draft · revision {}", draft.rev)).color(WARNING));
+                if draft.dirty() {
+                    let r = ui
+                        .button("Merge…")
+                        .on_hover_text("Pick, field by field, your draft's or the newer revision's value where both changed; commit as one revision");
+                    self.rects.insert("inspector:merge".into(), r.rect);
+                    merge_draft = r.clicked();
+                }
+            });
         }
         if playing {
             ui.label(
@@ -1732,6 +1746,12 @@ impl Editor {
         if duplicate {
             actions.extend(self.duplicate_ids(std::slice::from_ref(&id)));
         }
+        if merge_draft {
+            match self.run_command_with("merge.open", Some("draft")) {
+                Ok(more) => actions.extend(more),
+                Err(e) => self.set_error(format!("{e:#}")),
+            }
+        }
         if delete {
             actions.extend(self.delete_ids(&[id]));
         }
@@ -1742,6 +1762,11 @@ impl Editor {
     fn dock_tab(&mut self, ui: &mut Ui, tab: Dock, actions: &mut Vec<Action>) {
         let mut jump = None;
         let mut declare: Option<String> = None;
+        // Proposals / History: `ghost.show` and `merge.open` arguments picked this frame.
+        let mut ghost_pick: Option<String> = None;
+        let mut merge_open: Option<String> = None;
+        let clean_draft = !self.dirty();
+        let mut rects: Vec<(String, egui::Rect)> = vec![];
         // Resource / material / prefab drafts would be reset by the write; the object draft is not.
         let asset_draft = self.dirty() && !self.draft.as_ref().is_some_and(Draft::dirty);
         ScrollArea::vertical().id_salt("editor_dock_scroll").auto_shrink([false,false]).show(ui, |ui| match tab {
@@ -1775,27 +1800,47 @@ impl Editor {
                         let note = p["note"].as_str().unwrap_or("").lines().next().unwrap_or("");
                         let stale = if base != self.rev { "  · stale base" } else { "" };
                         let text = format!("#{id}  rev {base}  {} change(s){stale}\n{}", p["diff"]["total_changes"], truncate(note, 48));
-                        if cols[0].selectable_label(self.proposal_focus == Some(id), RichText::new(text).monospace().small()).clicked() {
-                            self.proposal_focus = Some(id);
+                        let row = cols[0].selectable_label(self.proposal_focus == Some(id), RichText::new(text).monospace().small());
+                        rects.push((format!("proposal:{id}"), row.rect));
+                        if row.clicked() {
+                            // Focusing a proposal shows its ghosts in the Scene view.
+                            ghost_pick = Some(format!("proposal:{id}"));
                         }
                     }
                     let Some(p) = self.proposals.iter().find(|p| p["id"].as_i64() == self.proposal_focus) else { return };
                     let id = p["id"].as_i64().unwrap_or(0);
                     let base = p["base_rev"].as_i64().unwrap_or(0);
+                    let mut merge = false;
                     cols[1].horizontal(|ui| {
-                        let clean = !self.dirty();
+                        let clean = clean_draft;
                         if ui.add_enabled(clean && base == self.rev, egui::Button::new("Approve"))
                             .on_hover_text("Apply against the proposal's base revision")
-                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: false }); }
+                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: false, keep: None, expected_rev: None }); }
                         if ui.add_enabled(clean, egui::Button::new("Rebase & approve"))
                             .on_hover_text("Re-validate against the current revision, then apply")
-                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: true }); }
+                            .clicked() { actions.push(Action::ResolveProposal { id, approve: true, rebase: true, keep: None, expected_rev: None }); }
+                        merge = base != self.rev;
                         if ui.button(RichText::new("Reject").color(WARNING)).clicked() {
-                            actions.push(Action::ResolveProposal { id, approve: false, rebase: false });
+                            actions.push(Action::ResolveProposal { id, approve: false, rebase: false, keep: None, expected_rev: None });
+                        }
+                        let showing = self.prefs.ghosts && self.ghost.source == Some(super::ghost::GhostSource::Proposal(id));
+                        let g = ui.selectable_label(showing, "Ghosts")
+                            .on_hover_text("Show where this proposal moves, adds and removes objects in the Scene view (preview only)");
+                        rects.push((format!("proposal:ghosts:{id}"), g.rect));
+                        if g.clicked() {
+                            ghost_pick = Some(if showing { "off".into() } else { format!("proposal:{id}") });
                         }
                     });
-                    if base != self.rev {
-                        cols[1].label(RichText::new(format!("Base revision {base} is behind current {}. Approving as-is would conflict; rebase re-validates the same edits on top of the latest world.", self.rev)).small().color(WARNING));
+                    if merge {
+                        cols[1].horizontal(|ui| {
+                            let r = ui.add_enabled(clean_draft, egui::Button::new("Merge…"))
+                                .on_hover_text("Pick, field by field, the proposal's or the current value where both changed; approve as one revision");
+                            rects.push((format!("proposal:merge:{id}"), r.rect));
+                            if r.clicked() {
+                                merge_open = Some(format!("proposal:{id}"));
+                            }
+                        });
+                        cols[1].label(RichText::new(format!("Base revision {base} is behind current {}: rebase replays the same edits on the latest world; Merge… lets you pick per field where both changed.", self.rev)).small().color(WARNING));
                     }
                     for change in p["diff"]["changes"].as_array().into_iter().flatten() {
                         let path = change["path"].as_str().unwrap_or("?");
@@ -1827,10 +1872,31 @@ impl Editor {
                                 truncate(row["reason"].as_str().unwrap_or(""), 14),
                                 row["created_at"].as_str().unwrap_or("").get(11..19).unwrap_or("")
                             );
-                            if ui.selectable_label(selected, RichText::new(text).monospace()).clicked() && rev > 1 {
+                            // Who made it: an approved proposal, an agent, the person, or the
+                            // system (initialize / migrations / older databases).
+                            let (tag, color, tip) = match (row["proposal"].as_i64(), row["author"].as_str()) {
+                                (Some(p), by) => (format!("#{p}"), theme::PREFAB, format!("Approved proposal #{p} (approved by {})", by.unwrap_or("?"))),
+                                (None, Some("agent")) => ("AI".into(), theme::WARNING, "Committed by an agent (bridge, CLI or editor_command)".into()),
+                                (None, Some("human")) => ("You".into(), theme::SUCCESS, "Committed in the editor".into()),
+                                (None, _) => ("—".into(), MUTED, "No author recorded (initialize, migration or an older build)".into()),
+                            };
+                            // Fixed-width cell so the revision columns line up.
+                            let chip = ui
+                                .allocate_ui_with_layout(egui::vec2(46.0, 20.0), Layout::left_to_right(egui::Align::Center), |ui| {
+                                    ui.set_min_size(egui::vec2(46.0, 20.0));
+                                    theme::chip(ui, tag, color)
+                                })
+                                .inner
+                                .on_hover_text(tip);
+                            rects.push((format!("history:author:{rev}"), chip.rect));
+                            let row_label = ui.selectable_label(selected, RichText::new(text).monospace());
+                            rects.push((format!("history:{rev}"), row_label.rect));
+                            if row_label.clicked() && rev > 1 {
                                 actions.push(Action::LoadDiff { rev });
+                                // The Scene view shows what this revision moved.
+                                ghost_pick = Some(format!("rev:{rev}"));
                             }
-                            if !current && ui.add_enabled(!self.dirty(), egui::Button::new("Restore").small())
+                            if !current && ui.add_enabled(clean_draft, egui::Button::new("Restore").small())
                                 .on_hover_text(format!("Append a revision restoring {rev}; history is kept"))
                                 .clicked()
                             {
@@ -1981,6 +2047,15 @@ impl Editor {
         }
         if let Some(name) = declare {
             actions.extend(self.declare_event(&name));
+        }
+        self.rects.extend(rects);
+        for (id, arg) in [("ghost.show", ghost_pick), ("merge.open", merge_open)] {
+            if let Some(arg) = arg {
+                match self.run_command_with(id, Some(&arg)) {
+                    Ok(more) => actions.extend(more),
+                    Err(e) => self.set_error(format!("{e:#}")),
+                }
+            }
         }
     }
 }

@@ -323,6 +323,10 @@ pub(super) struct SceneInput {
     /// Object ▸ Nav Target: Click Ground is armed: the next primary click in the scene view
     /// sets the selected agents' target point (Esc cancels).
     pub nav_pick: bool,
+    /// The current right-button press flew the camera (its release opens no context menu).
+    pub flew: bool,
+    /// Object context menu opened by a right click at this position.
+    pub menu: Option<Pos2>,
 }
 
 /// Dragging one path control point on the horizontal plane through it (world Y kept).
@@ -597,6 +601,9 @@ pub(super) fn mesh_bounds(mesh: &crate::presentation::MeshFrame) -> Option<Mat4>
 }
 
 fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4, color: Color32) {
+    draw_box_stroke(painter, view, matrix, Stroke::new(1.2_f32, color));
+}
+fn draw_box_stroke(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4, stroke: Stroke) {
     for i in 0..8 {
         let corner = |j: usize| {
             Vec3::new(
@@ -612,12 +619,63 @@ fn draw_box(painter: &egui::Painter, view: &ProjectionView, matrix: Mat4, color:
                     view,
                     matrix.transform_point3(corner(i)),
                     matrix.transform_point3(corner(i | axis)),
-                    Stroke::new(1.2_f32, color),
+                    stroke,
                 );
             }
         }
     }
 }
+/// Ghost boxes of a proposal / revision: white where an object was, sky blue where it goes
+/// (with a line between), green added, red removed, amber changed in place (colours distinct
+/// from the component gizmos). Returns boxes drawn.
+fn draw_ghosts(
+    painter: &egui::Painter,
+    view: &ProjectionView,
+    ghosts: &super::ghost::Ghosts,
+    label: &str,
+) -> usize {
+    use super::ghost::GhostKind;
+    let was = Stroke::new(1.6_f32, Color32::from_rgba_unmultiplied(235, 238, 245, 150));
+    let goes = Color32::from_rgb(110, 190, 255);
+    let stroke = |c: Color32| Stroke::new(2.0_f32, c);
+    for g in &ghosts.boxes {
+        let center = |m: Mat4| m.transform_point3(Vec3::ZERO);
+        match (g.kind, g.before, g.after) {
+            (GhostKind::Moved, Some(before), Some(after)) => {
+                draw_box_stroke(painter, view, before, was);
+                draw_box_stroke(painter, view, after, stroke(goes));
+                draw_line(
+                    painter,
+                    view,
+                    center(before),
+                    center(after),
+                    Stroke::new(1.2_f32, goes),
+                );
+            }
+            (GhostKind::Added, _, Some(after)) => {
+                draw_box_stroke(painter, view, after, stroke(super::theme::SUCCESS))
+            }
+            (GhostKind::Removed, Some(before), _) => {
+                draw_box_stroke(painter, view, before, stroke(super::theme::ERROR))
+            }
+            (_, _, Some(after)) => {
+                draw_box_stroke(painter, view, after, stroke(super::theme::WARNING))
+            }
+            _ => {}
+        }
+    }
+    // Caption at the top left (the bottom left holds the FPS readout), on a dark chip.
+    let galley = painter.layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), goes);
+    let at = view.rect.left_top() + vec2(12.0, 10.0);
+    painter.rect_filled(
+        Rect::from_min_size(at, galley.size()).expand2(vec2(7.0, 4.0)),
+        4.0,
+        Color32::from_black_alpha(170),
+    );
+    painter.galley(at, galley, goes);
+    ghosts.boxes.len()
+}
+
 fn draw_line(painter: &egui::Painter, view: &ProjectionView, a: Vec3, b: Vec3, stroke: Stroke) {
     if let (Some(a), Some(b)) = (view.project(a), view.project(b)) {
         painter.line_segment([a, b], stroke);
@@ -1527,6 +1585,74 @@ impl Editor {
         self.notice(format!("Box selected {count} object(s)"));
     }
 
+    /// Screen position of a world point in the Scene view as drawn last frame (tests).
+    #[cfg(test)]
+    pub(super) fn scene_point(&self, point: Vec3) -> Option<Pos2> {
+        ProjectionView {
+            matrix: self.orbit.matrix(self.viewport),
+            rect: self.viewport,
+        }
+        .project(point)
+    }
+
+    /// The Scene-view object context menu (right click): registry commands on the selection,
+    /// including handing it to an agent (Copy Context for AI). Closes on a pick, Esc or a
+    /// press outside it.
+    fn scene_context_menu(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        const ITEMS: [(&str, &str); 9] = [
+            ("file.copy_context", "Copy Context for AI"),
+            ("edit.copy", "Copy ID"),
+            ("edit.frame", "Focus"),
+            ("edit.rename", "Rename"),
+            ("edit.duplicate", "Duplicate"),
+            ("edit.delete", "Delete"),
+            ("object.group", "Create Group"),
+            ("edit.toggle_hidden", "Hide / Show (Editor View)"),
+            ("edit.toggle_locked", "Lock / Unlock (Editor View)"),
+        ];
+        let Some(at) = self.scene_input.menu else {
+            return;
+        };
+        let mut run = None;
+        let area = egui::Area::new(egui::Id::new("scene_context_menu"))
+            .fixed_pos(at)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    for (i, (cmd, title)) in ITEMS.into_iter().enumerate() {
+                        if i == 3 || i == 7 {
+                            ui.separator();
+                        }
+                        let blocked = self.command_blocked(cmd);
+                        let r = ui
+                            .add_enabled(
+                                blocked.is_none(),
+                                egui::Button::new(title).shortcut_text(self.shortcut_text(cmd)),
+                            )
+                            .on_disabled_hover_text(blocked.unwrap_or_default());
+                        self.rects.insert(format!("scene_menu:{cmd}"), r.rect);
+                        if r.clicked() {
+                            run = Some(cmd);
+                        }
+                    }
+                });
+            });
+        let outside = ctx.input(|i| {
+            i.key_pressed(egui::Key::Escape)
+                || (i.pointer.any_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !area.response.rect.contains(p)))
+        });
+        if run.is_some() || outside {
+            self.scene_input.menu = None;
+        }
+        if let Some(cmd) = run {
+            self.run_into(cmd, actions);
+        }
+    }
+
     pub(super) fn scene_view(
         &mut self,
         ui: &mut egui::Ui,
@@ -1575,6 +1701,9 @@ impl Editor {
         // RMB held: plain drag orbits; with WASD/QE it flies (and the mouse looks around the
         // eye for the rest of that press). The wheel then sets the fly speed instead of zoom.
         let rmb = ui.input(|i| rmb_held_in(i, rect));
+        if ui.input(|i| i.pointer.button_pressed(PointerButton::Secondary)) {
+            self.scene_input.flew = false;
+        }
         if !rmb {
             self.scene_input.flying = false;
         }
@@ -1591,6 +1720,7 @@ impl Editor {
                 });
                 if keys != Vec3::ZERO {
                     self.scene_input.flying = true;
+                    self.scene_input.flew = true;
                 }
                 if wheel != 0.0 {
                     self.prefs.fly_speed =
@@ -1951,6 +2081,24 @@ impl Editor {
                 }
             }
         }
+        // Right click (no orbit drag, no flight) on an object: select it and open its menu.
+        if response.clicked_by(PointerButton::Secondary)
+            && !self.scene_input.flew
+            && ready
+            && self.drag.is_none()
+            && !self.previewing
+        {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let hit = pick(runtime, &matrices, &view, pos, &skip);
+                if let Some(id) = &hit {
+                    if !self.selection().contains(id) {
+                        self.click_select(hit.clone(), egui::Modifiers::NONE);
+                    }
+                }
+                self.scene_input.menu = hit.is_some().then_some(pos);
+            }
+        }
+        self.scene_context_menu(ui.ctx(), actions);
         if let Some(start) = self.scene_input.marquee {
             let (latest, down, escape, modifiers) = ui.input(|i| {
                 (
@@ -1990,6 +2138,12 @@ impl Editor {
             self.scene_input.gizmo_shapes +=
                 draw_nav_grid(&painter, &view, runtime, focus, selected);
         }
+        // Ghosts of the focused proposal / History revision (edit mode only).
+        let ghosts = (!self.previewing)
+            .then(|| self.ghosts_now())
+            .flatten()
+            .map_or(0, |g| draw_ghosts(&painter, &view, g, &self.ghost.label));
+        self.ghost.drawn = ghosts;
         let dragged = self.scene_input.point_drag.as_ref().map(|d| d.index);
         for (k, at, _) in &point_handles {
             let chosen = self.scene_input.path_point == Some(*k);
@@ -2620,7 +2774,13 @@ mod tests {
         assert_eq!(editor.proposal_focus, Some(1));
         assert!(editor.status.contains("awaiting review"));
         editor.show_dock(Dock::Proposals);
-        assert!(frame(&egui::Context::default(), &mut editor, &runtime, vec![]).is_empty());
+        // Drawing writes nothing; the focused proposal only asks for its Scene-view ghosts.
+        assert!(matches!(
+            frame(&egui::Context::default(), &mut editor, &runtime, vec![]).as_slice(),
+            [Action::LoadGhosts {
+                source: crate::editor::ghost::GhostSource::Proposal(1)
+            }]
+        ));
     }
 
     #[test]

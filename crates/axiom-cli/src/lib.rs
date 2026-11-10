@@ -152,6 +152,15 @@ enum Command {
         /// Re-validate against the current revision instead of the proposal's base.
         #[arg(long)]
         rebase: bool,
+        /// Approve by a field-wise merge onto the current revision (see `acl -e "conflicts ID"`).
+        #[arg(long, conflicts_with_all = ["rebase", "reject"], requires = "expected_rev")]
+        merge: bool,
+        /// With --merge: a conflicting field path that keeps the current value (repeatable).
+        #[arg(long, requires = "merge")]
+        keep: Vec<String>,
+        /// Refuse unless this is the current revision (the one `conflicts` listed against).
+        #[arg(long)]
+        expected_rev: Option<i64>,
     },
     Discover {
         topic: Option<String>,
@@ -502,11 +511,14 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
     }
     let db = cli.db.unwrap_or_else(|| "data/world.sqlite".into());
     let mut store = if cli.connect.is_none() {
-        Some(Store::open_with(
+        let mut store = Store::open_with(
             &db,
             registry.authoring.clone(),
             initial(cli.pack.as_deref(), &registry.authoring)?,
-        )?)
+        )?;
+        // The CLI is how agents author (people use the editor).
+        store.set_author(Some(axiom_core::Author::Agent));
+        Some(store)
     } else {
         None
     };
@@ -626,6 +638,9 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             approve,
             reject,
             rebase,
+            merge,
+            keep,
+            expected_rev,
         } => {
             ensure!(
                 approve != reject,
@@ -635,6 +650,8 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 id,
                 approve,
                 rebase,
+                keep: merge.then_some(keep),
+                expected_rev,
             }
         }
         Command::Acl {
