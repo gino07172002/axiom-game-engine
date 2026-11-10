@@ -83,6 +83,15 @@ EDIT (any number, atomic):
         [ease=E] [direction=left|right|up|down] [amount=X] [from=X]   KIND: fade_in|fade_out|slide_in|
         slide_out|scale_in|scale_out|pulse|shake|number_roll (+ system ui.effects when missing)
   ui effect set ID [kind=..] [widget=..] [same options; OPTION=default clears] | ui effect remove ID
+ tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
+  input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
+                                  KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft
+  loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY   (new key: TEXT in the
+                                  default locale, empty elsewhere) | loc locale add L [from=L2] | loc locale remove L
+  ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
+        | ability ID event remove I   action.abilities timeline (TICK < duration, SOUND = audio.library cue)
+  vfx ID size START END | vfx ID color r,g,b,a r,g,b,a   vfx.library size curve / colour gradient over life
+  shader ID source \"WGSL\"         custom shader surface code (JSON string; refused with line N if invalid)
  state machines (Graphs editor; M = fsm.machines machine; graph positions live in editor.layout):
   fsm M create [INITIAL] | fsm M remove        one stop state (default idle) | refused while used
   fsm M state add NAME [JSON] | fsm M state remove NAME | fsm M state rename OLD NEW
@@ -394,6 +403,160 @@ enum Statement {
         Box<crate::ops::BehaviorOptions>,
     ),
     Ui(UiStatement),
+    Tuning(TuningStatement),
+}
+
+/// `input` / `loc` / `ability` / `vfx` / `shader` statements (tuning editor operations).
+enum TuningStatement {
+    Input(crate::ops::InputEdit),
+    Loc(crate::ops::LocEdit),
+    Ability(String, crate::ops::AbilityEventEdit),
+    Vfx(String, crate::ops::VfxEdit),
+    Shader(String, String),
+}
+
+fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
+    use crate::ops::{AbilityEventEdit, InputEdit, LocEdit, VfxEdit};
+    let text = |t: &str| match value(t) {
+        Value::String(s) => s,
+        _ => t.to_owned(),
+    };
+    let words: Vec<&str> = tokens.iter().map(String::as_str).collect();
+    let index = |t: &str| -> Result<usize> {
+        t.parse()
+            .with_context(|| format!("'{t}' is not an index (0, 1, ..)"))
+    };
+    let tick = |t: &str| -> Result<u32> {
+        t.parse()
+            .with_context(|| format!("'{t}' is not a tick (0, 1, .. at 120 per second)"))
+    };
+    let rgba = |t: &str| -> Result<[f64; 4]> {
+        let v = numbers(t)?;
+        ensure!(v.len() == 4, "colour '{t}' must be r,g,b,a");
+        Ok([v[0], v[1], v[2], v[3]].map(f64::from))
+    };
+    Ok(match words.as_slice() {
+        ["input", "button", action, key] => TuningStatement::Input(InputEdit::Button {
+            action: (*action).into(),
+            key: (*key).into(),
+        }),
+        ["input", "axis", action, positive, negative] => {
+            TuningStatement::Input(InputEdit::Axis {
+                action: (*action).into(),
+                positive: (*positive).into(),
+                negative: (*negative).into(),
+            })
+        }
+        ["input", "remove", action] => TuningStatement::Input(InputEdit::Remove {
+            action: (*action).into(),
+        }),
+        ["input", ..] => bail!(
+            "use: input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION"
+        ),
+        ["loc", "set", locale, key, t] => TuningStatement::Loc(LocEdit::Set {
+            locale: (*locale).into(),
+            key: (*key).into(),
+            text: text(t),
+        }),
+        ["loc", "key", "add", key] => TuningStatement::Loc(LocEdit::AddKey {
+            key: (*key).into(),
+            text: String::new(),
+        }),
+        ["loc", "key", "add", key, t] => TuningStatement::Loc(LocEdit::AddKey {
+            key: (*key).into(),
+            text: text(t),
+        }),
+        ["loc", "key", "remove", key] => TuningStatement::Loc(LocEdit::RemoveKey {
+            key: (*key).into(),
+        }),
+        ["loc", "locale", "add", locale, rest @ ..] if rest.len() <= 1 => {
+            let from = match rest.first() {
+                Some(t) => Some(
+                    t.strip_prefix("from=")
+                        .with_context(|| format!("option '{t}' must be from=LOCALE"))?
+                        .to_owned(),
+                ),
+                None => None,
+            };
+            TuningStatement::Loc(LocEdit::AddLocale {
+                locale: (*locale).into(),
+                from,
+            })
+        }
+        ["loc", "locale", "remove", locale] => TuningStatement::Loc(LocEdit::RemoveLocale {
+            locale: (*locale).into(),
+        }),
+        ["loc", ..] => bail!(
+            "use: loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY | loc locale add L [from=L2] | loc locale remove L"
+        ),
+        ["ability", id, "event", "add", t, sound] => TuningStatement::Ability(
+            (*id).into(),
+            AbilityEventEdit::Add {
+                tick: tick(t)?,
+                sound: (*sound).into(),
+            },
+        ),
+        ["ability", id, "event", "move", i, t] => TuningStatement::Ability(
+            (*id).into(),
+            AbilityEventEdit::Move {
+                index: index(i)?,
+                tick: tick(t)?,
+            },
+        ),
+        ["ability", id, "event", "sound", i, sound] => TuningStatement::Ability(
+            (*id).into(),
+            AbilityEventEdit::Sound {
+                index: index(i)?,
+                sound: (*sound).into(),
+            },
+        ),
+        ["ability", id, "event", "remove", i] => TuningStatement::Ability(
+            (*id).into(),
+            AbilityEventEdit::Remove { index: index(i)? },
+        ),
+        ["ability", ..] => bail!(
+            "use: ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND | ability ID event remove I"
+        ),
+        ["vfx", id, "size", start, end] => {
+            let n = |t: &str| -> Result<f64> {
+                t.parse().with_context(|| format!("'{t}' is not a number"))
+            };
+            TuningStatement::Vfx(
+                (*id).into(),
+                VfxEdit::Size {
+                    start: n(start)?,
+                    end: n(end)?,
+                },
+            )
+        }
+        ["vfx", id, "color", start, end] => TuningStatement::Vfx(
+            (*id).into(),
+            VfxEdit::Color {
+                start: rgba(start)?,
+                end: rgba(end)?,
+            },
+        ),
+        ["vfx", ..] => bail!("use: vfx ID size START END | vfx ID color r,g,b,a r,g,b,a"),
+        ["shader", id, "source", t] => TuningStatement::Shader((*id).into(), text(t)),
+        ["shader", ..] => bail!("use: shader ID source \"WGSL\" (JSON string; \\n for new lines)"),
+        _ => bail!("unknown tuning statement"),
+    })
+}
+
+fn tuning_edits(w: &World, stmt: &TuningStatement) -> Result<Vec<Edit>> {
+    match stmt {
+        TuningStatement::Input(edit) => crate::ops::edit_input(w, edit),
+        TuningStatement::Loc(edit) => crate::ops::edit_localization(w, edit),
+        TuningStatement::Ability(id, edit) => crate::ops::edit_ability_event(w, id, edit),
+        TuningStatement::Vfx(id, edit) => crate::ops::edit_vfx(w, id, edit),
+        TuningStatement::Shader(id, wgsl) => crate::ops::set_shader_source(w, id, wgsl),
+    }
+}
+
+/// One `input|loc|ability|vfx|shader ...` statement compiled against `world`: the editor's
+/// tuning commands run their argument through this, so they match the ACL verb exactly.
+pub fn tuning_command_edits(world: &World, statement: &str) -> Result<Vec<Edit>> {
+    tuning_edits(world, &tuning_statement(&tokenize(statement)?)?)
 }
 
 /// `ui ...` statements (UI Editor operations).
@@ -799,6 +962,9 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::EventDeclare(arg(2)?.clone(), fields)
         }
         "ui" => Statement::Ui(ui_statement(tokens)?),
+        "input" | "loc" | "ability" | "vfx" | "shader" => {
+            Statement::Tuning(tuning_statement(tokens)?)
+        }
         "rotate" => {
             ensure!(tokens.len() == 3, "use: rotate SEL x,y,z (Euler degrees)");
             Statement::Rotate(Box::new(selector(arg(1)?)?), vec3(arg(2)?)?)
@@ -1833,6 +1999,7 @@ pub fn run(
             Statement::Rotate(select, degrees) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_rotation(w, &ids, degrees)),
             Statement::Ui(stmt) => ui_edits(w, r, &stmt),
+            Statement::Tuning(stmt) => tuning_edits(w, &stmt),
             Statement::FsmCreate(machine, initial) => {
                 crate::ops::fsm_create_machine(w, r, &machine, initial.as_deref())
             }

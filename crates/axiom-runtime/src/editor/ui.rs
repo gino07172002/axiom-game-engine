@@ -56,6 +56,7 @@ impl Editor {
             && self.renaming.is_none()
             && !scene_owns_keys
             && self.options.is_none()
+            && !self.keys_captured(ctx)
         {
             // Every shortcut comes from the command registry (user overrides included).
             let pressed = ctx.input(|i| self.shortcut_commands(i));
@@ -95,6 +96,7 @@ impl Editor {
         }
         // Filled again by whichever tabs are drawn this frame.
         self.rects.clear();
+        self.tuning.begin_frame();
         self.chrome_setup(ctx);
         egui::TopBottomPanel::top("editor_menu")
             .frame(panel(BACKDROP, 3))
@@ -1732,7 +1734,11 @@ impl Editor {
             | Dock::World
             | Dock::UiEditor
             | Dock::Graphs
-            | Dock::Assets => {}
+            | Dock::Assets
+            | Dock::InputMap
+            | Dock::Localization
+            | Dock::Animation
+            | Dock::Vfx => {}
             Dock::Changes => {
                 if self.changes.is_empty() { caption(ui,"Preview an inspector draft or commit an edit to see stable change paths."); }
                 for change in &self.changes { ui.monospace(change); }
@@ -2048,6 +2054,10 @@ impl egui_dock::TabViewer for TabHost<'_> {
             Dock::UiEditor => editor.ui_editor_tab(ui, actions),
             Dock::Graphs => editor.graph_tab(ui, self.runtime, actions),
             Dock::Assets => editor.asset_browser(ui, actions),
+            Dock::InputMap => editor.input_map_tab(ui, actions),
+            Dock::Localization => editor.localization_tab(ui, actions),
+            Dock::Animation => editor.animation_tab(ui, self.runtime, actions),
+            Dock::Vfx => editor.vfx_tab(ui, actions),
             other => editor.dock_tab(ui, other, actions),
         }
     }

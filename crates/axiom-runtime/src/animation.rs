@@ -212,6 +212,45 @@ pub struct AnimationSystem {
     players: BTreeMap<String, Controller>,
 }
 
+/// An entity posed by the editor's Animation timeline for one extraction; the controller it
+/// replaced goes back with [`AnimationSystem::end_scrub`].
+pub(crate) struct Scrub {
+    entity: String,
+    saved: Controller,
+}
+
+impl AnimationSystem {
+    /// Poses `entity` at `seconds` of `clip` (clamped, not looping) until `end_scrub`. The
+    /// simulation's controller is kept aside unchanged; `None` when there is no such player or
+    /// clip, or the pose cannot be evaluated.
+    pub(crate) fn begin_scrub(&mut self, entity: &str, clip: &str, seconds: f32) -> Option<Scrub> {
+        let p = self.players.get_mut(entity)?;
+        let duration = p.clips.get(clip)?.source.duration;
+        let saved = p.clone();
+        p.active = Some(clip.to_owned());
+        p.time = if seconds.is_finite() {
+            seconds.clamp(0.0, duration.max(0.0))
+        } else {
+            0.0
+        };
+        p.playing = false;
+        p.looping = false;
+        p.fade = None;
+        if p.evaluate(0.0).is_err() {
+            *p = saved;
+            return None;
+        }
+        Some(Scrub {
+            entity: entity.to_owned(),
+            saved,
+        })
+    }
+
+    pub(crate) fn end_scrub(&mut self, scrub: Scrub) {
+        self.players.insert(scrub.entity, scrub.saved);
+    }
+}
+
 /// Imported assets shared across runtime rebuilds (derived data cached outside revisions).
 /// The key hashes the asset path, import options, the asset file bytes and the size and
 /// modification time of every file under the asset's directory (the only files an importer
@@ -349,6 +388,9 @@ impl RuntimeSystem for AnimationSystem {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
     }
     fn step(&mut self, state: &mut RuntimeState, _: &ActionMap) {
         for cue in std::mem::take(&mut state.animation_cues.pending) {

@@ -35,7 +35,7 @@ const MAX_NAMED: usize = 32;
 const WORLD_WINDOW: [f32; 4] = [300.0, 50.0, 400.0, 560.0];
 
 impl Dock {
-    pub(crate) const ALL: [Dock; 14] = [
+    pub(crate) const ALL: [Dock; 18] = [
         Dock::Hierarchy,
         Dock::Scene,
         Dock::Game,
@@ -50,6 +50,10 @@ impl Dock {
         Dock::Agent,
         Dock::World,
         Dock::UiEditor,
+        Dock::InputMap,
+        Dock::Localization,
+        Dock::Animation,
+        Dock::Vfx,
     ];
     /// Stable name used by the preferences file, `window.*` commands and `editor_view {dock}`.
     pub(crate) fn name(self) -> &'static str {
@@ -68,6 +72,10 @@ impl Dock {
             Dock::Agent => "agent",
             Dock::World => "world",
             Dock::UiEditor => "ui_editor",
+            Dock::InputMap => "input_map",
+            Dock::Localization => "localization",
+            Dock::Animation => "animation",
+            Dock::Vfx => "vfx",
         }
     }
     pub(crate) fn from_name(name: &str) -> Option<Dock> {
@@ -89,10 +97,21 @@ impl Dock {
             Dock::Agent => "AI / Protocol",
             Dock::World => "World",
             Dock::UiEditor => "UI Editor",
+            Dock::InputMap => "Input Map",
+            Dock::Localization => "Localization",
+            Dock::Animation => "Animation",
+            Dock::Vfx => "VFX",
         }
     }
     fn bottom(self) -> bool {
         BOTTOM.contains(&self)
+    }
+    /// Tuning editors: closed in every built-in layout, opened into the bottom strip.
+    fn tuning(self) -> bool {
+        matches!(
+            self,
+            Dock::InputMap | Dock::Localization | Dock::Animation | Dock::Vfx
+        )
     }
 }
 
@@ -458,7 +477,7 @@ pub(crate) fn show(state: &mut DockState<Dock>, tab: Dock) {
             return;
         }
     }
-    if tab.bottom() {
+    if tab.bottom() || tab.tuning() {
         if let Some((surface, node, _)) = BOTTOM.iter().find_map(|b| state.find_tab(b)) {
             if let Node::Leaf { tabs, active, .. } = &mut state[surface][node] {
                 tabs.push(tab);
@@ -660,6 +679,7 @@ mod tests {
                 // Inspector keep only Assets, Problems and History in the bottom strip (the
                 // other tool tabs open from the Window menu); Classic has them all.
                 let on_demand = matches!(tab, Dock::World | Dock::UiEditor)
+                    || tab.tuning()
                     || (name != "Classic"
                         && matches!(
                             tab,

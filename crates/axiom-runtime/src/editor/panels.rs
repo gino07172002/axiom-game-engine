@@ -26,6 +26,10 @@ pub(super) fn tab_icon(tab: Dock) -> Icon {
         Dock::Assets => Icon::Assets,
         Dock::Agent => Icon::Agent,
         Dock::UiEditor => Icon::UiDocument,
+        Dock::InputMap => Icon::Input,
+        Dock::Localization => Icon::Localization,
+        Dock::Animation => Icon::Animation,
+        Dock::Vfx => Icon::Vfx,
     }
 }
 
