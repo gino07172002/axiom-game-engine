@@ -522,6 +522,17 @@ enum Menu {
     AddState(Pos2),
 }
 
+/// A zoom argument (`1.5` or `150%`) within `min..=max` (`graph.zoom`, `ui.zoom`).
+pub(super) fn parse_zoom(number: &str, min: f32, max: f32) -> Option<f32> {
+    let number = number.strip_suffix('%').map_or_else(
+        || number.parse::<f32>(),
+        |p| p.trim().parse::<f32>().map(|p| p / 100.0),
+    );
+    number
+        .ok()
+        .filter(|z| z.is_finite() && (min..=max).contains(z))
+}
+
 /// Size of the "Any state" pseudo node in canvas units.
 const ANY_SIZE: Vec2 = vec2(110.0, 30.0);
 
@@ -1559,18 +1570,12 @@ impl Editor {
                     "in" => current * 1.25,
                     "out" => current / 1.25,
                     "reset" => 1.0,
-                    number => {
-                        let number = number.strip_suffix('%').map_or_else(
-                            || number.parse::<f32>(),
-                            |p| p.trim().parse::<f32>().map(|p| p / 100.0),
-                        );
-                        match number {
-                            Ok(z) if z.is_finite() && (ZOOM_MIN..=ZOOM_MAX).contains(&z) => z,
-                            _ => anyhow::bail!(
-                                "graph.zoom takes in|out|reset or a zoom {ZOOM_MIN}..{ZOOM_MAX} (e.g. 1.5 or 150%)"
-                            ),
-                        }
-                    }
+                    number => match parse_zoom(number, ZOOM_MIN, ZOOM_MAX) {
+                        Some(z) => z,
+                        None => anyhow::bail!(
+                            "graph.zoom takes in|out|reset or a zoom {ZOOM_MIN}..{ZOOM_MAX} (e.g. 1.5 or 150%)"
+                        ),
+                    },
                 };
                 // Around the canvas center (the last drawn size).
                 let center = self.graph.canvas_size / 2.0;

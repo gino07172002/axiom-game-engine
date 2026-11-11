@@ -1521,100 +1521,130 @@ impl Editor {
             }
         });
         let previewing = self.previewing;
+        // A short dock (the Default bottom dock: about 110 points at 1366x768, about 240 at
+        // 1920x1080, where the vertical tables also ran below the fold): the GPU pass groups as
+        // a four-row strip on top, a thin graph and tight rows, so every GPU number is visible
+        // without scrolling.
+        let compact = ui.available_height() < FULL_BODY;
         let (debug, rects) = (&self.debug, &mut self.rects);
         egui::ScrollArea::vertical()
             .id_salt("profiler_body")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-        let p = &debug.profiler;
-        match p.gpu_timing {
-            Some(Ok(())) => {}
-            Some(Err(why)) => {
-                ui.label(
-                    RichText::new(format!("GPU timing unavailable: {why}."))
-                        .size(11.0)
-                        .color(WARNING),
+                #[cfg(test)]
+                rects.insert("profiler:body".into(), ui.clip_rect());
+                if compact {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                }
+                let p = &debug.profiler;
+                match p.gpu_timing {
+                    Some(Ok(())) => {}
+                    Some(Err(why)) => {
+                        ui.label(
+                            RichText::new(format!("GPU timing unavailable: {why}."))
+                                .size(11.0)
+                                .color(WARNING),
+                        );
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new("GPU timing unavailable: no GPU renderer.")
+                                .size(11.0)
+                                .color(WARNING),
+                        );
+                    }
+                }
+                let gpu_on = p.gpu_timing == Some(Ok(()));
+                let strip = (compact && gpu_on && ui.available_width() >= STRIP_WIDTH)
+                    .then(|| gpu_strip(p, ui));
+                // Rolling graph: CPU (frame minus swapchain wait) per frame, 16.7 ms budget line.
+                if !compact {
+                    caption(ui, GRAPH);
+                }
+                let height = if compact { 28.0 } else { 64.0 };
+                let (rect, graph) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width().max(60.0), height),
+                    egui::Sense::hover(),
                 );
-            }
-            None => {
-                ui.label(
-                    RichText::new("GPU timing unavailable: no GPU renderer.")
-                        .size(11.0)
-                        .color(WARNING),
+                if compact {
+                    graph.on_hover_text(GRAPH);
+                }
+                rects.insert("profiler:graph".into(), rect);
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 4.0, theme::FIELD);
+                let scale = 33.4_f32;
+                let y = |ms: f32| rect.max.y - (ms / scale).clamp(0.0, 1.0) * (rect.height() - 4.0);
+                painter.hline(
+                    rect.x_range(),
+                    y(16.7),
+                    egui::Stroke::new(1.0_f32, ERROR.gamma_multiply(0.5)),
                 );
-            }
-        }
-        // Rolling graph: CPU (frame minus swapchain wait) per frame, 16.7 ms budget line.
-        caption(ui, "CPU ms per frame, last 240 frames (grey = swapchain wait; red line = 16.7 ms; bars over it are red)");
-        let height = 64.0;
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width().max(60.0), height),
-            egui::Sense::hover(),
-        );
-        rects.insert("profiler:graph".into(), rect);
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4.0, theme::FIELD);
-        let scale = 33.4_f32;
-        let y = |ms: f32| rect.max.y - (ms / scale).clamp(0.0, 1.0) * (rect.height() - 4.0);
-        painter.hline(
-            rect.x_range(),
-            y(16.7),
-            egui::Stroke::new(1.0_f32, ERROR.gamma_multiply(0.5)),
-        );
-        let bar = rect.width() / FRAMES as f32;
-        let start = FRAMES - p.len;
-        for (i, s) in p.samples().enumerate() {
-            let x = rect.min.x + (start + i) as f32 * bar;
-            let cpu = (s.total - s.acquire).max(0.0);
-            let color = if cpu > 16.7 { ERROR } else { SUCCESS };
-            painter.rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(x, y(cpu)),
-                    egui::pos2(x + bar.max(1.0), rect.max.y),
-                ),
-                0.0,
-                color.gamma_multiply(0.8),
-            );
-            if s.acquire > 0.0 {
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(x, y(s.total)),
-                        egui::pos2(x + bar.max(1.0), y(cpu)),
-                    ),
-                    0.0,
-                    MUTED.gamma_multiply(0.35),
-                );
-            }
-        }
-        let gpu_on = p.gpu_timing == Some(Ok(()));
-        // Wide dock: CPU phases and GPU pass groups side by side, both above the fold.
-        if gpu_on && ui.available_width() >= 760.0 {
-            ui.columns(2, |columns| {
-                cpu_table(p, &mut columns[0]);
-                let rect = gpu_table(p, &mut columns[1]);
-                rects.insert("profiler:gpu".into(), rect);
+                let bar = rect.width() / FRAMES as f32;
+                let start = FRAMES - p.len;
+                for (i, s) in p.samples().enumerate() {
+                    let x = rect.min.x + (start + i) as f32 * bar;
+                    let cpu = (s.total - s.acquire).max(0.0);
+                    let color = if cpu > 16.7 { ERROR } else { SUCCESS };
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(x, y(cpu)),
+                            egui::pos2(x + bar.max(1.0), rect.max.y),
+                        ),
+                        0.0,
+                        color.gamma_multiply(0.8),
+                    );
+                    if s.acquire > 0.0 {
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(x, y(s.total)),
+                                egui::pos2(x + bar.max(1.0), y(cpu)),
+                            ),
+                            0.0,
+                            MUTED.gamma_multiply(0.35),
+                        );
+                    }
+                }
+                // CPU phases and GPU pass groups side by side whenever two tables fit, both above the
+                // fold.
+                let (title, last) = if let Some(strip) = strip {
+                    cpu_table(p, ui);
+                    strip
+                } else if gpu_on && ui.available_width() >= 760.0 {
+                    ui.columns(2, |columns| {
+                        cpu_table(p, &mut columns[0]);
+                        gpu_table(p, &mut columns[1])
+                    })
+                } else {
+                    cpu_table(p, ui);
+                    if gpu_on {
+                        gpu_table(p, ui)
+                    } else {
+                        (egui::Rect::NOTHING, None)
+                    }
+                };
+                if gpu_on {
+                    rects.insert("profiler:gpu".into(), title);
+                }
+                #[cfg(test)]
+                if let Some(last) = last {
+                    rects.insert("profiler:gpu:frame".into(), last);
+                }
+                #[cfg(not(test))]
+                let _ = last;
+                ui.add_space(4.0);
+                if p.systems.is_empty() || !previewing {
+                    caption(
+                        ui,
+                        "Systems: measured while playing (the edit runtime does not step).",
+                    );
+                } else {
+                    table_row(ui, "system step()", ["last ms", "avg ms", "peak ms"], MUTED);
+                    for row in &p.systems {
+                        let v = [row.last, row.avg, row.peak];
+                        table_row(ui, &row.name, v.map(|v| format!("{v:.3}")), TEXT);
+                    }
+                }
             });
-        } else {
-            cpu_table(p, ui);
-            if gpu_on {
-                let rect = gpu_table(p, ui);
-                rects.insert("profiler:gpu".into(), rect);
-            }
-        }
-        ui.add_space(4.0);
-        if p.systems.is_empty() || !previewing {
-            caption(
-                ui,
-                "Systems: measured while playing (the edit runtime does not step).",
-            );
-        } else {
-            table_row(ui, "system step()", ["last ms", "avg ms", "peak ms"], MUTED);
-            for row in &p.systems {
-                let v = [row.last, row.avg, row.peak];
-                table_row(ui, &row.name, v.map(|v| format!("{v:.3}")), TEXT);
-            }
-        }
-        });
         if let Some(id) = command {
             if let Err(e) = self.run_command(id) {
                 self.set_error(format!("{e:#}"));
@@ -1670,8 +1700,9 @@ fn cpu_table(p: &Profiler, ui: &mut Ui) {
     }
 }
 
-/// The GPU pass-group table (timestamp queries); returns its title's rect.
-fn gpu_table(p: &Profiler, ui: &mut Ui) -> egui::Rect {
+/// The GPU pass-group table (timestamp queries); returns its title's rect and, once measured,
+/// its last row's (frame GPU).
+fn gpu_table(p: &Profiler, ui: &mut Ui) -> (egui::Rect, Option<egui::Rect>) {
     ui.add_space(4.0);
     let r = ui.label(
         RichText::new(format!(
@@ -1683,15 +1714,18 @@ fn gpu_table(p: &Profiler, ui: &mut Ui) -> egui::Rect {
     );
     let rect = r.rect;
     r.on_hover_text(GPU_MEASURED);
-    match p.gpu_stats() {
-        None => caption(
-            ui,
-            if p.paused {
-                "Paused."
-            } else {
-                "Waiting for the first readback…"
-            },
-        ),
+    let last = match p.gpu_stats() {
+        None => {
+            caption(
+                ui,
+                if p.paused {
+                    "Paused."
+                } else {
+                    "Waiting for the first readback…"
+                },
+            );
+            None
+        }
         Some((mean, total, max, worst)) => {
             let last = p.gpu_last();
             table_row(
@@ -1708,10 +1742,81 @@ fn gpu_table(p: &Profiler, ui: &mut Ui) -> egui::Rect {
                 }
             }
             let v = [last.total, total, worst];
-            table_row(ui, "frame GPU", v.map(|v| format!("{v:.3}")), ACCENT);
+            Some(table_row(
+                ui,
+                "frame GPU",
+                v.map(|v| format!("{v:.3}")),
+                ACCENT,
+            ))
+        }
+    };
+    (rect, last)
+}
+
+/// Short dock: the GPU pass groups as columns and last / mean / max as rows (four rows, so
+/// it fits the 1366x768 bottom dock); returns the title cell's rect and the last row's.
+fn gpu_strip(p: &Profiler, ui: &mut Ui) -> (egui::Rect, Option<egui::Rect>) {
+    let Some((mean, total, max, worst)) = p.gpu_stats() else {
+        let r = ui.label(
+            RichText::new(if p.paused {
+                "GPU (timestamp queries): paused."
+            } else {
+                "GPU (timestamp queries): waiting for the first readback…"
+            })
+            .size(11.0)
+            .color(MUTED),
+        );
+        return (r.rect, None);
+    };
+    let last = p.gpu_last();
+    let shown = |s: &Section| max[*s as usize] > 0.0;
+    let columns = Section::ALL.iter().filter(|s| shown(s)).count() + 1;
+    let width = ((ui.available_width() - NAME_WIDTH) / columns as f32 - 6.0).clamp(44.0, 96.0);
+    let mut title = egui::Rect::NOTHING;
+    let mut bottom = None;
+    for row in 0..4 {
+        let rect = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.spacing_mut().interact_size.y = 16.0;
+                if row == 0 {
+                    let r = cell(ui, NAME_WIDTH, egui::Align::Min, mono("GPU ms", MUTED));
+                    title = r.rect;
+                    r.on_hover_ui(|ui| {
+                        ui.label(format!(
+                            "Timestamp queries: {} frames measured, {} not measured.",
+                            p.gpu_len, p.gpu_dropped
+                        ));
+                        ui.label(GPU_MEASURED);
+                    });
+                } else {
+                    let name = ["last", "mean", "max"][row - 1];
+                    cell(ui, NAME_WIDTH, egui::Align::Min, mono(name, MUTED));
+                }
+                let value = |v: [f32; 3]| format!("{:.3}", v[row - 1]);
+                for s in Section::ALL.into_iter().filter(shown) {
+                    let i = s as usize;
+                    let text = if row == 0 {
+                        mono(s.name(), MUTED)
+                    } else {
+                        mono(value([last.ms[i], mean[i], max[i]]), TEXT)
+                    };
+                    cell(ui, width, egui::Align::Max, text);
+                }
+                let text = if row == 0 {
+                    mono("frame", ACCENT)
+                } else {
+                    mono(value([last.total, total, worst]), ACCENT)
+                };
+                cell(ui, width, egui::Align::Max, text);
+            })
+            .response
+            .rect;
+        if row == 3 {
+            bottom = Some(rect);
         }
     }
-    rect
+    (title, bottom)
 }
 
 /// Milliseconds with three decimals for `observe` (f32 noise trimmed).
@@ -1721,26 +1826,39 @@ fn round3(v: f32) -> f64 {
 
 /// One profiler table row: a name column and three right-aligned value columns (fixed
 /// widths, no `Grid`: a new Grid discards its first pass and with it that frame's clicks).
-fn table_row(ui: &mut Ui, name: &str, values: [impl Into<String>; 3], color: egui::Color32) {
+fn table_row(
+    ui: &mut Ui,
+    name: &str,
+    values: [impl Into<String>; 3],
+    color: egui::Color32,
+) -> egui::Rect {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let name_width = (ui.available_width() - 3.0 * 70.0).clamp(90.0, 220.0);
-        let cell = |ui: &mut Ui, width: f32, align: egui::Align, text: RichText| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, 16.0),
-                egui::Layout::left_to_right(egui::Align::Center).with_main_align(align),
-                |ui| {
-                    ui.set_min_width(width);
-                    ui.add(egui::Label::new(text).truncate());
-                },
-            );
-        };
-        let text = |s: String| RichText::new(s).monospace().size(11.5).color(color);
-        cell(ui, name_width, egui::Align::Min, text(name.to_owned()));
+        cell(ui, name_width, egui::Align::Min, mono(name, color));
         for v in values {
-            cell(ui, 64.0, egui::Align::Max, text(v.into()));
+            cell(ui, 64.0, egui::Align::Max, mono(v, color));
         }
-    });
+    })
+    .response
+    .rect
+}
+
+/// One fixed-width, truncated table cell.
+fn cell(ui: &mut Ui, width: f32, align: egui::Align, text: RichText) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 16.0),
+        egui::Layout::left_to_right(egui::Align::Center).with_main_align(align),
+        |ui| {
+            ui.set_min_width(width);
+            ui.add(egui::Label::new(text).truncate())
+        },
+    )
+    .inner
+}
+
+fn mono(text: impl Into<String>, color: egui::Color32) -> RichText {
+    RichText::new(text).monospace().size(11.5).color(color)
 }
 
 fn parse_seq(arg: Option<&str>) -> anyhow::Result<u64> {
@@ -1766,6 +1884,15 @@ fn kinds_arg(kinds: &[bool; 5]) -> String {
     format!("kinds={}", names.join(","))
 }
 
+/// Profiler body height below which the graph is thin and rows are tight (graph, captions and
+/// two full tables need about this much).
+const FULL_BODY: f32 = 300.0;
+/// Row-name column of the short-dock GPU strip.
+const NAME_WIDTH: f32 = 56.0;
+/// Narrowest body the strip fits with every pass group and the frame total (8 columns of at
+/// least 44 + 6 spacing); narrower docks keep the vertical table.
+const STRIP_WIDTH: f32 = NAME_WIDTH + 8.0 * 50.0;
+const GRAPH: &str = "CPU ms per frame, last 240 frames (grey = swapchain wait; red line = 16.7 ms; bars over it are red)";
 /// What the Profiler measures (its header's tooltip).
 const MEASURED: &str = "Main-thread wall time of each frame phase (Instant). render_present = world + UI encoding, submit and present, including the swapchain wait shown separately as \"acquire wait\" (grey in the graph). Systems = each runtime system's step(), summed over this frame's fixed steps (Play only). Not GPU time.";
 const GPU_MEASURED: &str = "GPU time from timestamp queries the renderer writes between its pass groups (only while this tab is visible): vfx_compute, shadows (sun depth), world (each camera view), vfx_draw, post, game_ui (Game tab interface), ui (editor interface). Each value is the GPU time between the previous timestamp and the one after that group, summed per frame. Results are read back asynchronously a few frames late; a frame is not measured while every readback slot is still busy. Not CPU time.";

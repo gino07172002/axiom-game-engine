@@ -392,6 +392,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Window",
         "WxH",
     ),
+    a(
+        "ui.zoom",
+        "UI Editor: Zoom Canvas…",
+        "View",
+        "in|out|reset|fit|FACTOR",
+    ),
     c(
         "ui.preview_effects",
         "UI Editor: Preview Effects of Selected Widget",
@@ -1042,6 +1048,10 @@ impl Editor {
                 "{id} takes no argument"
             );
             return self.tuning_command(id, arg);
+        }
+        if id == "ui.zoom" {
+            self.ui_zoom_command(arg)?;
+            return Ok(vec![]);
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");

@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-11 (night) — Claude (Opus 5.5) — follow-up E (FF): UI Editor canvas zoom + Profiler GPU numbers at 1366×768; committed on worktree branch `followup-e` (not merged)
+
+**Done:** `ui_editor.rs`: the fitted canvas rect is now a fixed view; zoom 25–200 % of fit (wheel / Ctrl+wheel / pinch around the pointer), middle-drag pan (clamped, 48 pt stays visible), fixed-width % readout = fit; drops computed from document (reference-resolution) coordinates (`to_doc`/`region_at`); `bound_ui::draw_canvas` takes a screen clip (inverse layer transform → Area clip rects). Command `ui.zoom in|out|reset|fit|FACTOR|N%` (shares `graph::parse_zoom`), `observe editor.ui_editor.zoom`. `debug.rs`: Profiler body < 300 pt (110 at 768, ~240 at 1080) → four-row GPU strip on top + 28 pt graph + tight CPU table; falls back to the vertical table below 456 pt width; side-by-side threshold unchanged (760). Docs: plan FF entry, scene-editor, editor-parity.
+
+**Verification:** fmt / clippy -D warnings clean; workspace 683 passed / 0 failed / 5 ignored (681 + 2 new); editor-smoke ok:true (DB deleted); editor-world-parity identical:true (1→13); street-editor-parity identical:true (8→16); build-street: content/street unchanged; captures `artifacts/captures/fe-{ui-fit,ui-zoom,ui-zoomout,profiler}-{1080,768}.png` in the fe worktree, looked at. Fresh-context review: no bugs; 5 risks/nits fixed (see plan FF).
+
+**Next:** persist UI Editor zoom in prefs; a bridge way to pan for captures; CPU table still scrolls in the short dock.
+
+**Gotchas added:** the Profiler's problem at 768 was dock height (~110 pt body), not width. In PowerShell `R` is an alias of Invoke-History — don't name helper functions `R`. `Set-Content -Encoding utf8` in PS 5.1 adds a BOM and CRLF: write docs with `[IO.File]::WriteAllText` + UTF8Encoding($false). A fresh worktree debug build takes ~28 min when another agent builds at the same time.
+
 ## 2026-11-11 (late) — Claude (Opus 5.5) — integration of follow-ups A/B/C + scenario-job test flake root cause
 
 **Done:** A (930a09f), B (merge c60fe71), C (merge b0795e0) on main, each merge verified on the merged tree before the next. Fixed the two load-sensitive scenario-job tests in `app.rs`.

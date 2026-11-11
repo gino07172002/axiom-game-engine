@@ -398,6 +398,13 @@ Axiom 的主要作者是 AI agent(CLI / bridge 交易協定),人類用編輯器�
   - **審查**:fresh-context 子代理審查:1 bug(位元組預算只算滑鼠,輸入 / 指令很多時整個錄製寫不出來)已修(統一預算 + 測試);風險:hover 的 move 吃掉操作上限(改為只錄拖曳中的 move)、RTS move last-wins 例外(已修)、f32 最長 17 字元(估算改 40 B / delta)、`AXIOM_GPU_TIMING=0` 不是乾淨 A/B(已改為裝置也不要求 feature);f32 JSON 來回經 f64 的雙重捨入:53 ≥ 2·24+2,無害,不改。
   - **未做 / 限制**:adapter 只有 `TIMESTAMP_QUERY`(沒有 INSIDE_ENCODERS)時不改用 pass 內的 `timestamp_writes`,只顯示原因;timestamp 是 pass 之間的編碼器時間點(Vulkan bottom-of-pipe),不是精確的單一 pass 時間;Profiler 沒有開關 GPU 計時的 UI;真實滑鼠的端到端錄製(實體滑鼠)沒有自動化,以 app 層測試走同一條 `mouse_look` / `send_screen_pointer` 路徑代替。
 - **FD 整合與測試穩定(2026-11-11)**:A / B / C 逐一合併、每次合併後在合併樹上驗證(最終 681 過 / 0 失敗、smoke、parity、build-street、m0 GPU smoke)。兩個 scenario 背景 job 測試的不穩定根因:Two Cameras 上 1,000,000 tick 在 debug 只要約 2.5 秒,機器忙時測試執行緒畫一兩個編輯器畫面就超過,job 在被觀察 / 取消 / 監控前就跑完;在測試 `draw()` 注入 3 秒延遲可穩定重現(舊世界失敗、新的 `busy_editor_app()` 256 個旋轉方塊通過)。第一個畫面(字型圖集)不再計入 250 ms 斷言。
+- **FF UI Editor 縮放 + Profiler 768(2026-11-11)**,worktree 分支 `followup-e`,以 `rigorous-change` 執行:
+  1. **UI Editor 畫布縮放**(`ui_editor.rs`、`bound_ui.rs`):原本塞進分頁的畫布範圍變成固定的「view」,縮放(25 %–200 %,100 % = 原本的 fit)與平移只移動 view 裡的畫布;滾輪 / Ctrl+滾輪(捏合,二擇一,同 Graphs)在游標處縮放並吃掉捲動,按住 widget 或平移中不縮放;中鍵拖曳平移(按下那一幀的指標位移不算,畫布至少留 48 點在 view 內);工具列固定寬度的百分比按鈕 = 回到 100 % 且不平移。`draw_canvas` 多一個螢幕座標的 clip(反轉 layer transform 後設成各 Area 的 clip rect),放大後不會畫到其他面板上。拖曳放開的區域改由文件座標(參考解析度像素,`to_doc` → `region_at`)計算,拖曳提示顯示 `widget -> region (x, y)`;放開仍是一筆 `ui place`。新指令 `ui.zoom in|out|reset|fit|FACTOR|N%`(View 選單,以 view 中心為準,參數錯誤回錯誤;解析與 `graph.zoom` 共用 `graph::parse_zoom`),`observe editor.ui_editor.zoom`。100 % 且沒平移時版面與之前完全相同(既有 UI Editor 測試不變)。
+  2. **Profiler 768**(`debug.rs`):原因不是並排的寬度門檻 —— 1366×768 下方格寬 868 點、早已並排 —— 而是本體只有約 110 點高(1920×1080 約 240 點),直式 GPU 表 10 列約 200 點,永遠在捲動區下方。改成本體不到 300 點時用「矮版面」:最上方四列的 GPU 橫表(欄 = 有量到的 pass 組 + frame,列 = 名稱 / last / mean / max;標題格滑過顯示量測範圍與 frames / not measured)、28 點高的長條圖(說明移到滑過提示)、行距 1 的 CPU 表;太窄放不下 8 欄(< 456 點)時仍用原本的直式表。並排門檻維持 760。沒有新增資料路徑的配置(每格字串與原本的表格相同)。
+  - **證據**:workspace 測試 681 → 683 全過(0 失敗,5 ignored):`ui_editor_tests::zoomed_canvas_drags_in_document_pixels_and_zoom_is_view_only`(滾輪 2× 以游標為中心、200 % 與 50 % 拖曳每幀的文件位移 = 螢幕位移 ÷(fit × 縮放)、各一筆 = ACL `ui place`、中鍵平移 (−40, 32)、上下限 / 錯誤參數 / 百分比按鈕 / fit、全程無寫入、指令已註冊)、`debug_tests::profiler_gpu_rows_fit_the_bottom_dock_at_768`(1366×768 預設版面,7 組 + frame 都在可見本體內;改動前失敗:GPU 表在 657–859、本體 621–731)。fmt / clippy -D warnings 乾淨;`editor-smoke-test.ps1` ok:true(data/ DB 已刪);`editor-world-parity.ps1` identical:true(1→13);`street-editor-parity.ps1` identical:true(8→16);`build-street.ps1` 後 `content/street` 無差異。GPU 截圖(debug,已目視,Axiom Town):`artifacts/captures/fe-ui-{fit,zoom,zoomout}-{1080,768}.png`(140 % 以中心縮放、內容在 view 邊緣被裁切,50 % 置中)、`fe-profiler-{1080,768}.png`(Play 中,768 下 vfx_compute / shadows / world / game_ui / ui / frame 的 last / mean / max 全部可見)。
+  - **審查**(另開 context,只給需求與 diff):沒有 bug。採納:矮版面在 1080 也會啟用(已實測並寫進註解 / 文件:1080 的直式 GPU 表原本也在下方)、並排門檻改動不在需求內(改回 760)、窄又矮的下方格放不下橫表(加寬度下限,改用直式表)、百分比按鈕寬度隨數字變會讓工具列重新換行(固定寬度)、`draw_canvas` 的 clip 再與分頁 clip 取交集。記錄不改:讀數比滾輪晚一幀;極小分頁(縮放後 < 5 %)時游標點會略漂移;按住時滾輪不吃掉捲動(畫布下沒有可捲動的東西)。
+  - **補記(偏離 / 假設)**:`ui.document` 的 widget 沒有自由座標或尺寸(只有九宮格區域),所以「拖曳 / 縮放 widget 的文件座標」解讀為參考解析度像素中的拖曳位移與放開點,測試釘住位移 = 螢幕位移 ÷ 縮放、區域由文件座標決定;沒有可調整大小的把手可測。100 % 定義為「塞進分頁」(不是 1 文件像素 = 1 點)。140 % 截圖以中心縮放,HUD 多半在 view 外(bridge 不能送中鍵拖曳平移),平移由 egui 測試涵蓋。
+  - **未做 / 限制**:縮放 / 平移不存偏好檔(切換世界或重開編輯器回到 100 %);沒有鍵盤快捷鍵;矮版面的 CPU 表仍需捲動(之前也是)。
 
 ## 修訂補記
 
@@ -449,3 +456,5 @@ demo 腳本九個步驟都有對應的編輯器操作、協定 / `editor_command
 後續 B(2026-11-11,見 FB 條目):執行期 tag 改為 interned 位元集合(FSM 掃描 release p50 約 3×)、`camera_blocker` tag 改成 `camera.blocker` 元件並提供遷移、VFX 多點 size 曲線 / 色彩漸層(CPU / GPU 一致)。
 
 後續 C(2026-11-11,見 FC 條目):Profiler GPU timestamp 計時(非阻塞讀回、只在 Profiler 可見時)、Play 錄製滑鼠視角與螢幕指標(重播 state_hash 一致)。
+
+後續 FF(2026-11-11,見 FF 條目):UI Editor 畫布縮放 / 平移(`ui.zoom`,拖曳以文件座標放置),Profiler 在矮的下方格(1366×768)改用四列 GPU 橫表,每組 GPU 數字不必捲動。
