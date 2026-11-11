@@ -2284,3 +2284,142 @@ fn prefab_revert_and_apply_match_acl() {
         );
     }
 }
+
+fn animator_lab() -> World {
+    axiom_core::ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/animator-lab"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+#[test]
+fn animation_controller_edits_match_animctl() {
+    let lab = animator_lab();
+    // A new controller (rest-pose `idle`), opened in Graphs ▸ Animator.
+    assert_parity(
+        lab.clone(),
+        |e| {
+            let made = e
+                .run_command_with("graph.new_controller", Some("crowd"))
+                .unwrap();
+            assert_eq!(e.graph.machine.as_deref(), Some("crowd"));
+            vec![made]
+        },
+        "animctl crowd create",
+    );
+    // Toolbar commands on the open controller.
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            vec![e.run_command("graph.add_state").unwrap()]
+        },
+        "animctl locomotion state add state",
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            e.graph.selected = Some(super::graph::Sel::State("move".into()));
+            vec![e.run_command("graph.set_initial").unwrap()]
+        },
+        "animctl locomotion initial move",
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            e.graph.selected = Some(super::graph::Sel::Transition(2));
+            vec![e.run_command("graph.delete").unwrap()]
+        },
+        "animctl locomotion transition remove 2",
+    );
+    // A state / transition form commit is one graph edit (the panel's write path).
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            let edit = axiom_core::ops::FsmEdit::SetTransition(
+                0,
+                serde_json::json!({"from":"idle","to":"move","conditions":[{"param":"speed","op":"gt","value":0.5}],"duration":0.4}),
+            );
+            vec![e.graph_edit_for_test(edit).into_iter().collect()]
+        },
+        r#"animctl locomotion transition set 0 {"from":"idle","to":"move","conditions":[{"param":"speed","op":"gt","value":0.5}],"duration":0.4}"#,
+    );
+    // Parameters: add (kind shorthand), replace (JSON), remove.
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            vec![e
+                .run_command_with("graph.param", Some("crouch bool"))
+                .unwrap()]
+        },
+        r#"animctl locomotion param set crouch {"kind":"bool"}"#,
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            vec![e
+                .run_command_with(
+                    "graph.param",
+                    Some(r#"speed {"kind":"float","default":0.5}"#),
+                )
+                .unwrap()]
+        },
+        r#"animctl locomotion param set speed {"kind":"float","default":0.5}"#,
+    );
+    let crouching = headless(
+        &lab,
+        r#"animctl locomotion param set crouch {"kind":"bool"}"#,
+    );
+    assert_parity(
+        crouching,
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            vec![e
+                .run_command_with("graph.param", Some("crouch remove"))
+                .unwrap()]
+        },
+        "animctl locomotion param remove crouch",
+    );
+    // Attach to the selection.
+    let mut bare = lab.clone();
+    bare.entities
+        .iter_mut()
+        .find(|x| x.id == "walker")
+        .unwrap()
+        .components
+        .remove("animation.controller");
+    assert_parity(
+        bare,
+        |e| {
+            e.select(Some("walker".into()));
+            vec![e
+                .run_command_with("graph.attach_controller", Some("locomotion"))
+                .unwrap()]
+        },
+        "animctl walker attach locomotion",
+    );
+    // Without an open controller the animator commands explain why.
+    let mut e = Editor::new(lab, 1, None);
+    e.run_command_with("graph.open_controller", None).unwrap();
+    assert_eq!(
+        e.command_blocked("graph.param"),
+        Some("open an animation controller in the Graphs tab")
+    );
+    assert!(e
+        .run_command_with("graph.open_controller", Some("nope"))
+        .is_err());
+}

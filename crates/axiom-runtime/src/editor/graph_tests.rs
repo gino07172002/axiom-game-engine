@@ -628,3 +628,77 @@ fn zoomed_canvas_hit_tests_and_drags_in_canvas_units() {
         assert!(canvas.contains_rect(r), "{key} {r:?} outside {canvas:?}");
     }
 }
+
+fn animator_lab() -> World {
+    ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/animator-lab"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+#[test]
+fn animator_graph_edits_through_egui_match_animctl_and_play_highlights_live_state() {
+    let mut h = Harness::new(animator_lab());
+    h.editor
+        .run_command_with("graph.open_controller", Some("locomotion"))
+        .unwrap();
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert_eq!(h.editor.graph.view, View::Animator);
+    assert_eq!(h.editor.graph.machine.as_deref(), Some("locomotion"));
+    let observed = h.editor.graph_observation();
+    assert_eq!(observed["doc"], "animator", "{observed}");
+    assert_eq!(observed["problems"], 0, "{observed}");
+    // + State: a rest-pose state named `state` (one revision).
+    let actions = h.click("graph:graph.add_state");
+    h.commit(actions, "animctl locomotion state add state");
+    // Drag from the new state's port to idle: a transition after one cycle, 0.2 s fade.
+    let port = h.rect("graph:port:state").center();
+    let target = h.rect("graph:node:idle").center();
+    let linked = h.drag(port, target, 6);
+    h.commit(linked, "animctl locomotion transition add state idle");
+    assert_eq!(h.editor.graph.selected, Some(Sel::Transition(4)));
+    // A parameter through the editor command (the table's Add button runs the same op).
+    let actions = h
+        .editor
+        .run_command_with("graph.param", Some("crouch bool"))
+        .unwrap();
+    h.commit(
+        actions,
+        r#"animctl locomotion param set crouch {"kind":"bool"}"#,
+    );
+    // Removing a parameter a condition uses is refused with the users named.
+    let refused = h
+        .editor
+        .run_command_with("graph.param", Some("speed remove"));
+    assert!(refused.is_ok_and(|a| a.is_empty()));
+    assert!(h.editor.status.contains("used by"), "{}", h.editor.status);
+    // Play: the walker runs; its state is highlighted and the parameters are live.
+    h.runtime
+        .command(&axiom_core::gameplay::RuntimeCommand::Call {
+            capability: "path".into(),
+            action: "set_speed".into(),
+            args: json!({"id":"walker","speed":2.0}),
+        })
+        .unwrap();
+    for _ in 0..90 {
+        h.runtime.step(&Default::default());
+    }
+    h.frame(vec![]);
+    assert!(h.editor.graph_live_for_test().iter().all(|n| *n == 0));
+    h.editor.previewing = true;
+    h.frame(vec![]);
+    let live = h.editor.graph_live_for_test();
+    let moving = h.editor.graph_node_index_for_test("move").unwrap();
+    assert_eq!(live[moving], 1, "{live:?}");
+    let observed = h.editor.graph_observation();
+    assert_eq!(observed["live"]["state"], "move", "{observed}");
+    assert!(observed["live"]["params"]["speed"].as_f64().unwrap() > 1.5);
+    // The Play overlay draws the controller read-only.
+    let (editor, runtime) = (&mut h.editor, &h.runtime);
+    let _ = h.ctx.run(egui::RawInput::default(), |ctx| {
+        editor.play_graph_overlay(ctx, runtime)
+    });
+}

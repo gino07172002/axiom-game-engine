@@ -1700,6 +1700,18 @@ impl Editor {
                 Some(action) => actions.push(action),
                 None => self.set_error("Nothing to play: pick a clip on the timeline"),
             },
+            Some(ComponentRequest::EditController) => {
+                let controller = self.world.entity(&id).and_then(|e| {
+                    component_value(&self.world, e, "animation.controller")?["controller"]
+                        .as_str()
+                        .map(str::to_owned)
+                });
+                if let Some(c) = controller {
+                    if let Err(e) = self.graph_open_doc(axiom_core::ops::GraphDoc::Animator, &c) {
+                        self.problem(&e);
+                    }
+                }
+            }
             Some(ComponentRequest::EditGraph) => {
                 let machine = self.world.entity(&id).and_then(|e| {
                     component_value(&self.world, e, "fsm.agent")?["machine"]
@@ -2540,6 +2552,8 @@ pub(super) enum ComponentRequest {
     CameraBlocker(bool),
     Play(String),
     EditGraph,
+    /// Open the entity's `animation.controller` in Graphs ▸ Animator.
+    EditController,
     /// Revert / Apply to Prefab on a marked field (pointer relative to the component).
     Prefab {
         component: String,
@@ -2977,18 +2991,24 @@ fn component_actions(
         if r.clicked() {
             request = Some(ComponentRequest::Reset(component.clone()));
         }
-        if component == "fsm.agent" {
-            let enabled = draft
-                .form
-                .as_ref()
-                .is_some_and(|f| f["machine"].is_string());
+        if component == "fsm.agent" || component == "animation.controller" {
+            let field = if component == "fsm.agent" {
+                "machine"
+            } else {
+                "controller"
+            };
+            let enabled = draft.form.as_ref().is_some_and(|f| f[field].is_string());
             let r = ui
                 .add_enabled_ui(enabled, |ui| {
                     theme::icon_button_sized(
                         ui,
                         icons,
                         Icon::Graphs,
-                        "Edit Graph: open this agent's state machine in the Graphs tab",
+                        if field == "machine" {
+                            "Edit Graph: open this agent's state machine in the Graphs tab"
+                        } else {
+                            "Edit Graph: open this animation controller in Graphs ▸ Animator"
+                        },
                         false,
                         22.0,
                     )
@@ -2996,7 +3016,11 @@ fn component_actions(
                 .inner;
             rects.insert("component:edit_graph".into(), r.rect);
             if r.clicked() {
-                request = Some(ComponentRequest::EditGraph);
+                request = Some(if field == "machine" {
+                    ComponentRequest::EditGraph
+                } else {
+                    ComponentRequest::EditController
+                });
             }
         }
         if playable {

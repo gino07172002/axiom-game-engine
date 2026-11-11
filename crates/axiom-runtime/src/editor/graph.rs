@@ -9,9 +9,11 @@
 //! any state (`*`), which a pin-to-pin wire set cannot represent (M6 ADR in
 //! `docs/plan-editor-human-tuning.md`). The drawn model is rebuilt only when the world
 //! version or the open machine changes; drawing is bounded by `MAX_DRAW_*`.
+#[path = "anim_graph.rs"]
+mod anim;
 use super::{form, Action, Dock, Editor};
 use crate::world::WorldRuntime;
-use axiom_core::ops::{self, FsmEdit, GraphProblem};
+use axiom_core::ops::{self, FsmEdit, GraphDoc, GraphProblem};
 use axiom_core::World;
 use egui::{pos2, vec2, Color32, PointerButton, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use serde_json::{json, Map, Value};
@@ -45,6 +47,8 @@ const EDGE: Color32 = Color32::from_rgb(130, 150, 172);
 pub(crate) enum View {
     #[default]
     Machine,
+    /// The `animation.controllers` graph (same canvas, animation state / transition forms).
+    Animator,
     Rules,
     Overview,
 }
@@ -61,6 +65,18 @@ pub(crate) enum Sel {
 #[derive(Default)]
 pub(crate) struct GraphUi {
     pub machine: Option<String>,
+    /// Which graph kind `machine` names (`Animator`: an `animation.controllers` ID).
+    pub doc: GraphDoc,
+    /// The other kind's open graph, restored when the view switches back.
+    stash: Option<String>,
+    /// Animator view: clip IDs the controller's entities have (per world version).
+    anim_clips: Option<(u64, Vec<String>)>,
+    /// Animator view in Play: the first controlled entity of the open controller, its
+    /// parameter values (parallel to the declared parameters) and the blend-in weight of
+    /// its current state while a cross-fade runs.
+    anim_live: Option<anim::Live>,
+    /// Animator view: the parameter table being edited.
+    anim_params: Option<anim::ParamsDraft>,
     pub view: View,
     model: Option<Model>,
     pub selected: Option<Sel>,
@@ -101,6 +117,7 @@ pub(crate) struct GraphUi {
 
 struct Model {
     version: u64,
+    doc: GraphDoc,
     /// `GraphUi::edits` when built (queued writes show at once).
     edits: u64,
     machine: String,
@@ -328,30 +345,28 @@ fn names(v: Option<&Value>) -> Vec<String> {
 }
 
 impl Model {
-    fn build(world: &World, version: u64, machine: &str, problems: &[GraphProblem]) -> Self {
-        let machines = names(
-            world
-                .resources
-                .get(ops::FSM_RESOURCE)
-                .and_then(|r| r.get("machines")),
-        );
+    fn build(
+        world: &World,
+        version: u64,
+        doc: GraphDoc,
+        machine: &str,
+        problems: &[GraphProblem],
+    ) -> Self {
+        let machines = doc.ids(world);
         let events = names(
             world
                 .resources
                 .get("behavior.program")
                 .and_then(|p| p.get("events")),
         );
-        let m = world
-            .resources
-            .get(ops::FSM_RESOURCE)
-            .and_then(|r| r["machines"].get(machine));
+        let m = doc.graph(world, machine);
         let empty = Map::new();
         let states = m.and_then(|m| m["states"].as_object()).unwrap_or(&empty);
         let transitions: &[Value] = m
             .and_then(|m| m["transitions"].as_array())
             .map_or(&[], Vec::as_slice);
         let any = transitions.iter().any(|t| t["from"] == "*");
-        let saved = ops::fsm_node_positions(world, machine);
+        let saved = ops::graph_node_positions(world, doc, machine);
         let top = if any { 110.0 } else { 30.0 };
         // Unsaved states are laid out in columns by their distance from the initial state
         // (states it cannot reach in the last column); odd columns sit half a row lower so
@@ -414,7 +429,10 @@ impl Model {
                 Node {
                     name: name.clone(),
                     at,
-                    detail: state_label(def),
+                    detail: match doc {
+                        GraphDoc::Fsm => state_label(def),
+                        GraphDoc::Animator => anim::state_label(def),
+                    },
                     problem,
                 }
             })
@@ -434,7 +452,10 @@ impl Model {
                     index: i,
                     from,
                     to,
-                    label: condition_label(&t["when"]),
+                    label: match doc {
+                        GraphDoc::Fsm => condition_label(&t["when"]),
+                        GraphDoc::Animator => anim::transition_label(t),
+                    },
                     lane: 0.0,
                 })
             })
@@ -458,6 +479,7 @@ impl Model {
         }
         Model {
             version,
+            doc,
             edits: 0,
             machine: machine.to_owned(),
             exists: m.is_some(),
@@ -854,6 +876,22 @@ impl GraphUi {
                     WARNING,
                 );
             }
+            // Animator in Play: how far the current state has faded in.
+            if let Some((_, w)) = self
+                .anim_live
+                .as_ref()
+                .and_then(|l| l.fade)
+                .filter(|(n, _)| *n == i)
+            {
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        pos2(r.left(), r.bottom() - 4.0 * zoom),
+                        vec2(r.width() * w, 4.0 * zoom),
+                    ),
+                    0.0,
+                    LIVE,
+                );
+            }
             if interactive {
                 painter.circle_filled(Self::port(r), PORT * 0.7, ACCENT);
             }
@@ -1176,26 +1214,26 @@ impl Editor {
         let version = self.world_version;
         let key = (version, self.graph.edits);
         if self.graph.problems.as_ref().is_none_or(|(k, _)| *k != key) {
-            let problems = ops::fsm_problems(self.graph_world());
+            let problems = match self.graph.doc {
+                GraphDoc::Fsm => ops::fsm_problems(self.graph_world()),
+                GraphDoc::Animator => ops::anim_problems(self.graph_world()),
+            };
             self.graph.problems = Some((key, problems));
         }
         if self.graph.machine.is_none() {
-            self.graph.machine = self
-                .world
-                .resources
-                .get(ops::FSM_RESOURCE)
-                .and_then(|r| r["machines"].as_object())
-                .and_then(|m| m.keys().next().cloned());
+            self.graph.machine = self.graph.doc.ids(&self.world).into_iter().next();
         }
         let machine = self.graph.machine.clone().unwrap_or_default();
-        let stale = self
-            .graph
-            .model
-            .as_ref()
-            .is_none_or(|m| (m.version, m.edits) != key || m.machine != machine);
+        let stale = self.graph.model.as_ref().is_none_or(|m| {
+            (m.version, m.edits) != key || m.machine != machine || m.doc != self.graph.doc
+        });
         if stale {
             // A drag / link in progress follows its node by name into the new model.
-            let old = self.graph.model.as_ref().filter(|m| m.machine == machine);
+            let old = self
+                .graph
+                .model
+                .as_ref()
+                .filter(|m| m.machine == machine && m.doc == self.graph.doc);
             let name = |i: usize| old.and_then(|m| m.nodes.get(i)).map(|n| n.name.clone());
             let drag = self
                 .graph
@@ -1209,7 +1247,13 @@ impl Editor {
                 None => None,
             };
             let problems = &self.graph.problems.as_ref().expect("set above").1;
-            let mut model = Model::build(self.graph_world(), version, &machine, problems);
+            let mut model = Model::build(
+                self.graph_world(),
+                version,
+                self.graph.doc,
+                &machine,
+                problems,
+            );
             if let Some((n, mut d)) = drag {
                 if let Some(i) = model.node(&n) {
                     d.node = i;
@@ -1322,11 +1366,9 @@ impl Editor {
     /// The selected element's committed value (with queued graph writes).
     fn graph_element(&self, sel: &Sel) -> Option<Value> {
         let m = self
-            .graph_world()
-            .resources
-            .get(ops::FSM_RESOURCE)?
-            .get("machines")?
-            .get(self.graph.machine.as_deref()?)?;
+            .graph
+            .doc
+            .graph(self.graph_world(), self.graph.machine.as_deref()?)?;
         match sel {
             Sel::State(s) => m["states"].get(s).cloned(),
             Sel::Transition(i) => m["transitions"].get(*i).cloned(),
@@ -1336,19 +1378,43 @@ impl Editor {
     /// Opens the Graphs tab on `machine` (Inspector ▸ Edit Graph, `graph.open MACHINE`,
     /// `editor_view {open:"graph:MACHINE"}`).
     pub(super) fn graph_open(&mut self, machine: &str) -> anyhow::Result<()> {
-        let exists = self
-            .graph_world()
-            .resources
-            .get(ops::FSM_RESOURCE)
-            .and_then(|r| r["machines"].get(machine))
-            .is_some();
-        if !exists {
+        self.graph_open_doc(GraphDoc::Fsm, machine)
+    }
+
+    /// Switches the canvas to graph kind `doc` (its last open graph comes back); the other
+    /// kind's open graph is kept for when the view switches back.
+    pub(super) fn graph_set_doc(&mut self, doc: GraphDoc) {
+        if self.graph.doc == doc {
+            return;
+        }
+        self.graph_flush();
+        std::mem::swap(&mut self.graph.machine, &mut self.graph.stash);
+        self.graph.doc = doc;
+        self.graph.selected = None;
+        self.graph.element = None;
+        self.graph.drag = None;
+        self.graph.link = None;
+        self.graph.pan = Vec2::ZERO;
+        self.graph.zoom = 1.0;
+        self.graph.anim_live = None;
+        // Problems are per kind: rebuilt on the next refresh.
+        self.graph.problems = None;
+    }
+
+    /// Opens graph `machine` of kind `doc` (`graph.open M`, `graph.open_controller C`,
+    /// `editor_view {open:"graph:M"}`).
+    pub(super) fn graph_open_doc(&mut self, doc: GraphDoc, machine: &str) -> anyhow::Result<()> {
+        if doc.graph(self.graph_world(), machine).is_none() {
             return Err(axiom_core::Diagnostic::error(
                 "not_found",
-                format!("/resources/fsm.machines/machines/{machine}"),
-                format!("no state machine '{machine}'"),
+                format!("/resources/{}/{}/{machine}", doc.resource(), doc.root()),
+                match doc {
+                    GraphDoc::Fsm => format!("no state machine '{machine}'"),
+                    GraphDoc::Animator => format!("no animation controller '{machine}'"),
+                },
             ));
         }
+        self.graph_set_doc(doc);
         if self.graph.machine.as_deref() != Some(machine) {
             self.graph_flush();
             self.graph.selected = None;
@@ -1357,7 +1423,10 @@ impl Editor {
             self.graph.zoom = 1.0;
         }
         self.graph.machine = Some(machine.to_owned());
-        self.graph.view = View::Machine;
+        self.graph.view = match doc {
+            GraphDoc::Fsm => View::Machine,
+            GraphDoc::Animator => View::Animator,
+        };
         self.show_dock(Dock::Graphs);
         Ok(())
     }
@@ -1403,7 +1472,7 @@ impl Editor {
     /// Runs one `ops::fsm_edit` on the open machine.
     fn graph_edit(&mut self, edit: FsmEdit) -> Option<Action> {
         let machine = self.graph.machine.clone()?;
-        let result = ops::fsm_edit(self.graph_world(), &machine, &edit);
+        let result = ops::graph_edit(self.graph_world(), self.graph.doc, &machine, &edit);
         match result {
             Ok(edits) if edits.is_empty() => None,
             result => self.graph_write(result),
@@ -1420,13 +1489,20 @@ impl Editor {
             state: None,
         };
         let world = self.graph_world();
-        let result = ops::fsm_edit(world, &machine, &add).and_then(|mut edits| {
+        let doc = self.graph.doc;
+        let result = ops::graph_edit(world, doc, &machine, &add).and_then(|mut edits| {
             if let Some(at) = at {
                 let mut next = world.clone();
                 for e in &edits {
                     e.clone().apply(&mut next, &self.registry)?;
                 }
-                edits.extend(ops::fsm_set_node(&next, &machine, &name, [at.x, at.y])?);
+                edits.extend(ops::graph_set_node(
+                    &next,
+                    doc,
+                    &machine,
+                    &name,
+                    [at.x, at.y],
+                )?);
             }
             Ok(edits)
         });
@@ -1501,21 +1577,24 @@ impl Editor {
     /// Why a `graph.*` / `behavior.*` command cannot run (`None` = not one of them).
     pub(super) fn graph_blocked(&self, id: &str) -> Option<Option<&'static str>> {
         let busy = self.dirty() || self.drag.is_some();
-        let open = self.graph.machine.as_deref().is_some_and(|m| {
-            self.world
-                .resources
-                .get(ops::FSM_RESOURCE)
-                .and_then(|r| r["machines"].get(m))
-                .is_some()
-        });
+        let open = self
+            .graph
+            .machine
+            .as_deref()
+            .is_some_and(|m| self.graph.doc.graph(&self.world, m).is_some());
+        let closed = match self.graph.doc {
+            GraphDoc::Fsm => "open a state machine in the Graphs tab",
+            GraphDoc::Animator => "open an animation controller in the Graphs tab",
+        };
+        let animator = self.graph.doc == GraphDoc::Animator && open;
         Some(match id {
-            "graph.open" => None,
+            "graph.open" | "graph.open_controller" => None,
+            "graph.param" if !animator => Some("open an animation controller in the Graphs tab"),
+            "graph.attach_controller" if self.selected.is_none() => Some("nothing selected"),
             // View only: allowed while a draft is open.
-            "graph.frame" | "graph.zoom" if !open => Some("open a state machine in the Graphs tab"),
+            "graph.frame" | "graph.zoom" if !open => Some(closed),
             "graph.frame" | "graph.zoom" => None,
-            "graph.add_state" | "graph.set_initial" | "graph.delete" if !open => {
-                Some("open a state machine in the Graphs tab")
-            }
+            "graph.add_state" | "graph.set_initial" | "graph.delete" if !open => Some(closed),
             "graph.set_initial" if !matches!(self.graph.selected, Some(Sel::State(_))) => {
                 Some("select a state in the graph")
             }
@@ -1540,10 +1619,36 @@ impl Editor {
         id: &str,
         arg: Option<&str>,
     ) -> anyhow::Result<Vec<Action>> {
-        let takes_arg = matches!(id, "graph.open" | "graph.zoom" | "behavior.fsm_agent");
+        let takes_arg = matches!(
+            id,
+            "graph.open"
+                | "graph.zoom"
+                | "behavior.fsm_agent"
+                | "graph.open_controller"
+                | "graph.new_controller"
+                | "graph.attach_controller"
+                | "graph.param"
+        );
         anyhow::ensure!(takes_arg || arg.is_none(), "{id} takes no argument");
         let arg = arg.map(str::trim).filter(|a| !a.is_empty());
         let action = match (id, arg) {
+            ("graph.open_controller", Some(c)) => {
+                self.graph_open_doc(GraphDoc::Animator, c)?;
+                None
+            }
+            ("graph.open_controller", None) => {
+                self.show_dock(Dock::Graphs);
+                self.graph_set_doc(GraphDoc::Animator);
+                self.graph.view = View::Animator;
+                self.notice("Pick an animation controller in the Graphs tab");
+                None
+            }
+            ("graph.new_controller", Some(c)) => self.anim_new_controller(c),
+            ("graph.attach_controller", Some(c)) => self.anim_attach(c),
+            ("graph.param", Some(spec)) => self.anim_param_command(spec)?,
+            ("graph.new_controller" | "graph.attach_controller" | "graph.param", None) => {
+                anyhow::bail!("{id} needs an argument (see discover editor)")
+            }
             ("graph.open", Some(machine)) => {
                 self.graph_open(machine)?;
                 None
@@ -1617,7 +1722,9 @@ impl Editor {
     pub(super) fn graph_observation(&self) -> Value {
         json!({
             "machine": self.graph.machine,
-            "view": match self.graph.view { View::Machine => "machine", View::Rules => "rules", View::Overview => "overview" },
+            "view": match self.graph.view { View::Machine => "machine", View::Animator => "animator", View::Rules => "rules", View::Overview => "overview" },
+            "doc": match self.graph.doc { GraphDoc::Fsm => "fsm", GraphDoc::Animator => "animator" },
+            "live": self.graph.anim_live.as_ref().map(anim::Live::observe),
             "zoom": (self.graph.zoom() * 1000.0).round() / 1000.0,
             "selected": match &self.graph.selected {
                 Some(Sel::State(s)) => json!({"state": s}),
@@ -1627,7 +1734,10 @@ impl Editor {
             // Fresh even when the Graphs / Problems tabs are not drawn (agents rely on it).
             "problems": match &self.graph.problems {
                 Some((k, p)) if *k == (self.world_version, self.graph.edits) => p.len(),
-                _ => ops::fsm_problems(self.graph_world()).len(),
+                _ => match self.graph.doc {
+                    GraphDoc::Fsm => ops::fsm_problems(self.graph_world()).len(),
+                    GraphDoc::Animator => ops::anim_problems(self.graph_world()).len(),
+                },
             },
         })
     }
@@ -1671,6 +1781,7 @@ impl Editor {
         ui.horizontal_wrapped(|ui| {
             for (v, title) in [
                 (View::Machine, "State machine"),
+                (View::Animator, "Animator"),
                 (View::Rules, "Rules"),
                 (View::Overview, "Overview"),
             ] {
@@ -1682,12 +1793,18 @@ impl Editor {
                 }
             }
             ui.separator();
-            if view == View::Machine {
+            // The machine / controller toolbar (skipped the frame the view switches kind).
+            let animator = self.graph.doc == GraphDoc::Animator;
+            if (view == View::Machine && !animator) || (view == View::Animator && animator) {
                 let model = self.graph.model.as_ref().expect("refreshed");
                 let current = self.graph.machine.clone().unwrap_or_default();
                 egui::ComboBox::from_id_salt("graph_machine")
                     .selected_text(if current.is_empty() {
-                        "(no machine)"
+                        if animator {
+                            "(no controller)"
+                        } else {
+                            "(no machine)"
+                        }
                     } else {
                         current.as_str()
                     })
@@ -1698,23 +1815,42 @@ impl Editor {
                             }
                         }
                     });
-                ui.menu_button("New machine…", |ui| {
-                    let id = egui::Id::new("graph_new_machine");
-                    let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .hint_text("machine id")
-                            .desired_width(140.0),
-                    );
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.button("Create").clicked() || enter) && !text.trim().is_empty() {
-                        create = Some(text.trim().to_owned());
-                        text.clear();
-                        ui.close_menu();
-                    }
-                    ui.data_mut(|d| d.insert_temp(id, text));
-                    ui.label(RichText::new("ACL: fsm ID create").small().weak());
-                });
+                ui.menu_button(
+                    if animator {
+                        "New controller…"
+                    } else {
+                        "New machine…"
+                    },
+                    |ui| {
+                        let id = egui::Id::new("graph_new_machine");
+                        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut text)
+                                .hint_text(if animator {
+                                    "controller id"
+                                } else {
+                                    "machine id"
+                                })
+                                .desired_width(140.0),
+                        );
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.button("Create").clicked() || enter) && !text.trim().is_empty() {
+                            create = Some(text.trim().to_owned());
+                            text.clear();
+                            ui.close_menu();
+                        }
+                        ui.data_mut(|d| d.insert_temp(id, text));
+                        ui.label(
+                            RichText::new(if animator {
+                                "ACL: animctl ID create"
+                            } else {
+                                "ACL: fsm ID create"
+                            })
+                            .small()
+                            .weak(),
+                        );
+                    },
+                );
                 for (cmd, title, blocked) in buttons {
                     let r = ui
                         .add_enabled(blocked.is_none(), egui::Button::new(title))
@@ -1750,12 +1886,20 @@ impl Editor {
             ui.label(text);
         });
         self.graph.view = view;
+        match view {
+            View::Machine => self.graph_set_doc(GraphDoc::Fsm),
+            View::Animator => self.graph_set_doc(GraphDoc::Animator),
+            View::Rules | View::Overview => {}
+        }
         if let Some(m) = pick {
-            if let Err(e) = self.graph_open(&m) {
+            if let Err(e) = self.graph_open_doc(self.graph.doc, &m) {
                 self.problem(&e);
             }
         }
-        if let Some(id) = create {
+        let animator = self.graph.doc == GraphDoc::Animator;
+        if let Some(id) = create.as_ref().filter(|_| animator) {
+            actions.extend(self.anim_new_controller(id));
+        } else if let Some(id) = create {
             let result = ops::fsm_create_machine(self.graph_world(), &self.registry, &id, None);
             if let Some(action) = self.graph_write(result) {
                 actions.push(action);
@@ -1779,7 +1923,7 @@ impl Editor {
                     .show(ui, |ui| self.graphs(ui));
             }
             View::Rules => self.rules_view(ui, actions),
-            View::Machine => self.machine_view(ui, runtime, actions),
+            View::Machine | View::Animator => self.machine_view(ui, runtime, actions),
         }
         #[cfg(test)]
         GRAPH_RECTS.with(|g| {
@@ -1796,6 +1940,11 @@ impl Editor {
         self.graph.live.clear();
         self.graph.live.resize(n, 0);
         if !self.previewing {
+            self.graph.anim_live = None;
+            return;
+        }
+        if self.graph.doc == GraphDoc::Animator {
+            self.anim_graph_live(runtime);
             return;
         }
         let (Some(fsm), Some(model)) = (
@@ -1815,6 +1964,9 @@ impl Editor {
 
     fn machine_view(&mut self, ui: &mut Ui, runtime: &WorldRuntime, actions: &mut Vec<Action>) {
         self.graph_live(runtime);
+        if self.graph.doc == GraphDoc::Animator {
+            self.anim_refresh_clips(runtime);
+        }
         let available = ui.available_size();
         let side = available.x > 2.0 * SIDE;
         let canvas = if side {
@@ -1852,7 +2004,13 @@ impl Editor {
         }
         if let Some((name, at)) = out.moved {
             let machine = self.graph.machine.clone().unwrap_or_default();
-            let result = ops::fsm_set_node(self.graph_world(), &machine, &name, [at.x, at.y]);
+            let result = ops::graph_set_node(
+                self.graph_world(),
+                self.graph.doc,
+                &machine,
+                &name,
+                [at.x, at.y],
+            );
             actions.extend(self.graph_write(result));
         }
         if let Some((from, to)) = out.link {
@@ -1893,6 +2051,10 @@ impl Editor {
 
     /// Inspector of the selected state or transition (typed forms; live commit).
     fn element_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        if self.graph.doc == GraphDoc::Animator {
+            self.anim_panel(ui, actions);
+            return;
+        }
         let Some(sel) = self.graph.selected.clone() else {
             ui.label(RichText::new("Click a state or transition to edit it. Drag a state to move it, drag from its port (right edge) to another state to add a transition, double-click empty space to add a state, right-click for more.").small().color(MUTED));
             self.graph_problem_list(ui);
@@ -2629,6 +2791,11 @@ impl Editor {
     }
 
     #[cfg(test)]
+    pub(super) fn graph_edit_for_test(&mut self, edit: FsmEdit) -> Option<Action> {
+        self.graph_edit(edit)
+    }
+
+    #[cfg(test)]
     pub(super) fn graph_problems_for_test(&self) -> &[GraphProblem] {
         self.graph
             .problems
@@ -2665,7 +2832,11 @@ impl Editor {
             return;
         };
         if model.exists {
-            egui::Window::new(format!("FSM · {} (live)", model.machine))
+            let kind = match model.doc {
+                GraphDoc::Fsm => "FSM",
+                GraphDoc::Animator => "Animator",
+            };
+            egui::Window::new(format!("{kind} · {} (live)", model.machine))
                 .id(egui::Id::new("play_graph_overlay"))
                 .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
                 .resizable(false)
