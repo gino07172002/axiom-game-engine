@@ -1263,7 +1263,17 @@ fn reference(
     } else {
         current.clone()
     };
-    let r = egui::ComboBox::from_id_salt(("ref", pointer))
+    // An asset reference keeps room for its Copy and Show in Assets buttons (2 × 20 pt + gaps).
+    let asset = axiom_core::assets::AssetKind::ALL
+        .into_iter()
+        .find(|k| k.location() == Some((resource, at)));
+    let mut combo = egui::ComboBox::from_id_salt(("ref", pointer));
+    if asset.is_some() {
+        combo = combo.width(
+            (room(ui) - 52.0 - 2.0 * ui.spacing().button_padding.x - 16.0).clamp(48.0, 220.0),
+        );
+    }
+    let r = combo
         .selected_text(RichText::new(text).color(if known { Color32::LIGHT_GRAY } else { WARNING }))
         .show_ui(ui, |ui| {
             if *kind == Kind::Event && ui.selectable_label(current.is_empty(), "(none)").clicked() {
@@ -1302,9 +1312,6 @@ fn reference(
         *v = json!(p);
     }
     // An asset reference: copy `kind:id` and show it in the Assets tab (`asset.reveal`).
-    let asset = axiom_core::assets::AssetKind::ALL
-        .into_iter()
-        .find(|k| k.location() == Some((resource, at)));
     if let (Some(kind), false) = (asset, current.is_empty() || mixed || !known) {
         let reference = format!("{}:{current}", kind.name());
         let icons = super::icons::Icons::of(ui.ctx());
