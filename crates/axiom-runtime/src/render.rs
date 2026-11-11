@@ -79,6 +79,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    sky_late_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     shadow_bind: wgpu::BindGroup,
@@ -321,37 +322,44 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sky"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_sky"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_sky"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        // Legacy background: drawn first, over everything (depth Always). An authored sky is
+        // drawn after the opaque geometry instead (LessEqual against the cleared far depth),
+        // so only the pixels where sky shows run its per-pixel direction and sky formula.
+        let sky = |label: &'static str, depth_compare: wgpu::CompareFunction| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_sky"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_sky"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let sky_pipeline = sky("sky", wgpu::CompareFunction::Always);
+        let sky_late_pipeline = sky("authored sky", wgpu::CompareFunction::LessEqual);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shared unit cube"),
             contents: bytemuck::cast_slice(&cube_vertices()),
@@ -383,6 +391,7 @@ impl Renderer {
             pipeline,
             shadow_pipeline,
             sky_pipeline,
+            sky_late_pipeline,
             uniform,
             bind,
             shadow_bind,
@@ -696,15 +705,24 @@ impl Renderer {
             pass.set_viewport(x * width, y * height, w * width, h * height, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
-            stats.add(1, 1);
+            let late_sky = lighting.sky.mode != crate::lighting::SKY_NONE;
+            if !late_sky {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
+                stats.add(1, 1);
+            }
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
             for blend in [false, true] {
                 if blend {
                     pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
+                    // After every opaque draw, before the transparent ones (they blend over it).
+                    if late_sky {
+                        pass.set_pipeline(&self.sky_late_pipeline);
+                        pass.draw(0..3, 0..1);
+                        stats.add(1, 1);
+                    }
                     pass.set_vertex_buffer(0, self.vertices.slice(..));
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                 }

@@ -29,7 +29,7 @@
 ### 預算
 
 - 每個世界最多 **4 盞 directional**、**32 盞 point / spot / area**(所有帶 `render.light` 的實體都算,不論啟用與否或場景狀態,結果因此是確定的)。超過時交易失敗(`directional light budget exceeded` / `point/spot/area light budget exceeded`)。
-- GPU 的局部光陣列有 32 格,由編寫的燈光和 VFX 粒子光源(`vfx.library` renderer `light`)共用:**編寫的燈光先放(依實體編寫順序),VFX 光源接在後面(依 emitter 順序)**,放不下的丟棄。32 格沒有改:每格從 32 bytes 增加到 80 bytes,每個 view 的 uniform 從 1280 bytes 增加到 3072 bytes(8 個相機共 24 KB)。
+- GPU 的局部光陣列有 32 格,由編寫的燈光和 VFX 粒子光源(`vfx.library` renderer `light`)共用:**編寫的燈光先放(依實體編寫順序),VFX 光源接在後面(依 emitter 順序)**,放不下的丟棄。32 格沒有改:每格從 32 bytes 增加到 80 bytes,每個 view 的 uniform 從 1280 bytes 增加到 3072 bytes(8 個相機共 24 KB);加入天空後再增加到 3328 bytes(8 個相機共 26 KB)。
 
 ### 平行光(directional)
 
@@ -95,6 +95,7 @@
 - `ambient: {"mode":"sky","intensity":k}` = **天空光**:CPU 每幀用固定 16×16 方向格點(等立體角)積分天空(不含日盤),得到法線朝上 / 水平(四個方位平均)/ 朝下的 irradiance/π,再乘 `k` 當作 trilight。必須同時有 `sky`,否則交易失敗(`ambient mode sky requires a sky`)。
 - 只寫 `sky` 不寫 ambient:背景換成天空,環境光仍是舊版預設。
 - 編輯器:World 視窗 ▸ **SKY** 列的 Gradient / Procedural / None 按鈕,或 World 選單 ▸ Sky…(`world.sky gradient|procedural|none`);ACL `sky gradient|procedural|none`。兩者同一個 `ops::set_sky`:沒有 `render.environment` 時建立它(並補 `render` capability),放入預設天空,沒有編寫 ambient 時加上 `ambient: sky`;同一模式再按一次不寫入(保留調整過的數值);`none` 移除天空與 sky 模式的 ambient(其他 ambient、fog 保留)。細部數值在 Inspector 開 `render.environment` 調整(`*_color` 欄位是色票),或 `set resources[id=render.environment] sky/exposure 1.4`。
+- 編寫的天空在不透明幾何**之後**畫(depth LessEqual 對清空的遠平面),只有看得到天空的像素才算方向與公式;舊版背景仍然最先畫(depth Always),路徑不變。
 - 量測見下方「量測(天空、反射、網格陰影)」。
 
 ### 表面反射(`render.surface`,元件)
@@ -143,3 +144,17 @@ Gizmo(場景工具列 Gizmos 開關,隱藏的物件不畫):directional = 小圓 
 | `content/rts-bench` + `create light directional id=sun`(64 個單位) | 7 | 4.73 ms | 3.81 ms | 約 +0.9 ms / 幀(7 回合中有 6 回合 A 比較慢) |
 
 結論:在 MX150 上,一張 2048² 陰影貼圖在方塊多的場景大約多 1 ms / 幀(debug build,數字會隨負載變動 2–3 倍,只能當量級參考)。每多一盞投影的聚光燈就要多一個 pass,而且還需要額外的貼圖綁定與每盞燈的矩陣。這一版**不實作**聚光燈陰影,`shadows: true` 會被明確拒絕。點光源要 6 面 cube map,成本約是聚光燈的 6 倍,同樣不做。沒有量 GPU 時間戳(wgpu 沒開 `TIMESTAMP_QUERY`),上面的數字是整個 process 的牆鐘時間差。
+## 量測(天空、反射、網格陰影)
+
+- 環境:**release build**(`cargo build --release -p axiom -j1`)、NVIDIA GeForce MX150 / Vulkan、1440×900 隱藏視窗(`--smoke-frames`)、`content/render-lab`。量測用的 build **暫時**把 present mode 改成 `AutoNoVsync`,並加一個只存在於量測 build 的環境變數略過網格投影 pass(量完都已還原,沒有提交)。
+- 方法:每次開新 process,每幀成本 = (600 幀牆鐘 − 60 幀牆鐘) / 540;A / B 交錯(ABBA…)7 回合,取中位數。**同時有其他代理在編譯**,同一設定的回合之間差到 2–3 倍,下表只能當量級參考。
+
+| 比較 | A 中位數 | B 中位數 | 差 | A 較慢的回合 |
+|---|---|---|---|---|
+| 天空(程序天空 + 天空光,先畫的版本)vs `sky none` | 6.44 ms | 4.53 ms | +1.9 ms | 6/7 |
+| 天空(後畫的版本)vs `sky none` | 7.37 ms | 5.41 ms | +2.0 ms | 4/7 |
+| 後畫 vs 先畫(同一份內容,兩個 build) | 8.04 ms | 8.12 ms | 測不出來 | 2/7 |
+| `render.surface`(地面、金屬方塊、鉻球)vs 移除 | 5.60 ms | 6.22 ms | 測不出來(A 還比較快) | 1/7 |
+| 網格投影 pass(1 個 2466 頂點的角色)vs 略過 | 6.41 ms | 6.44 ms | 測不出來 | 3/7 |
+
+結論:反射與網格投影在這個場景落在雜訊內;天空背景大約多 2 ms / 幀的量級(第二輪只有 4/7 回合較慢,不是穩定的結果)。把天空改成在不透明幾何之後畫沒有量到改善,保留它是因為只算看得到的像素、不改變畫面。沒有量 GPU 時間戳(這是整個 process 的牆鐘時間差);CPU 端天空光積分每幀 256 個方向,沒有單獨量。
