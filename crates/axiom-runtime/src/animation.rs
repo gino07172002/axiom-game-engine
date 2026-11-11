@@ -15,6 +15,7 @@ use axiom_animation::{
 use axiom_core::gameplay::{RuntimeCommand, Scalar};
 use axiom_core::local::at;
 use glam::{Mat4, Quat, Vec3};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
@@ -695,6 +696,41 @@ impl RuntimeSystem for AnimationSystem {
             }
         }
     }
+    fn checkpoint_supported(&self) -> bool {
+        true
+    }
+    fn save_state(&self, state: &RuntimeState) -> Option<Result<Value>> {
+        let saved = SavedAnimation {
+            players: self
+                .players
+                .iter()
+                .map(|(id, p)| (id.clone(), p.save()))
+                .collect(),
+            fired: self.fired,
+            emit_fault: self.emit_fault.clone(),
+            finished: state.animation_cues.finished.iter().cloned().collect(),
+        };
+        Some(serde_json::to_value(saved).map_err(Into::into))
+    }
+    fn load_state(&mut self, state: &mut RuntimeState, value: &Value) -> Result<()> {
+        let saved: SavedAnimation = serde_json::from_value(value.clone())?;
+        ensure!(
+            saved.players.keys().eq(self.players.keys()),
+            "checkpoint animation players do not match the content"
+        );
+        for (id, s) in &saved.players {
+            let p = self.players.get_mut(id).expect("same keys");
+            at(&component_path(id), p.load(s))?;
+        }
+        self.fired = saved.fired;
+        self.emit_fault = saved.emit_fault;
+        state.animation_cues.finished = saved
+            .finished
+            .into_iter()
+            .filter(|id| self.players.contains_key(id))
+            .collect();
+        Ok(())
+    }
     fn validate(&self, _: &RuntimeState) -> Result<()> {
         for p in self.players.values() {
             ensure!(p.fault.is_none(), "animation fault: {:?}", p.fault);
@@ -1134,5 +1170,266 @@ impl AnimationSystem {
                 }
             });
         }
+    }
+}
+
+/// Checkpoint form of one player: everything `step` / commands change at runtime. Bones and
+/// controller states are saved by name, so a mismatch fails loudly instead of misbinding.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedPlayer {
+    clip: Option<String>,
+    time: f32,
+    playing: bool,
+    speed: f32,
+    looping: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ramp: Option<(f32, f32, f32, f32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fade: Option<SavedFade>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    overrides: BTreeMap<String, Quat>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ik: BTreeMap<String, axiom_animation::ik::TwoBoneIk>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    twists: BTreeMap<String, bool>,
+    marker_fresh: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controller: Option<SavedController>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedFade {
+    from: Vec<Trs>,
+    elapsed: f32,
+    duration: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedLayer {
+    state: String,
+    loops: u32,
+    frac: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedController {
+    id: String,
+    current: SavedLayer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<SavedLayer>,
+    fade: f32,
+    fade_duration: f32,
+    params: BTreeMap<String, f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_transition: Option<u16>,
+    fired: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_position: Option<[f32; 3]>,
+    ignored_cues: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedAnimation {
+    players: BTreeMap<String, SavedPlayer>,
+    #[serde(default)]
+    fired: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    emit_fault: Option<String>,
+    /// Entities whose one-shot clip had finished (FSM `clip_finished` reads it first).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    finished: Vec<String>,
+}
+
+fn save_layer(c: &controller::Compiled, l: &controller::Layer) -> SavedLayer {
+    SavedLayer {
+        state: c.states[l.state as usize].clone(),
+        loops: l.loops,
+        frac: l.frac,
+    }
+}
+
+fn load_layer(c: &controller::Compiled, l: &SavedLayer) -> Result<controller::Layer> {
+    let state = c
+        .states
+        .iter()
+        .position(|s| *s == l.state)
+        .with_context(|| format!("checkpoint names unknown controller state {}", l.state))?;
+    ensure!(
+        l.frac.is_finite() && (0.0..=1.0).contains(&l.frac),
+        "invalid checkpoint controller time"
+    );
+    Ok(controller::Layer {
+        state: state as u16,
+        loops: l.loops,
+        frac: l.frac,
+    })
+}
+
+impl Controller {
+    fn save(&self) -> SavedPlayer {
+        let bones = &self.asset.skeleton.source.bones;
+        SavedPlayer {
+            clip: self.active.clone(),
+            time: self.time,
+            playing: self.playing,
+            speed: self.speed,
+            looping: self.looping,
+            ramp: self.ramp,
+            fade: self.fade.as_ref().map(|f| SavedFade {
+                from: f.from.local.clone(),
+                elapsed: f.elapsed,
+                duration: f.duration,
+            }),
+            overrides: self
+                .overrides
+                .iter()
+                .map(|(&i, &q)| (bones[i].id.clone(), q))
+                .collect(),
+            ik: self
+                .ik
+                .iter()
+                .map(|(id, c)| (id.clone(), c.source.clone()))
+                .collect(),
+            twists: self
+                .twists
+                .iter()
+                .map(|(id, t)| (id.clone(), t.source.enabled))
+                .collect(),
+            marker_fresh: self.marker_fresh,
+            controller: self.animator.as_ref().map(|a| {
+                let c = &a.compiled;
+                SavedController {
+                    id: a.id.to_string(),
+                    current: save_layer(c, &a.state.current),
+                    previous: a.state.previous.as_ref().map(|l| save_layer(c, l)),
+                    fade: a.state.fade,
+                    fade_duration: a.state.fade_duration,
+                    params: c
+                        .params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| (n.clone(), a.state.params[i]))
+                        .collect(),
+                    last_transition: a.state.last_transition,
+                    fired: a.state.fired,
+                    last_position: a.last_position,
+                    ignored_cues: a.ignored_cues,
+                }
+            }),
+        }
+    }
+
+    fn load(&mut self, s: &SavedPlayer) -> Result<()> {
+        let finite = |x: f32| x.is_finite();
+        ensure!(
+            finite(s.time) && finite(s.speed) && s.speed.abs() <= 8.0,
+            "invalid checkpoint playback"
+        );
+        if let Some(clip) = &s.clip {
+            ensure!(
+                self.clips.contains_key(clip),
+                "checkpoint clip {clip} not found"
+            );
+        }
+        self.active = s.clip.clone();
+        self.time = s.time;
+        self.playing = s.playing;
+        self.speed = s.speed;
+        self.looping = s.looping;
+        self.ramp = s.ramp;
+        self.marker_fresh = s.marker_fresh;
+        let bones = self.asset.skeleton.source.bones.len();
+        self.fade = match &s.fade {
+            Some(f) => {
+                ensure!(
+                    f.from.len() == bones
+                        && finite(f.elapsed)
+                        && finite(f.duration)
+                        && f.duration > 0.0,
+                    "invalid checkpoint fade"
+                );
+                for t in &f.from {
+                    t.validate()?;
+                }
+                Some(Fade {
+                    from: Pose {
+                        local: f.from.clone(),
+                    },
+                    elapsed: f.elapsed,
+                    duration: f.duration,
+                })
+            }
+            None => None,
+        };
+        self.overrides.clear();
+        for (bone, q) in &s.overrides {
+            ensure!(
+                q.is_finite() && (q.length_squared() - 1.0).abs() < 0.001,
+                "invalid checkpoint bone override"
+            );
+            self.overrides.insert(self.asset.skeleton.bone(bone)?, *q);
+        }
+        ensure!(
+            s.ik.keys().eq(self.ik.keys()) && s.twists.keys().eq(self.twists.keys()),
+            "checkpoint IK / twist constraints do not match the content"
+        );
+        for (id, c) in &s.ik {
+            self.ik
+                .insert(id.clone(), Arc::new(c.compile(&self.asset.skeleton)?));
+        }
+        for (id, enabled) in &s.twists {
+            let mut t = self.twists[id].source.clone();
+            t.enabled = *enabled;
+            self.twists
+                .insert(id.clone(), Arc::new(t.compile(&self.asset.skeleton)?));
+        }
+        match (&mut self.animator, &s.controller) {
+            (None, None) => {}
+            (Some(a), Some(saved)) => {
+                ensure!(
+                    *a.id == *saved.id,
+                    "checkpoint controller {} does not match {}",
+                    saved.id,
+                    a.id
+                );
+                let c = a.compiled.clone();
+                let mut state = c.start();
+                state.current = load_layer(&c, &saved.current)?;
+                state.previous = saved
+                    .previous
+                    .as_ref()
+                    .map(|l| load_layer(&c, l))
+                    .transpose()?;
+                ensure!(
+                    finite(saved.fade) && finite(saved.fade_duration),
+                    "invalid checkpoint cross-fade"
+                );
+                state.fade = saved.fade;
+                state.fade_duration = saved.fade_duration;
+                ensure!(
+                    saved.params.len() == c.params.len(),
+                    "checkpoint controller parameters do not match the content"
+                );
+                for (name, v) in &saved.params {
+                    let i = c
+                        .param(name)
+                        .with_context(|| format!("checkpoint names unknown parameter {name}"))?;
+                    ensure!(v.is_finite(), "invalid checkpoint parameter {name}");
+                    state.params[i] = *v;
+                }
+                state.last_transition = saved.last_transition;
+                state.fired = saved.fired;
+                a.state = state;
+                a.last_position = saved.last_position;
+                a.ignored_cues = saved.ignored_cues;
+            }
+            _ => anyhow::bail!("checkpoint controller layout does not match the content"),
+        }
+        self.evaluate(0.0)
     }
 }

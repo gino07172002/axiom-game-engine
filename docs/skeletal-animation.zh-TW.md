@@ -58,7 +58,7 @@ IK 使用 `root`／`middle`／`end`、模型空間 `target`、控制彎曲平面
 
 指定 PMX 有 459 根骨、19,857 個頂點、29,711 個三角形、18 個材質與 8 張 base color 貼圖。以 Blender 4.5.3 LTS 生成並烘焙的 Rigify 波動作測試。21 個關節位置樣本的最大誤差約 0.00053 mm。重定向後頂點最大位移 0.290 m，前臂 twist 開關的頂點最大差異 0.0385 m。左手 IK 在測試姿勢的殘差低於 0.001 mm。原始 PMX 與貼圖由本機路徑引用，測試內容包不內含該模型。
 
-目前 PMX 支援加權骨架與基本材質。表情 morph、布料／頭髮物理、toon／sphere shader、PMX 控制器以及 append constraints 由原工具處理或烘焙。glTF morph、超過四個權重、需要額外擴充的壓縮幾何、以及含 shear 的局部骨變換會拒絕匯入或需要事先烘焙。原生動畫播放狀態暫不提供 checkpoint。此項目完成 M3 的骨架動畫底座，能力時序與 Action 原型另屬後續工作。
+目前 PMX 支援加權骨架與基本材質。表情 morph、布料／頭髮物理、toon／sphere shader、PMX 控制器以及 append constraints 由原工具處理或烘焙。glTF morph、超過四個權重、需要額外擴充的壓縮幾何、以及含 shear 的局部骨變換會拒絕匯入或需要事先烘焙。原生動畫播放狀態(片段、時間、速度與漸變、淡入、骨骼覆寫、IK 目標、twist 開關、控制器狀態)存進 checkpoint 的 `systems`。此項目完成 M3 的骨架動畫底座，能力時序與 Action 原型另屬後續工作。
 
 ```powershell
 . .\scripts\env.ps1
@@ -81,7 +81,7 @@ cargo build --workspace
 - **轉移**:依列表順序檢查,第一個通過的觸發(`from` 可為 `*`)。`conditions` 全部成立(`gt/lt/eq/ne` 比 float、`true/false` 比 bool、`trigger`),可加 `exit_time`(來源狀態正規化時間,1 = 一個循環),`duration` 是交叉淡入秒數。淡入期間不打斷(下一個轉移等淡入結束)。
 - **執行期**:`animation.evaluate` 每個 120 Hz 固定步先更新綁定參數,再推進目前狀態(與淡出中的前一狀態)並檢查轉移,最後把最多 4 個加權片段取樣混成姿勢。控制器狀態是固定大小的 `Copy` 值、姿勢緩衝區重複使用,步進不配置記憶體(`tests/animator.rs::steady_controller_steps_do_not_allocate` 用計數配置器量到 240 步 0 次配置;retarget、twist、IK、蒙皮輸出仍沿用既有路徑,會配置)。
 - **命令**:`animation.param {entity,name,value}`(UI 按鈕、`runtime.bindings`、scenario、loopback 都走同一個 `RuntimeCommand::Call`);`animation.inspect` 與 `observe` 的 `metrics.animation.players.ID.controller` 回報目前狀態、淡出狀態、淡入比例、參數與觸發次數。
-- **確定性與存檔**:控制器狀態在 `state_hash` 內(observe metrics),同一 scenario 重播雜湊一致。動畫系統不支援 checkpoint:`save` 明確失敗並指出 `animation.evaluate`,不會只存一半。
+- **確定性與存檔**:控制器狀態在 `state_hash` 內(observe metrics),同一 scenario 重播雜湊一致。Checkpoint 的 `systems.animation.evaluate` 保存每個播放器的片段 / 時間 / 速度與漸變 / 淡入起始姿勢 / 骨骼覆寫 / IK 目標 / twist 開關、控制器的目前與淡出狀態(以名稱)、參數、觸發次數與片段完成集合;讀檔後重新求值,與未存檔的執行逐步相同(`checkpoints_round_trip_controller_and_clip_playback`)。舊格式存檔缺少這段時明確拒絕讀取,狀態或參數名稱對不上內容也會拒絕。
 - **編輯中熱重載**:修改控制器時,同名狀態與參數保留(例如 Play 中在 Graphs ▸ Animator 改轉移),狀態被刪掉時回到初始狀態。
 
 ```powershell

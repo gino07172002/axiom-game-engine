@@ -233,22 +233,93 @@ fn scenario_replay_has_the_same_state_hash() {
     assert_ne!(a["state_hash"], c["state_hash"]);
 }
 
-#[test]
-fn checkpoints_refuse_animation_state_explicitly() {
+fn savable(controller: bool) -> World {
     let mut w = lab();
     w.capabilities.insert("save".into(), 1);
-    // path.move has no checkpoint support either; leave only the animation system to refuse.
+    // path.move has no checkpoint support; the walker stands still.
     w.systems.retain(|s| s != "path.move");
-    w.entities
-        .iter_mut()
-        .find(|e| e.id == "walker")
-        .unwrap()
-        .components
-        .remove("path.follow");
-    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
-    run(&mut r, 5);
-    let e = format!("{:#}", r.checkpoint().unwrap_err());
-    assert!(e.contains("animation.evaluate"), "{e}");
+    let walker = w.entities.iter_mut().find(|e| e.id == "walker").unwrap();
+    walker.components.remove("path.follow");
+    if !controller {
+        walker.components.remove("animation.controller");
+    }
+    w
+}
+
+fn hash(r: &WorldRuntime) -> String {
+    axiom_runtime::scenario::state_hash(r).unwrap()
+}
+
+/// Checkpoints `r` now, runs both it and a runtime restored from the checkpoint for
+/// `ticks` and checks they end in the same state.
+fn round_trip(w: World, r: &mut WorldRuntime, ticks: u32) -> axiom_runtime::checkpoint::Checkpoint {
+    let saved = r.checkpoint().unwrap();
+    let text = serde_json::to_string(&saved).unwrap();
+    let saved: axiom_runtime::checkpoint::Checkpoint = serde_json::from_str(&text).unwrap();
+    let mut restored = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    restored.restore_checkpoint(&saved).unwrap();
+    assert_eq!(hash(&restored), hash(r), "restored state differs");
+    run(r, ticks);
+    run(&mut restored, ticks);
+    assert_eq!(
+        hash(&restored),
+        hash(r),
+        "replay after the checkpoint differs"
+    );
+    saved
+}
+
+#[test]
+fn checkpoints_round_trip_controller_and_clip_playback() {
+    // Controller: saved half way through the cross-fade into the wave one-shot.
+    let mut r = WorldRuntime::new(savable(true), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 20);
+    call(
+        &mut r,
+        "animation",
+        "param",
+        json!({"entity":"walker","name":"wave","value":true}),
+    )
+    .unwrap();
+    run(&mut r, 10);
+    assert_eq!(controller(&r)["previous"], "idle", "mid cross-fade");
+    let saved = round_trip(savable(true), &mut r, 240);
+    assert!(saved.systems.contains_key("animation.evaluate"));
+    assert_eq!(controller(&r)["state"], "idle");
+    // Plain player: saved during a clip fade and a speed ramp, with a bone override.
+    let mut r = WorldRuntime::new(savable(false), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 20);
+    call(
+        &mut r,
+        "animation",
+        "play",
+        json!({"entity":"walker","clip":"wave","fade_seconds":0.5,"looping":false}),
+    )
+    .unwrap();
+    call(
+        &mut r,
+        "animation",
+        "speed",
+        json!({"entity":"walker","speed":0.5,"ramp_seconds":1.0}),
+    )
+    .unwrap();
+    run(&mut r, 15);
+    let saved = round_trip(savable(false), &mut r, 300);
+    let player = &saved.systems["animation.evaluate"]["players"]["walker"];
+    assert!(
+        player["fade"].is_object() && player["ramp"].is_array(),
+        "{player}"
+    );
+    // A checkpoint without the animation state (an older save) is refused, not half loaded.
+    let mut old = saved.clone();
+    old.systems.clear();
+    let mut fresh =
+        WorldRuntime::new(savable(false), 1, axiom_runtime::installed_registry()).unwrap();
+    let e = format!("{:#}", fresh.restore_checkpoint(&old).unwrap_err());
+    assert!(
+        e.contains("lacks the state of system animation.evaluate"),
+        "{e}"
+    );
 }
 
 #[test]

@@ -304,6 +304,14 @@ pub trait RuntimeSystem: Any + Send {
     fn checkpoint_ready(&self) -> Result<()> {
         Ok(())
     }
+    /// Simulation state this system stores in checkpoints (`Checkpoint.systems`), if any.
+    fn save_state(&self, _state: &RuntimeState) -> Option<Result<Value>> {
+        None
+    }
+    /// Restores what `save_state` stored, into this freshly built system (before `restored`).
+    fn load_state(&mut self, _state: &mut RuntimeState, _value: &Value) -> Result<()> {
+        anyhow::bail!("this system stores no checkpoint state")
+    }
     /// A checkpoint was just loaded into this freshly built system's runtime.
     fn restored(&mut self, _state: &RuntimeState) {}
     fn as_any(&self) -> &dyn Any;
@@ -783,6 +791,41 @@ impl WorldRuntime {
         for (id, s) in &self.systems {
             s.checkpoint_ready()
                 .map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?;
+        }
+        Ok(())
+    }
+    /// State of every system that stores some (`RuntimeSystem::save_state`).
+    pub(crate) fn save_system_states(&self) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for (id, s) in &self.systems {
+            if let Some(v) = s.save_state(&self.state) {
+                out.insert(
+                    id.clone(),
+                    v.map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?,
+                );
+            }
+        }
+        Ok(out)
+    }
+    /// Loads saved system states; a system that stores state must find it and every saved
+    /// entry must belong to a running system (nothing is dropped silently).
+    pub(crate) fn load_system_states(&mut self, saved: &BTreeMap<String, Value>) -> Result<()> {
+        for id in saved.keys() {
+            ensure!(
+                self.systems.iter().any(|(s, _)| s == id),
+                "checkpoint holds state of system {id}, which this world does not run"
+            );
+        }
+        for (id, s) in &mut self.systems {
+            match (saved.get(id.as_str()), s.save_state(&self.state).is_some()) {
+                (Some(v), _) => s
+                    .load_state(&mut self.state, v)
+                    .map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?,
+                (None, true) => anyhow::bail!(
+                    "checkpoint lacks the state of system {id} (saved before it supported checkpoints)"
+                ),
+                (None, false) => {}
+            }
         }
         Ok(())
     }

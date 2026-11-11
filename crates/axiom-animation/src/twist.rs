@@ -32,7 +32,7 @@ impl Default for Twist {
     }
 }
 pub struct CompiledTwist {
-    source: Twist,
+    pub source: Twist,
     driver: usize,
     helpers: Vec<(usize, f32)>,
     preserve: Vec<usize>,
