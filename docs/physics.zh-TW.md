@@ -100,7 +100,7 @@ call physics impulse {"id":"crate","impulse":[0,6,0]}
 
 ## 效能
 
-見 ADR 補記的 release 量測(`perf_bench --generated-physics N`):每步成本隨醒著的剛體數成長,睡著的剛體幾乎不花時間。剛體與碰撞體在建立執行期時一次配置;本模組的穩定步進不配置記憶體(rapier 內部的配置次數一併量測)。
+release 量測(`perf_bench --generated-physics N --ticks 600`,全部醒著、4 個一疊,3 輪 p50 的中位數,機器同時有其他編譯):64 / 256 / 1024 剛體每步 0.28 / 0.74 / 2.65 ms。睡著的剛體幾乎不花時間。剛體與碰撞體在建立執行期時一次配置;本模組的步進迴圈不配置記憶體,但 rapier 內部每步仍有 15 / 21 / 27 次配置(約 3 / 12 / 49 KB)。
 
 ## 限制
 
