@@ -35,9 +35,10 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) world: vec3<f3
         direct+=sun.color.rgb*max(dot(n,ld),0.0)*lit_by;
         spec+=sun.specular.rgb*(pow(max(dot(n,normalize(ld+view)),0.0),48.0)*0.17*lit_by);
     }
-    // material.zw = render.surface (metallic, smoothness + 1; 0 = no render.surface).
+    // material.zw = render.surface (metallic, smoothness + 1; 0 = no render.surface);
+    // view_params.w = 1 is the Unlit display (no reflections).
     var diffuse=base;var reflection=vec3<f32>(0.0);
-    if v.material.w>0.5 {
+    if v.material.w>0.5 && g.view_params.w<0.5 {
         diffuse=base*(1.0-v.material.z);
         reflection=axiom_reflection(base,n,view,v.material.z,v.material.w-1.0);
     }

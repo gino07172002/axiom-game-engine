@@ -270,6 +270,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                 };
                 materials.push(Material {
                     id: format!("{}/{}/{}", node.index(), mesh.index(), primitive.index()),
+                    name: mat.name().map(str::to_owned),
                     first_index: start,
                     index_count: indices.len() as u32 - start,
                     color: pbr.base_color_factor(),

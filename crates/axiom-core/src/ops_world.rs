@@ -397,6 +397,8 @@ pub fn default_value(world: &World, registry: &Registry, id: &str) -> Option<Val
         }
         "render.light" => crate::ops::preset_light("light.point").map(|l| json!(l)),
         "render.surface" => typed::<crate::light::RenderSurface>(),
+        "render.toon" => typed::<crate::style::RenderToon>(),
+        "render.outline" => typed::<crate::style::RenderOutline>(),
         "trigger.zone" => crate::ops::preset_trigger("trigger.box").map(|z| json!(z)),
         "path.spline" => Some(json!(crate::path::PathSpline::preset())),
         "nav.blocker" => Some(json!({"half":[0.5,0.5],"offset":[0.0,0.0]})),

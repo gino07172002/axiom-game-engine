@@ -244,6 +244,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         };
         materials.push(Material {
             id: format!("{i}/{name}"),
+            name: Some(name.clone()),
             first_index: offset,
             index_count: count,
             color,

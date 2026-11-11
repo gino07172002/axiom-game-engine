@@ -112,4 +112,9 @@ pub struct MeshFrame {
     pub material: Option<String>,
     /// The entity's `render.surface` (reflections; used when the world authors lighting).
     pub surface: Option<axiom_core::RenderSurface>,
+    /// `render.toon` / `render.outline` / `render.decal`, resolved at runtime build.
+    pub style: Option<std::sync::Arc<crate::mesh_style::MeshStyle>>,
+    /// This frame's face and decal-projector spaces (bone world matrices, else `model`);
+    /// identity without a style.
+    pub style_space: [Mat4; 2],
 }

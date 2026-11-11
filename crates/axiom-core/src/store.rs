@@ -551,7 +551,8 @@ impl Store {
             | Request::Save { .. }
             | Request::Load { .. }
             | Request::EditorView { .. }
-            | Request::Screenshot { .. } => {
+            | Request::Screenshot { .. }
+            | Request::ReloadAssets { .. } => {
                 anyhow::bail!("runtime request requires a live engine connection")
             }
             Request::Schema { topic } => self.registry.schema(topic.as_deref()),

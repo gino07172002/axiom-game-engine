@@ -103,6 +103,8 @@ struct App {
     activation: Option<Activation>,
     /// Editor Changes-list diff for an external revision, computed off the main thread.
     changes_job: Option<(i64, crate::jobs::Job<serde_json::Value>)>,
+    /// Model hot reload by content hash (`reload_assets`, editor `asset.reload|watch`).
+    asset_reload: crate::asset_reload::Reload,
     /// Frames over the 16 ms budget and the phases of the last one (`observe` -> `frame`).
     slow_frames: u64,
     last_slow_frame: Option<serde_json::Value>,
@@ -767,6 +769,7 @@ impl App {
             background_activation: false,
             activation: None,
             changes_job: None,
+            asset_reload: Default::default(),
             slow_frames: 0,
             last_slow_frame: None,
             writes: None,
@@ -1574,6 +1577,11 @@ impl App {
         if let Some(reload) = self.reload_metrics() {
             observation.metrics.insert("reload".into(), reload);
         }
+        if self.asset_reload.watch || self.asset_reload.reloads > 0 || self.asset_reload.running() {
+            observation
+                .metrics
+                .insert("assets_reload".into(), self.asset_reload.observation());
+        }
         if self.slow_frames > 0 {
             observation.metrics.insert(
                 "frame".into(),
@@ -1787,6 +1795,7 @@ impl App {
                 }
                 result
             }
+            Request::ReloadAssets { watch, cancel } => self.reload_assets(watch, cancel),
             Request::Screenshot { .. } => anyhow::bail!(
                 "screenshot replies when its PNG is written; send it over the loopback bridge (axiom --connect ADDR rpc)"
             ),
@@ -2025,6 +2034,93 @@ impl App {
         }
         self.record_reload(timings);
         Ok(())
+    }
+
+    /// `reload_assets` / editor `asset.reload|watch`.
+    fn reload_assets(&mut self, watch: Option<bool>, cancel: bool) -> Result<serde_json::Value> {
+        if cancel {
+            return Ok(serde_json::json!({"ok":true,"cancelled":self.asset_reload.cancel()}));
+        }
+        if let Some(watch) = watch {
+            self.asset_reload.watch = watch;
+            return Ok(serde_json::json!({"ok":true,"watch":watch}));
+        }
+        self.asset_reload.start(&self.runtime, "command")
+    }
+
+    /// Non-blocking; once per frame. Starts a watched reload and adopts a finished one (the
+    /// same main-thread swap as a revision activation).
+    fn poll_asset_reload(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            if let Some(ask) = editor.take_asset_reload() {
+                let result = match ask {
+                    crate::editor::AssetReloadAsk::Now => {
+                        self.asset_reload.start(&self.runtime, "command").map(drop)
+                    }
+                    crate::editor::AssetReloadAsk::Watch(on) => {
+                        self.asset_reload.watch = on;
+                        Ok(())
+                    }
+                };
+                if let (Err(error), Some(editor)) = (result, &mut self.editor) {
+                    editor.set_error(format!("Asset reload: {error:#}"));
+                }
+            }
+        }
+        if self.asset_reload.watch_due(&self.runtime) {
+            if let Err(error) = self.asset_reload.start(&self.runtime, "watch") {
+                self.ui.output.push(format!("asset reload: {error:#}"));
+            }
+        }
+        if let Some(editor) = &mut self.editor {
+            editor.host_job = self.asset_reload.job_observation();
+        }
+        let Some((result, elapsed)) = self.asset_reload.poll() else {
+            return;
+        };
+        let busy = self.activation.is_some();
+        match self
+            .asset_reload
+            .decide(result, elapsed, &self.runtime, busy)
+        {
+            crate::asset_reload::Decision::Discard(stale) => {
+                if let Some(stale) = stale {
+                    retire(stale);
+                }
+            }
+            crate::asset_reload::Decision::Adopt(next) => {
+                let started = Instant::now();
+                let renderer = &mut self.renderer;
+                let adopted = self.runtime.adopt(
+                    Ok(*next),
+                    |next| {
+                        if let Some(renderer) = renderer {
+                            renderer.prepare_shaders(next.shaders())?;
+                        }
+                        Ok(())
+                    },
+                    started,
+                );
+                let adopt_ms = ms(started);
+                match adopted {
+                    Ok(old) => {
+                        retire(old);
+                        self.asset_reload.adopted(Ok(()), adopt_ms);
+                    }
+                    Err(error) => self.asset_reload.adopted(Err(error), adopt_ms),
+                }
+            }
+        }
+        if let Some(line) = self.asset_reload.summary() {
+            self.ui.output.push(line.clone());
+            if let Some(editor) = &mut self.editor {
+                if line.starts_with("Asset reload ") {
+                    editor.set_error(line);
+                } else {
+                    editor.notice(line);
+                }
+            }
+        }
     }
 
     fn poll_changes(&mut self) {
@@ -2605,6 +2701,7 @@ impl App {
         }
         self.poll_activation()?;
         self.poll_changes();
+        self.poll_asset_reload();
         phases.mark("simulate");
         let window = self.window.as_ref().unwrap().clone();
         let mut raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);

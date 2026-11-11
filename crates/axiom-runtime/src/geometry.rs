@@ -168,6 +168,7 @@ impl Geometry {
             indices,
             materials: vec![Material {
                 id: "surface".into(),
+                name: None,
                 first_index: 0,
                 index_count: count,
                 color: [1.0; 4],
@@ -184,9 +185,16 @@ impl Geometry {
         Ok(asset)
     }
 }
+/// Slot, asset, undeformed vertices and the slot's stylized look.
+type GeometryMesh = (
+    usize,
+    Arc<Asset>,
+    Arc<Vec<SkinnedVertex>>,
+    Option<Arc<crate::mesh_style::MeshStyle>>,
+);
 struct GeometrySystem {
     /// Slot, asset and its undeformed vertices (built once; presented every frame).
-    meshes: Vec<(usize, Arc<Asset>, Arc<Vec<SkinnedVertex>>)>,
+    meshes: Vec<GeometryMesh>,
 }
 impl RuntimeSystem for GeometrySystem {
     fn as_any(&self) -> &dyn Any {
@@ -198,7 +206,7 @@ impl RuntimeSystem for GeometrySystem {
     fn step(&mut self, _state: &mut RuntimeState, _input: &ActionMap) {}
     fn extract(&self, state: &RuntimeState, frame: &mut RenderFrame) {
         let matrices = state.matrices();
-        for (slot, asset, vertices) in &self.meshes {
+        for (slot, asset, vertices, style) in &self.meshes {
             if !state.compiled.enabled[*slot] {
                 continue;
             }
@@ -212,6 +220,10 @@ impl RuntimeSystem for GeometrySystem {
                     .as_ref()
                     .map(|m| m.id.clone()),
                 surface: state.compiled.entities[*slot].surface,
+                style: style.clone(),
+                style_space: style.as_ref().map_or([glam::Mat4::IDENTITY; 2], |s| {
+                    crate::mesh_style::spaces(s, matrices[*slot], |_| glam::Mat4::IDENTITY)
+                }),
             });
         }
     }
@@ -284,7 +296,8 @@ pub fn register(r: &mut RuntimeRegistry) {
                         })
                         .collect(),
                 );
-                meshes.push((i, asset, vertices));
+                let style = crate::mesh_style::prepare(state, i, &asset)?;
+                meshes.push((i, asset, vertices, style));
             }
         }
         Ok(Box::new(GeometrySystem { meshes }))

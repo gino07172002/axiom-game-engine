@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "id": "style-lab",
+  "title": "Style Lab · toon ramp, outline, decals",
+  "capabilities": {"animation":1,"behavior":1,"core":1,"render":1,"ui":1},
+  "systems": ["geometry.prepare","animation.evaluate","behavior.execute"],
+  "entities": [
+    {"id":"sun","label":"Sun (casts shadows)","components":{
+      "core.transform":{"position":[-2,5,4],"rotation":[-0.3535534,-0.3535534,-0.1464466,0.8535534]},
+      "render.light":{"kind":"directional","color":[1,0.96,0.9],"intensity":1.2,"shadows":true}
+    }},
+    {"id":"camera/stage","label":"Stage camera","components":{
+      "core.transform":{"position":[0,0.85,3.4],"rotation":[-0.0348995,0,0,0.9993908]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":38},"near":0.05,"far":60,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"stage/floor","label":"Floor","components":{
+      "core.transform":{"position":[0,-0.05,-0.6],"scale":[10,0.1,8]},
+      "render.mesh":{"parts":[{"color":[0.42,0.44,0.5],"grid":true}]}
+    }},
+    {"id":"stage/backdrop","label":"Backdrop","components":{
+      "core.transform":{"position":[0,1.6,-2.4]},
+      "render.mesh":{"parts":[{"transform":{"scale":[10,3.4,0.1]},"color":[0.78,0.8,0.86]}]}
+    }},
+    {"id":"mascot/plain","label":"Mascot · built-in lit shader (no style)","components":{
+      "core.transform":{"position":[-1.05,0,0],"rotation":[0,0.1305262,0,0.9914449]},
+      "animation.player":{"asset":"axiom-short","clip":"idle","speed":0.8}
+    }},
+    {"id":"mascot/toon","label":"Mascot · render.toon (ramp, rim, face, skin approximation) + render.outline","components":{
+      "core.transform":{"position":[-0.35,0,0],"rotation":[0,0.0436194,0,0.9990482]},
+      "animation.player":{"asset":"axiom-short","clip":"idle","speed":0.8},
+      "render.toon":{"bands":1,"softness":0.06,"threshold":0.0,"shadow_color":[0.7,0.64,0.84],"rim_color":[1,0.95,0.9],"rim_strength":0.35,"rim_power":4,
+        "skin":{"wrap":0.45,"tint":[1,0.38,0.3],"materials":["skin","blush"]},
+        "face":{"bone":"head","forward":[0,0,1],"blend":0.75,"materials":["skin","blush","eye","pupil"]}},
+      "render.outline":{"width":2.5,"units":"pixels","color":[0.08,0.05,0.12]}
+    }},
+    {"id":"mascot/decal","label":"Mascot · toon + outline + projected decal on the chest bone","components":{
+      "core.transform":{"position":[0.35,0,0],"rotation":[0,-0.0436194,0,0.9990482]},
+      "animation.player":{"asset":"axiom-long","clip":"idle","speed":0.8},
+      "render.toon":{"bands":3,"softness":0.12,"shadow_color":[0.6,0.54,0.74],"rim_strength":0.25,
+        "skin":{"wrap":0.45,"materials":["skin","blush"]},
+        "face":{"bone":"head","blend":0.75,"materials":["skin","blush","eye","pupil"]}},
+      "render.outline":{"width":0.006,"units":"meters","color":[0.1,0.06,0.14]},
+      "render.decal":{"image":"emblem","projector":{"bone":"chest","position":[0,0.07,0.12],"size":[0.11,0.11,0.2]}}
+    }},
+    {"id":"ball","label":"Procedural sphere · toon + outline + UV decal band","components":{
+      "core.transform":{"position":[1.05,0.36,0.1],"scale":[0.34,0.34,0.34]},
+      "render.geometry":{"shape":"sphere","segments":48,"rings":32},
+      "render.toon":{"bands":3,"softness":0.1,"shadow_color":[0.5,0.55,0.75]},
+      "render.outline":{"width":2,"color":[0.06,0.05,0.1]},
+      "render.decal":{"image":"label","rect":[0,0.38,0.5,0.62]}
+    }}
+  ],
+  "scenes":[{"id":"style-stage","active":true,"entities":["sun","camera/stage","stage/floor","stage/backdrop","mascot/plain","mascot/toon","mascot/decal","ball"]}],
+  "resources": {
+    "animation.library":{"assets":{"axiom-short":{"path":"axiom-short.glb"},"axiom-long":{"path":"axiom-long.glb"}}},
+    "behavior.program":{},
+    "ui.document":{"locale":"en","catalogs":{"en":{}},"widgets":[],"images":{"emblem":"emblem.png","label":"label.png"}},
+    "render.environment":{"sky":{"mode":"procedural"},"ambient":{"mode":"sky","intensity":0.9}},
+    "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":6}
+  }
+}

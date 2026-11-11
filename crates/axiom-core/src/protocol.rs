@@ -163,6 +163,17 @@ pub enum Request {
         #[serde(default)]
         region: Option<String>,
     },
+    /// Reload the running world's model files (glb / gltf / pmx) whose content hash changed,
+    /// in a background job; the reply comes at once, the outcome in `observe` ->
+    /// `assets_reload`. A changed skeleton is refused. `watch`: reload whenever a model file
+    /// changes (true) or stop watching (false) instead of reloading now; `cancel`: cancel the
+    /// running reload.
+    ReloadAssets {
+        #[serde(default)]
+        watch: Option<bool>,
+        #[serde(default)]
+        cancel: bool,
+    },
 }
 impl Request {
     pub fn is_runtime(&self) -> bool {
@@ -176,6 +187,7 @@ impl Request {
                 | Self::Load { .. }
                 | Self::EditorView { .. }
                 | Self::Screenshot { .. }
+                | Self::ReloadAssets { .. }
         )
     }
 }

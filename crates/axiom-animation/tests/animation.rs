@@ -43,6 +43,7 @@ fn asset(s: CompiledSkeleton) -> Asset {
         indices: vec![0, 0, 0],
         materials: vec![Material {
             id: "m".into(),
+            name: None,
             first_index: 0,
             index_count: 3,
             color: [1.; 4],

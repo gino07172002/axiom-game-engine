@@ -501,6 +501,8 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     a("asset.reveal", "Assets: Show Asset…", "Assets", "KIND:ID"),
     c("asset.thumbnails", "Generate Thumbnails", "Assets", ""),
+    c("asset.reload", "Reload Changed Models", "Assets", ""),
+    a("asset.watch", "Watch Model Files", "Assets", "on|off (none = toggle)"),
     c(
         "asset.cancel_thumbnails",
         "Cancel Thumbnail Job",
@@ -1074,6 +1076,10 @@ impl Editor {
             "play.time_scale" | "game.aspect" | "game.camera" | "game.main_camera"
         ) {
             return self.play_command(id, arg);
+        }
+        if matches!(id, "asset.reload" | "asset.watch") {
+            self.reload_command(id, arg)?;
+            return Ok(vec![]);
         }
         if id.starts_with("asset.") {
             return self.asset_command(id, arg);
@@ -1908,7 +1914,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
                 "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
                 "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",
-                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.display_mode, view.screenshot, asset.folder, asset.reveal, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.display_mode, view.screenshot, asset.folder, asset.reveal, asset.reload, asset.watch, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
