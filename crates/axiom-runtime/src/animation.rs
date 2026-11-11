@@ -63,6 +63,9 @@ struct Controller {
     /// This step's playback interval of the primary clip (prev, end; unwrapped): seconds,
     /// or normalized time of the controller state when the flag is set.
     crossing: Option<(f32, f32, bool)>,
+    /// Controller only: the last step of the state a transition just left (state, prev, end),
+    /// in that state's normalized time.
+    exit_crossing: Option<(u16, f32, f32)>,
     /// `animation.player.on_end` (index into the system's events).
     on_end: Option<usize>,
     /// `animation.controller`: when present it chooses the clips (and `play` is refused).
@@ -172,6 +175,7 @@ impl Controller {
             animator: None,
             marker_fresh: true,
             crossing: None,
+            exit_crossing: None,
             on_end: None,
             accum: Pose { local: vec![] },
             scratch: Pose { local: vec![] },
@@ -630,15 +634,20 @@ impl RuntimeSystem for AnimationSystem {
                     }
                 }
                 if p.playing {
-                    let before = a.state.current;
-                    let fired = a.state.fired;
-                    a.compiled.tick(&mut a.state, FIXED_DT * p.speed.max(0.0));
-                    // Marker interval in normalized time of the current state's clip.
+                    let dt = FIXED_DT * p.speed.max(0.0);
+                    let snapshot = a.state;
+                    let before = snapshot.current;
+                    a.compiled.tick(&mut a.state, dt);
+                    // Marker intervals in normalized time of the state's clip; a transition
+                    // first finishes the left state's last step, then starts the new one at 0.
                     let after = a.state.current;
-                    p.crossing = Some(if a.state.fired != fired {
+                    let prev = if p.marker_fresh { -1e-4 } else { before.frac };
+                    p.crossing = Some(if a.state.fired != snapshot.fired {
+                        let left = a.compiled.advanced(&snapshot, before, dt);
+                        let laps = left.loops.saturating_sub(before.loops) as f32;
+                        p.exit_crossing = Some((before.state, prev, left.frac + laps));
                         (-1e-4, after.normalized(), true)
                     } else {
-                        let prev = if p.marker_fresh { -1e-4 } else { before.frac };
                         let laps = after.loops.saturating_sub(before.loops) as f32;
                         (prev, after.frac + laps, true)
                     });
@@ -647,6 +656,9 @@ impl RuntimeSystem for AnimationSystem {
                 if p.speed > 0.0 && p.active.is_some() {
                     let prev = if p.marker_fresh { -1e-4 } else { p.time };
                     p.crossing = Some((prev, p.time.max(0.0) + FIXED_DT * p.speed, false));
+                } else if p.speed < 0.0 {
+                    // Markers fire forward only; a reverse run is no fresh start.
+                    p.marker_fresh = false;
                 }
                 p.time += FIXED_DT * p.speed;
                 if let Some(clip) = p.active.as_ref().and_then(|id| p.clips.get(id)) {
@@ -665,6 +677,7 @@ impl RuntimeSystem for AnimationSystem {
                     f.elapsed = elapsed;
                 }
                 p.crossing = None;
+                p.exit_crossing = None;
                 // The position read this step stays the reference for the next speed sample.
                 if let (Some(a), Some(s)) = (&mut p.animator, saved.2) {
                     a.state = s;
@@ -764,14 +777,16 @@ impl RuntimeSystem for AnimationSystem {
             let mut p = old.clone();
             match action {
                 "play" => {
-                    state.animation_cues.finished.remove(entity);
                     p.play(serde_json::from_value(args.clone())?)?;
+                    state.animation_cues.finished.remove(entity);
                 }
                 "seek" => {
                     let a: SeekArgs = serde_json::from_value(args.clone())?;
                     p.time = a.seconds;
                     p.playing = !a.paused;
                     p.fade = None;
+                    // A jump fires nothing on the way; only a seek to 0 restarts the markers.
+                    p.marker_fresh = a.seconds == 0.0;
                 }
                 "ik" => {
                     let a: IkArgs = serde_json::from_value(args.clone())?;
@@ -843,12 +858,16 @@ impl RuntimeSystem for AnimationSystem {
             .as_any()
             .downcast_ref::<Self>()
             .context("animation transfer type")?;
+        self.fired = old.fired;
+        self.emit_fault.clone_from(&old.emit_fault);
         for (id, p) in &mut self.players {
             if let Some(previous) = old.players.get(id) {
                 if p.config.asset == previous.config.asset
                     && p.config.retarget == previous.config.retarget
                 {
                     p.time = previous.time;
+                    // The same playback continues: markers already passed do not fire again.
+                    p.marker_fresh = previous.marker_fresh;
                     if p.config.clip == previous.config.clip {
                         p.active = previous.active.clone();
                         p.playing = previous.playing;
@@ -869,6 +888,7 @@ impl RuntimeSystem for AnimationSystem {
                         a.state = a.compiled.carry(&b.compiled, &b.state);
                         a.last_position = b.last_position;
                         a.ignored_cues = b.ignored_cues;
+                        p.marker_fresh = previous.marker_fresh;
                         p.evaluate(0.)?;
                     }
                 }
@@ -1033,6 +1053,24 @@ fn compile_markers(
         }
         markers.insert(clip.clone(), out);
     }
+    // A marker past the end of a clip a player has would never fire.
+    for (clip, list) in &markers {
+        for p in players.values() {
+            if let Some(c) = p.clips.get(clip) {
+                let d = c.source.duration;
+                if let Some(m) = list.iter().find(|m: &&CMarker| m.at > d + 1e-4) {
+                    return Err(axiom_core::Diagnostic::error(
+                        "marker_out_of_range",
+                        format!(
+                            "/resources/animation.library/markers/{}",
+                            axiom_core::local::escape(clip)
+                        ),
+                        format!("marker at {} s is past the end of {clip} ({d} s)", m.at),
+                    ));
+                }
+            }
+        }
+    }
     for (id, p) in players.iter_mut() {
         if let Some(e) = p.config.on_end.clone() {
             let path = format!("{}/on_end", component_path(id));
@@ -1082,7 +1120,7 @@ fn crossings(
         if k >= 1 && prev < base && base <= end {
             hit(None);
         }
-        for m in list.iter().filter(|m| m.at < duration) {
+        for m in list.iter().filter(|m| m.at <= duration) {
             let t = base + m.at;
             if prev < t && t <= end {
                 hit(Some(m));
@@ -1096,8 +1134,24 @@ impl AnimationSystem {
     /// one-shot `finished` set (FSM `clip_finished`). No allocation unless something fires.
     fn fire_markers(&mut self, state: &mut RuntimeState) {
         let tick = state.tick;
-        for (id, p) in &mut self.players {
+        let Self {
+            players,
+            markers,
+            events,
+            fired,
+            emit_fault,
+            ..
+        } = self;
+        let mut out = Delivery {
+            state,
+            events,
+            fired,
+            fault: emit_fault,
+            tick,
+        };
+        for (id, p) in players.iter_mut() {
             let crossing = p.crossing.take();
+            let exit = p.exit_crossing.take();
             if crossing.is_some() {
                 p.marker_fresh = false;
             }
@@ -1112,63 +1166,100 @@ impl AnimationSystem {
                 Some(a) => a.compiled.finished(&a.state),
                 None => primary.is_some_and(|(_, d, looping)| !looping && p.time >= d),
             };
-            let listed = state.animation_cues.finished.contains(id);
+            let finished_set = &mut out.state.animation_cues.finished;
+            let listed = finished_set.contains(id);
             if finished && !listed {
-                state.animation_cues.finished.insert(id.clone());
+                finished_set.insert(id.clone());
             } else if !finished && listed {
-                state.animation_cues.finished.remove(id);
+                finished_set.remove(id);
             }
-            let (Some((prev, end, normalized)), Some((clip, duration, looping))) =
-                (crossing, primary)
-            else {
+            // The state a transition left finishes its last step first.
+            if let (Some((left, prev, end)), Some(a)) = (exit, &p.animator) {
+                if let Some((clip, duration, looping)) = a.compiled.primary_of(&a.state, left) {
+                    let list = markers.get(clip).map_or(&[][..], Vec::as_slice);
+                    out.cross(
+                        id,
+                        clip,
+                        list,
+                        (duration, looping),
+                        (prev, end, true),
+                        p.on_end,
+                    );
+                }
+            }
+            let (Some(crossing), Some((clip, duration, looping))) = (crossing, primary) else {
                 continue;
             };
-            let list = self.markers.get(clip).map_or(&[][..], Vec::as_slice);
-            if list.is_empty() && p.on_end.is_none() {
-                continue;
+            let list = markers.get(clip).map_or(&[][..], Vec::as_slice);
+            out.cross(id, clip, list, (duration, looping), crossing, p.on_end);
+        }
+    }
+}
+
+/// Where marker / end events of one step go.
+struct Delivery<'a> {
+    state: &'a mut RuntimeState,
+    events: &'a [EventInfo],
+    fired: &'a mut u64,
+    fault: &'a mut Option<String>,
+    tick: u64,
+}
+
+impl Delivery<'_> {
+    /// Fires what `crossing` (prev, end, normalized?) passes in `clip`.
+    fn cross(
+        &mut self,
+        entity: &str,
+        clip: &str,
+        list: &[CMarker],
+        (duration, looping): (f32, bool),
+        (prev, end, normalized): (f32, f32, bool),
+        on_end: Option<usize>,
+    ) {
+        if list.is_empty() && on_end.is_none() {
+            return;
+        }
+        let scale = if normalized { duration } else { 1.0 };
+        crossings(list, duration, looping, prev * scale, end * scale, |m| {
+            let (event, cue) = match m {
+                Some(m) => (m.event, m.cue.as_deref()),
+                None => (on_end, None),
+            };
+            if let Some(cue) = cue {
+                self.state.audio.emit(self.tick, cue);
+                *self.fired += 1;
             }
-            let scale = if normalized { duration } else { 1.0 };
-            let (events, fired, fault, on_end) = (
-                &self.events,
-                &mut self.fired,
-                &mut self.emit_fault,
-                p.on_end,
-            );
-            crossings(list, duration, looping, prev * scale, end * scale, |m| {
-                let (event, cue) = match m {
-                    Some(m) => (m.event, m.cue.as_deref()),
-                    None => (on_end, None),
-                };
-                if let Some(cue) = cue {
-                    state.audio.emit(tick, cue);
-                    *fired += 1;
-                }
-                let Some(e) = event else { return };
-                let info = &events[e];
-                let mut fields = BTreeMap::new();
-                if info.entity {
-                    fields.insert("entity".to_owned(), Scalar::Text(id.clone()));
-                }
-                if info.clip {
-                    fields.insert("clip".to_owned(), Scalar::Text(clip.to_owned()));
-                }
-                let result = match state.gameplay.as_mut() {
-                    Some(g) => g.command(
-                        &RuntimeCommand::Emit {
-                            event: info.name.clone(),
-                            fields,
-                        },
-                        tick,
-                    ),
-                    None => Err(anyhow::anyhow!("behavior.execute is not running")),
-                };
-                match result {
-                    Ok(()) => *fired += 1,
-                    Err(e) => {
-                        fault.get_or_insert_with(|| format!("emit {}: {e:#}", info.name));
-                    }
-                }
-            });
+            if let Some(e) = event {
+                self.emit(e, entity, clip);
+            }
+        });
+    }
+
+    fn emit(&mut self, event: usize, entity: &str, clip: &str) {
+        let info = &self.events[event];
+        let mut fields = BTreeMap::new();
+        if info.entity {
+            fields.insert("entity".to_owned(), Scalar::Text(entity.to_owned()));
+        }
+        if info.clip {
+            fields.insert("clip".to_owned(), Scalar::Text(clip.to_owned()));
+        }
+        let result = match self.state.gameplay.as_mut() {
+            Some(g) => g.command(
+                &RuntimeCommand::Emit {
+                    event: info.name.clone(),
+                    fields,
+                },
+                self.tick,
+            ),
+            None => Err(anyhow::anyhow!("behavior.execute is not running")),
+        };
+        match result {
+            Ok(()) => *self.fired += 1,
+            Err(e) => {
+                self.fault
+                    .get_or_insert_with(|| format!("emit {}: {e:#}", info.name));
+            }
         }
     }
 }

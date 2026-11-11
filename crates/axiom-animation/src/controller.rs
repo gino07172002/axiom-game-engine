@@ -816,7 +816,12 @@ impl Compiled {
     /// The clip that dominates the current state (a clip, or the heaviest blend point), with
     /// its length in seconds and whether the state loops: marker and end events follow it.
     pub fn primary(&self, s: &State) -> Option<(&str, f32, bool)> {
-        match &self.motions[s.current.state as usize] {
+        self.primary_of(s, s.current.state)
+    }
+
+    /// [`Self::primary`] of any state (a state a transition just left).
+    pub fn primary_of(&self, s: &State, state: u16) -> Option<(&str, f32, bool)> {
+        match &self.motions[state as usize] {
             CMotion::Rest => None,
             CMotion::Clip {
                 clip,
@@ -839,6 +844,12 @@ impl Compiled {
                 Some((&points[i].clip, points[i].duration, *looping))
             }
         }
+    }
+
+    /// `layer` advanced by `dt` seconds under `s` (what `tick` does before any transition).
+    pub fn advanced(&self, s: &State, mut layer: Layer, dt: f32) -> Layer {
+        self.advance(s, &mut layer, dt);
+        layer
     }
 
     /// The current state plays once and has reached its end (FSM `clip_finished`).

@@ -631,3 +631,72 @@ fn an_fsm_continues_after_a_one_shot_clip_with_clip_finished() {
         "walk"
     );
 }
+
+#[test]
+fn a_transition_finishes_the_left_state_and_edits_or_seeks_do_not_refire_markers() {
+    // Controller + on_end: idle plays the 3 s sit clip, so in this window only the wave
+    // one-shot completes, in the very step its exit-time transition leaves it.
+    let mut w = eventful(true);
+    let c = &mut w.resources.get_mut("animation.controllers").unwrap()["controllers"]["locomotion"];
+    c["states"]["idle"]["motion"]["clip"] = json!("sit");
+    w.entities
+        .iter_mut()
+        .find(|e| e.id == "walker")
+        .unwrap()
+        .components
+        .get_mut("animation.player")
+        .unwrap()["on_end"] = json!("looped");
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 10);
+    call(
+        &mut r,
+        "animation",
+        "param",
+        json!({"entity":"walker","name":"wave","value":true}),
+    )
+    .unwrap();
+    run(&mut r, 240);
+    assert_eq!(controller(&r)["state"], "idle");
+    assert_eq!(variable(&r, "loops"), 1, "the wave completion fired on_end");
+    // Plain player: a content edit during play keeps the markers already passed.
+    let mut r = WorldRuntime::new(eventful(false), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 60);
+    assert_eq!(variable(&r, "beats"), 1);
+    let mut edited = eventful(false);
+    edited.resources.get_mut("animation.library").unwrap()["markers"]["walk"] =
+        json!([{"at":0.1,"event":"beat","cue":"chime"},{"at":0.9,"event":"beat"}]);
+    r.reconcile(edited, 2).unwrap();
+    run(&mut r, 24);
+    assert_eq!(
+        variable(&r, "beats"),
+        1,
+        "the 0.1 marker did not fire again"
+    );
+    run(&mut r, 36);
+    assert_eq!(variable(&r, "beats"), 2, "the new 0.9 marker fired");
+    // play + seek in one tick: the jump fires nothing.
+    call(
+        &mut r,
+        "animation",
+        "play",
+        json!({"entity":"walker","clip":"walk"}),
+    )
+    .unwrap();
+    call(
+        &mut r,
+        "animation",
+        "seek",
+        json!({"entity":"walker","seconds":0.5}),
+    )
+    .unwrap();
+    run(&mut r, 12);
+    assert_eq!(variable(&r, "beats"), 2);
+    // A marker past the end of a clip is refused.
+    let mut w = eventful(false);
+    w.resources.get_mut("animation.library").unwrap()["markers"]["walk"][0]["at"] = json!(5.0);
+    let e = WorldRuntime::new(w, 1, axiom_runtime::installed_registry())
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap();
+    assert!(e.contains("past the end of walk"), "{e}");
+}
