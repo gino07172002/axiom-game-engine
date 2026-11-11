@@ -84,3 +84,10 @@
 - M1(walking skeleton):控制器型別 + 驗證 + runtime 整合 + `content/animator-lab`(mascot 的 idle / walk / run / wave,沿 path 行走,速度驅動)+ headless 測試 + GPU 畫面。
 - M2:ops(`anim_create` / `anim_param` / `anim_attach` / `anim_problems` + 共用 `graph_*`)、ACL `animctl`、編輯器 Graphs ▸ Animator(畫布、參數表、狀態 / 轉移表單、Play 即時高亮與參數值、淡入進度條)、指令 `graph.open_controller|new_controller|attach_controller|param`、`editor_view {open:"animator:ID"}`、Inspector Edit Graph、parity 測試。
 - M3:驗證(全套 + GPU smoke + 截圖)、審查修正、文件。
+
+**補記(範圍追加,2026-11-12):** 使用者要求在 A 線補上 `docs/gaps-paladin-night.zh-TW.md` 的 A2、A3、D1、D2(通用實作,不複製該內容包)。
+- A2 片段結束 / 標記事件:`animation.library.markers`(片段 → `{at, event?, cue?}`)越過時送 `behavior.program` 事件(宣告了 `entity` / `clip` 文字欄位就填入),循環每圈一次;`animation.player.on_end` 每次完成循環;FSM 新條件 `clip_finished`;控制器內用 `exit_time`,轉移當步先結算離開狀態的最後一步(標記與 `on_end` 不漏)。ACL `marker CLIP add|remove|move`、op `anim_marker`、編輯器 `anim.marker`。
+- A3 速度:runtime 命令 `animation.speed {entity, speed, ramp_seconds?}`(不重置時間,線性漸變,失敗步回滾);控制器狀態 `speed_parameter`(Animator 表單 Rate param)。
+- D1 音效:標記的 `cue` 走既有 `audio.events`,每圈一次;未知 cue / 缺系統在建置時報錯。
+- D2 存檔:`Checkpoint.systems`(新欄位,舊存檔沒有;空時不寫出)+ `RuntimeSystem::save_state / load_state`。動畫存片段、時間、速度與漸變、淡入起始姿勢、骨骼覆寫、IK 目標、twist 開關、控制器狀態(以名稱)與參數;需要狀態的系統遇到缺少該段的存檔明確拒絕。原計畫(M1 時)是「動畫 checkpoint 明確失敗」,改為完整支援,因為使用者把 D2 列為必做。
+- 未做:時間軸上畫出標記(目前只有指令 / ACL / Inspector JSON 可編輯);標記所屬片段若沒有任何 player 會被忽略(不報錯,避免刪掉角色就讓整個世界無法建置);反向播放不觸發標記;混合樹的標記跟隨當步權重最大的片段。

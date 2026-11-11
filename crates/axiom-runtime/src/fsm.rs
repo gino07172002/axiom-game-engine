@@ -1030,7 +1030,7 @@ mod tests {
             )]),
         };
         machines.validate().unwrap();
-        // Six action kinds and six condition kinds (serde variants of ActionDef / Cond).
-        assert_eq!((actions.len(), conditions.len()), (6, 6));
+        // Six action kinds and seven condition kinds (serde variants of ActionDef / Cond).
+        assert_eq!((actions.len(), conditions.len()), (6, 7));
     }
 }
