@@ -1263,15 +1263,45 @@ fn reference(
     } else {
         current.clone()
     };
-    // An asset reference keeps room for its Copy and Show in Assets buttons (2 × 20 pt + gaps).
+    // Asset kinds keyed by this field's resource map (models, materials, machines, clips).
     let asset = axiom_core::assets::AssetKind::ALL
         .into_iter()
         .find(|k| k.location() == Some((resource, at)));
+    // An asset reference: copy `kind:id` and show it in the Assets tab (`asset.reveal`),
+    // left of the picker so a narrow Inspector clips the picker, not the buttons.
+    if let (Some(kind), false) = (asset, current.is_empty() || mixed || !known) {
+        let reference = format!("{}:{current}", kind.name());
+        let icons = super::icons::Icons::of(ui.ctx());
+        let copy = super::theme::icon_button_sized(
+            ui,
+            icons,
+            super::icons::Icon::Copy,
+            &format!("Copy {reference}"),
+            false,
+            20.0,
+        );
+        ctx.rect(format!("form:{pointer}:copy"), copy.rect);
+        if copy.clicked() {
+            ui.ctx().copy_text(reference.clone());
+        }
+        let show = super::theme::icon_button_sized(
+            ui,
+            icons,
+            super::icons::Icon::Search,
+            &format!("Show {reference} in Assets (asset.reveal)"),
+            false,
+            20.0,
+        );
+        ctx.rect(format!("form:{pointer}:reveal"), show.rect);
+        if show.clicked() {
+            super::asset_browser::request_reveal(ui.ctx(), reference);
+        }
+    }
     let mut combo = egui::ComboBox::from_id_salt(("ref", pointer));
     if asset.is_some() && !(current.is_empty() || mixed || !known) {
-        combo = combo.width(
-            (room(ui) - 52.0 - 2.0 * ui.spacing().button_padding.x - 16.0).clamp(48.0, 220.0),
-        );
+        // The buttons are already placed: the picker takes the visible rest of the row.
+        combo =
+            combo.width((room(ui) - 2.0 * ui.spacing().button_padding.x - 16.0).clamp(48.0, 220.0));
     }
     let r = combo
         .selected_text(RichText::new(text).color(if known { Color32::LIGHT_GRAY } else { WARNING }))
@@ -1310,35 +1340,6 @@ fn reference(
     let mut changed = picked.as_ref().is_some_and(|p| *p != current || mixed);
     if let Some(p) = picked.filter(|_| changed) {
         *v = json!(p);
-    }
-    // An asset reference: copy `kind:id` and show it in the Assets tab (`asset.reveal`).
-    if let (Some(kind), false) = (asset, current.is_empty() || mixed || !known) {
-        let reference = format!("{}:{current}", kind.name());
-        let icons = super::icons::Icons::of(ui.ctx());
-        let copy = super::theme::icon_button_sized(
-            ui,
-            icons,
-            super::icons::Icon::Copy,
-            &format!("Copy {reference}"),
-            false,
-            20.0,
-        );
-        ctx.rect(format!("form:{pointer}:copy"), copy.rect);
-        if copy.clicked() {
-            ui.ctx().copy_text(reference.clone());
-        }
-        let show = super::theme::icon_button_sized(
-            ui,
-            icons,
-            super::icons::Icon::Search,
-            &format!("Show {reference} in Assets (asset.reveal)"),
-            false,
-            20.0,
-        );
-        ctx.rect(format!("form:{pointer}:reveal"), show.rect);
-        if show.clicked() {
-            super::asset_browser::request_reveal(ui.ctx(), reference);
-        }
     }
     if *kind == Kind::Event {
         // A new event name: Problems offers "Declare event" when it is not declared yet.
