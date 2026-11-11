@@ -29,7 +29,7 @@ pub(crate) fn cube_vertex_layouts() -> [wgpu::VertexBufferLayout<'static>; 2] {
     ]
 }
 /// Per-view uniform slot (dynamic offset); a multiple of the 256-byte offset alignment.
-pub(crate) const GLOBALS_STRIDE: u32 = 3072;
+pub(crate) const GLOBALS_STRIDE: u32 = 3328;
 /// Bytes of `Globals` (the WGSL struct in lighting.wgsl must match).
 pub(crate) const GLOBALS_SIZE: u64 = std::mem::size_of::<Globals>() as u64;
 const _: () = assert!(GLOBALS_SIZE <= GLOBALS_STRIDE as u64);
@@ -45,6 +45,9 @@ struct Globals {
     suns: [crate::lighting::GpuSun; crate::lighting::GPU_SUNS],
     ambient: [[f32; 4]; 3],
     fog: [f32; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    sky: [[f32; 4]; 4],
+    sky_viewport: [f32; 4],
 }
 
 /// Draw commands the last `Renderer::render` recorded, counted on the CPU while recording (no
@@ -361,7 +364,8 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let egui = egui_wgpu::Renderer::new(&device, format, None, 1, false);
-        let meshes = crate::mesh_render::MeshRenderer::new(&device, format, &uniform);
+        let meshes =
+            crate::mesh_render::MeshRenderer::new(&device, format, &uniform, &shadow, &sampler);
         let shaders = crate::shader_gpu::ShaderGpu::new(&device, format, &layout, meshes.layouts());
         let vfx = crate::vfx_gpu::VfxGpu::new(&device, format, &uniform, &depth);
         let post =
@@ -463,6 +467,7 @@ impl Renderer {
         }
         let lighting = crate::lighting::pack(snapshot);
         let light_vp = lighting.light_vp;
+        let sky = lighting.sky_uniform();
         let mut uniforms = vec![0_u8; views.len() * GLOBALS_STRIDE as usize];
         let mut geometry = snapshot.instances.clone();
         let shared = geometry.len() as u32;
@@ -504,9 +509,9 @@ impl Renderer {
                     v.camera.far,
                 ),
             };
+            let view_proj = projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up);
             let global = Globals {
-                view_proj: (projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up))
-                    .to_cols_array_2d(),
+                view_proj: view_proj.to_cols_array_2d(),
                 light_vp: light_vp.to_cols_array_2d(),
                 eye_time: [v.eye.x, v.eye.y, v.eye.z, snapshot.tick as f32 / 120.0],
                 accent: [
@@ -532,6 +537,14 @@ impl Renderer {
                 suns: lighting.suns,
                 ambient: lighting.ambient,
                 fog: lighting.fog,
+                inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+                sky,
+                sky_viewport: [
+                    viewport[0] * self.config.width as f32,
+                    viewport[1] * self.config.height as f32,
+                    viewport[2] * self.config.width as f32,
+                    viewport[3] * self.config.height as f32,
+                ],
             };
             let bytes = bytemuck::bytes_of(&global);
             uniforms[i * GLOBALS_STRIDE as usize..i * GLOBALS_STRIDE as usize + bytes.len()]
@@ -627,6 +640,12 @@ impl Renderer {
                     pass.draw(0..36, range.clone());
                     stats.add(1, 12 * range.len() as u64);
                 }
+            }
+            // Imported / procedural meshes cast only where they also receive (authored
+            // lighting), so the legacy look keeps its cube-only shadow map.
+            if lighting.authored {
+                let (calls, triangles) = self.meshes.draw_shadow(&mut pass, &self.shaders);
+                stats.add(calls, triangles);
             }
             drop(pass);
             self.timer

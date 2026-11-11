@@ -190,6 +190,7 @@ impl World {
             let material = decode::<MaterialBinding>(&c, "render.material")?;
             let camera = decode::<Camera>(&c, "render.camera")?;
             let light = decode::<crate::light::RenderLight>(&c, "render.light")?;
+            let surface = decode::<crate::light::RenderSurface>(&c, "render.surface")?;
             let trigger = decode::<crate::trigger::TriggerZone>(&c, "trigger.zone")?;
             let path = decode::<crate::path::PathSpline>(&c, "path.spline")?;
             let follow = decode::<crate::path::PathFollow>(&c, "path.follow")?;
@@ -237,6 +238,7 @@ impl World {
                 material,
                 camera,
                 light,
+                surface,
                 trigger,
                 path,
                 follow,
@@ -881,6 +883,8 @@ pub struct CompiledEntity {
     pub material: Option<MaterialBinding>,
     pub camera: Option<Camera>,
     pub light: Option<crate::light::RenderLight>,
+    /// `render.surface`: metallic / smoothness of the entity's parts and meshes.
+    pub surface: Option<crate::light::RenderSurface>,
     pub trigger: Option<crate::trigger::TriggerZone>,
     pub path: Option<crate::path::PathSpline>,
     pub follow: Option<crate::path::PathFollow>,

@@ -209,6 +209,161 @@ pub enum Ambient {
         #[serde(default = "one")]
         intensity: f32,
     },
+    /// Sky light: the trilight is the irradiance of the authored `sky` (without the sun disk)
+    /// for normals up, horizontal and down. Requires `sky`.
+    Sky {
+        #[serde(default = "one")]
+        intensity: f32,
+    },
+}
+
+fn default_sun_size() -> f32 {
+    1.5
+}
+fn default_sky_ground() -> [f32; 3] {
+    [0.22, 0.2, 0.18]
+}
+
+/// Background sky (also the source of `ambient: sky` and of surface reflections).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Sky {
+    /// View-dependent gradient: horizon → zenith above the horizon (`pow(up, exponent)`),
+    /// horizon → ground just below it (ground reached about 10° down).
+    Gradient {
+        zenith_color: [f32; 3],
+        horizon_color: [f32; 3],
+        ground_color: [f32; 3],
+        #[serde(default = "one")]
+        exponent: f32,
+        #[serde(default = "one")]
+        intensity: f32,
+    },
+    /// Analytic daylight sky lit by the first enabled directional light (else the default
+    /// sun): colours follow the sun elevation (day, sunset, night), haze around the sun and a
+    /// sun disk. An approximation, not a physical scattering solve.
+    Procedural {
+        #[serde(default = "default_sun_size")]
+        sun_size_degrees: f32,
+        #[serde(default = "one")]
+        atmosphere: f32,
+        #[serde(default = "default_sky_ground")]
+        ground_color: [f32; 3],
+        #[serde(default = "one")]
+        exposure: f32,
+    },
+}
+
+impl Sky {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Sky::Gradient {
+                zenith_color,
+                horizon_color,
+                ground_color,
+                exponent,
+                intensity,
+            } => {
+                ensure!(
+                    rgb_ok(zenith_color) && rgb_ok(horizon_color) && rgb_ok(ground_color),
+                    "sky zenith_color/horizon_color/ground_color must be rgb in 0..1"
+                );
+                ensure!(
+                    exponent.is_finite() && (0.1..=8.0).contains(exponent),
+                    "sky exponent must be 0.1..8"
+                );
+                ensure!(
+                    intensity.is_finite() && (0.0..=8.0).contains(intensity),
+                    "sky intensity must be 0..8"
+                );
+            }
+            Sky::Procedural {
+                sun_size_degrees,
+                atmosphere,
+                ground_color,
+                exposure,
+            } => {
+                ensure!(
+                    sun_size_degrees.is_finite() && (0.0..=10.0).contains(sun_size_degrees),
+                    "sky sun_size_degrees must be 0..10"
+                );
+                ensure!(
+                    atmosphere.is_finite() && (0.0..=4.0).contains(atmosphere),
+                    "sky atmosphere must be 0..4"
+                );
+                ensure!(rgb_ok(ground_color), "sky ground_color must be rgb in 0..1");
+                ensure!(
+                    exposure.is_finite() && (0.0..=8.0).contains(exposure),
+                    "sky exposure must be 0..8"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Editor / ACL presets (`sky gradient|procedural`).
+    pub fn preset(mode: &str) -> Option<Self> {
+        match mode {
+            "gradient" => Some(Sky::Gradient {
+                zenith_color: [0.16, 0.32, 0.62],
+                horizon_color: [0.62, 0.72, 0.82],
+                ground_color: default_sky_ground(),
+                exponent: 1.0,
+                intensity: 1.0,
+            }),
+            "procedural" => Some(Sky::Procedural {
+                sun_size_degrees: default_sun_size(),
+                atmosphere: 1.0,
+                ground_color: default_sky_ground(),
+                exposure: 1.0,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Surface response of an entity's `render.mesh` parts and imported / procedural meshes:
+/// metallic tints and strengthens reflections, smoothness sharpens them. Reflections show
+/// the authored sky (else the ambient trilight); they do not show other objects.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RenderSurface {
+    #[serde(default)]
+    pub metallic: f32,
+    #[serde(default = "half")]
+    pub smoothness: f32,
+}
+fn half() -> f32 {
+    0.5
+}
+impl Default for RenderSurface {
+    fn default() -> Self {
+        Self {
+            metallic: 0.0,
+            smoothness: half(),
+        }
+    }
+}
+impl RenderSurface {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.metallic.is_finite() && (0.0..=1.0).contains(&self.metallic),
+            "metallic must be 0..1"
+        );
+        ensure!(
+            self.smoothness.is_finite() && (0.0..=1.0).contains(&self.smoothness),
+            "smoothness must be 0..1"
+        );
+        Ok(())
+    }
+}
+
+pub fn surface_schema() -> Value {
+    json!({
+        "metallic": "0..1, default 0: 0 = dielectric (4% reflectance at normal incidence), 1 = metal (reflection tinted by the base colour, no diffuse)",
+        "smoothness": "0..1, default 0.5: 0 = blurry reflection (the ambient trilight), 1 = mirror-sharp reflection of the sky",
+        "requires": "applies to every render.mesh part of the entity and to its imported / procedural mesh (meshes only when the world authors lighting: a directional light or render.environment). Reflects the render.environment sky (else the ambient trilight), never other objects (no probes or screen-space reflections)"
+    })
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -226,6 +381,8 @@ pub struct RenderEnvironment {
     pub ambient: Option<Ambient>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fog: Option<Fog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky: Option<Sky>,
 }
 
 fn rgb_ok(c: &[f32; 3]) -> bool {
@@ -257,7 +414,20 @@ impl RenderEnvironment {
                     "ambient intensity must be 0..10"
                 );
             }
+            Some(Ambient::Sky { intensity }) => {
+                ensure!(
+                    self.sky.is_some(),
+                    "ambient mode sky requires a sky (set sky first, or use mode color|gradient)"
+                );
+                ensure!(
+                    intensity.is_finite() && (0.0..=10.0).contains(intensity),
+                    "ambient intensity must be 0..10"
+                );
+            }
             None => {}
+        }
+        if let Some(sky) = &self.sky {
+            sky.validate()?;
         }
         if let Some(f) = &self.fog {
             ensure!(rgb_ok(&f.color), "fog color must be rgb in 0..1");
@@ -269,11 +439,14 @@ impl RenderEnvironment {
         Ok(())
     }
 
-    /// Hemisphere ambient as (sky, equator, ground), already multiplied by intensity.
-    /// `None` = the legacy default (renderer tints it by `render.settings.accent`).
+    /// Hemisphere ambient as (sky, equator, ground), already multiplied by intensity, for the
+    /// `color` and `gradient` modes. `None` = no ambient authored (the legacy default, tinted
+    /// by `render.settings.accent`) or `sky` mode (the renderer integrates the sky; see
+    /// `sky_ambient`).
     pub fn trilight(&self) -> Option<[[f32; 3]; 3]> {
         let scale = |c: &[f32; 3], k: f32| c.map(|v| v * k);
         match self.ambient.as_ref()? {
+            Ambient::Sky { .. } => None,
             Ambient::Color { color, intensity } => {
                 let c = scale(color, *intensity);
                 Some([c, c, c])
@@ -292,11 +465,22 @@ impl RenderEnvironment {
     }
 }
 
+impl RenderEnvironment {
+    /// Intensity of `ambient: {mode: sky}` (the trilight comes from the sky).
+    pub fn sky_ambient(&self) -> Option<f32> {
+        match self.ambient {
+            Some(Ambient::Sky { intensity }) => Some(intensity),
+            _ => None,
+        }
+    }
+}
+
 pub fn environment_schema() -> Value {
     json!({
-        "ambient": "optional; {mode: color, color: rgb, intensity 0..10} | {mode: gradient, sky, equator, ground: rgb, intensity 0..10} (Unity Trilight). Omitted = legacy sky/ground hemisphere tinted by render.settings.accent",
+        "ambient": "optional; {mode: color, color: rgb, intensity 0..10} | {mode: gradient, sky, equator, ground: rgb, intensity 0..10} (Unity Trilight) | {mode: sky, intensity 0..10} (sky light: irradiance of the authored sky, requires sky). Omitted = legacy sky/ground hemisphere tinted by render.settings.accent",
         "fog": "optional {color: rgb, density 0..1}: exponential squared, 1 - exp(-(density*distance)^2). Omitted = legacy fog (density ~0.011)",
-        "sky": "not configurable yet (background gradient stays the engine default)"
+        "sky": "optional; {mode: gradient, zenith_color, horizon_color, ground_color: rgb, exponent 0.1..8 (default 1), intensity 0..8 (default 1)} | {mode: procedural, sun_size_degrees 0..10 (default 1.5, 0 = no disk), atmosphere 0..4 (default 1), ground_color rgb, exposure 0..8 (default 1)} (analytic, follows the first directional light). Omitted = the legacy screen-space background gradient. Orthographic views see one colour (the view direction)",
+        "edit": "sky gradient|procedural|none (ACL) = World ▸ Sky (editor): preset sky + ambient mode sky"
     })
 }
 
@@ -431,5 +615,55 @@ mod tests {
         assert!(parse(json!({"ambient":{"mode":"color","color":[1,1,1],"sky":[1,1,1]}})).is_err());
         assert!(parse(json!({"fog":{"color":[0,0,0],"density":2}})).is_err());
         assert!(parse(json!({"skybox":1})).is_err());
+    }
+
+    #[test]
+    fn sky_modes_defaults_and_validation() {
+        let parse = |v: Value| -> Result<RenderEnvironment> {
+            let e: RenderEnvironment = serde_json::from_value(v)?;
+            e.validate()?;
+            Ok(e)
+        };
+        let err = |v: Value| format!("{:#}", parse(v).unwrap_err());
+        // Old content (no sky) round-trips byte for byte: the new field is not written.
+        let old = json!({"ambient":{"mode":"color","color":[0.5,0.5,0.5],"intensity":1.0}});
+        assert_eq!(json!(parse(old.clone()).unwrap()), old);
+        let p = parse(json!({"sky":{"mode":"procedural"},"ambient":{"mode":"sky"}})).unwrap();
+        assert_eq!(p.sky, Sky::preset("procedural"));
+        assert_eq!(p.sky_ambient(), Some(1.0));
+        assert_eq!(p.trilight(), None, "sky light is integrated by the renderer");
+        let g = parse(json!({"sky":{"mode":"gradient","zenith_color":[0,0,1],"horizon_color":[1,1,1],"ground_color":[0,0,0]}})).unwrap();
+        assert!(matches!(g.sky, Some(Sky::Gradient { exponent, intensity, .. }) if exponent == 1.0 && intensity == 1.0));
+        assert!(err(json!({"ambient":{"mode":"sky"}})).contains("requires a sky"));
+        assert!(err(json!({"sky":{"mode":"hdri"}})).contains("unknown variant"));
+        assert!(err(json!({"sky":{"mode":"procedural","sun":1}})).contains("unknown field"));
+        assert!(err(json!({"sky":{"mode":"procedural","sun_size_degrees":11}})).contains("sun_size"));
+        assert!(err(json!({"sky":{"mode":"procedural","atmosphere":-1}})).contains("atmosphere"));
+        assert!(err(json!({"sky":{"mode":"procedural","exposure":9}})).contains("exposure"));
+        assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[2,0,0],"horizon_color":[1,1,1],"ground_color":[0,0,0]}})).contains("rgb"));
+        assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[0,0,0],"horizon_color":[1,1,1],"ground_color":[0,0,0],"exponent":0}})).contains("exponent"));
+        assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[0,0,0]}})).contains("missing field"));
+        assert!(err(json!({"sky":{"mode":"procedural"},"ambient":{"mode":"sky","intensity":11}})).contains("intensity"));
+        for mode in ["gradient", "procedural"] {
+            Sky::preset(mode).unwrap().validate().unwrap();
+        }
+        assert_eq!(Sky::preset("hdri"), None);
+    }
+
+    #[test]
+    fn surface_defaults_and_ranges() {
+        let s: RenderSurface = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(s, RenderSurface::default());
+        assert_eq!((s.metallic, s.smoothness), (0.0, 0.5));
+        for bad in [
+            json!({"metallic":1.5}),
+            json!({"smoothness":-0.1}),
+            json!({"metallic":"x"}),
+            json!({"roughness":0.2}),
+        ] {
+            let parsed: Result<RenderSurface> =
+                serde_json::from_value(bad.clone()).map_err(Into::into);
+            assert!(parsed.and_then(|s| s.validate()).is_err(), "{bad}");
+        }
     }
 }

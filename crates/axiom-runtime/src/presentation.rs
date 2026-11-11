@@ -21,6 +21,11 @@ impl Instance {
         Self::new(parent * p.transform.matrix(), p.color, p.emission, p.grid)
     }
 }
+/// `render.surface` as the shaders read it (cube `material.zw`, mesh `params.zw`):
+/// (metallic, smoothness + 1), `[0, 0]` = no surface (the unchanged look).
+pub fn surface_params(surface: Option<axiom_core::RenderSurface>) -> [f32; 2] {
+    surface.map_or([0.0; 2], |s| [s.metallic, s.smoothness + 1.0])
+}
 #[derive(Clone)]
 pub struct RenderView {
     pub id: String,
@@ -105,4 +110,6 @@ pub struct MeshFrame {
     pub vertices: std::sync::Arc<Vec<axiom_animation::SkinnedVertex>>,
     pub model: Mat4,
     pub material: Option<String>,
+    /// The entity's `render.surface` (reflections; used when the world authors lighting).
+    pub surface: Option<axiom_core::RenderSurface>,
 }

@@ -396,6 +396,7 @@ pub fn default_value(world: &World, registry: &Registry, id: &str) -> Option<Val
             Some(json!(camera))
         }
         "render.light" => crate::ops::preset_light("light.point").map(|l| json!(l)),
+        "render.surface" => typed::<crate::light::RenderSurface>(),
         "trigger.zone" => crate::ops::preset_trigger("trigger.box").map(|z| json!(z)),
         "path.spline" => Some(json!(crate::path::PathSpline::preset())),
         "nav.blocker" => Some(json!({"half":[0.5,0.5],"offset":[0.0,0.0]})),
@@ -537,6 +538,64 @@ pub fn remove_resource(world: &World, id: &str) -> Result<Vec<Edit>> {
     }
     Ok(vec![Edit::Core(CoreEdit::RemoveResource {
         id: id.to_owned(),
+    })])
+}
+
+/// World ▸ Sky / ACL `sky gradient|procedural|none`. `gradient` / `procedural` put that preset
+/// sky in `render.environment` (created with its capability when missing) and, when no ambient
+/// is authored, the sky light `ambient: {mode: sky}`; a sky already in that mode keeps its
+/// values (empty batch). `none` removes the sky and a sky-mode ambient (other ambient and fog
+/// stay). Unchanged = empty batch.
+pub fn set_sky(world: &World, registry: &Registry, mode: &str) -> Result<Vec<Edit>> {
+    const PATH: &str = "/resources/render.environment/sky";
+    let preset = match mode {
+        "none" => None,
+        other => Some(crate::light::Sky::preset(other).ok_or_else(|| {
+            invalid(
+                PATH,
+                format!("sky takes gradient|procedural|none, not '{other}'"),
+            )
+        })?),
+    };
+    let current: Option<crate::light::RenderEnvironment> = world
+        .resources
+        .get("render.environment")
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|e| invalid("/resources/render.environment", format!("{e:#}")))?;
+    let mut env = current.clone().unwrap_or_default();
+    match preset {
+        None => {
+            env.sky = None;
+            if env.sky_ambient().is_some() {
+                env.ambient = None;
+            }
+        }
+        Some(sky) => {
+            let replace = env
+                .sky
+                .as_ref()
+                .is_none_or(|s| std::mem::discriminant(s) != std::mem::discriminant(&sky));
+            if replace {
+                env.sky = Some(sky);
+            }
+            env.ambient
+                .get_or_insert(crate::light::Ambient::Sky { intensity: 1.0 });
+        }
+    }
+    if current.as_ref() == Some(&env) || (current.is_none() && env.sky.is_none()) {
+        return Ok(vec![]);
+    }
+    let value = json!(env);
+    if current.is_none() {
+        return create_resource(world, registry, "render.environment", Some(value));
+    }
+    if let Some(d) = registry.resources.get("render.environment") {
+        (d.validate)(&value).map_err(|e| invalid(PATH, format!("{e:#}")))?;
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetResource {
+        id: "render.environment".into(),
+        value,
     })])
 }
 

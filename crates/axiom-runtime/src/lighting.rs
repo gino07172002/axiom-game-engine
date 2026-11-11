@@ -11,14 +11,22 @@
 //!   (hemisphere ambient tinted by `render.settings.accent`, exp² fog k = 0.00012).
 use crate::presentation::RenderFrame;
 use axiom_core::{
-    AreaShape, LightKind, DEFAULT_AMBIENT_GROUND, DEFAULT_AMBIENT_SKY, DEFAULT_FOG_COLOR,
+    AreaShape, LightKind, Sky, DEFAULT_AMBIENT_GROUND, DEFAULT_AMBIENT_SKY, DEFAULT_FOG_COLOR,
     DEFAULT_FOG_K, DEFAULT_SUN_COLOR, DEFAULT_SUN_TOWARD,
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-pub const SCENE_WGSL: &str = concat!(include_str!("lighting.wgsl"), include_str!("scene.wgsl"));
-pub const MESH_WGSL: &str = concat!(include_str!("lighting.wgsl"), include_str!("mesh.wgsl"));
+pub const SCENE_WGSL: &str = concat!(
+    include_str!("lighting.wgsl"),
+    include_str!("shadow.wgsl"),
+    include_str!("scene.wgsl")
+);
+pub const MESH_WGSL: &str = concat!(
+    include_str!("lighting.wgsl"),
+    include_str!("shadow.wgsl"),
+    include_str!("mesh.wgsl")
+);
 pub const VFX_DRAW_WGSL: &str =
     concat!(include_str!("lighting.wgsl"), include_str!("vfx_draw.wgsl"));
 
@@ -47,6 +55,178 @@ pub struct GpuSun {
     pub specular: [f32; 4],
 }
 
+pub const SKY_NONE: f32 = 0.0;
+pub const SKY_GRADIENT: f32 = 1.0;
+pub const SKY_PROCEDURAL: f32 = 2.0;
+
+/// The authored sky reduced to what the shader evaluates (`axiom_sky` in lighting.wgsl; the
+/// same formula as [`SkyParams::radiance`]). Procedural colours depend only on the sun
+/// elevation, so they are resolved here once per frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyParams {
+    /// SKY_NONE (legacy screen gradient), SKY_GRADIENT or SKY_PROCEDURAL.
+    pub mode: f32,
+    pub zenith: [f32; 3],
+    pub horizon: [f32; 3],
+    pub ground: [f32; 3],
+    /// Gradient: `pow(up, shape)`; procedural: haze `1 - pow(1 - up, shape)`.
+    pub shape: f32,
+    /// Intensity (gradient) or exposure (procedural).
+    pub scale: f32,
+    /// cos of the sun disk half-angle; > 1 = no disk.
+    pub sun_cos: f32,
+    /// Strength of the glow around the sun.
+    pub haze: f32,
+    pub sun_toward: Vec3,
+    pub sun_color: [f32; 3],
+}
+
+impl SkyParams {
+    pub const NONE: SkyParams = SkyParams {
+        mode: SKY_NONE,
+        zenith: [0.0; 3],
+        horizon: [0.0; 3],
+        ground: [0.0; 3],
+        shape: 1.0,
+        scale: 1.0,
+        sun_cos: 2.0,
+        haze: 0.0,
+        sun_toward: Vec3::Y,
+        sun_color: [0.0; 3],
+    };
+
+    pub fn new(sky: Option<&Sky>, sun_toward: Vec3, sun_color: [f32; 3]) -> Self {
+        let smooth = |a: f32, b: f32, x: f32| {
+            let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let mix = |a: [f32; 3], b: [f32; 3], t: f32| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+        match sky {
+            None => Self::NONE,
+            Some(Sky::Gradient {
+                zenith_color,
+                horizon_color,
+                ground_color,
+                exponent,
+                intensity,
+            }) => SkyParams {
+                mode: SKY_GRADIENT,
+                zenith: *zenith_color,
+                horizon: *horizon_color,
+                ground: *ground_color,
+                shape: *exponent,
+                scale: *intensity,
+                ..Self::NONE
+            },
+            Some(Sky::Procedural {
+                sun_size_degrees,
+                atmosphere,
+                ground_color,
+                exposure,
+            }) => {
+                let e = sun_toward.y;
+                // 0 at night, 1 in daylight; `warm` peaks while the sun is at the horizon.
+                let day = smooth(-0.12, 0.25, e);
+                let warm = (1.0 - smooth(0.0, 0.35, e)) * smooth(-0.18, 0.0, e);
+                let zenith = mix([0.004, 0.007, 0.018], [0.10, 0.27, 0.62], day);
+                let horizon = mix([0.02, 0.028, 0.045], [0.56, 0.70, 0.86], day);
+                let horizon = mix(horizon, [0.92, 0.50, 0.24], warm * atmosphere.min(1.0));
+                let lit = 0.12 + 0.88 * day;
+                SkyParams {
+                    mode: SKY_PROCEDURAL,
+                    zenith,
+                    horizon,
+                    ground: ground_color.map(|c| c * lit),
+                    shape: 4.0 / atmosphere.max(0.05),
+                    scale: *exposure,
+                    sun_cos: if *sun_size_degrees > 0.0 {
+                        (sun_size_degrees.to_radians() * 0.5).cos()
+                    } else {
+                        2.0
+                    },
+                    haze: 0.3 * atmosphere * (day + warm).min(1.0),
+                    sun_toward,
+                    sun_color,
+                }
+            }
+        }
+    }
+
+    /// Sky radiance toward unit direction `d` (no clamp). `disk` adds the sun disk.
+    pub fn radiance(&self, d: Vec3, disk: bool) -> [f32; 3] {
+        if self.mode == SKY_NONE {
+            return [0.0; 3];
+        }
+        let y = d.y.clamp(-1.0, 1.0);
+        let mut c: [f32; 3] = if y >= 0.0 {
+            let t = if self.mode == SKY_GRADIENT {
+                y.powf(self.shape)
+            } else {
+                1.0 - (1.0 - y).powf(self.shape)
+            };
+            std::array::from_fn(|i| self.horizon[i] + (self.zenith[i] - self.horizon[i]) * t)
+        } else {
+            let t = ((-y) / 0.17).clamp(0.0, 1.0);
+            let t = t * t * (3.0 - 2.0 * t);
+            std::array::from_fn(|i| self.horizon[i] + (self.ground[i] - self.horizon[i]) * t)
+        };
+        for v in &mut c {
+            *v *= self.scale;
+        }
+        if self.mode == SKY_PROCEDURAL {
+            let cos = d.dot(self.sun_toward).max(0.0);
+            let above = ((y + 0.02) / 0.04).clamp(0.0, 1.0);
+            let mut glow = cos.powi(12) * self.haze * above;
+            if disk && self.sun_cos <= 1.0 {
+                let t = ((cos - (self.sun_cos - 0.0004)) / 0.0005).clamp(0.0, 1.0);
+                glow += t * t * (3.0 - 2.0 * t) * 12.0 * above;
+            }
+            for (v, s) in c.iter_mut().zip(self.sun_color) {
+                *v += s * glow * self.scale;
+            }
+        }
+        c
+    }
+
+    /// Irradiance / π of the sky (sun disk excluded) for normals up, horizontal (mean of four
+    /// azimuths) and down: the `ambient: sky` trilight. Fixed 16 x 16 direction grid (equal
+    /// solid angle bands), no allocation.
+    pub fn trilight(&self) -> [[f32; 3]; 3] {
+        const AZIMUTHS: usize = 16;
+        const BANDS: usize = 16;
+        let mut out = [[0.0_f32; 3]; 3];
+        let mut weight = [0.0_f32; 3];
+        let horizontal = [Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z];
+        for band in 0..BANDS {
+            // Equal-area bands in y = sin(elevation): every sample covers the same solid angle.
+            let y = -1.0 + (band as f32 + 0.5) * 2.0 / BANDS as f32;
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            for a in 0..AZIMUTHS {
+                let phi = (a as f32 + 0.5) * std::f32::consts::TAU / AZIMUTHS as f32;
+                let d = Vec3::new(r * phi.cos(), y, r * phi.sin());
+                let l = self.radiance(d, false);
+                let cosines = [
+                    y.max(0.0),
+                    horizontal.iter().map(|n| n.dot(d).max(0.0)).sum::<f32>() * 0.25,
+                    (-y).max(0.0),
+                ];
+                for (k, cos) in cosines.into_iter().enumerate() {
+                    weight[k] += cos;
+                    for i in 0..3 {
+                        out[k][i] += l[i] * cos;
+                    }
+                }
+            }
+        }
+        for k in 0..3 {
+            for v in &mut out[k] {
+                *v /= weight[k].max(1e-6);
+            }
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PackedLighting {
     pub locals: [GpuLocalLight; GPU_LOCAL_LIGHTS],
@@ -64,6 +244,21 @@ pub struct PackedLighting {
     /// A directional light or `render.environment` is authored (meshes switch from the
     /// legacy flat key light to the shared lighting model).
     pub authored: bool,
+    /// The authored sky (`SkyParams::NONE` = legacy screen-space background).
+    pub sky: SkyParams,
+}
+
+impl PackedLighting {
+    /// The four sky vectors of the per-view globals (see `Globals` in lighting.wgsl).
+    pub fn sky_uniform(&self) -> [[f32; 4]; 4] {
+        let s = &self.sky;
+        [
+            [s.zenith[0], s.zenith[1], s.zenith[2], s.mode],
+            [s.horizon[0], s.horizon[1], s.horizon[2], s.shape],
+            [s.ground[0], s.ground[1], s.ground[2], s.scale],
+            [s.sun_cos, s.haze, 0.0, 0.0],
+        ]
+    }
 }
 
 /// The legacy sun shadow matrix (eye (-45, 75, 35) looking at the origin).
@@ -193,8 +388,21 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
     let local_count = total.min(GPU_LOCAL_LIGHTS);
 
     let env = &frame.environment;
-    let authored = !directional.is_empty() || env.ambient.is_some() || env.fog.is_some();
-    let [sky, equator, ground] = env.trilight().unwrap_or_else(|| {
+    let authored = !directional.is_empty()
+        || env.ambient.is_some()
+        || env.fog.is_some()
+        || env.sky.is_some();
+    // The procedural sky follows sun 0 (the first directional light or the default sun).
+    let sky_params = SkyParams::new(
+        env.sky.as_ref(),
+        Vec3::from_slice(&suns[0].direction_shadow[..3]),
+        [suns[0].color[0], suns[0].color[1], suns[0].color[2]],
+    );
+    let sky_light = env.sky_ambient().map(|k| {
+        let [s, e, g] = sky_params.trilight();
+        [s, e, g].map(|c| c.map(|v| v * k))
+    });
+    let [sky, equator, ground] = sky_light.or_else(|| env.trilight()).unwrap_or_else(|| {
         let a = frame.settings.accent;
         let tint = [0.85 + a[0] * 0.15, 0.85 + a[1] * 0.15, 0.85 + a[2] * 0.15];
         let sky: [f32; 3] = std::array::from_fn(|i| DEFAULT_AMBIENT_SKY[i] * tint[i]);
@@ -231,6 +439,7 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
         ],
         fog,
         authored,
+        sky: sky_params,
     }
 }
 
@@ -456,5 +665,110 @@ mod tests {
         // Environment alone keeps the default sun.
         assert_eq!(p.sun_count, 1);
         assert_eq!(p.light_vp, legacy_light_vp(33.0));
+    }
+
+    #[test]
+    fn no_sky_keeps_the_legacy_background() {
+        let p = pack(&frame());
+        assert_eq!(p.sky, SkyParams::NONE);
+        assert_eq!(p.sky_uniform()[0][3], SKY_NONE);
+        assert_eq!(p.sky.radiance(Vec3::Y, true), [0.0; 3]);
+    }
+
+    #[test]
+    fn gradient_sky_radiance_and_sky_light() {
+        let sky: Sky = serde_json::from_value(json!({"mode":"gradient","zenith_color":[0.1,0.2,0.8],"horizon_color":[0.7,0.7,0.7],"ground_color":[0.2,0.1,0.0],"exponent":2,"intensity":0.5})).unwrap();
+        let s = SkyParams::new(Some(&sky), Vec3::Y, [1.0; 3]);
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(close(s.radiance(Vec3::Y, true), [0.05, 0.1, 0.4]));
+        assert!(close(s.radiance(Vec3::X, true), [0.35, 0.35, 0.35]));
+        assert!(close(s.radiance(-Vec3::Y, true), [0.1, 0.05, 0.0]));
+        // pow(up, exponent): halfway up (y = 0.5) is a quarter of the way to the zenith.
+        let mid = s.radiance(Vec3::new(0.75_f32.sqrt(), 0.5, 0.0), false);
+        assert!((mid[2] - (0.35 + (0.4 - 0.35) * 0.25)).abs() < 1e-5);
+        // A uniform sky gives the same irradiance for every normal.
+        let flat: Sky = serde_json::from_value(json!({"mode":"gradient","zenith_color":[0.3,0.4,0.5],"horizon_color":[0.3,0.4,0.5],"ground_color":[0.3,0.4,0.5]})).unwrap();
+        for c in SkyParams::new(Some(&flat), Vec3::Y, [1.0; 3]).trilight() {
+            assert!(close(c, [0.3, 0.4, 0.5]), "{c:?}");
+        }
+        // Up sees mostly the zenith, down mostly the ground.
+        let [up, equator, down] = s.trilight();
+        assert!(up[2] > equator[2] && equator[2] > down[2]);
+        assert!(down[0] < equator[0]);
+
+        // ambient: sky = that trilight times its intensity; the sky reaches the shader.
+        let mut f = frame();
+        f.environment = serde_json::from_value(json!({"sky":sky,"ambient":{"mode":"sky","intensity":2}})).unwrap();
+        f.environment.validate().unwrap();
+        let p = pack(&f);
+        assert!(p.authored);
+        let expect = SkyParams::new(Some(&sky), p.sky.sun_toward, p.sky.sun_color).trilight();
+        for k in 0..3 {
+            assert!(close(
+                [p.ambient[k][0], p.ambient[k][1], p.ambient[k][2]],
+                expect[k].map(|v| v * 2.0)
+            ));
+        }
+        let u = p.sky_uniform();
+        assert_eq!(u[0], [0.1, 0.2, 0.8, SKY_GRADIENT]);
+        assert_eq!(u[1][3], 2.0);
+        assert_eq!(u[2][3], 0.5);
+        assert!(u[3][0] > 1.0, "gradient skies have no sun disk");
+        // A sky without ambient: sky shown, ambient stays the legacy default.
+        f.environment.ambient = None;
+        let (sky_only, legacy) = (pack(&f), pack(&frame()));
+        for k in 0..3 {
+            assert_eq!(sky_only.ambient[k][..3], legacy.ambient[k][..3]);
+        }
+        assert!(sky_only.authored && !legacy.authored);
+    }
+
+    #[test]
+    fn procedural_sky_follows_the_sun() {
+        let sky = Sky::preset("procedural").unwrap();
+        let toward = |deg: f32| {
+            let r = deg.to_radians();
+            Vec3::new(r.cos(), r.sin(), 0.0)
+        };
+        let noon = SkyParams::new(Some(&sky), toward(60.0), [1.0; 3]);
+        let dusk = SkyParams::new(Some(&sky), toward(2.0), [1.0, 0.7, 0.4]);
+        let night = SkyParams::new(Some(&sky), toward(-30.0), [0.2; 3]);
+        assert_eq!(noon.mode, SKY_PROCEDURAL);
+        // Blue zenith by day, much darker at night; a warm horizon at sunset.
+        assert!(noon.zenith[2] > noon.zenith[0] && noon.zenith[2] > 0.5);
+        assert!(night.zenith[2] < 0.05);
+        assert!(dusk.horizon[0] > dusk.horizon[2]);
+        assert!(noon.horizon[2] > noon.horizon[0]);
+        // The disk only where the sun is, and only with `disk`.
+        let at_sun = noon.radiance(toward(60.0), true);
+        let without = noon.radiance(toward(60.0), false);
+        let away = noon.radiance(toward(120.0), true);
+        assert!(at_sun[0] > without[0] + 5.0);
+        assert!(away[0] < without[0]);
+        // No disk when its size is 0.
+        let bare = SkyParams::new(
+            Some(&Sky::Procedural {
+                sun_size_degrees: 0.0,
+                atmosphere: 1.0,
+                ground_color: [0.2; 3],
+                exposure: 1.0,
+            }),
+            toward(60.0),
+            [1.0; 3],
+        );
+        assert_eq!(bare.radiance(toward(60.0), true), bare.radiance(toward(60.0), false));
+        // The sun of the frame is sun 0: the first directional light.
+        let mut f = frame();
+        f.environment = serde_json::from_value(json!({"sky":{"mode":"procedural"}})).unwrap();
+        f.scene_lights = vec![light(
+            "sun",
+            json!({"kind":"directional","color":[1,0.9,0.8],"intensity":2}),
+            Vec3::ZERO,
+            Vec3::new(0.0, -1.0, -1.0),
+        )];
+        let p = pack(&f);
+        assert!((p.sky.sun_toward - Vec3::new(0.0, 1.0, 1.0).normalize()).length() < 1e-5);
+        assert_eq!(p.sky.sun_color, [2.0, 1.8, 1.6]);
+        assert!(p.authored);
     }
 }

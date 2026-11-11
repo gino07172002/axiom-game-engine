@@ -76,12 +76,44 @@
   - `{"mode":"gradient","sky":…,"equator":…,"ground":…,"intensity":k}`:Unity Trilight。法線朝上用 sky,水平用 equator,朝下用 ground,之間線性插值。
   - 省略時沿用舊版:ground `(0.11,0.16,0.19)` 到 sky `(0.37,0.48,0.53)` 的半球漸層,再乘 `0.85 + accent × 0.15`(`render.settings.accent`)。編寫了 ambient 就**不再**乘 accent。
 - `fog`(選填):`{color, density}`,指數平方霧 `1 - exp(-(density × 距離)²)`(Unity ExponentialSquared 的定義)。省略時沿用舊版(`k = 0.00012`,約等於 density 0.011)。
-- 背景天空的漸層**還不能設定**(仍是引擎預設)。
+- `sky`(選填,見下節「天空」)。省略時背景沿用舊版固定的螢幕空間漸層。
+
+### 天空(`render.environment.sky`)與天空光
+
+```json
+{"sky":{"mode":"procedural","sun_size_degrees":1.5,"atmosphere":1,"ground_color":[0.22,0.2,0.18],"exposure":1},
+ "ambient":{"mode":"sky","intensity":1}}
+```
+
+| 模式 | 欄位 | 說明 |
+|---|---|---|
+| `gradient` | `zenith_color`、`horizon_color`、`ground_color`(rgb 0..1,必填)、`exponent` 0.1..8(預設 1)、`intensity` 0..8(預設 1) | 依**視線方向**:地平線以上 `mix(horizon, zenith, pow(up, exponent))`,地平線以下約 10° 內漸變到 ground |
+| `procedural` | `sun_size_degrees` 0..10(預設 1.5,0 = 不畫日盤)、`atmosphere` 0..4(預設 1,越大地平線霧帶越高、日落越紅;0 = 整片天頂色)、`ground_color`、`exposure` 0..8(預設 1) | 解析式日光天空,跟著**第一盞啟用的 directional**(沒有時是預設太陽)的方向與顏色:太陽高 = 藍天,接近地平線 = 暖色地平線,低於地平線 = 夜色;太陽周圍有光暈與日盤。**近似**,不是物理散射解算 |
+
+- 背景天空在每個 view 用 inverse view-projection 算出像素的世界方向,所以會跟著相機轉;多相機各自正確。**正交相機**的每個像素方向相同,整片是同一個顏色。
+- `ambient: {"mode":"sky","intensity":k}` = **天空光**:CPU 每幀用固定 16×16 方向格點(等立體角)積分天空(不含日盤),得到法線朝上 / 水平(四個方位平均)/ 朝下的 irradiance/π,再乘 `k` 當作 trilight。必須同時有 `sky`,否則交易失敗(`ambient mode sky requires a sky`)。
+- 只寫 `sky` 不寫 ambient:背景換成天空,環境光仍是舊版預設。
+- 編輯器:World 視窗 ▸ **SKY** 列的 Gradient / Procedural / None 按鈕,或 World 選單 ▸ Sky…(`world.sky gradient|procedural|none`);ACL `sky gradient|procedural|none`。兩者同一個 `ops::set_sky`:沒有 `render.environment` 時建立它(並補 `render` capability),放入預設天空,沒有編寫 ambient 時加上 `ambient: sky`;同一模式再按一次不寫入(保留調整過的數值);`none` 移除天空與 sky 模式的 ambient(其他 ambient、fog 保留)。細部數值在 Inspector 開 `render.environment` 調整(`*_color` 欄位是色票),或 `set resources[id=render.environment] sky/exposure 1.4`。
+- 量測見下方「量測(天空、反射、網格陰影)」。
+
+### 表面反射(`render.surface`,元件)
+
+```json
+{"metallic":1,"smoothness":0.9}
+```
+
+- `metallic` 0..1(預設 0):0 = 絕緣體(正入射 4% 反射),1 = 金屬(反射染上 base color,沒有漫射)。`smoothness` 0..1(預設 0.5):1 = 鏡面般清楚的天空反射,0 = 模糊成 trilight。
+- 作用在該物件**所有** `render.mesh` 方塊部件,以及它的匯入 / 程序網格(`animation.player`、`render.geometry`;網格只在世界有編寫燈光時生效,跟網格的光照模型同一個條件)。自訂材質(`render.material`)的物件由材質 shader 決定外觀,不套用。
+- 反射內容:有 `sky` 時是天空(smoothness 越低越往 trilight 模糊,smoothness > 0.95 時看得到日盤),沒有 `sky` 時是 trilight。Fresnel 用 Schlick + 依 smoothness 的掠射項。**不會反射其他物體**(沒有反射探針、沒有 SSR,理由見 `docs/plan-engine-next.zh-TW.md` 的 R ADR);陰影裡的表面仍反射天空(沒有反射遮蔽)。
+- 沒有 `render.surface` 的物件畫面完全不變。
+- 編輯器:Inspector ▸ Add component ▸ `render.surface`(滑桿範圍來自 schema);ACL `add SEL render.surface [JSON]`、`set SEL render.surface/smoothness 0.9`。
 
 ## 和舊版的相容性
 
 - 沒有 `render.light` directional、也沒有 `render.environment` 的世界,畫面跟改動前一樣:axiom-town、fps、shader-lab、action、effects-tour 在同一個視窗大小下前後截圖逐像素比對,576,000 像素中最多 2 個像素差 1/255(浮點捨入)。
-- 匯入的三角網格(角色、glTF):沒有編寫燈光時仍用原本的平光公式;世界一旦編寫了 directional 或 `render.environment`,網格改用和方塊相同的模型(環境光 + 平行光 + 局部光 + 霧 + 色調曲線),但**不接收陰影**(網格 pipeline 沒有陰影貼圖)。
+- 匯入的三角網格(角色、glTF、`render.geometry`):沒有編寫燈光時仍用原本的平光公式(不接收也不投射陰影,舊畫面不變);世界一旦編寫了 directional、`render.environment`(ambient / fog / sky 任一項),網格改用和方塊相同的模型(環境光 + 平行光 + 局部光 + 霧 + 色調曲線),並且:
+  - **接收** sun 0 的陰影(同一張 2048² 陰影貼圖、同樣的 3×3 PCF;網格的 camera bind group 多了陰影貼圖與比較取樣器,自訂材質的 `SurfaceInput.shadow` 也是實際值);
+  - **投射**陰影:不透明的 primitive(材質 alpha opaque,或自訂材質 alpha opaque)在 sun depth pass 畫進陰影貼圖(不剔除背面,深度偏移和方塊相同);mask / blend 不投射。自訂材質的 `vertex_offset` 不影響投影(陰影用未位移的幾何)。
 - 自訂材質(`render.shaders`):`SurfaceInput.diffuse` / `shadow` 改成第一盞 directional(或預設太陽)的值;`axiom_local_light(p, n)` 現在包含編寫的 point / spot / area 光和 VFX 光源。
 
 ## 編輯器與無頭操作

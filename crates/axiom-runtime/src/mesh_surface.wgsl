@@ -6,7 +6,7 @@
     let color = textureSample(base, base_sampler, v.uv) * d.color * material_surface.tint;
     let result = surface(SurfaceInput(color, v.world, n, v.uv,
         normalize(g.eye_time.xyz - v.world), g.eye_time.w, max(dot(n, light), 0.0),
-        1.0, material_surface.params));
+        mesh_shadow(v.world), material_surface.params));
     let inherit = material_surface.alpha.x < 0.0;
     return surface_alpha(result, select(material_surface.alpha.x, d.params.x, inherit),
         select(material_surface.alpha.y, d.params.y, inherit));

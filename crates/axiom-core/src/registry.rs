@@ -137,6 +137,12 @@ impl Registry {
             crate::light::light_schema(),
             |v| typed(v, crate::light::RenderLight::validate),
         );
+        r.component(
+            "render.surface",
+            "render",
+            crate::light::surface_schema(),
+            |v| typed(v, crate::light::RenderSurface::validate),
+        );
         r.resource(
             "render.environment",
             "render",

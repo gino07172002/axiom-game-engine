@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "id": "render-lab",
+  "title": "Render Lab · sky, reflections, mesh shadows",
+  "capabilities": {"animation":1,"core":1,"render":1},
+  "systems": ["geometry.prepare","animation.evaluate"],
+  "entities": [
+    {"id":"sun","label":"Sun (casts shadows)","components":{
+      "core.transform":{"position":[-3,6,4],"rotation":[-0.403,-0.2725,-0.1271,0.8643]},
+      "render.light":{"kind":"directional","color":[1,0.95,0.86],"intensity":1.1,"shadows":true}
+    }},
+    {"id":"camera/main","label":"Camera","components":{
+      "core.transform":{"position":[0,2.1,7.2],"rotation":[-0.0958,0,0,0.9954]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":50},"near":0.05,"far":200,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"ground","label":"Polished ground (render.surface smoothness 0.85)","components":{
+      "core.transform":{"position":[0,-0.05,0],"scale":[40,0.1,40]},
+      "render.mesh":{"parts":[{"color":[0.3,0.32,0.34],"grid":true}]},
+      "render.surface":{"metallic":0,"smoothness":0.85}
+    }},
+    {"id":"metal/gold","label":"Gold block (metallic 1)","components":{
+      "core.transform":{"position":[-2.3,0.6,0.2],"rotation":[0,0.2588,0,0.9659]},
+      "render.mesh":{"parts":[{"transform":{"scale":[1.2,1.2,1.2]},"color":[0.95,0.72,0.32]}]},
+      "render.surface":{"metallic":1,"smoothness":0.9}
+    }},
+    {"id":"metal/chrome","label":"Chrome sphere (render.geometry, metallic 1)","components":{
+      "core.transform":{"position":[-0.3,0.9,-0.9],"scale":[0.9,0.9,0.9]},
+      "render.geometry":{"shape":"sphere","segments":48,"rings":32},
+      "render.surface":{"metallic":1,"smoothness":0.95}
+    }},
+    {"id":"matte/red","label":"Matte box (no render.surface)","components":{
+      "core.transform":{"position":[-0.9,0.4,1.6]},
+      "render.mesh":{"parts":[{"transform":{"scale":[0.8,0.8,0.8]},"color":[0.75,0.18,0.14]}]}
+    }},
+    {"id":"canopy","label":"Canopy (its shadow falls across the fighter)","components":{
+      "core.transform":{"position":[0.95,0,1.75]},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[0,1.35,0],"scale":[0.25,2.7,0.25]},"color":[0.82,0.8,0.76]},
+        {"transform":{"position":[0.25,2.72,-0.1],"scale":[1.6,0.08,0.55]},"color":[0.82,0.8,0.76]}
+      ]}
+    }},
+    {"id":"fighter","label":"Imported glTF fighter (receives + casts shadows)","components":{
+      "core.transform":{"position":[1.7,0,0.7],"rotation":[0,-0.2588,0,0.9659]},
+      "animation.player":{"asset":"fighter","clip":"idle"}
+    }}
+  ],
+  "scenes":[{"id":"lab","active":true,"entities":["sun","camera/main","ground","metal/gold","metal/chrome","matte/red","canopy","fighter"]}],
+  "resources": {
+    "animation.library":{"assets":{"fighter":{"path":"fighter.glb"}}},
+    "render.environment":{"sky":{"mode":"procedural"},"ambient":{"mode":"sky","intensity":1}},
+    "render.settings":{"accent":[0.41,0.87,0.76],"shadow_extent":12}
+  }
+}

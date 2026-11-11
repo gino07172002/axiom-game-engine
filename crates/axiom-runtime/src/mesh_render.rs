@@ -46,6 +46,9 @@ struct Mesh {
 pub struct MeshRenderer {
     camera: wgpu::BindGroup,
     camera_layout: wgpu::BindGroupLayout,
+    /// Uniform-only camera group and depth-only pipeline of the sun shadow pass.
+    shadow_camera: wgpu::BindGroup,
+    shadow_pipeline: wgpu::RenderPipeline,
     material_layout: wgpu::BindGroupLayout,
     draws: wgpu::Buffer,
     pipelines: Vec<wgpu::RenderPipeline>,
@@ -61,30 +64,84 @@ impl MeshRenderer {
     pub fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
         [&self.camera_layout, &self.material_layout]
     }
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, globals: &wgpu::Buffer) -> Self {
+    /// `shadow` / `shadow_sampler`: the sun shadow map the meshes sample (bindings 1 and 2 of
+    /// the camera group, like the cube pipeline) and cast into (`draw_shadow`).
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        globals: &wgpu::Buffer,
+        shadow: &wgpu::TextureView,
+        shadow_sampler: &wgpu::Sampler,
+    ) -> Self {
+        let uniform_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("triangle camera"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: None,
+            entries: &[
+                uniform_entry,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
+        let globals_binding = || {
+            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: globals,
+                offset: 0,
+                size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
+            })
+        };
         let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("triangle camera"),
             layout: &camera_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(shadow),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
+                },
+            ],
+        });
+        // The depth pass writes the shadow map, so its camera group must not also bind it.
+        let shadow_camera_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("triangle shadow camera"),
+                entries: &[uniform_entry],
+            });
+        let shadow_camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("triangle shadow camera"),
+            layout: &shadow_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: globals,
-                    offset: 0,
-                    size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
-                }),
+                resource: globals_binding(),
             }],
         });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -176,6 +233,39 @@ impl MeshRenderer {
                 );
             }
         }
+        let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("triangle shadow"),
+            bind_group_layouts: &[&shadow_camera_layout, &material_layout],
+            push_constant_ranges: &[],
+        });
+        // Same depth bias as the cube shadow pipeline; no culling so open / double-sided
+        // imported meshes still cast.
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("triangle shadow pipeline"),
+            layout: Some(&shadow_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_mesh_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[mesh_vertex_layout()],
+            },
+            fragment: None,
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
         let draws = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("triangle draws"),
             size: 8192 * 256,
@@ -185,6 +275,8 @@ impl MeshRenderer {
         Self {
             camera,
             camera_layout,
+            shadow_camera,
+            shadow_pipeline,
             material_layout,
             draws,
             pipelines,
@@ -305,10 +397,11 @@ impl MeshRenderer {
             ensure!(normal.is_finite(), "singular mesh model transform");
             for m in &mesh.materials {
                 ensure!(draw_index < 8192, "triangle draw budget exceeded");
+                let [metallic, smooth] = crate::presentation::surface_params(frame.surface);
                 let params = match m.alpha {
-                    AlphaMode::Opaque => [0., 0., 0., 0.],
-                    AlphaMode::Mask(c) => [1., c, 0., 0.],
-                    AlphaMode::Blend => [2., 0., 0., 0.],
+                    AlphaMode::Opaque => [0., 0., metallic, smooth],
+                    AlphaMode::Mask(c) => [1., c, metallic, smooth],
+                    AlphaMode::Blend => [2., 0., metallic, smooth],
                 };
                 let draw = Draw {
                     model: frame.model.to_cols_array_2d(),
@@ -374,6 +467,46 @@ impl MeshRenderer {
                 } else {
                     let pipeline = usize::from(blend) * 2 + usize::from(m.double_sided);
                     pass.set_pipeline(&self.pipelines[pipeline]);
+                }
+                pass.set_bind_group(1, &m.bind, &[((active.first + i) * 256) as u32]);
+                pass.draw_indexed(m.range.clone(), 0, 0..1);
+                calls += 1;
+                triangles += m.range.len() as u64 / 3;
+            }
+        }
+        (calls, triangles)
+    }
+    /// Draws the opaque mesh primitives (after any surface material's alpha) into the sun
+    /// depth pass. Masked and blended primitives do not cast.
+    pub fn draw_shadow(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        shaders: &crate::shader_gpu::ShaderGpu,
+    ) -> (u32, u64) {
+        let (mut calls, mut triangles) = (0, 0);
+        if self.active.is_empty() {
+            return (calls, triangles);
+        }
+        pass.set_pipeline(&self.shadow_pipeline);
+        pass.set_bind_group(0, &self.shadow_camera, &[0]);
+        for active in &self.active {
+            let mesh = &self.meshes[&active.key];
+            let surface = active
+                .material
+                .as_ref()
+                .and_then(|id| shaders.materials.get(id))
+                .map(|s| s.alpha);
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            for (i, m) in mesh.materials.iter().enumerate() {
+                use crate::shader::Alpha;
+                let opaque = match surface.unwrap_or(Alpha::Inherit) {
+                    Alpha::Inherit => matches!(m.alpha, AlphaMode::Opaque),
+                    Alpha::Opaque => true,
+                    _ => false,
+                };
+                if !opaque || m.range.is_empty() {
+                    continue;
                 }
                 pass.set_bind_group(1, &m.bind, &[((active.first + i) * 256) as u32]);
                 pass.draw_indexed(m.range.clone(), 0, 0..1);

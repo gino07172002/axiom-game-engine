@@ -7,18 +7,54 @@ struct LocalLight {position_range:vec4<f32>,color_intensity:vec4<f32>,direction_
 struct SunLight {direction_shadow:vec4<f32>,color:vec4<f32>,specular:vec4<f32>}
 // accent.w = local light count; ambient_sky.w = sun count; ambient_equator.w = 1 when the world
 // authors lighting (directional light or render.environment); fog = (rgb, k) with 1-exp(-d²k).
-struct Globals { view_proj: mat4x4<f32>, light_vp: mat4x4<f32>, eye_time: vec4<f32>, accent: vec4<f32>, lights:array<LocalLight,32>, view_params:vec4<f32>, suns:array<SunLight,4>, ambient_sky:vec4<f32>, ambient_equator:vec4<f32>, ambient_ground:vec4<f32>, fog:vec4<f32> }
+// Sky (render.environment sky; lighting.rs SkyParams): sky_zenith.w = mode (0 none = legacy
+// screen gradient, 1 gradient, 2 procedural), sky_horizon.w = shape, sky_ground.w = scale,
+// sky_sun = (cos sun-disk half angle (> 1 = no disk), haze, 0, 0). Sun = suns[0].
+// sky_viewport = this view's viewport (x, y, width, height) in framebuffer pixels.
+struct Globals { view_proj: mat4x4<f32>, light_vp: mat4x4<f32>, eye_time: vec4<f32>, accent: vec4<f32>, lights:array<LocalLight,32>, view_params:vec4<f32>, suns:array<SunLight,4>, ambient_sky:vec4<f32>, ambient_equator:vec4<f32>, ambient_ground:vec4<f32>, fog:vec4<f32>, inv_view_proj: mat4x4<f32>, sky_zenith:vec4<f32>, sky_horizon:vec4<f32>, sky_ground:vec4<f32>, sky_sun:vec4<f32>, sky_viewport:vec4<f32> }
 @group(0) @binding(0) var<uniform> g: Globals;
+
+// Sky radiance toward unit direction d (the formula of SkyParams::radiance); disk adds the sun.
+fn axiom_sky(d:vec3<f32>,disk:bool)->vec3<f32> {
+ let mode=g.sky_zenith.w;let y=clamp(d.y,-1.0,1.0);
+ var c:vec3<f32>;
+ if y>=0.0 {
+  var t=pow(y,g.sky_horizon.w);
+  if mode>1.5 {t=1.0-pow(1.0-y,g.sky_horizon.w);}
+  c=mix(g.sky_horizon.rgb,g.sky_zenith.rgb,t);
+ } else {
+  c=mix(g.sky_horizon.rgb,g.sky_ground.rgb,smoothstep(0.0,1.0,clamp(-y/0.17,0.0,1.0)));
+ }
+ c*=g.sky_ground.w;
+ if mode>1.5 {
+  let cs=max(dot(d,g.suns[0].direction_shadow.xyz),0.0);let above=clamp((y+0.02)/0.04,0.0,1.0);
+  var glow=pow(cs,12.0)*g.sky_sun.y*above;
+  if disk&&g.sky_sun.x<=1.0 {glow+=smoothstep(0.0,1.0,clamp((cs-(g.sky_sun.x-0.0004))/0.0005,0.0,1.0))*12.0*above;}
+  c+=g.suns[0].color.rgb*glow*g.sky_ground.w;
+ }
+ return c;
+}
+// Environment seen along reflection r: the authored sky blurred toward the ambient trilight
+// as smoothness drops (no sky authored: the trilight). Not a probe: other objects never show.
+fn axiom_environment(r:vec3<f32>,smoothness:f32)->vec3<f32> {
+ let blur=axiom_ambient(r);
+ if g.sky_zenith.w<0.5 {return blur;}
+ return mix(blur,axiom_sky(r,smoothness>0.95),smoothness*smoothness);
+}
+// render.surface reflection added to a lit colour: Schlick Fresnel with the roughness-aware
+// grazing term; metallic tints by the base colour. The caller scales its diffuse by 1-metallic.
+fn axiom_reflection(base:vec3<f32>,n:vec3<f32>,view:vec3<f32>,metallic:f32,smoothness:f32)->vec3<f32> {
+ let nv=clamp(dot(n,view),0.0,1.0);
+ let f0=mix(vec3<f32>(0.04),base,metallic);
+ let fresnel=f0+(max(vec3<f32>(smoothness),f0)-f0)*pow(1.0-nv,5.0);
+ return axiom_environment(reflect(-view,n),smoothness)*fresnel;
+}
 
 // Hemisphere ("trilight") ambient: equator at the horizon, sky up, ground down.
 fn axiom_ambient(n:vec3<f32>)->vec3<f32> {
  let t=clamp(n.y,-1.0,1.0);
  if t>=0.0 {return mix(g.ambient_equator.rgb,g.ambient_sky.rgb,t);}
  return mix(g.ambient_equator.rgb,g.ambient_ground.rgb,-t);
-}
-fn axiom_sun_diffuse(n:vec3<f32>)->vec3<f32> {
- var c=vec3<f32>(0.0);for(var i=0u;i<min(u32(g.ambient_sky.w),4u);i=i+1u) {c+=g.suns[i].color.rgb*max(dot(n,g.suns[i].direction_shadow.xyz),0.0);}
- return c;
 }
 fn axiom_fog(lit:vec3<f32>,p:vec3<f32>)->vec3<f32> {
  let distance=length(g.eye_time.xyz-p);
