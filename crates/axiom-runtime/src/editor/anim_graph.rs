@@ -542,7 +542,7 @@ impl Editor {
                                 }
                             }
                             if ui
-                                .small_button(RichText::new("✕").color(WARNING))
+                                .small_button(RichText::new("x").color(WARNING))
                                 .on_hover_text("Remove parameter (ACL: animctl C param remove NAME)")
                                 .clicked()
                             {
@@ -745,7 +745,7 @@ fn motion_form(
                         ui.label(RichText::new("at").small().color(MUTED));
                         changed |= drag(ui, &mut p["at"], -1000.0..=1000.0, 0.05);
                         changed |= clip_combo(ui, ("anim_point", i), clips, &mut p["clip"]);
-                        if n > 1 && ui.small_button("✕").clicked() {
+                        if n > 1 && ui.small_button("x").clicked() {
                             remove = Some(i);
                         }
                     });
@@ -915,7 +915,7 @@ fn transition_form(
                         changed = true;
                     }
                 }
-                if ui.small_button("✕").clicked() {
+                if ui.small_button("x").clicked() {
                     remove = Some(i);
                 }
             });

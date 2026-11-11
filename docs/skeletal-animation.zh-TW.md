@@ -86,7 +86,7 @@ cargo build --workspace
 
 ```powershell
 .\target\debug\axiom.exe --db data/animator-lab.sqlite --pack content/animator-lab play --start
-.\target\debug\axiom.exe --db data/animator-lab.sqlite call animation.param '{"entity":"walker","name":"wave","value":true}' --ticks 120
+.\target\debug\axiom.exe --db data/animator-lab.sqlite --pack content/animator-lab call animation.param '{"entity":"walker","name":"wave","value":true}' --ticks 120
 ```
 
 ACL:`animctl C create|remove`、`animctl C state add|remove|rename|set ..`、`animctl C initial S`、`animctl C transition add|remove|move|set ..`、`animctl C param set NAME JSON | param remove NAME`、`animctl C node S x,y`、`animctl SEL attach C`。示範內容包 `content/animator-lab` 只用 mascot 已提交的第一方片段(idle / walk / run / wave),角色沿 path 行走,UI 按鈕改 path 速度,控制器自動在 idle、walk↔run 混合與 wave 之間切換。

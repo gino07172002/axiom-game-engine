@@ -771,7 +771,9 @@ impl GraphUi {
             for s in [-1.0, 1.0] {
                 painter.line_segment([b, b - dir * 10.0 * zoom + side * 5.0 * zoom * s], stroke);
             }
-            let mid = a + (b - a) * 0.5;
+            // Parallel / opposite transitions put their labels nearer their own start, so
+            // the two labels of an A<->B pair do not cover each other.
+            let mid = a + (b - a) * if e.lane != 0.0 { 0.35 } else { 0.5 };
             let galley = painter.layout_no_wrap(
                 e.label.clone(),
                 egui::FontId::proportional(11.0 * zoom),

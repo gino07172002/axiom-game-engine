@@ -46,7 +46,7 @@
         ]
       }
     }},
-    "editor.layout":{"graphs":{"anim/locomotion":{"idle":[40,60],"move":[300,60],"wave":[40,200]}}},
+    "editor.layout":{"graphs":{"anim/locomotion":{"idle":[40,60],"move":[340,60],"wave":[40,240]}}},
     "behavior.program":{"variables":{}},
     "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":10},
     "ui.document":{
