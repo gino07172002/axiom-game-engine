@@ -74,6 +74,10 @@ EDIT (any number, atomic):
                                   e.g. core.transform/position; COMPONENT alone = the whole override)
   prefab apply ID COMPONENT/FIELD     ID's overridden value becomes the prefab's (all instances), ID
                                   stops overriding it
+                                  FIELD inside an overridden array (e.g. render.mesh/parts/1/color):
+                                  revert / apply copy that one value (a key one side lacks is
+                                  removed / added); the array override goes once it equals the
+                                  prefab's; an item the prefab lacks = no_prefab_value
   ground SEL                      drop to the highest render.mesh top below (else y=0); moves position.y
   rotate SEL x,y,z                core.transform rotation from Euler degrees (XYZ)
   tag SEL +TAG -TAG ..            add / remove entity tags (other tags and their order kept)

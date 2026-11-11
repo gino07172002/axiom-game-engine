@@ -2266,4 +2266,21 @@ fn prefab_revert_and_apply_match_acl() {
         },
         "prefab apply plaza/lamp-2 core.transform/position",
     );
+    // One value inside an array the instance overrides as a whole (render.mesh parts).
+    let parts = headless(
+        &town,
+        r#"set plaza/lamp-2 render.mesh/parts [{"transform":{"position":[0,1.4,0],"scale":[0.12,2.8,0.12]},"color":[0.16,0.17,0.2]},{"transform":{"position":[0,2.9,0],"scale":[0.42,0.32,0.42]},"color":[0.2,0.6,1],"emission":1.6}]"#,
+    );
+    for verb in ["revert", "apply"] {
+        assert_parity(
+            parts.clone(),
+            |e| {
+                e.select(Some("plaza/lamp-2".into()));
+                vec![e
+                    .run_command_with(&format!("prefab.{verb}"), Some("render.mesh/parts/1/color"))
+                    .unwrap()]
+            },
+            &format!("prefab {verb} plaza/lamp-2 render.mesh/parts/1/color"),
+        );
+    }
 }

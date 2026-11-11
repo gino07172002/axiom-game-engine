@@ -1491,6 +1491,7 @@ impl Editor {
                                     rects: &mut self.rects,
                                     clipboard: self.component_clipboard.as_ref().map(|c| c.0.as_str()),
                                     live,
+                                    stale,
                                     scroll: &mut self.scroll_component,
                                     icons: self.icons,
                                 };
@@ -2564,6 +2565,8 @@ struct ComponentPanel<'a> {
     /// Component whose values were copied (Paste is offered on the same type).
     clipboard: Option<&'a str>,
     live: bool,
+    /// The draft is from an older revision (JSON mode then shows no override markers).
+    stale: bool,
     /// Scroll the Inspector so the open component starts at the top (once).
     scroll: &'a mut bool,
     icons: super::icons::Icons,
@@ -2622,6 +2625,7 @@ fn component_editor(
         rects,
         clipboard,
         live,
+        stale,
         scroll,
         icons,
     } = panel;
@@ -2682,6 +2686,12 @@ fn component_editor(
                         }
                     }
                 });
+            // A combo box is a child of unknown size, which the wrapping row never wraps (and
+            // its `available_width` is the whole row): a narrow Inspector puts Behavior… on
+            // its own row instead of widening every card below it past the panel.
+            if ui.max_rect().right() - ui.cursor().min.x < 110.0 {
+                ui.end_row();
+            }
             // Behavior ▸ templates: option dialogs (`command:ID` runs the registered command).
             let menu = egui::ComboBox::from_id_salt("add_behavior")
                 .selected_text("Behavior…")
@@ -2807,6 +2817,7 @@ fn component_editor(
                     picker: &mut *picker,
                     rects: &mut *rects,
                     live,
+                    stale,
                     spec,
                 };
                 if let Some(r) = component_body(ui, body, entity, inherited, draft) {
@@ -3017,6 +3028,7 @@ struct ComponentBody<'a> {
     picker: &'a mut Option<super::form::Picker>,
     rects: &'a mut std::collections::HashMap<String, egui::Rect>,
     live: bool,
+    stale: bool,
     spec: Option<&'a super::form::Spec>,
 }
 
@@ -3038,6 +3050,7 @@ fn component_body(
         picker,
         rects,
         live,
+        stale,
         spec,
     } = body;
     let mut request = None;
@@ -3092,10 +3105,12 @@ fn component_body(
             }
         });
         if !draft.json_mode {
+            // At most the visible rest of the row, less the text box's own 4 pt side margins.
+            let room = super::form::room(ui) - 8.0;
             let r = ui.add(
                 egui::TextEdit::singleline(filter)
                     .hint_text("Filter fields")
-                    .desired_width(110.0),
+                    .desired_width(room.clamp(40.0, 110.0)),
             );
             rects.insert("form:filter".into(), r.rect);
         }
@@ -3173,14 +3188,40 @@ fn component_body(
             );
         }
     }
-    draft.component_dirty |= ui
-        .add(
-            egui::TextEdit::multiline(&mut draft.json)
-                .code_editor()
-                .desired_rows(5)
-                .desired_width(f32::INFINITY),
-        )
-        .changed();
+    // Override markers in a gutter left of the text while it shows the committed override.
+    let gutter = overrides
+        .filter(|(set, _)| own && inherits && !set.json_lines.is_empty())
+        .filter(|(set, _)| !draft.component_dirty && !stale && draft.json.len() == set.json_len);
+    let text = egui::TextEdit::multiline(&mut draft.json)
+        .code_editor()
+        .desired_rows(5)
+        .desired_width(f32::INFINITY);
+    match gutter {
+        Some((set, apply)) => {
+            caption(
+                ui,
+                "Blue bars: overridden keys · right-click one for Revert / Apply to Prefab",
+            );
+            let output = ui
+                .horizontal_top(|ui| {
+                    ui.add_space(super::prefab_overrides::GUTTER);
+                    text.show(ui)
+                })
+                .inner;
+            draft.component_dirty |= output.response.changed();
+            rects.insert("form:json".into(), output.response.rect);
+            if let Some((pointer, action)) =
+                super::prefab_overrides::json_gutter(ui, &output, set, apply, rects)
+            {
+                request = Some(ComponentRequest::Prefab {
+                    component: draft.component.clone(),
+                    pointer,
+                    action,
+                });
+            }
+        }
+        None => draft.component_dirty |= ui.add(text).changed(),
+    }
     ui.horizontal(|ui| {
         if !own && ui.small_button("Stage component").clicked() {
             draft.component_dirty = true;
