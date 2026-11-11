@@ -656,3 +656,110 @@ fn inspector_on_a_4096_object_world_stays_within_budget() {
     );
     assert!(max(&filtered) < 16.0 * 6.0 && typed < 16.0 * 6.0);
 }
+
+#[test]
+fn closed_cards_toggle_enabled_and_the_transform_card_reverts_like_acl() {
+    // Workstream E: a closed card's enable checkbox and the Transform card's Revert.
+    let start = acl(
+        &lab(),
+        "create light point id=lamp\ncreate cube id=box at=1,2,3 rot=0,45,0",
+    );
+    let mut h = Harness::new(start.clone());
+    h.editor.select(Some("lamp".into()));
+    h.frame(vec![]);
+    assert_eq!(h.editor.draft.as_ref().unwrap().component, "");
+    // Revert / "…" on a closed card act on the component by name.
+    assert!(h.editor.rects.contains_key("component:menu@render.light"));
+    assert!(h.editor.rects.contains_key("component:reset@render.light"));
+    // Closed render.light card: one click = one revision.
+    let toggled = h.click("component:enabled:render.light");
+    h.frame(vec![]);
+    let toggled = if toggled.is_empty() {
+        h.frame(vec![])
+    } else {
+        toggled
+    };
+    h.commit(toggled);
+    assert_same(&h, &start, "set lamp render.light/enabled false");
+    // Transform card: Revert = reset SEL core.transform.
+    h.editor.select(Some("box".into()));
+    h.frame(vec![]);
+    let reverted = h.click("transform:revert");
+    h.commit(reverted);
+    assert_same(
+        &h,
+        &start,
+        "set lamp render.light/enabled false\nreset box core.transform",
+    );
+    let t = h.value("box", "core.transform", "/position");
+    assert_eq!(t, json!([0.0, 0.0, 0.0]));
+}
+
+#[test]
+fn add_component_lives_in_the_components_header_and_writes_like_acl() {
+    let start = acl(&lab(), "create cube id=box");
+    let mut h = Harness::new(start.clone());
+    h.editor.select(Some("box".into()));
+    h.frame(vec![]);
+    let add = h.rect("component:add");
+    let header = h.rect("component:add");
+    // On the Components header row, right of the title, above the Transform card.
+    assert!(add.top() < h.rect("transform:revert").top());
+    assert_eq!(header, h.rect("behavior:menu"));
+    h.click("component:add");
+    h.frame(vec![]);
+    let added = h.click("behavior:behavior.patrol");
+    h.frame(vec![]);
+    assert!(added.is_empty(), "the template opens its options dialog");
+    assert!(h.editor.options.is_some());
+}
+
+#[test]
+fn fields_still_at_their_default_fold_under_an_advanced_row() {
+    // The registry default light with one field changed: the rest folds away.
+    let start = acl(
+        &lab(),
+        "create empty id=spot\nadd spot render.light\nset spot render.light/intensity 4",
+    );
+    let mut h = Harness::new(start.clone());
+    h.open("spot", "render.light");
+    let spec = h
+        .editor
+        .specs
+        .get(&h.editor.registry, &h.editor.world, "render.light");
+    let default = spec
+        .value_default
+        .clone()
+        .expect("render.light has a default");
+    let draft = h.editor.draft.as_ref().unwrap();
+    let base = draft.form_base.as_object().unwrap().clone();
+    let hidden: Vec<&String> = base
+        .keys()
+        .filter(|k| k.as_str() != "enabled" && default.get(k.as_str()) == base.get(k.as_str()))
+        .collect();
+    assert!(
+        hidden.len() >= 2 && base.len() - hidden.len() >= 2,
+        "{hidden:?} of {base:?}"
+    );
+    {
+        let row = h.rect("form:advanced");
+        // The hidden fields are not drawn until the row is opened.
+        let first = format!("form:/{}", hidden[0]);
+        assert!(
+            !h.editor.rects.contains_key(&first) || h.rect(&first).top() > row.top(),
+            "{first} drawn above the Advanced row"
+        );
+        h.click("form:advanced");
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.rect(&first).top() > row.top());
+    }
+    // A filter shows every field again (no row).
+    h.editor.field_filter = "a".into();
+    h.editor.rects.clear();
+    h.frame(vec![]);
+    assert!(!h.editor.rects.contains_key("form:advanced"));
+    h.editor.field_filter.clear();
+    // Editing never writes by itself.
+    assert!(h.frame(vec![]).is_empty());
+}

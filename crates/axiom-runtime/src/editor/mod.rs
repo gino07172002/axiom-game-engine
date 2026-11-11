@@ -34,6 +34,8 @@ pub(crate) mod merge;
 // Follow-ups: readable diff lines, prefab override markers.
 mod diff_view;
 mod prefab_overrides;
+// Workstream E (editor look): Scene view display mode and screenshot.
+mod look;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
@@ -533,6 +535,8 @@ pub(crate) struct Editor {
     /// Last frame's renderer counters and the GPU allocator total (host-supplied).
     pub(crate) frame_stats: crate::render::FrameStats,
     pub(crate) gpu_alloc: Option<u64>,
+    /// This process's video memory on the render adapter (host-supplied, every 2 s).
+    pub(crate) vram: Option<crate::vram::VramReading>,
     /// Bridge requests accepted so far and the time since the last one (host-supplied).
     pub(crate) bridge_activity: (u64, Option<std::time::Duration>),
     /// Registry component descriptors, used as form hints.
@@ -639,6 +643,8 @@ pub(crate) struct Editor {
     graph: graph::GraphUi,
     /// Assets tab: filters, selection, Find Usages, thumbnails.
     assets: asset_browser::AssetBrowser,
+    /// Scene view display mode and the screenshot job.
+    look: look::Look,
     /// Console, Event trace, Profiler and the scenario recording (M8).
     pub(crate) debug: debug::Debug,
     /// Input Map, Localization, Animation, VFX tabs and the shader source (editor state).
@@ -708,6 +714,7 @@ impl Editor {
             theme: None,
             frame_stats: Default::default(),
             gpu_alloc: None,
+            vram: None,
             bridge_activity: (0, None),
             component_hints: Default::default(),
             history: Vec::new(),
@@ -767,6 +774,7 @@ impl Editor {
             tuning: Default::default(),
             graph: Default::default(),
             assets: Default::default(),
+            look: Default::default(),
             debug: Default::default(),
             ghost: Default::default(),
             merge: Default::default(),
@@ -2390,7 +2398,13 @@ impl Editor {
             "debug":self.debug.observation(),
             "tuning":self.tuning_observation(),
             "ghosts":self.ghost_observation(),
-            "merge":self.merge_observation()
+            "merge":self.merge_observation(),
+            "look":self.look_observation(),
+            "vram":match &self.vram {
+                Some(crate::vram::VramReading::Bytes { local, shared, budget }) => json!({"source":"dxgi","local_bytes":local,"shared_bytes":shared,"budget_bytes":budget}),
+                Some(crate::vram::VramReading::Unavailable(why)) => json!({"available":false,"reason":why}),
+                None => Value::Null,
+            }
         })
     }
 

@@ -97,6 +97,15 @@ pub struct Renderer {
     pub timestamp_query_supported: bool,
     /// Pass-group GPU times (editor Profiler); writes timestamps only while enabled.
     pub timer: crate::gpu_timing::GpuTimer,
+    /// This process's video memory on the adapter (OS counters; see `vram.rs`).
+    pub vram: crate::vram::VideoMemory,
+    /// The view drawn unlit (editor Scene view display mode): see `unlit_globals`.
+    pub unlit_view: Option<&'static str>,
+    /// Read the next presented frame back into `grabbed` (editor screenshot; the editor
+    /// encodes it off the main thread). Cleared after the read-back.
+    pub grab: bool,
+    /// `(width, height, RGBA8 rows)` of the last grabbed frame.
+    pub grabbed: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl Renderer {
@@ -393,6 +402,10 @@ impl Renderer {
             stats: FrameStats::default(),
             timestamp_query_supported,
             timer,
+            vram: crate::vram::VideoMemory::open(info.vendor, info.device),
+            unlit_view: None,
+            grab: false,
+            grabbed: None,
         })
     }
 
@@ -504,7 +517,7 @@ impl Renderer {
                     v.camera.far,
                 ),
             };
-            let global = Globals {
+            let mut global = Globals {
                 view_proj: (projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up))
                     .to_cols_array_2d(),
                 light_vp: light_vp.to_cols_array_2d(),
@@ -533,6 +546,9 @@ impl Renderer {
                 ambient: lighting.ambient,
                 fog: lighting.fog,
             };
+            if self.unlit_view == Some(v.id.as_str()) {
+                unlit_globals(&mut global);
+            }
             let bytes = bytemuck::bytes_of(&global);
             uniforms[i * GLOBALS_STRIDE as usize..i * GLOBALS_STRIDE as usize + bytes.len()]
                 .copy_from_slice(bytes);
@@ -838,7 +854,10 @@ impl Renderer {
         }
         self.timer
             .mark(&mut encoder, crate::gpu_timing::Section::Ui);
-        let capture = if screenshot.is_some() {
+        // Without read-back support the grab is dropped (the editor reports it); a `--screenshot`
+        // capture still fails the frame below.
+        let grab = std::mem::take(&mut self.grab) && self.can_capture;
+        let capture = if screenshot.is_some() || grab {
             anyhow::ensure!(
                 self.can_capture,
                 "surface does not support screenshot readback"
@@ -903,20 +922,24 @@ impl Renderer {
                     pixel.swap(0, 2);
                 }
             }
-            let path = screenshot.unwrap();
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut png = png::Encoder::new(
-                std::io::BufWriter::new(std::fs::File::create(path)?),
-                self.config.width,
-                self.config.height,
-            );
-            png.set_color(png::ColorType::Rgba);
-            png.set_depth(png::BitDepth::Eight);
-            png.write_header()?.write_image_data(&pixels)?;
             drop(mapped);
             buffer.unmap();
+            if let Some(path) = screenshot {
+                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut png = png::Encoder::new(
+                    std::io::BufWriter::new(std::fs::File::create(path)?),
+                    self.config.width,
+                    self.config.height,
+                );
+                png.set_color(png::ColorType::Rgba);
+                png.set_depth(png::BitDepth::Eight);
+                png.write_header()?.write_image_data(&pixels)?;
+            }
+            if grab {
+                self.grabbed = Some((self.config.width, self.config.height, pixels));
+            }
         }
         for id in &output.textures_delta.free {
             self.egui.free_texture(id);
@@ -984,4 +1007,45 @@ fn cube_vertices() -> Vec<Vertex> {
         }
     }
     vertices
+}
+
+/// Editor "Unlit" display: every shader that reads the shared globals (cubes, meshes, custom
+/// material hooks through `axiom_lighting`) sees one uniform white ambient and nothing else:
+/// no suns (so no sun shadow or specular), no local lights, no fog. Colours still pass through
+/// the shaders' tone curve, so this is flat base colour, not the raw texel value.
+fn unlit_globals(global: &mut Globals) {
+    const FLAT: f32 = 1.5;
+    global.accent[3] = 0.0;
+    global.ambient = [
+        [FLAT, FLAT, FLAT, 0.0],
+        // w = 1: the authored-lighting path (meshes otherwise use the legacy key light).
+        [FLAT, FLAT, FLAT, 1.0],
+        [FLAT, FLAT, FLAT, 0.0],
+    ];
+    global.fog = [0.0; 4];
+}
+
+#[cfg(test)]
+mod unlit_tests {
+    #[test]
+    fn unlit_globals_drop_every_light_and_the_fog() {
+        let mut g: super::Globals = bytemuck::Zeroable::zeroed();
+        g.accent = [1.0, 0.5, 0.5, 7.0];
+        g.ambient = [
+            [0.2, 0.3, 0.4, 2.0],
+            [0.1, 0.1, 0.1, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ];
+        g.fog = [0.5, 0.5, 0.5, 0.01];
+        super::unlit_globals(&mut g);
+        // accent.w = local light count, ambient_sky.w = sun count, ambient_equator.w = authored.
+        assert_eq!(g.accent, [1.0, 0.5, 0.5, 0.0]);
+        assert_eq!(g.ambient[0][3], 0.0);
+        assert_eq!(g.ambient[1][3], 1.0);
+        assert_eq!(g.fog[3], 0.0);
+        assert!(g
+            .ambient
+            .iter()
+            .all(|a| a[0] == a[1] && a[1] == a[2] && a[0] > 1.0));
+    }
 }

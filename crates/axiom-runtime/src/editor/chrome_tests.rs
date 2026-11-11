@@ -191,7 +191,13 @@ fn status_bar_shows_the_render_counters_and_switches_mode() {
     assert!(drawn(&out, "GPU alloc 256 MiB"));
     assert!(drawn(&out, "Entities 6"));
     h.editor.gpu_alloc = None;
-    assert!(drawn(&h.frame(), "GPU alloc n/a"));
+    assert!(drawn(&h.frame(), "VRAM –"));
+    h.editor.vram = Some(crate::vram::VramReading::Bytes {
+        local: 300 << 20,
+        shared: 0,
+        budget: 2 << 30,
+    });
+    assert!(drawn(&h.frame(), "VRAM 300 MiB"));
     // Play Mode = play.start; while editing, Edit Mode does nothing.
     assert!(h.click("status:play.stop").is_empty());
     assert!(matches!(

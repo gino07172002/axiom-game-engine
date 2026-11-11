@@ -2487,6 +2487,7 @@ impl App {
                         .device
                         .generate_allocator_report()
                         .map(|r| r.total_allocated_bytes);
+                    editor.vram = Some(renderer.vram.read());
                 }
             }
         }
@@ -2865,6 +2866,13 @@ impl App {
                 out.shapes.clear();
             }
         }
+        // Editor Scene view display mode and screenshot read-back (view state, not content).
+        let grab = self.editor.as_ref().is_some_and(|e| e.wants_grab());
+        if let Some(editor) = &self.editor {
+            let renderer = self.renderer.as_mut().unwrap();
+            renderer.unlit_view = editor.unlit_view();
+            renderer.grab = grab;
+        }
         let rendered = self.renderer.as_mut().unwrap().render(
             &frame,
             &ctx,
@@ -2872,6 +2880,12 @@ impl App {
             game_ctx.as_ref().zip(game_output),
             capture_path,
         )?;
+        if rendered && grab {
+            let grabbed = self.renderer.as_mut().unwrap().grabbed.take();
+            if let Some(editor) = &mut self.editor {
+                editor.grabbed(grabbed, ctx.pixels_per_point());
+            }
+        }
         if !rendered {
             self.frames -= 1;
             // Keep an on-demand capture for the next frame that actually renders.

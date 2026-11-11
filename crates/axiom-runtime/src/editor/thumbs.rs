@@ -60,13 +60,24 @@ pub(crate) struct ThumbKey {
 
 #[derive(Clone, Debug)]
 enum Source {
-    File { path: PathBuf, options: String },
-    Material { tint: [f32; 4], value: String },
+    File {
+        path: PathBuf,
+        options: String,
+    },
+    Material {
+        tint: [f32; 4],
+        value: String,
+    },
+    /// A prefab's `render.mesh` boxes: `(part matrix, colour)`, and the component as text.
+    Parts {
+        parts: Vec<(glam::Mat4, [f32; 4])>,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Request {
-    key: ThumbKey,
+    pub(crate) key: ThumbKey,
     source: Source,
 }
 
@@ -114,6 +125,53 @@ pub(crate) fn request(world: &axiom_core::World, entry: &AssetEntry) -> Option<R
                 },
                 value,
             )
+        }
+        AssetKind::Prefab => {
+            let prefab = world.prefabs.get(&entry.id)?;
+            if let Some(mesh) = prefab.components.get("render.mesh") {
+                // Primitive prefabs: their boxes in their colours.
+                let parsed: axiom_core::RenderMesh = serde_json::from_value(mesh.clone()).ok()?;
+                let parts = parsed
+                    .parts
+                    .iter()
+                    .map(|p| {
+                        let t = &p.transform;
+                        let matrix = glam::Mat4::from_scale_rotation_translation(
+                            glam::Vec3::from_array(t.scale),
+                            glam::Quat::from_array(t.rotation).normalize(),
+                            glam::Vec3::from_array(t.position),
+                        );
+                        (matrix, [p.color[0], p.color[1], p.color[2], 1.0])
+                    })
+                    .collect();
+                let value = format!("prefab-mesh\n{mesh}");
+                (
+                    Source::Parts {
+                        parts,
+                        value: value.clone(),
+                    },
+                    value,
+                )
+            } else {
+                // A prefab of a model: the model's thumbnail.
+                let asset = prefab
+                    .components
+                    .get("animation.player")?
+                    .get("asset")?
+                    .as_str()?;
+                let model = AssetEntry {
+                    kind: AssetKind::Model,
+                    id: asset.to_owned(),
+                    path: None,
+                };
+                let mut request = request(world, &model)?;
+                request.key = ThumbKey {
+                    kind: entry.kind,
+                    id: entry.id.clone(),
+                    source: request.key.source,
+                };
+                return Some(request);
+            }
         }
         _ => return None,
     };
@@ -572,7 +630,7 @@ fn one(
                 }
             }
         }
-        Source::Material { value, .. } => (
+        Source::Material { value, .. } | Source::Parts { value, .. } => (
             fnv(fnv(FNV_START, VERSION.as_bytes()), value.as_bytes()),
             None,
         ),
@@ -602,6 +660,7 @@ fn one(
             gpu_render(gpu, renderer, &mesh)?
         }
         (Source::Material { tint, .. }, _) => gpu_render(gpu, renderer, &Mesh::sphere(*tint))?,
+        (Source::Parts { parts, .. }, _) => gpu_render(gpu, renderer, &Mesh::boxes(parts))?,
     };
     if let Some(file) = &file {
         write_png(file, &pixels).map_err(text)?;
@@ -794,6 +853,47 @@ impl Mesh {
                 let a = r * (segments + 1) + s;
                 let b = a + segments + 1;
                 indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+        Self { vertices, indices }
+    }
+
+    /// Unit boxes (the engine's cube primitive, ±0.5) placed by each part matrix, flat
+    /// shaded per face.
+    fn boxes(parts: &[(glam::Mat4, [f32; 4])]) -> Self {
+        const FACES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+            ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ];
+        let mut vertices = Vec::with_capacity(parts.len() * 24);
+        let mut indices = Vec::with_capacity(parts.len() * 36);
+        for (matrix, color) in parts.iter().take(1024) {
+            let normal_matrix = matrix.inverse().transpose();
+            for (n, u, v) in FACES {
+                let (n, u, v) = (
+                    glam::Vec3::from_array(n),
+                    glam::Vec3::from_array(u),
+                    glam::Vec3::from_array(v),
+                );
+                let normal = normal_matrix
+                    .transform_vector3(n)
+                    .try_normalize()
+                    .unwrap_or(n);
+                let base = vertices.len() as u32;
+                for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                    let local = (n + u * a + v * b) * 0.5;
+                    vertices.push(Vertex {
+                        position: matrix.transform_point3(local).to_array(),
+                        normal: normal.to_array(),
+                        color: *color,
+                    });
+                }
+                // u × v = n for every face, so (0, 1, 2) is counter-clockwise seen from outside.
+                indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
             }
         }
         Self { vertices, indices }
@@ -1207,4 +1307,28 @@ pub fn validate_thumbnails_gpu(models: &[PathBuf], out: &Path) -> anyhow::Result
         0.0,
     )?;
     Ok(json!({"ok": true, "size": SIZE, "pipeline_setup_ms": setup_ms, "items": items}))
+}
+
+#[cfg(test)]
+mod box_tests {
+    #[test]
+    fn prefab_boxes_are_closed_outward_cubes_in_their_part_space() {
+        let part = glam::Mat4::from_scale_rotation_translation(
+            glam::vec3(2.0, 1.0, 4.0),
+            glam::Quat::IDENTITY,
+            glam::vec3(0.0, 0.5, 0.0),
+        );
+        let mesh = super::Mesh::boxes(&[(part, [1.0, 0.5, 0.25, 1.0])]);
+        assert_eq!((mesh.vertices.len(), mesh.indices.len()), (24, 36));
+        let (centre, half) = mesh.bounds();
+        assert_eq!(centre, glam::vec3(0.0, 0.5, 0.0));
+        assert_eq!(half, glam::vec3(1.0, 0.5, 2.0));
+        // Every triangle winds counter-clockwise seen from outside (normal · face normal > 0).
+        for t in mesh.indices.chunks(3) {
+            let p = |i: u32| glam::Vec3::from_array(mesh.vertices[i as usize].position);
+            let n = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
+            let face = glam::Vec3::from_array(mesh.vertices[t[0] as usize].normal);
+            assert!(n.dot(face) > 0.0);
+        }
+    }
 }

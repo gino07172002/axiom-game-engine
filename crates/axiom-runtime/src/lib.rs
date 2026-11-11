@@ -48,6 +48,7 @@ pub mod ui;
 pub mod ui_effects;
 pub mod vfx;
 pub mod vfx_gpu;
+pub mod vram;
 pub mod world;
 pub mod writer;
 pub use app::{run, RunMode, RunOptions};

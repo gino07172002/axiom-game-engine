@@ -355,3 +355,41 @@ fn hierarchy_with_2000_objects_draws_only_visible_rows() {
     h.frame(vec![]);
     assert!(h.editor.rects.contains_key("row:obj/1999"));
 }
+
+/// Workstream E: the first-party Sakura Plaza demo is organized in group folders like the
+/// mockup, built with `group` (ops::create_group), and the Hierarchy shows them as a
+/// collapsible folder tree.
+#[test]
+fn sakura_plaza_is_a_folder_tree_of_groups() {
+    let registry = crate::installed_registry();
+    let world = axiom_core::ContentPackage::load("../../content/plaza", &registry.authoring)
+        .unwrap()
+        .world;
+    let graph = axiom_core::scene_edit::Hierarchy::new(&world);
+    let label = |id: &str| world.entity(id).unwrap().label.clone().unwrap_or_default();
+    let roots: Vec<String> = graph.children[&None].iter().map(|id| label(id)).collect();
+    assert_eq!(roots, ["Environment", "Lighting", "Characters", "Cameras"]);
+    let under =
+        |id: &str| -> Vec<String> { graph.children[&Some(id)].iter().map(|c| label(c)).collect() };
+    assert_eq!(
+        under("env"),
+        ["PlazaFloor", "Buildings", "Props", "Vegetation"]
+    );
+    assert!(under("env/props").contains(&"Fountain".to_owned()));
+    assert!(under("characters").contains(&"Axiom_Long".to_owned()));
+    // Groups are plain objects (no components besides the transform): folder rows.
+    let mut h = Harness::new(world);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    for group in ["env", "env/buildings", "env/props", "env/vegetation"] {
+        h.rect(&format!("fold:{group}"));
+    }
+    // A fold arrow collapses the folder: its children leave the tree.
+    let fold = h.rect("fold:env").center();
+    h.click(fold, PointerButton::Primary);
+    assert!(h.editor.collapsed.contains("env"));
+    h.editor.rects.clear();
+    h.frame(vec![]);
+    assert!(h.editor.rects.contains_key("row:env"));
+    assert!(!h.editor.rects.contains_key("row:env/props"));
+}

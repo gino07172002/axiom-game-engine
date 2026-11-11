@@ -1,0 +1,12 @@
+# Sakura Plaza, stage 2: Lighting folder (a warm sun with shadows and the two lamp lights).
+create light directional id=lighting/sun rot=-48,35,0
+set lighting/sun render.light {"kind":"directional","color":[1,0.9,0.84],"intensity":1.15,"shadows":true}
+rename lighting/sun "DirectionalLight"
+create light point id=lighting/lamp-a at=-3,3.1,-3
+set lighting/lamp-a render.light {"kind":"point","color":[1,0.82,0.6],"intensity":2.2,"range":7}
+rename lighting/lamp-a "LampLight_A"
+create light point id=lighting/lamp-b at=3,3.1,4
+set lighting/lamp-b render.light {"kind":"point","color":[1,0.82,0.6],"intensity":2.2,"range":7}
+rename lighting/lamp-b "LampLight_B"
+group entities[id=lighting/sun,id=lighting/lamp-a,id=lighting/lamp-b] id=lighting
+rename lighting "Lighting"

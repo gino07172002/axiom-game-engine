@@ -1,0 +1,18 @@
+# Sakura Plaza, stage 3: Characters (the first-party mascot models, idle; one primitive figure)
+# and Cameras.
+create empty id=characters/axiom at=0,0,0
+set characters/axiom animation.player {"asset":"axiom-long","clip":"idle"}
+rename characters/axiom "Axiom_Long"
+create empty id=characters/student-a at=-2.2,0,-1.5 rot=0,30,0
+set characters/student-a animation.player {"asset":"axiom-short","clip":"idle","speed":0.9}
+rename characters/student-a "Axiom_Short"
+create cube id=characters/student-b at=2.4,0,-2 rot=0,-25,0
+set characters/student-b render.mesh/parts [{"transform":{"position":[0,0.45,0],"scale":[0.36,0.9,0.26]},"color":[0.2,0.24,0.36]},{"transform":{"position":[0,1.08,0],"scale":[0.46,0.42,0.3]},"color":[0.95,0.95,0.97]},{"transform":{"position":[0,1.47,0],"scale":[0.3,0.32,0.3]},"color":[0.98,0.84,0.76]},{"transform":{"position":[0,1.62,-0.02],"scale":[0.34,0.14,0.34]},"color":[0.3,0.2,0.18]}]
+rename characters/student-b "Student_B"
+group entities[id=characters/axiom,id=characters/student-a,id=characters/student-b] id=characters
+rename characters "Characters"
+
+create camera id=cameras/main at=0,1.6,6.5 rot=-6,0,0
+rename cameras/main "MainCamera"
+group entities[id=cameras/main] id=cameras
+rename cameras "Cameras"

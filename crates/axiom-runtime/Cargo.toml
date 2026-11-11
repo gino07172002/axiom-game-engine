@@ -27,3 +27,8 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.17"
 
+
+# Per-process video memory for the editor status bar (vram.rs). Already built for wgpu-hal's
+# D3D12 backend (same version and features), so this adds no crate and no compile time.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Dxgi"] }

@@ -264,13 +264,9 @@ impl Editor {
                     }
                 }
                 divider(ui);
-                let gpu = match self.gpu_alloc {
-                    Some(bytes) => format!("GPU alloc {:.0} MiB", bytes as f64 / MIB),
-                    None => "GPU alloc n/a".into(),
-                };
-                item(ui, gpu, MUTED).on_hover_text(
-                    "wgpu allocator total, refreshed every 2 s; excludes swapchain images and driver-internal memory. n/a = the backend gives no allocator report (e.g. Vulkan)",
-                );
+                let (gpu, tip) = vram_text(self.vram.as_ref(), self.gpu_alloc);
+                let r = item(ui, gpu, MUTED).on_hover_text(tip);
+                self.rects.insert("status:vram".into(), r.rect);
                 let s = self.frame_stats;
                 item(ui, format!("Tris {}", grouped(s.triangles)), MUTED)
                     .on_hover_text("Triangles submitted by the world passes last frame (primitives × instances)");
@@ -350,6 +346,61 @@ fn item(ui: &mut Ui, text: String, color: Color32) -> egui::Response {
     response
 }
 
+/// Status bar video memory: this process's dedicated video memory from the OS (`vram.rs`),
+/// else the wgpu allocator total, else a dash with the reason in the tooltip.
+pub(super) fn vram_text(
+    vram: Option<&crate::vram::VramReading>,
+    alloc: Option<u64>,
+) -> (String, String) {
+    use crate::vram::VramReading;
+    let alloc_line = match alloc {
+        Some(bytes) => format!("wgpu allocator total: {:.0} MiB", bytes as f64 / MIB),
+        None => {
+            "wgpu allocator total: not reported by this backend (wgpu 24 reports it only on D3D12)"
+                .into()
+        }
+    };
+    match vram {
+        Some(VramReading::Bytes {
+            local,
+            shared,
+            budget,
+        }) => {
+            let gib = |b: u64| b as f64 / (MIB * 1024.0);
+            let text = if *local >= 1 << 30 {
+                format!("VRAM {:.2} GB", gib(*local))
+            } else {
+                format!("VRAM {:.0} MiB", *local as f64 / MIB)
+            };
+            (
+                text,
+                format!(
+                    "Video memory this process uses on the render adapter (DXGI QueryVideoMemoryInfo, all APIs, swapchain and driver memory included), refreshed every 2 s.\nDedicated: {:.0} MiB of a {:.2} GB budget\nShared system memory: {:.0} MiB\n{alloc_line}",
+                    *local as f64 / MIB,
+                    gib(*budget),
+                    *shared as f64 / MIB,
+                ),
+            )
+        }
+        other => {
+            let why = match other {
+                Some(VramReading::Unavailable(why)) => why.as_str(),
+                _ => "not read yet (the first reading comes with the first rendered frame)",
+            };
+            match alloc {
+                Some(bytes) => (
+                    format!("GPU alloc {:.0} MiB", bytes as f64 / MIB),
+                    format!("wgpu allocator total, refreshed every 2 s (excludes swapchain images and driver memory). Per-process video memory unavailable: {why}"),
+                ),
+                None => (
+                    "VRAM –".into(),
+                    format!("Video memory unavailable: {why}.\n{alloc_line}"),
+                ),
+            }
+        }
+    }
+}
+
 /// 1780321 -> "1,780,321".
 pub(super) fn grouped(n: u64) -> String {
     let digits = n.to_string();
@@ -371,5 +422,34 @@ mod tests {
         assert_eq!(super::grouped(999), "999");
         assert_eq!(super::grouped(1000), "1,000");
         assert_eq!(super::grouped(1_780_321), "1,780,321");
+    }
+
+    #[test]
+    fn vram_text_prefers_the_os_reading_and_explains_a_missing_one() {
+        use crate::vram::VramReading;
+        let mib = 1024 * 1024;
+        let bytes = VramReading::Bytes {
+            local: 300 * mib,
+            shared: 20 * mib,
+            budget: 1536 * mib,
+        };
+        let (text, tip) = super::vram_text(Some(&bytes), None);
+        assert_eq!(text, "VRAM 300 MiB");
+        assert!(tip.contains("Shared system memory: 20 MiB") && tip.contains("1.50 GB budget"));
+        let big = VramReading::Bytes {
+            local: 1290 * mib,
+            shared: 0,
+            budget: 4096 * mib,
+        };
+        assert_eq!(super::vram_text(Some(&big), None).0, "VRAM 1.26 GB");
+        let gone = VramReading::Unavailable("no DXGI adapter matches PCI 10de:1d12".into());
+        let (text, tip) = super::vram_text(Some(&gone), None);
+        assert_eq!(text, "VRAM –");
+        assert!(tip.contains("no DXGI adapter matches") && tip.contains("D3D12"));
+        assert_eq!(
+            super::vram_text(Some(&gone), Some(64 * mib)).0,
+            "GPU alloc 64 MiB"
+        );
+        assert!(super::vram_text(None, None).1.contains("not read yet"));
     }
 }

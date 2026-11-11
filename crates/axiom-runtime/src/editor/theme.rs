@@ -32,6 +32,12 @@ pub(crate) const PREFAB: Color32 = Color32::from_rgb(122, 170, 255);
 pub(crate) const WARNING: Color32 = Color32::from_rgb(255, 178, 111);
 pub(crate) const SUCCESS: Color32 = Color32::from_rgb(88, 214, 141);
 pub(crate) const ERROR: Color32 = Color32::from_rgb(240, 96, 96);
+/// Axis letters of vector fields, in the viewport gizmo colours.
+pub(crate) const AXES: [(&str, Color32); 3] = [
+    ("X", Color32::from_rgb(255, 106, 103)),
+    ("Y", Color32::from_rgb(130, 224, 134)),
+    ("Z", Color32::from_rgb(117, 173, 255)),
+];
 /// Corner radius of cards, buttons and fields.
 pub(crate) const RADIUS: u8 = 5;
 
@@ -261,6 +267,34 @@ pub(crate) fn section(
         .show_header(ui, |ui| {
             icons.show(ui, icon, 16.0, ACCENT);
             ui.label(RichText::new(title).strong().color(TEXT));
+        })
+        .body(add);
+    });
+    ui.add_space(8.0);
+}
+
+/// `section` with header actions on the right (drawn right to left, e.g. Revert and "…").
+pub(crate) fn section_with_actions(
+    ui: &mut Ui,
+    icons: Icons,
+    icon: Icon,
+    title: &str,
+    default_open: bool,
+    actions: impl FnOnce(&mut Ui),
+    add: impl FnOnce(&mut Ui),
+) {
+    card().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        let id = ui.make_persistent_id(("section", title));
+        egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            default_open,
+        )
+        .show_header(ui, |ui| {
+            icons.show(ui, icon, 16.0, ACCENT);
+            ui.label(RichText::new(title).strong().color(TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions);
         })
         .body(add);
     });

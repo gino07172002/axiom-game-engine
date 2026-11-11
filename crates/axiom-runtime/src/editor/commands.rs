@@ -91,6 +91,18 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("view.palette", "Command Palette…", "View", "Ctrl+Shift+P"),
     c("view.fullscreen", "Toggle Fullscreen Window", "View", "F11"),
     c("view.gizmos", "Toggle Component Gizmos", "View", ""),
+    a(
+        "view.display_mode",
+        "Scene View: Lit / Unlit",
+        "View",
+        "lit|unlit (none = toggle)",
+    ),
+    a(
+        "view.screenshot",
+        "Scene View: Screenshot",
+        "View",
+        "[NAME] (artifacts/captures/NAME.png)",
+    ),
     c(
         "view.camera_preview",
         "Toggle Inspector Camera Preview",
@@ -455,6 +467,13 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     a("asset.find_usages", "Find Usages…", "Assets", "KIND:ID"),
     a("asset.rename", "Rename Asset…", "Assets", "KIND:ID NEW"),
+    a(
+        "asset.folder",
+        "Assets: Open Folder…",
+        "Assets",
+        "PATH (e.g. Models/content/plaza; empty = all)",
+    ),
+    a("asset.reveal", "Assets: Show Asset…", "Assets", "KIND:ID"),
     c("asset.thumbnails", "Generate Thumbnails", "Assets", ""),
     c(
         "asset.cancel_thumbnails",
@@ -825,6 +844,7 @@ impl Editor {
                 Some("apply or reload the inspector draft first")
             }
             "play.maximize" if self.previewing => Some("stop Play first"),
+            "view.screenshot" if self.screenshot_running() => Some("a screenshot is being written"),
             "game.main_camera" if busy => Some("apply or reload the inspector draft first"),
             "edit.undo" if self.undo.is_empty() && self.saving == 0 => Some("nothing to undo"),
             "edit.redo" if self.redo.is_empty() && self.saving == 0 => Some("nothing to redo"),
@@ -1051,6 +1071,10 @@ impl Editor {
         }
         if id == "ui.zoom" {
             self.ui_zoom_command(arg)?;
+            return Ok(vec![]);
+        }
+        if matches!(id, "view.display_mode" | "view.screenshot") {
+            self.look_command(id, arg)?;
             return Ok(vec![]);
         }
         if cmd.arg.is_empty() {
@@ -1844,7 +1868,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
                 "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
                 "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",
-                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
+                "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.display_mode, view.screenshot, asset.folder, asset.reveal, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",

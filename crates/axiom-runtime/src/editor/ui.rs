@@ -44,6 +44,7 @@ pub(super) fn component_value(world: &World, entity: &Entity, component: &str) -
 impl Editor {
     pub fn draw(&mut self, ctx: &egui::Context, runtime: &WorldRuntime) -> Vec<Action> {
         let mut actions = Vec::new();
+        self.poll_look();
         let text_focused = ctx
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
@@ -243,6 +244,7 @@ impl Editor {
         }
         self.merge_window(ctx, &mut actions);
         actions.extend(self.ghost_request());
+        self.take_reveal(ctx, &mut actions);
         self.command_windows(ctx, &mut actions);
         // Not while a button is held (dragging a separator or a window would write the
         // preferences file every frame); the change is saved on release.
@@ -359,6 +361,8 @@ impl Editor {
                             run = Some(cmd);
                         }
                     });
+                    // Screenshot of the Scene view and the Lit / Unlit display mode (view state).
+                    self.look_toolbar(ui, &mut run);
                     let mode = self.orbit.mode;
                     let view = theme::pill(ui, |ui| {
                         icons.show(ui, Icon::Scene, 16.0, MUTED);
@@ -887,7 +891,10 @@ impl Editor {
                         } else {
                             ui.add_space(16.0);
                         }
-                        let (icon, tip) = entity_icon(&self.world, entity, branch);
+                        let (mut icon, tip) = entity_icon(&self.world, entity, branch);
+                        if icon == Icon::Folder && !self.collapsed.contains(id) && !filtered {
+                            icon = Icon::FolderOpen;
+                        }
                         let tint = if selected { theme::TEXT } else { MUTED };
                         let (rect, r) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         icons.paint(ui.painter(), rect, icon, tint);
@@ -1372,7 +1379,46 @@ impl Editor {
                                     );
                                 });
                         }
-                        theme::section(ui, icons, Icon::Move, "Transform", true, |ui| {
+                        // Components: the header ("+ Add Component…"), Transform as the first
+                        // card, then one card per component.
+                        macro_rules! component_panel {
+                            () => {
+                                ComponentPanel {
+                                    overrides: self
+                                        .overrides
+                                        .get(&draft.component)
+                                        .map(|set| (set, apply_to_prefab)),
+                                    world: &self.world,
+                                    world_version: self.world_version,
+                                    hints: &self.component_hints,
+                                    registry: &self.registry,
+                                    spec: spec.as_deref(),
+                                    mixed: &self.mixed.fields,
+                                    filter: &mut self.field_filter,
+                                    picker: &mut self.picker,
+                                    rects: &mut self.rects,
+                                    clipboard: self.component_clipboard.as_ref().map(|c| c.0.as_str()),
+                                    live,
+                                    stale,
+                                    scroll: &mut self.scroll_component,
+                                    icons: self.icons,
+                                }
+                            };
+                        }
+                        ui.scope(|ui| {
+                            component_editor(ui, component_panel!(), entity, draft, &mut add_component, true);
+                        });
+                        let transform_own = entity.components.contains_key("core.transform");
+                        let transform_clip = self
+                            .component_clipboard
+                            .as_ref()
+                            .is_some_and(|c| c.0 == "core.transform");
+                        let mut transform_request = None;
+                        let draft_dirty = draft.dirty();
+                        let transform_rects = std::cell::RefCell::new(Vec::new());
+                        theme::section_with_actions(ui, icons, Icon::Move, "Transform", true, |ui| {
+                            transform_request = transform_actions(ui, icons, !draft_dirty, transform_own, transform_clip, &transform_rects);
+                        }, |ui| {
                                 if let Some(t) = &mut draft.transform {
                                     // "—" on an axis whose value differs across the selection,
                                     // until it is edited.
@@ -1436,6 +1482,14 @@ impl Editor {
                                     draft.transform_dirty = true;
                                 }
                             });
+                        for (key, rect) in transform_rects.into_inner() {
+                            self.rects.insert(key, rect);
+                        }
+                        ui.scope(|ui| {
+                            component_request =
+                                component_editor(ui, component_panel!(), entity, draft, &mut add_component, false)
+                                    .or(transform_request);
+                        });
                         theme::section(ui, icons, Icon::Hierarchy, "Parent and scenes", true, |ui| {
                                 caption(ui, "PARENT ID · EMPTY FOR ROOT");
                                 draft.parent_dirty |= ui
@@ -1473,30 +1527,6 @@ impl Editor {
                                         caption(ui, "Global object · no scene membership");
                                     }
                                 });
-                            });
-                        ui.scope(|ui| {
-                                let panel = ComponentPanel {
-                                    overrides: self
-                                        .overrides
-                                        .get(&draft.component)
-                                        .map(|set| (set, apply_to_prefab)),
-                                    world: &self.world,
-                                    world_version: self.world_version,
-                                    hints: &self.component_hints,
-                                    registry: &self.registry,
-                                    spec: spec.as_deref(),
-                                    mixed: &self.mixed.fields,
-                                    filter: &mut self.field_filter,
-                                    picker: &mut self.picker,
-                                    rects: &mut self.rects,
-                                    clipboard: self.component_clipboard.as_ref().map(|c| c.0.as_str()),
-                                    live,
-                                    stale,
-                                    scroll: &mut self.scroll_component,
-                                    icons: self.icons,
-                                };
-                                component_request =
-                                    component_editor(ui, panel, entity, draft, &mut add_component);
                             });
                         if let Some((clips, current)) = &audio {
                             theme::section(ui, icons, Icon::Audio, "Audio source", true, |ui| {
@@ -2611,6 +2641,7 @@ fn component_editor(
     entity: &Entity,
     draft: &mut Draft,
     add_component: &mut Option<String>,
+    header: bool,
 ) -> Option<ComponentRequest> {
     let ComponentPanel {
         overrides,
@@ -2639,80 +2670,106 @@ fn component_editor(
         .collect();
     let mut request = None;
     // Picking in Add component writes at once, so any unapplied draft edit blocks it.
-    ui.add_enabled_ui(!draft.dirty(), |ui| {
-        ui.horizontal(|ui| {
-            icons.show(ui, Icon::Layers, 16.0, ACCENT);
-            ui.label(RichText::new("Components").strong().color(theme::TEXT));
-        });
-        ui.horizontal_wrapped(|ui| {
-            // Picker over every installed component the object lacks. Picking one writes it with
-            // its default and whatever capability/systems it needs (ops::add_component).
-            egui::ComboBox::from_id_salt("add_component")
-                .selected_text("Add Component…")
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    let mut available: Vec<&String> = registry
-                        .components
-                        .keys()
-                        .chain(world.component_schemas.keys())
-                        .filter(|id| !keys.contains(*id) && id.as_str() != "core.transform")
-                        .collect();
-                    available.sort();
-                    available.dedup();
-                    for id in available {
-                        let needs = axiom_core::ops::requirements(registry, id);
-                        let missing: Vec<&str> = needs
-                            .capabilities
-                            .iter()
-                            .filter(|c| !world.capabilities.contains_key(*c))
-                            .chain(needs.systems.iter().filter(|s| !world.systems.contains(s)))
-                            .map(String::as_str)
-                            .collect();
-                        let text = if missing.is_empty() {
-                            RichText::new(id.as_str())
-                        } else {
-                            RichText::new(format!("{id}   + {}", missing.join(", "))).color(MUTED)
-                        };
-                        let response = ui.selectable_label(false, text);
-                        let response = if missing.is_empty() {
-                            response
-                        } else {
-                            response.on_hover_text(
-                                "Adds what it needs to the world in the same revision",
-                            )
-                        };
-                        if response.clicked() {
-                            *add_component = Some(id.clone());
+    if header {
+        ui.add_enabled_ui(!draft.dirty(), |ui| {
+            // Header row: "Components" and, on the right, "+ Add Component…" (every installed
+            // component the object lacks, then the Behavior templates).
+            ui.horizontal(|ui| {
+                icons.show(ui, Icon::Layers, 16.0, ACCENT);
+                ui.label(RichText::new("Components").strong().color(theme::TEXT));
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let add = theme::icon_text_button(
+                        ui,
+                        icons,
+                        Icon::Add,
+                        "Add Component…",
+                        None,
+                        theme::TEXT,
+                    )
+                    .on_hover_text(
+                        "Add a component or a behavior template (ACL: add SEL COMPONENT)",
+                    );
+                    rects.insert("component:add".into(), add.rect);
+                    // The Behavior templates live in the same list (older tests and docs call the
+                    // button "behavior:menu").
+                    rects.insert("behavior:menu".into(), add.rect);
+                    let menu_id = ui.make_persistent_id("add_component");
+                    theme::dropdown(ui, menu_id, &add, |ui| {
+                        ui.set_min_width(220.0);
+                        // Behavior templates first (four rows, always in view): option dialogs
+                        // (`command:ID` runs the registered command).
+                        ui.label(RichText::new("BEHAVIOR").small().color(MUTED));
+                        for (id, title) in [
+                            ("behavior.fsm_agent", "FSM Agent…"),
+                            ("behavior.patrol", "Patrol…"),
+                            ("behavior.guard", "Guard…"),
+                            ("behavior.dialogue", "NPC Dialogue…"),
+                        ] {
+                            let r = ui.selectable_label(false, title);
+                            rects.insert(format!("behavior:{id}"), r.rect);
+                            if r.clicked() {
+                                *add_component = Some(format!("command:{id}"));
+                                theme::close_dropdown(ui, menu_id);
+                            }
                         }
-                    }
+                        ui.separator();
+                        ui.label(RichText::new("COMPONENTS").small().color(MUTED));
+                        ScrollArea::vertical()
+                            .id_salt("add_component_list")
+                            .max_height(280.0)
+                            .show(ui, |ui| {
+                                // Picking one writes it with its default and whatever capability /
+                                // systems it needs (ops::add_component).
+                                let mut available: Vec<&String> = registry
+                                    .components
+                                    .keys()
+                                    .chain(world.component_schemas.keys())
+                                    .filter(|id| {
+                                        !keys.contains(*id) && id.as_str() != "core.transform"
+                                    })
+                                    .collect();
+                                available.sort();
+                                available.dedup();
+                                for id in available {
+                                    let needs = axiom_core::ops::requirements(registry, id);
+                                    let missing: Vec<&str> = needs
+                                        .capabilities
+                                        .iter()
+                                        .filter(|c| !world.capabilities.contains_key(*c))
+                                        .chain(
+                                            needs
+                                                .systems
+                                                .iter()
+                                                .filter(|s| !world.systems.contains(s)),
+                                        )
+                                        .map(String::as_str)
+                                        .collect();
+                                    let text = if missing.is_empty() {
+                                        RichText::new(id.as_str())
+                                    } else {
+                                        RichText::new(format!("{id}   + {}", missing.join(", ")))
+                                            .color(MUTED)
+                                    };
+                                    let response = ui.selectable_label(false, text);
+                                    let response = if missing.is_empty() {
+                                        response
+                                    } else {
+                                        response.on_hover_text(
+                                            "Adds what it needs to the world in the same revision",
+                                        )
+                                    };
+                                    if response.clicked() {
+                                        *add_component = Some(id.clone());
+                                        theme::close_dropdown(ui, menu_id);
+                                    }
+                                }
+                            });
+                    });
                 });
-            // A combo box is a child of unknown size, which the wrapping row never wraps (and
-            // its `available_width` is the whole row): a narrow Inspector puts Behavior… on
-            // its own row instead of widening every card below it past the panel.
-            if ui.max_rect().right() - ui.cursor().min.x < 110.0 {
-                ui.end_row();
-            }
-            // Behavior ▸ templates: option dialogs (`command:ID` runs the registered command).
-            let menu = egui::ComboBox::from_id_salt("add_behavior")
-                .selected_text("Behavior…")
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    for (id, title) in [
-                        ("behavior.fsm_agent", "FSM Agent…"),
-                        ("behavior.patrol", "Patrol…"),
-                        ("behavior.guard", "Guard…"),
-                        ("behavior.dialogue", "NPC Dialogue…"),
-                    ] {
-                        let r = ui.selectable_label(false, title);
-                        rects.insert(format!("behavior:{id}"), r.rect);
-                        if r.clicked() {
-                            *add_component = Some(format!("command:{id}"));
-                        }
-                    }
-                });
-            rects.insert("behavior:menu".into(), menu.response.rect);
+            });
         });
-    });
+        return request;
+    }
     // A component loaded by ID that the object neither authors nor inherits gets a card too
     // (stage it with JSON).
     let staged = (!draft.component.is_empty()
@@ -2738,9 +2795,21 @@ fn component_editor(
                     18.0,
                 );
                 rects.insert(format!("component:fold:{key}"), fold.rect);
-                // Enabled: a live form edit on the open card; read-only on the others.
+                // Enabled: a live form edit on the open card. A component whose schema has an
+                // `enabled` flag the value leaves out shows its default (a no-op until toggled).
+                let flag_default = hint_enabled(hints, key);
                 let mut shown_enabled = false;
                 if open {
+                    if let (Some(default), Some(Value::Object(form))) =
+                        (flag_default, draft.form.as_mut())
+                    {
+                        if !form.contains_key("enabled") {
+                            form.insert("enabled".into(), Value::Bool(default));
+                            if let Value::Object(base) = &mut draft.form_base {
+                                base.insert("enabled".into(), Value::Bool(default));
+                            }
+                        }
+                    }
                     let base_enabled = draft.form_base.get("enabled").cloned();
                     if let Some(Value::Bool(enabled)) =
                         draft.form.as_mut().and_then(|f| f.get_mut("enabled"))
@@ -2762,12 +2831,26 @@ fn component_editor(
                         .get(key)
                         .and_then(|v| v.get("enabled"))
                         .or_else(|| inherited?.components.get(key)?.get("enabled"))
-                        .and_then(Value::as_bool);
+                        .and_then(Value::as_bool)
+                        .or(flag_default);
+                    // A closed card's checkbox opens the card with the flipped value: the live
+                    // Inspector commits it as one revision (ACL: set SEL COMPONENT/enabled B).
                     if let Some(mut enabled) = enabled {
-                        ui.add_enabled_ui(false, |ui| {
-                            theme::accent_check(ui, icons, &mut enabled, false)
-                                .on_disabled_hover_text("Open the component to toggle it")
-                        });
+                        let r = ui
+                            .add_enabled_ui(!draft.dirty(), |ui| {
+                                theme::accent_check(ui, icons, &mut enabled, false)
+                            })
+                            .inner
+                            .on_hover_text("Enabled")
+                            .on_disabled_hover_text("Apply or reload the open component first");
+                        rects.insert(format!("component:enabled:{key}"), r.rect);
+                        if r.changed() && !draft.dirty() {
+                            draft.open_component(world, entity, key);
+                            if let Some(Value::Object(form)) = draft.form.as_mut() {
+                                form.insert("enabled".into(), Value::Bool(enabled));
+                                draft.form_dirty = true;
+                            }
+                        }
                     }
                 }
                 icons.show(
@@ -2793,15 +2876,16 @@ fn component_editor(
                 } else if fold.clicked() && open && !draft.dirty() {
                     draft.open_component(world, entity, "");
                 }
-                if open {
-                    ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(r) = component_actions(
-                            ui, icons, draft, rects, spec, clipboard, key, entity, inherited,
-                        ) {
-                            request = Some(r);
-                        }
-                    });
-                }
+                // Revert and "…" on every card (they act on the component by name); the
+                // draft-based actions (Make Main Camera, Play, Edit Graph) only on the open one.
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let spec = spec.filter(|_| open);
+                    if let Some(r) = component_actions(
+                        ui, icons, draft, rects, spec, clipboard, key, entity, inherited, open,
+                    ) {
+                        request = Some(r);
+                    }
+                });
             });
             if open {
                 if std::mem::take(scroll) {
@@ -2827,7 +2911,7 @@ fn component_editor(
         });
         ui.add_space(6.0);
     }
-    egui::CollapsingHeader::new(RichText::new("Advanced").color(MUTED))
+    egui::CollapsingHeader::new(RichText::new("Load component by ID").color(MUTED))
         .id_salt("components_advanced")
         .show(ui, |ui| {
             ui.add_enabled_ui(!draft.dirty(), |ui| {
@@ -2853,8 +2937,8 @@ fn component_editor(
     request
 }
 
-/// Header actions of the open component card, right to left: "…" menu (Copy, Paste, Remove,
-/// Make Main Camera), Reset, then Play / Edit Graph where they apply.
+/// Header actions of a component card, right to left: "…" menu (Reset, Copy, Paste, Remove;
+/// Make Main Camera on the open card), Revert, then Play / Edit Graph on the open card.
 #[allow(clippy::too_many_arguments)]
 fn component_actions(
     ui: &mut Ui,
@@ -2866,6 +2950,7 @@ fn component_actions(
     key: &str,
     entity: &Entity,
     inherited: Option<&axiom_core::Prefab>,
+    open: bool,
 ) -> Option<ComponentRequest> {
     let own = entity.components.contains_key(key);
     let inherits = inherited.is_some_and(|p| p.components.contains_key(key));
@@ -2874,11 +2959,21 @@ fn component_actions(
     }
     let mut request = None;
     let component = key.to_owned();
-    let resettable = own && (inherits || spec.is_some_and(|s| s.resettable));
-    let playable = matches!(component.as_str(), "tween.clips" | "audio.source");
+    // A closed card has no spec at hand: Reset is offered on an authored component and the
+    // op explains a type without a default.
+    let resettable = own && (inherits || spec.map_or(!open, |s| s.resettable));
+    let playable = open && matches!(component.as_str(), "tween.clips" | "audio.source");
+    // Widget keys: `component:NAME` on the open card, `component:NAME@KEY` on the others.
+    let tag = |name: &str| {
+        if open {
+            format!("component:{name}")
+        } else {
+            format!("component:{name}@{key}")
+        }
+    };
     ui.add_enabled_ui(!draft.dirty(), |ui| {
         let more = theme::icon_button_sized(ui, icons, Icon::More, "More actions", false, 22.0);
-        rects.insert("component:menu".into(), more.rect);
+        rects.insert(tag("menu"), more.rect);
         let id = ui.make_persistent_id(("component_menu", key));
         theme::dropdown(ui, id, &more, |ui| {
             let mut item =
@@ -2890,7 +2985,7 @@ fn component_actions(
                             egui::Button::image_and_text(image, text).frame(false),
                         )
                         .on_hover_text(tip);
-                    rects.insert(format!("component:{name}"), r.rect);
+                    rects.insert(tag(name), r.rect);
                     let clicked = r.clicked();
                     if clicked {
                         theme::close_dropdown(ui, id);
@@ -2939,7 +3034,8 @@ fn component_actions(
             ) {
                 request = Some(ComponentRequest::Paste(component.clone()));
             }
-            if component == "render.camera"
+            if open
+                && component == "render.camera"
                 && item(
                     ui,
                     "main_camera",
@@ -2973,11 +3069,11 @@ fn component_actions(
                 theme::icon_button_sized(ui, icons, Icon::Reset, tip, false, 22.0)
             })
             .inner;
-        rects.insert("component:reset".into(), r.rect);
+        rects.insert(tag("reset"), r.rect);
         if r.clicked() {
             request = Some(ComponentRequest::Reset(component.clone()));
         }
-        if component == "fsm.agent" {
+        if open && component == "fsm.agent" {
             let enabled = draft
                 .form
                 .as_ref()
@@ -3012,6 +3108,69 @@ fn component_actions(
             if r.clicked() {
                 request = Some(ComponentRequest::Play(component.clone()));
             }
+        }
+    });
+    request
+}
+
+/// Default of a component's `enabled` flag from its registry schema hint (`"bool, default
+/// true"`); `None` when the component has no such flag.
+fn hint_enabled(hints: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<bool> {
+    let hint = hints.get(key)?.get("enabled")?.as_str()?;
+    hint.starts_with("bool")
+        .then(|| !hint.contains("default false"))
+}
+
+/// Transform card header, right to left: "…" (Reset, Copy values, Paste values) and Revert;
+/// the same requests as a component card (`reset SEL core.transform`, Paste = `set`).
+fn transform_actions(
+    ui: &mut Ui,
+    icons: super::icons::Icons,
+    enabled: bool,
+    own: bool,
+    pasteable: bool,
+    rects: &std::cell::RefCell<Vec<(String, egui::Rect)>>,
+) -> Option<ComponentRequest> {
+    let mut request = None;
+    let component = || "core.transform".to_owned();
+    ui.add_enabled_ui(enabled, |ui| {
+        let more = theme::icon_button_sized(ui, icons, Icon::More, "More actions", false, 22.0);
+        rects.borrow_mut().push(("transform:menu".into(), more.rect));
+        let id = ui.make_persistent_id("transform_menu");
+        theme::dropdown(ui, id, &more, |ui| {
+            for (name, icon, text, on) in [
+                ("reset", Icon::Reset, "Reset", own),
+                ("copy", Icon::Copy, "Copy values", true),
+                ("paste", Icon::Paste, "Paste values", pasteable),
+            ] {
+                let image = icons.image(ui.ctx(), icon, 16.0, MUTED);
+                let r = ui.add_enabled(on, egui::Button::image_and_text(image, text).frame(false));
+                rects.borrow_mut().push((format!("transform:{name}"), r.rect));
+                if r.clicked() {
+                    request = Some(match name {
+                        "reset" => ComponentRequest::Reset(component()),
+                        "copy" => ComponentRequest::Copy(component()),
+                        _ => ComponentRequest::Paste(component()),
+                    });
+                    theme::close_dropdown(ui, id);
+                }
+            }
+        });
+        let r = ui
+            .add_enabled_ui(own, |ui| {
+                theme::icon_button_sized(
+                    ui,
+                    icons,
+                    Icon::Reset,
+                    "Revert: origin, no rotation, scale 1 — or the prefab's pose (ACL: reset SEL core.transform)",
+                    false,
+                    22.0,
+                )
+            })
+            .inner;
+        rects.borrow_mut().push(("transform:revert".into(), r.rect));
+        if r.clicked() {
+            request = Some(ComponentRequest::Reset(component()));
         }
     });
     request
@@ -3275,16 +3434,27 @@ fn vector(
         // `add_sized` cannot make a widget narrower than its own minimum.
         ui.spacing_mut().interact_size.x = width;
         ui.spacing_mut().button_padding.x = 3.0;
-        for ((v, axis), mixed) in value.iter_mut().zip(["X ", "Y ", "Z "]).zip(mixed) {
+        // Axis letters in the gizmo colours (X red, Y green, Z blue) left of each field.
+        const AXIS: f32 = 10.0;
+        ui.spacing_mut().interact_size.x = (width - AXIS - 1.0).max(16.0);
+        for ((v, (axis, color)), mixed) in value.iter_mut().zip(theme::AXES).zip(mixed) {
+            let (letter, _) = ui.allocate_exact_size(egui::vec2(AXIS, 20.0), egui::Sense::hover());
+            ui.painter().text(
+                letter.center(),
+                egui::Align2::CENTER_CENTER,
+                axis,
+                egui::FontId::proportional(11.5),
+                color,
+            );
+            ui.add_space(-GAP + 1.0);
             let mut drag = egui::DragValue::new(v)
-                .prefix(axis)
                 .speed(speed)
                 .range(range.clone())
                 .max_decimals(3);
             if mixed {
                 drag = drag.custom_formatter(|_, _| super::form::MIXED.to_owned());
             }
-            let r = ui.add_sized([width, 20.0], drag);
+            let r = ui.add_sized([(width - AXIS - 1.0).max(16.0), 20.0], drag);
             changed |= r.changed();
             z = r.rect;
         }
