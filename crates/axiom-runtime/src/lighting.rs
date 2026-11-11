@@ -704,11 +704,8 @@ mod tests {
         let p = pack(&f);
         assert!(p.authored);
         let expect = SkyParams::new(Some(&sky), p.sky.sun_toward, p.sky.sun_color).trilight();
-        for k in 0..3 {
-            assert!(close(
-                [p.ambient[k][0], p.ambient[k][1], p.ambient[k][2]],
-                expect[k].map(|v| v * 2.0)
-            ));
+        for (got, want) in p.ambient.iter().zip(expect) {
+            assert!(close([got[0], got[1], got[2]], want.map(|v| v * 2.0)));
         }
         let u = p.sky_uniform();
         assert_eq!(u[0], [0.1, 0.2, 0.8, SKY_GRADIENT]);
@@ -718,8 +715,8 @@ mod tests {
         // A sky without ambient: sky shown, ambient stays the legacy default.
         f.environment.ambient = None;
         let (sky_only, legacy) = (pack(&f), pack(&frame()));
-        for k in 0..3 {
-            assert_eq!(sky_only.ambient[k][..3], legacy.ambient[k][..3]);
+        for (a, b) in sky_only.ambient.iter().zip(legacy.ambient) {
+            assert_eq!(a[..3], b[..3]);
         }
         assert!(sky_only.authored && !legacy.authored);
     }
