@@ -101,7 +101,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "view.screenshot",
         "Scene View: Screenshot",
         "View",
-        "[NAME] (artifacts/captures/NAME.png)",
+        "[NAME|PATH.png] (NAME = artifacts/captures/NAME.png)",
     ),
     c(
         "view.camera_preview",

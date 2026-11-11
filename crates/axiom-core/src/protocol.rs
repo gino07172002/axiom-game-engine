@@ -154,6 +154,15 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// Capture the running window (game or editor) to `path` (`.png`, relative to the engine's
+    /// working directory or absolute) without restarting: one capture at a time; the reply
+    /// comes when the file is written, with its size. `region`: `window` (default) or `view`
+    /// (the editor's Scene / Game view).
+    Screenshot {
+        path: String,
+        #[serde(default)]
+        region: Option<String>,
+    },
 }
 impl Request {
     pub fn is_runtime(&self) -> bool {
@@ -162,7 +171,11 @@ impl Request {
         }
         matches!(
             self,
-            Self::Command { .. } | Self::Save { .. } | Self::Load { .. } | Self::EditorView { .. }
+            Self::Command { .. }
+                | Self::Save { .. }
+                | Self::Load { .. }
+                | Self::EditorView { .. }
+                | Self::Screenshot { .. }
         )
     }
 }

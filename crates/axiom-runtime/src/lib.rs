@@ -38,6 +38,7 @@ mod rhythm;
 pub mod rts;
 pub mod rts_stress;
 pub mod scenario;
+mod screenshot;
 pub mod shader;
 mod shader_gpu;
 pub mod showcase;

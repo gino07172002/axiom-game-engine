@@ -87,6 +87,15 @@ impl Bridge {
                             BufReader::new((&mut stream).take(1_048_577)).read_line(&mut line)?;
                             let request = parse_request(line.trim())?;
                             if request.is_runtime() {
+                                // A screenshot answers when its PNG is written (read-back and
+                                // encode take longer than a command in debug builds).
+                                let wait = Duration::from_secs(
+                                    if matches!(request, Request::Screenshot { .. }) {
+                                        20
+                                    } else {
+                                        3
+                                    },
+                                );
                                 let (reply, result) = std::sync::mpsc::sync_channel(1);
                                 commands
                                     .as_ref()
@@ -96,15 +105,14 @@ impl Bridge {
                                     .try_send(RuntimeRequest {
                                         request,
                                         reply,
-                                        deadline: std::time::Instant::now()
-                                            + Duration::from_secs(3),
+                                        deadline: std::time::Instant::now() + wait,
                                     })
                                     .map_err(|_| {
                                         anyhow::anyhow!(
                                             "runtime command queue full or disconnected"
                                         )
                                     })?;
-                                result.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+                                result.recv_timeout(wait).map_err(|_| {
                                     anyhow::anyhow!("runtime command response timed out")
                                 })
                             } else if let Request::ObserveDelta {
