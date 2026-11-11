@@ -90,3 +90,10 @@ cargo build --workspace
 ```
 
 ACL:`animctl C create|remove`、`animctl C state add|remove|rename|set ..`、`animctl C initial S`、`animctl C transition add|remove|move|set ..`、`animctl C param set NAME JSON | param remove NAME`、`animctl C node S x,y`、`animctl SEL attach C`。示範內容包 `content/animator-lab` 只用 mascot 已提交的第一方片段(idle / walk / run / wave),角色沿 path 行走,UI 按鈕改 path 速度,控制器自動在 idle、walk↔run 混合與 wave 之間切換。
+
+## 片段事件、播放速度與音效標記
+
+- **片段標記**(`animation.library.markers`):`{"CLIP":[{"at":秒,"event"?:E,"cue"?:C}]}`。播放(或控制器目前狀態的主要片段:單一片段、或 1D 混合中權重最大的點)越過標記時,`event` 送進 `behavior.program`(事件若宣告文字欄位 `entity` / `clip` 會自動填入),`cue` 走既有的 `audio.events` 播放 `audio.library` 的音效。循環片段每一圈觸發一次(每步最多 8 圈),一次性片段停在結尾。未宣告的事件、不存在的音效、缺少 `behavior.execute` / `audio.events` 系統都在建置時明確報錯。ACL:`marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS`;編輯器 Animation 分頁的 `anim.marker add [SECONDS] [event=E] [cue=C]`(省略秒數 = 播放頭)。
+- **片段結束**:`animation.player.on_end` 事件在片段完成時送出(一次性片段到尾、循環片段每圈)。FSM 新增條件 `{"kind":"clip_finished"}`:agent 的一次性片段(或控制器的一次性狀態)播完才成立,所以 `clip_loop:false` 的狀態可以自動接下一段;控制器內則用 `exit_time` 轉移。
+- **播放速度**:`animation.speed {entity, speed, ramp_seconds?}` 改變播放速率但不重置時間,`ramp_seconds` 內線性漸變;控制器狀態可設 `speed_parameter`(float 參數乘上播放速率,0 = 暫停但保留時間)。
+- 標記與結束事件只在觸發時配置記憶體;穩定步進仍是 0 次配置。`observe` 的 `metrics.animation.markers_fired`(有觸發才出現)與 `emit_fault` 回報送出狀況。

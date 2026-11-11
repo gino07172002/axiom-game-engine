@@ -518,6 +518,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     a("anim.target", "Animation: Model / Clip…", "Window", "ENTITY [CLIP]"),
     a("anim.scrub", "Animation: Scrub to…", "Window", "SECONDS"),
     a(
+        "anim.marker",
+        "Animation: Clip Marker…",
+        "Window",
+        "add [SECONDS] [event=E] [cue=C] | remove I | move I SECONDS",
+    ),
+    a(
         "vfx.edit",
         "VFX: Size Curve / Colour Gradient…",
         "World",

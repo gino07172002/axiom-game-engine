@@ -12,6 +12,7 @@ use axiom_animation::{
     twist::CompiledTwist,
     *,
 };
+use axiom_core::gameplay::{RuntimeCommand, Scalar};
 use axiom_core::local::at;
 use glam::{Mat4, Quat, Vec3};
 use serde_json::{json, Value};
@@ -24,6 +25,9 @@ pub(crate) struct AnimationCues {
     pub bone_names: BTreeMap<String, std::collections::BTreeSet<String>>,
     pub socket_requests: BTreeMap<String, std::collections::BTreeSet<String>>,
     pub sockets: BTreeMap<(String, String), Mat4>,
+    /// Entities whose one-shot clip (or controller one-shot state) has reached its end
+    /// (FSM `clip_finished`). Changed only when an entity enters or leaves the set.
+    pub finished: std::collections::BTreeSet<String>,
 }
 #[derive(Clone)]
 struct Fade {
@@ -42,6 +46,8 @@ struct Controller {
     time: f32,
     playing: bool,
     speed: f32,
+    /// `animation.speed` ramp in progress: (from, to, elapsed, duration) seconds.
+    ramp: Option<(f32, f32, f32, f32)>,
     looping: bool,
     pose: Pose,
     sampled: Pose,
@@ -51,6 +57,13 @@ struct Controller {
     overrides: BTreeMap<usize, Quat>,
     fault: Option<String>,
     ik_results: BTreeMap<String, IkResult>,
+    /// The next step starts a clip (markers at 0 fire), set by `play` and on build.
+    marker_fresh: bool,
+    /// This step's playback interval of the primary clip (prev, end; unwrapped): seconds,
+    /// or normalized time of the controller state when the flag is set.
+    crossing: Option<(f32, f32, bool)>,
+    /// `animation.player.on_end` (index into the system's events).
+    on_end: Option<usize>,
     /// `animation.controller`: when present it chooses the clips (and `play` is refused).
     animator: Option<Animator>,
     /// Reused pose buffers (sized once): the pose being built, a blend scratch / the next
@@ -141,6 +154,7 @@ impl Controller {
             time: 0.,
             playing: config.playing,
             speed: config.speed,
+            ramp: None,
             looping: config.looping,
             pose: asset.skeleton.rest_pose(),
             sampled: asset.skeleton.rest_pose(),
@@ -155,6 +169,9 @@ impl Controller {
             fault: None,
             ik_results: BTreeMap::new(),
             animator: None,
+            marker_fresh: true,
+            crossing: None,
+            on_end: None,
             accum: Pose { local: vec![] },
             scratch: Pose { local: vec![] },
             globals: vec![],
@@ -278,7 +295,7 @@ impl Controller {
             let i = self.asset.skeleton.bone(id)?;
             values.insert(id.clone(),json!({"local":self.pose.local[i],"position":globals[i].w_axis.truncate(),"rotation":globals[i].to_scale_rotation_translation().1}));
         }
-        let mut out = json!({"asset":self.config.asset,"clip":self.active,"time":self.time,"playing":self.playing,"speed":self.speed,"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values});
+        let mut out = json!({"asset":self.config.asset,"clip":self.active,"time":self.time,"playing":self.playing,"speed":self.speed,"ramp":self.ramp.map(|(_, to, elapsed, duration)| json!({"to":to,"remaining":duration - elapsed})),"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values});
         if let (Some(a), Some(map)) = (&self.animator, out.as_object_mut()) {
             map.insert("controller".into(), a.describe());
         }
@@ -302,6 +319,7 @@ impl Controller {
             duration: a.fade_seconds,
         });
         self.active = Some(a.clip);
+        self.marker_fresh = true;
         self.time = 0.;
         self.playing = true;
         self.speed = a.speed;
@@ -311,6 +329,14 @@ impl Controller {
 }
 pub struct AnimationSystem {
     players: BTreeMap<String, Controller>,
+    /// `animation.library.markers` (clip -> markers), shared read-only.
+    markers: BTreeMap<String, Vec<CMarker>>,
+    /// `behavior.program` events the markers and `on_end` emit.
+    events: Vec<EventInfo>,
+    /// Marker / end events and cues fired since start.
+    fired: u64,
+    /// First failure to deliver an event (reported in metrics; simulation continues).
+    emit_fault: Option<String>,
     /// The editor's last scrubbed pose: (entity, clip, seconds, pose). A playhead that did not
     /// move reuses it, so an idle preview neither clones nor evaluates per frame.
     scrubbed: Option<(String, String, f32, Pose)>,
@@ -515,8 +541,13 @@ pub fn register(registry: &mut RuntimeRegistry) {
                     )
                 })
                 .collect();
+            let (markers, events) = compile_markers(state, &lib, &mut players)?;
             Ok(Box::new(AnimationSystem {
                 players,
+                markers,
+                events,
+                fired: 0,
+                emit_fault: None,
                 scrubbed: None,
             }))
         });
@@ -529,6 +560,7 @@ impl RuntimeSystem for AnimationSystem {
                     a.ignored_cues = a.ignored_cues.saturating_add(1);
                     continue;
                 }
+                state.animation_cues.finished.remove(&cue.entity);
                 let result = player.play(cue).and_then(|_| player.evaluate(0.0));
                 if let Err(error) = result {
                     player.fault = Some(format!("{error:#}"));
@@ -549,6 +581,7 @@ impl RuntimeSystem for AnimationSystem {
                     a.ignored_cues = a.ignored_cues.saturating_add(1);
                     continue;
                 }
+                state.animation_cues.finished.remove(&cue.entity);
                 if let Err(error) = player.play(cue) {
                     player.fault = Some(format!("{error:#}"));
                 }
@@ -570,6 +603,15 @@ impl RuntimeSystem for AnimationSystem {
                 p.fade.as_ref().map(|f| f.elapsed),
                 p.animator.as_ref().map(|a| a.state),
             );
+            let saved_speed = (p.speed, p.ramp);
+            if let Some((from, to, elapsed, duration)) = &mut p.ramp {
+                *elapsed += FIXED_DT;
+                let k = (*elapsed / *duration).min(1.0);
+                p.speed = *from + (*to - *from) * k;
+                if k >= 1.0 {
+                    p.ramp = None;
+                }
+            }
             let position = state.transforms[slot].as_ref().map(|t| t.position);
             if let Some(a) = &mut p.animator {
                 // Bound parameters read this step's movement (also while paused).
@@ -587,9 +629,24 @@ impl RuntimeSystem for AnimationSystem {
                     }
                 }
                 if p.playing {
+                    let before = a.state.current;
+                    let fired = a.state.fired;
                     a.compiled.tick(&mut a.state, FIXED_DT * p.speed.max(0.0));
+                    // Marker interval in normalized time of the current state's clip.
+                    let after = a.state.current;
+                    p.crossing = Some(if a.state.fired != fired {
+                        (-1e-4, after.normalized(), true)
+                    } else {
+                        let prev = if p.marker_fresh { -1e-4 } else { before.frac };
+                        let laps = after.loops.saturating_sub(before.loops) as f32;
+                        (prev, after.frac + laps, true)
+                    });
                 }
             } else if p.playing {
+                if p.speed > 0.0 && p.active.is_some() {
+                    let prev = if p.marker_fresh { -1e-4 } else { p.time };
+                    p.crossing = Some((prev, p.time.max(0.0) + FIXED_DT * p.speed, false));
+                }
                 p.time += FIXED_DT * p.speed;
                 if let Some(clip) = p.active.as_ref().and_then(|id| p.clips.get(id)) {
                     let duration = clip.source.duration;
@@ -602,9 +659,11 @@ impl RuntimeSystem for AnimationSystem {
             }
             if let Err(e) = p.evaluate(if p.playing { FIXED_DT } else { 0. }) {
                 p.time = saved.0;
+                (p.speed, p.ramp) = saved_speed;
                 if let (Some(f), Some(elapsed)) = (&mut p.fade, saved.1) {
                     f.elapsed = elapsed;
                 }
+                p.crossing = None;
                 // The position read this step stays the reference for the next speed sample.
                 if let (Some(a), Some(s)) = (&mut p.animator, saved.2) {
                     a.state = s;
@@ -612,6 +671,7 @@ impl RuntimeSystem for AnimationSystem {
                 p.fault = Some(format!("{e:#}"));
             }
         }
+        self.fire_markers(state);
         if !state.animation_cues.socket_requests.is_empty() {
             let models = state.matrices();
             state.animation_cues.sockets.clear();
@@ -644,7 +704,7 @@ impl RuntimeSystem for AnimationSystem {
     }
     fn command(
         &mut self,
-        _: &mut RuntimeState,
+        state: &mut RuntimeState,
         capability: &str,
         action: &str,
         args: &Value,
@@ -668,6 +728,7 @@ impl RuntimeSystem for AnimationSystem {
             let mut p = old.clone();
             match action {
                 "play" => {
+                    state.animation_cues.finished.remove(entity);
                     p.play(serde_json::from_value(args.clone())?)?;
                 }
                 "seek" => {
@@ -709,6 +770,15 @@ impl RuntimeSystem for AnimationSystem {
                     let i = p.asset.skeleton.bone(&a.bone)?;
                     p.overrides.insert(i, a.rotation);
                 }
+                "speed" => {
+                    let a: SpeedArgs = serde_json::from_value(args.clone())?;
+                    if a.ramp_seconds > 0.0 {
+                        p.ramp = Some((p.speed, a.speed, 0.0, a.ramp_seconds));
+                    } else {
+                        p.speed = a.speed;
+                        p.ramp = None;
+                    }
+                }
                 "param" => {
                     let a: ParamArgs = serde_json::from_value(args.clone())?;
                     let c = p.animator.as_mut().with_context(|| {
@@ -748,6 +818,7 @@ impl RuntimeSystem for AnimationSystem {
                         p.playing = previous.playing;
                         if p.config.speed == previous.config.speed {
                             p.speed = previous.speed;
+                            p.ramp = previous.ramp;
                         }
                         if p.config.looping == previous.config.looping {
                             p.looping = previous.looping;
@@ -813,9 +884,255 @@ impl RuntimeSystem for AnimationSystem {
         }
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        BTreeMap::from([(
-            "animation".into(),
-            json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()}),
-        )])
+        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
+        // Only when used, so worlds without markers keep their observation (and state_hash).
+        if self.fired > 0 {
+            out["markers_fired"] = json!(self.fired);
+        }
+        if let Some(f) = &self.emit_fault {
+            out["emit_fault"] = json!(f);
+        }
+        BTreeMap::from([("animation".into(), out)])
+    }
+}
+
+/// A compiled `animation.library.markers` entry.
+#[derive(Clone)]
+struct CMarker {
+    at: f32,
+    event: Option<usize>,
+    cue: Option<String>,
+}
+
+/// A `behavior.program` event the animation system emits, with the optional text fields it
+/// fills (`entity`, `clip`) when the program declares them.
+struct EventInfo {
+    name: String,
+    entity: bool,
+    clip: bool,
+}
+
+fn event_index(
+    events: &mut Vec<EventInfo>,
+    program: Option<&Value>,
+    name: &str,
+    path: &str,
+) -> Result<usize> {
+    if let Some(i) = events.iter().position(|e| e.name == name) {
+        return Ok(i);
+    }
+    let fields = program
+        .and_then(|p| {
+            p.pointer(&format!(
+                "/events/{}/fields",
+                axiom_core::local::escape(name)
+            ))
+        })
+        .and_then(Value::as_object);
+    let Some(fields) = fields else {
+        return Err(axiom_core::Diagnostic::error(
+            "undeclared_event",
+            path,
+            format!("animation emits {name}, which behavior.program does not declare"),
+        ));
+    };
+    events.push(EventInfo {
+        name: name.to_owned(),
+        entity: fields.contains_key("entity"),
+        clip: fields.contains_key("clip"),
+    });
+    Ok(events.len() - 1)
+}
+
+/// Markers by clip and the events they and `animation.player.on_end` emit.
+type Markers = (BTreeMap<String, Vec<CMarker>>, Vec<EventInfo>);
+
+/// Compiles the markers; unknown events, unknown audio cues and a missing
+/// `behavior.execute` / `audio.events` system are errors.
+fn compile_markers(
+    state: &RuntimeState,
+    lib: &Library,
+    players: &mut BTreeMap<String, Controller>,
+) -> Result<Markers> {
+    let source = &state.compiled.source;
+    let program = source.resources.get("behavior.program");
+    let audio: Option<axiom_core::audio::AudioLibrary> = source
+        .resources
+        .get("audio.library")
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()?;
+    let mut events = vec![];
+    let mut markers = BTreeMap::new();
+    let mut cues = false;
+    for (clip, list) in &lib.markers {
+        let path = format!(
+            "/resources/animation.library/markers/{}",
+            axiom_core::local::escape(clip)
+        );
+        let mut out = vec![];
+        for m in list {
+            let event = m
+                .event
+                .as_deref()
+                .map(|e| event_index(&mut events, program, e, &path))
+                .transpose()?;
+            if let Some(cue) = &m.cue {
+                cues = true;
+                let known = audio
+                    .as_ref()
+                    .is_some_and(|a| a.cues.contains_key(cue) || a.clips.contains_key(cue));
+                if !known {
+                    return Err(axiom_core::Diagnostic::error(
+                        "unknown_cue",
+                        path,
+                        format!("marker cue {cue} is not in audio.library"),
+                    ));
+                }
+            }
+            out.push(CMarker {
+                at: m.at,
+                event,
+                cue: m.cue.clone(),
+            });
+        }
+        markers.insert(clip.clone(), out);
+    }
+    for (id, p) in players.iter_mut() {
+        if let Some(e) = p.config.on_end.clone() {
+            let path = format!("{}/on_end", component_path(id));
+            p.on_end = Some(event_index(&mut events, program, &e, &path)?);
+        }
+    }
+    ensure!(
+        events.is_empty() || source.systems.iter().any(|s| s == "behavior.execute"),
+        "animation marker / on_end events need the behavior.execute system"
+    );
+    ensure!(
+        !cues || source.systems.iter().any(|s| s == "audio.events"),
+        "animation marker cues need the audio.events system"
+    );
+    Ok((markers, events))
+}
+
+/// Calls `hit(Some(marker))` for every marker of a clip `duration` seconds long crossed
+/// going from `prev` to `end` (seconds; unwrapped for loops; `prev < 0` includes time 0),
+/// and `hit(None)` for every completed cycle. A loop fires each marker once per iteration
+/// (at most 8 iterations per step); a one-shot stops at its end.
+fn crossings(
+    list: &[CMarker],
+    duration: f32,
+    looping: bool,
+    prev: f32,
+    end: f32,
+    mut hit: impl FnMut(Option<&CMarker>),
+) {
+    if end <= prev || duration <= 0.0 || !end.is_finite() {
+        return;
+    }
+    if !looping {
+        let end = end.min(duration);
+        for m in list.iter().filter(|m| prev < m.at && m.at <= end) {
+            hit(Some(m));
+        }
+        if prev < duration && duration <= end {
+            hit(None);
+        }
+        return;
+    }
+    let first = (prev.max(0.0) / duration).floor() as u32;
+    let last = ((end / duration).floor() as u32).min(first + 8);
+    for k in first..=last {
+        let base = k as f32 * duration;
+        if k >= 1 && prev < base && base <= end {
+            hit(None);
+        }
+        for m in list.iter().filter(|m| m.at < duration) {
+            let t = base + m.at;
+            if prev < t && t <= end {
+                hit(Some(m));
+            }
+        }
+    }
+}
+
+impl AnimationSystem {
+    /// Delivers the markers and `on_end` events this step crossed and refreshes the
+    /// one-shot `finished` set (FSM `clip_finished`). No allocation unless something fires.
+    fn fire_markers(&mut self, state: &mut RuntimeState) {
+        let tick = state.tick;
+        for (id, p) in &mut self.players {
+            let crossing = p.crossing.take();
+            if crossing.is_some() {
+                p.marker_fresh = false;
+            }
+            let primary = match &p.animator {
+                Some(a) => a.compiled.primary(&a.state),
+                None => p.active.as_deref().and_then(|c| {
+                    let d = p.clips.get(c)?.source.duration;
+                    Some((c, d, p.looping))
+                }),
+            };
+            let finished = match &p.animator {
+                Some(a) => a.compiled.finished(&a.state),
+                None => primary.is_some_and(|(_, d, looping)| !looping && p.time >= d),
+            };
+            let listed = state.animation_cues.finished.contains(id);
+            if finished && !listed {
+                state.animation_cues.finished.insert(id.clone());
+            } else if !finished && listed {
+                state.animation_cues.finished.remove(id);
+            }
+            let (Some((prev, end, normalized)), Some((clip, duration, looping))) =
+                (crossing, primary)
+            else {
+                continue;
+            };
+            let list = self.markers.get(clip).map_or(&[][..], Vec::as_slice);
+            if list.is_empty() && p.on_end.is_none() {
+                continue;
+            }
+            let scale = if normalized { duration } else { 1.0 };
+            let (events, fired, fault, on_end) = (
+                &self.events,
+                &mut self.fired,
+                &mut self.emit_fault,
+                p.on_end,
+            );
+            crossings(list, duration, looping, prev * scale, end * scale, |m| {
+                let (event, cue) = match m {
+                    Some(m) => (m.event, m.cue.as_deref()),
+                    None => (on_end, None),
+                };
+                if let Some(cue) = cue {
+                    state.audio.emit(tick, cue);
+                    *fired += 1;
+                }
+                let Some(e) = event else { return };
+                let info = &events[e];
+                let mut fields = BTreeMap::new();
+                if info.entity {
+                    fields.insert("entity".to_owned(), Scalar::Text(id.clone()));
+                }
+                if info.clip {
+                    fields.insert("clip".to_owned(), Scalar::Text(clip.to_owned()));
+                }
+                let result = match state.gameplay.as_mut() {
+                    Some(g) => g.command(
+                        &RuntimeCommand::Emit {
+                            event: info.name.clone(),
+                            fields,
+                        },
+                        tick,
+                    ),
+                    None => Err(anyhow::anyhow!("behavior.execute is not running")),
+                };
+                match result {
+                    Ok(()) => *fired += 1,
+                    Err(e) => {
+                        fault.get_or_insert_with(|| format!("emit {}: {e:#}", info.name));
+                    }
+                }
+            });
+        }
     }
 }

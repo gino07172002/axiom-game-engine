@@ -17,6 +17,50 @@ pub struct Library {
     pub assets: BTreeMap<String, Source>,
     pub clips: BTreeMap<String, clip::Clip>,
     pub profiles: BTreeMap<String, humanoid::Profile>,
+    /// Clip ID -> markers fired when playback crosses them (once per loop iteration).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub markers: BTreeMap<String, Vec<Marker>>,
+}
+/// A point in a clip that emits a `behavior.program` event and / or plays an audio cue.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Marker {
+    /// Seconds into the clip.
+    pub at: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue: Option<String>,
+}
+pub const MAX_MARKERS_PER_CLIP: usize = 64;
+impl Library {
+    pub fn validate_markers(&self) -> Result<()> {
+        ensure!(
+            self.markers.len() <= 128,
+            "animation marker clip budget exceeded"
+        );
+        for (clip, list) in &self.markers {
+            axiom_core::valid_id(clip)?;
+            ensure!(
+                list.len() <= MAX_MARKERS_PER_CLIP,
+                "clip {clip}: at most {MAX_MARKERS_PER_CLIP} markers"
+            );
+            for m in list {
+                ensure!(
+                    m.at.is_finite() && (0.0..=86400.0).contains(&m.at),
+                    "clip {clip}: marker time 0..86400 s"
+                );
+                ensure!(
+                    m.event.is_some() || m.cue.is_some(),
+                    "clip {clip}: a marker needs an event or a cue"
+                );
+                for id in m.event.iter().chain(&m.cue) {
+                    axiom_core::valid_id(id)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +92,10 @@ pub struct Player {
     pub twists: BTreeMap<String, twist::Twist>,
     pub ik: BTreeMap<String, ik::TwoBoneIk>,
     pub debug_skeleton: bool,
+    /// `behavior.program` event emitted each time the playing clip completes (a one-shot at
+    /// its end, a loop at every wrap; a controller: its current state's clip).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_end: Option<String>,
 }
 impl Default for Player {
     fn default() -> Self {
@@ -62,6 +110,7 @@ impl Default for Player {
             twists: BTreeMap::new(),
             ik: BTreeMap::new(),
             debug_skeleton: false,
+            on_end: None,
         }
     }
 }
@@ -126,6 +175,16 @@ pub struct BoneArgs {
     pub bone: String,
     pub rotation: Quat,
 }
+/// `animation.speed`: changes the playback rate without resetting time, at once or ramped
+/// linearly over `ramp_seconds` (a controller scales its tick by it).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeedArgs {
+    pub entity: String,
+    pub speed: f32,
+    #[serde(default)]
+    pub ramp_seconds: f32,
+}
 /// `animation.param`: sets one controller parameter of `entity`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,11 +203,16 @@ pub struct InspectArgs {
 pub fn register(r: &mut Registry) {
     r.resource_mergers
         .insert("animation.library".into(), |a, b| {
-            axiom_core::package::merge_resource(a, b, &["assets", "clips", "profiles"], &[])
+            axiom_core::package::merge_resource(
+                a,
+                b,
+                &["assets", "clips", "profiles", "markers"],
+                &[],
+            )
         });
     r.capabilities.insert("animation".into(), 1);
-    r.resource("animation.library","animation",json!({"assets":"stable ID -> {path, external:false, options:{coordinates?, strict:false}}","clips":"stable ID -> {id,duration,tracks}","profiles":"stable ID -> {mapping:HumanBodyBones->bone ID,reference:bone ID->local TRS}"}),|v|{let lib:Library=serde_json::from_value(v.clone())?;ensure!(lib.assets.len()<=32&&lib.clips.len()<=128&&lib.profiles.len()<=64,"animation library budget exceeded");for id in lib.assets.keys().chain(lib.clips.keys()).chain(lib.profiles.keys()){axiom_core::valid_id(id)?;}for source in lib.assets.values(){ensure!(!source.path.as_os_str().is_empty(),"asset path missing");if let Some(c)=source.options.coordinates{c.matrix()?;}}Ok(())});
-    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?}","debug_skeleton":"bool"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
+    r.resource("animation.library","animation",json!({"assets":"stable ID -> {path, external:false, options:{coordinates?, strict:false}}","clips":"stable ID -> {id,duration,tracks}","profiles":"stable ID -> {mapping:HumanBodyBones->bone ID,reference:bone ID->local TRS}","markers":"clip ID -> [{at:seconds, event?:behavior.program event, cue?:audio cue}] (fired once per loop iteration)"}),|v|{let lib:Library=serde_json::from_value(v.clone())?;ensure!(lib.assets.len()<=32&&lib.clips.len()<=128&&lib.profiles.len()<=64,"animation library budget exceeded");lib.validate_markers()?;for id in lib.assets.keys().chain(lib.clips.keys()).chain(lib.profiles.keys()){axiom_core::valid_id(id)?;}for source in lib.assets.values(){ensure!(!source.path.as_os_str().is_empty(),"asset path missing");if let Some(c)=source.options.coordinates{c.matrix()?;}}Ok(())});
+    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?}","debug_skeleton":"bool","on_end":"optional behavior.program event emitted when the clip completes (each loop)"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
     r.resource_mergers
         .insert("animation.controllers".into(), |a, b| {
             axiom_core::package::merge_resource(a, b, &["controllers"], &[])
@@ -166,6 +230,22 @@ pub fn register(r: &mut Registry) {
         |v| {
             let a: controller::Attach = serde_json::from_value(v.clone())?;
             axiom_core::valid_id(&a.controller)
+        },
+    );
+    r.action(
+        "animation.speed",
+        "animation",
+        json!({"entity":"stable ID","speed":"-8..8 playback rate (time is kept)","ramp_seconds":"0..60, default 0 = at once"}),
+        |v| {
+            let a: SpeedArgs = serde_json::from_value(v.clone())?;
+            ensure!(
+                a.speed.is_finite()
+                    && a.speed.abs() <= 8.
+                    && a.ramp_seconds.is_finite()
+                    && (0.0..=60.).contains(&a.ramp_seconds),
+                "invalid speed / ramp"
+            );
+            Ok(())
         },
     );
     r.action(
@@ -310,7 +390,7 @@ pub fn register(r: &mut Registry) {
     );
     r.action("animation.bone","animation",json!({"entity":"stable ID","bone":"bone ID","rotation":"normalized xyzw local quaternion override"}),|v|{let a:BoneArgs=serde_json::from_value(v.clone())?;ensure!(a.rotation.is_finite()&&(a.rotation.length_squared()-1.).abs()<0.001,"invalid bone rotation");Ok(())});
     r.action("animation.inspect","animation",json!({"entity":"stable ID","bones":"optional up to 64 stable IDs; omitted returns summary only"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.bones.len()<=64,"bone inspection budget exceeded");Ok(())});
-    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param"],"controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","skinning"],"skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"native animation state checkpoint is not yet supported"}));
+    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed"],"controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","skinning"],"skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"native animation state checkpoint is not yet supported"}));
 }
 pub fn component_path(entity: &str) -> String {
     format!(

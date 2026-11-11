@@ -104,6 +104,9 @@ pub struct StateDef {
     /// `None` holds the skeleton's rest pose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<Motion>,
+    /// Float parameter that multiplies the playback rate (0 pauses; time is never reset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_parameter: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -238,6 +241,14 @@ impl ControllerDef {
             self.initial
         );
         for (name, s) in &self.states {
+            if let Some(p) = &s.speed_parameter {
+                ensure!(
+                    self.parameters
+                        .get(p)
+                        .is_some_and(|d| d.kind == ParamKind::Float),
+                    "state {name}: speed_parameter {p} must be a float parameter"
+                );
+            }
             axiom_core::valid_id(name)?;
             ensure!(
                 name != "*",
@@ -410,6 +421,8 @@ pub struct Compiled {
     defaults: [f32; MAX_PARAMS],
     pub states: Vec<String>,
     motions: Vec<CMotion>,
+    /// Per state: the float parameter that multiplies its playback rate.
+    rates: Vec<Option<usize>>,
     transitions: Vec<CTransition>,
     initial: u16,
 }
@@ -550,6 +563,11 @@ impl Compiled {
                 exit_time: t.exit_time,
             })
             .collect();
+        let rates = def
+            .states
+            .values()
+            .map(|s| s.speed_parameter.as_deref().and_then(param))
+            .collect();
         Ok(Self {
             kinds: def.parameters.values().map(|p| p.kind).collect(),
             sources: def.parameters.values().map(|p| p.source).collect(),
@@ -558,6 +576,7 @@ impl Compiled {
             initial: state(&def.initial).expect("validated"),
             states,
             motions,
+            rates,
             transitions,
         })
     }
@@ -635,6 +654,17 @@ impl Compiled {
 
     /// Seconds one normalized cycle of `state` lasts now (0 = does not advance).
     fn cycle(&self, s: &State, state: u16) -> (f32, bool) {
+        let (cycle, looping) = self.base_cycle(s, state);
+        match self.rates[state as usize] {
+            Some(p) if s.params[p] > 0.0 && s.params[p].is_finite() => {
+                (cycle / s.params[p], looping)
+            }
+            Some(_) => (0.0, looping),
+            None => (cycle, looping),
+        }
+    }
+
+    fn base_cycle(&self, s: &State, state: u16) -> (f32, bool) {
         match &self.motions[state as usize] {
             CMotion::Rest => (1.0, true),
             CMotion::Clip {
@@ -781,6 +811,40 @@ impl Compiled {
         };
         self.layer_samples(s, &s.current, w, &mut out);
         out
+    }
+
+    /// The clip that dominates the current state (a clip, or the heaviest blend point), with
+    /// its length in seconds and whether the state loops: marker and end events follow it.
+    pub fn primary(&self, s: &State) -> Option<(&str, f32, bool)> {
+        match &self.motions[s.current.state as usize] {
+            CMotion::Rest => None,
+            CMotion::Clip {
+                clip,
+                duration,
+                looping,
+                ..
+            } => Some((clip, *duration, *looping)),
+            CMotion::Blend {
+                param,
+                points,
+                looping,
+                ..
+            } => {
+                let (w, n) = Self::blend(points, s.params[*param]);
+                let (i, _) =
+                    w[..n].iter().copied().fold(
+                        (0, -1.0),
+                        |best, (i, w)| if w > best.1 { (i, w) } else { best },
+                    );
+                Some((&points[i].clip, points[i].duration, *looping))
+            }
+        }
+    }
+
+    /// The current state plays once and has reached its end (FSM `clip_finished`).
+    pub fn finished(&self, s: &State) -> bool {
+        let (_, looping) = self.base_cycle(s, s.current.state);
+        !looping && s.current.normalized() >= 1.0
     }
 
     /// The clip a sample plays (`None` = rest pose).

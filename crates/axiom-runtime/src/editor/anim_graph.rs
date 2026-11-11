@@ -674,6 +674,37 @@ fn motion_form(
                 }
             });
     });
+    // Rate parameter (a float that multiplies playback; 0 pauses without resetting time).
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Rate param").small().color(MUTED));
+        let current = state["speed_parameter"].as_str().unwrap_or("").to_owned();
+        egui::ComboBox::from_id_salt("anim_rate_param")
+            .selected_text(if current.is_empty() {
+                "(none)"
+            } else {
+                current.as_str()
+            })
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_empty(), "(none)").clicked()
+                    && !current.is_empty()
+                {
+                    state
+                        .as_object_mut()
+                        .expect("checked")
+                        .remove("speed_parameter");
+                    changed = true;
+                }
+                for (n, k) in params {
+                    if k == "float"
+                        && ui.selectable_label(*n == current, n).clicked()
+                        && *n != current
+                    {
+                        state["speed_parameter"] = json!(n);
+                        changed = true;
+                    }
+                }
+            });
+    });
     let Some(motion) = state.get_mut("motion").filter(|m| m.is_object()) else {
         return changed;
     };

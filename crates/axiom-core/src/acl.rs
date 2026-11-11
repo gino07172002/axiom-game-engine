@@ -102,6 +102,9 @@ EDIT (any number, atomic):
   loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY   (new key: TEXT in the
                                   default locale, empty elsewhere) | loc locale add L [from=L2] | loc locale remove L
   ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
+  marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS
+                                  animation.library clip markers: behavior.program event and / or audio cue,
+                                  fired once per loop iteration (also under an animation controller)
         | ability ID event remove I   action.abilities timeline (TICK < duration, SOUND = audio.library cue)
   vfx ID size START END | vfx ID color r,g,b,a r,g,b,a   vfx.library size curve / colour gradient over life
   vfx ID size_curve T:S T:S .. | none     2..8 keys (t 0..1 increasing) replace size->end_size; none removes
@@ -460,6 +463,7 @@ enum TuningStatement {
     Ability(String, crate::ops::AbilityEventEdit),
     Vfx(String, crate::ops::VfxEdit),
     Shader(String, String),
+    Marker(String, crate::ops::MarkerEdit),
 }
 
 fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
@@ -476,6 +480,16 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
     let tick = |t: &str| -> Result<u32> {
         t.parse()
             .with_context(|| format!("'{t}' is not a tick (0, 1, .. at 120 per second)"))
+    };
+    let seconds = |t: &str| -> Result<f32> {
+        let s: f32 = t
+            .parse()
+            .with_context(|| format!("'{t}' is not a time in seconds"))?;
+        ensure!(
+            s.is_finite() && s >= 0.0,
+            "marker time must be >= 0 seconds"
+        );
+        Ok(s)
     };
     let rgba = |t: &str| -> Result<[f64; 4]> {
         let v = numbers(t)?;
@@ -561,6 +575,35 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
             (*id).into(),
             AbilityEventEdit::Remove { index: index(i)? },
         ),
+        ["marker", clip, "add", at, rest @ ..] => {
+            let mut event = None;
+            let mut cue = None;
+            for t in rest {
+                match t.split_once('=') {
+                    Some(("event", v)) => event = Some(text(v)),
+                    Some(("cue", v)) => cue = Some(text(v)),
+                    _ => bail!("unexpected '{t}' (expected event=E or cue=C)"),
+                }
+            }
+            TuningStatement::Marker(
+                text(clip),
+                crate::ops::MarkerEdit::Add {
+                    at: seconds(at)?,
+                    event,
+                    cue,
+                },
+            )
+        }
+        ["marker", clip, "remove", i] => {
+            TuningStatement::Marker(text(clip), crate::ops::MarkerEdit::Remove(index(i)?))
+        }
+        ["marker", clip, "move", i, at] => TuningStatement::Marker(
+            text(clip),
+            crate::ops::MarkerEdit::Move(index(i)?, seconds(at)?),
+        ),
+        ["marker", ..] => bail!(
+            "use: marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS"
+        ),
         ["ability", ..] => bail!(
             "use: ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND | ability ID event remove I"
         ),
@@ -634,6 +677,7 @@ fn tuning_edits(w: &World, stmt: &TuningStatement) -> Result<Vec<Edit>> {
         TuningStatement::Ability(id, edit) => crate::ops::edit_ability_event(w, id, edit),
         TuningStatement::Vfx(id, edit) => crate::ops::edit_vfx(w, id, edit),
         TuningStatement::Shader(id, wgsl) => crate::ops::set_shader_source(w, id, wgsl),
+        TuningStatement::Marker(clip, edit) => crate::ops::anim_marker(w, clip, edit),
     }
 }
 
@@ -1053,7 +1097,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::EventDeclare(arg(2)?.clone(), fields)
         }
         "ui" => Statement::Ui(ui_statement(tokens)?),
-        "input" | "loc" | "ability" | "vfx" | "shader" => {
+        "input" | "loc" | "ability" | "vfx" | "shader" | "marker" => {
             Statement::Tuning(tuning_statement(tokens)?)
         }
         "rotate" => {

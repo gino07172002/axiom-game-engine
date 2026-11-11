@@ -227,6 +227,139 @@ pub fn anim_problems(world: &World) -> Vec<crate::ops_graph::GraphProblem> {
     out
 }
 
+/// One edit of a clip's markers in `animation.library.markers` (ACL `marker CLIP ..`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkerEdit {
+    /// New marker at `at` seconds emitting `event` and / or playing audio `cue`.
+    Add {
+        at: f32,
+        event: Option<String>,
+        cue: Option<String>,
+    },
+    Remove(usize),
+    /// Moves marker I to a new time (the list stays sorted by time).
+    Move(usize, f32),
+}
+
+/// Most markers one clip may have (the animation validator's budget).
+pub const MAX_CLIP_MARKERS: usize = 64;
+const LIBRARY: &str = "animation.library";
+
+/// A time as its shortest decimal text (0.1, not the widened 0.10000000149).
+fn short(x: f32) -> Value {
+    json!(x.to_string().parse::<f64>().unwrap_or(0.0))
+}
+
+/// Animation tab ▸ markers / `anim.marker` / ACL `marker CLIP add|remove|move ..`: edits
+/// the markers of `clip` (kept sorted by time; an emptied clip drops its entry). Event and
+/// cue names are resolved by the runtime against `behavior.program` and `audio.library`.
+pub fn anim_marker(world: &World, clip: &str, edit: &MarkerEdit) -> Result<Vec<Edit>> {
+    let base = format!("/resources/{LIBRARY}/markers/{}", escape(clip));
+    if valid_id(clip).is_err() {
+        return Err(Diagnostic::error(
+            "invalid_id",
+            base,
+            format!("invalid clip ID '{clip}'"),
+        ));
+    }
+    let Some(mut lib) = world.resources.get(LIBRARY).cloned() else {
+        return Err(Diagnostic::error(
+            "not_found",
+            format!("/resources/{LIBRARY}"),
+            "the world has no animation.library",
+        ));
+    };
+    let lib_map = lib
+        .as_object_mut()
+        .ok_or_else(|| invalid(format!("/resources/{LIBRARY}"), "must be an object"))?;
+    let markers = lib_map
+        .entry("markers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid(&base, "markers must be an object"))?;
+    let mut list: Vec<Value> = markers
+        .get(clip)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let at_of = |m: &Value| m["at"].as_f64().unwrap_or(0.0);
+    let check_time = |at: f32| -> Result<()> {
+        if !(at.is_finite() && (0.0..=86400.0).contains(&at)) {
+            return Err(invalid(&base, "marker time must be 0..86400 seconds"));
+        }
+        Ok(())
+    };
+    let check_index = |i: usize, len: usize| -> Result<()> {
+        if i >= len {
+            return Err(Diagnostic::error(
+                "index_out_of_range",
+                &base,
+                format!("marker {i} is out of range: clip {clip} has {len} marker(s)"),
+            ));
+        }
+        Ok(())
+    };
+    match edit {
+        MarkerEdit::Add { at, event, cue } => {
+            check_time(*at)?;
+            if event.is_none() && cue.is_none() {
+                return Err(invalid(&base, "a marker needs event=E and / or cue=C"));
+            }
+            for id in event.iter().chain(cue) {
+                if valid_id(id).is_err() {
+                    return Err(Diagnostic::error(
+                        "invalid_id",
+                        &base,
+                        format!("invalid event / cue '{id}'"),
+                    ));
+                }
+            }
+            if list.len() >= MAX_CLIP_MARKERS {
+                return Err(invalid(
+                    &base,
+                    format!("a clip has at most {MAX_CLIP_MARKERS} markers"),
+                ));
+            }
+            let mut m = json!({ "at": short(*at) });
+            if let Some(e) = event {
+                m["event"] = json!(e);
+            }
+            if let Some(c) = cue {
+                m["cue"] = json!(c);
+            }
+            let i = list.partition_point(|x| at_of(x) <= short(*at).as_f64().unwrap_or(0.0));
+            list.insert(i, m);
+        }
+        MarkerEdit::Remove(i) => {
+            check_index(*i, list.len())?;
+            list.remove(*i);
+        }
+        MarkerEdit::Move(i, at) => {
+            check_index(*i, list.len())?;
+            check_time(*at)?;
+            if list[*i]["at"] == short(*at) {
+                return Ok(vec![]);
+            }
+            let mut m = list.remove(*i);
+            m["at"] = short(*at);
+            let j = list.partition_point(|x| at_of(x) <= short(*at).as_f64().unwrap_or(0.0));
+            list.insert(j, m);
+        }
+    }
+    if list.is_empty() {
+        markers.remove(clip);
+    } else {
+        markers.insert(clip.to_owned(), Value::Array(list));
+    }
+    if markers.is_empty() {
+        lib_map.remove("markers");
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetResource {
+        id: LIBRARY.into(),
+        value: lib,
+    })])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +500,67 @@ mod tests {
             .insert("animation.controller".into(), json!({"controller":"ghost"}));
         let codes: Vec<&str> = anim_problems(&w).iter().map(|p| p.code).collect();
         assert_eq!(codes, ["anim_missing_controller", "anim_unreachable"]);
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    fn world() -> World {
+        let mut w = World::empty("t");
+        w.resources
+            .insert(LIBRARY.into(), json!({"assets":{},"clips":{}}));
+        w
+    }
+
+    fn apply(w: &World, edits: Vec<Edit>) -> World {
+        let mut w = w.clone();
+        for e in edits {
+            e.apply(&mut w, &Registry::core()).unwrap();
+        }
+        w
+    }
+
+    #[test]
+    fn markers_stay_sorted_and_an_emptied_clip_drops_its_entry() {
+        let w = world();
+        let add = |w: &World, at: f32, event: Option<&str>, cue: Option<&str>| {
+            let edit = MarkerEdit::Add {
+                at,
+                event: event.map(str::to_owned),
+                cue: cue.map(str::to_owned),
+            };
+            apply(w, anim_marker(w, "walk", &edit).unwrap())
+        };
+        let w = add(&w, 0.6, Some("step"), None);
+        let w = add(&w, 0.1, None, Some("chime"));
+        let list = &w.resources[LIBRARY]["markers"]["walk"];
+        assert_eq!(
+            list,
+            &json!([{"at":0.1,"cue":"chime"},{"at":0.6,"event":"step"}])
+        );
+        let w = apply(
+            &w,
+            anim_marker(&w, "walk", &MarkerEdit::Move(0, 0.9)).unwrap(),
+        );
+        assert_eq!(w.resources[LIBRARY]["markers"]["walk"][1]["cue"], "chime");
+        assert!(anim_marker(&w, "walk", &MarkerEdit::Move(1, 0.9))
+            .unwrap()
+            .is_empty());
+        let none = MarkerEdit::Add {
+            at: 0.2,
+            event: None,
+            cue: None,
+        };
+        assert!(anim_marker(&w, "walk", &none).is_err());
+        let out = anim_marker(&w, "walk", &MarkerEdit::Remove(5)).unwrap_err();
+        assert_eq!(
+            out.downcast_ref::<Diagnostic>().unwrap().code,
+            "index_out_of_range"
+        );
+        let w = apply(&w, anim_marker(&w, "walk", &MarkerEdit::Remove(0)).unwrap());
+        let w = apply(&w, anim_marker(&w, "walk", &MarkerEdit::Remove(0)).unwrap());
+        assert!(w.resources[LIBRARY].get("markers").is_none());
     }
 }

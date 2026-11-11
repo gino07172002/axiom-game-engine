@@ -64,6 +64,7 @@ impl Editor {
             }
             "anim.target" => return self.anim_target_command(arg).map(|_| vec![]),
             "anim.scrub" => return self.anim_scrub_command(arg).map(|_| vec![]),
+            "anim.marker" => return self.anim_marker_command(arg),
             "vfx.select" => return self.vfx_select_command(arg).map(|_| vec![]),
             "shader.check" => return self.shader_check_command().map(|_| vec![]),
             "shader.draft" => return self.shader_draft_command(arg).map(|_| vec![]),
@@ -98,6 +99,9 @@ impl Editor {
     /// runnable).
     pub(super) fn tuning_blocked(&self, id: &str) -> Option<&'static str> {
         match id {
+            "anim.marker" if self.tuning.anim.clip.is_none() => {
+                Some("pick a model and clip in the Animation tab (anim.target ENTITY CLIP)")
+            }
             "input.capture" if self.previewing => Some("stop Play first (Play owns the keyboard)"),
             "shader.cancel_check" if self.tuning.shader.job.is_none() => {
                 Some("no shader check is running")

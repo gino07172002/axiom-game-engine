@@ -326,3 +326,237 @@ fn steady_controller_steps_do_not_allocate() {
         "the controller allocated while stepping"
     );
 }
+
+fn inspect(r: &mut WorldRuntime, entity: &str) -> Value {
+    call(r, "animation", "inspect", json!({ "entity": entity })).unwrap()["result"].clone()
+}
+
+#[test]
+fn speed_changes_the_rate_without_resetting_time_and_ramps() {
+    // A plain clip player (no controller): sit loops for 3 s at speed 1 (no wrap below).
+    let mut w = lab();
+    let walker = w.entities.iter_mut().find(|e| e.id == "walker").unwrap();
+    walker.components.remove("animation.controller");
+    walker.components.remove("path.follow");
+    walker.components.insert(
+        "animation.player".into(),
+        json!({"asset":"axiom-short","clip":"sit"}),
+    );
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 24);
+    let t0 = inspect(&mut r, "walker")["time"].as_f64().unwrap();
+    assert!((t0 - 0.2).abs() < 0.01, "{t0}");
+    let reply = call(
+        &mut r,
+        "animation",
+        "speed",
+        json!({"entity":"walker","speed":2.0}),
+    )
+    .unwrap();
+    assert!(
+        (reply["result"]["time"].as_f64().unwrap() - t0).abs() < 1e-6,
+        "time kept: {reply}"
+    );
+    run(&mut r, 24);
+    let t1 = inspect(&mut r, "walker")["time"].as_f64().unwrap();
+    assert!((t1 - t0 - 0.4).abs() < 0.01, "twice as fast: {t0} -> {t1}");
+    // Ramp to 0 over 0.5 s: the average rate is 1 (2 -> 0), then time stops.
+    call(
+        &mut r,
+        "animation",
+        "speed",
+        json!({"entity":"walker","speed":0.0,"ramp_seconds":0.5}),
+    )
+    .unwrap();
+    assert!(inspect(&mut r, "walker")["ramp"]["to"] == 0.0);
+    run(&mut r, 60);
+    let t2 = inspect(&mut r, "walker")["time"].as_f64().unwrap();
+    assert!((t2 - t1 - 0.5).abs() < 0.02, "ramped: {t1} -> {t2}");
+    run(&mut r, 30);
+    let i = inspect(&mut r, "walker");
+    assert_eq!(i["speed"], 0.0);
+    assert_eq!(i["ramp"], Value::Null);
+    assert!(
+        (i["time"].as_f64().unwrap() - t2).abs() < 1e-6,
+        "stopped: {i}"
+    );
+    // Bad arguments are refused by the action schema.
+    assert!(call(
+        &mut r,
+        "animation",
+        "speed",
+        json!({"entity":"walker","speed":20.0})
+    )
+    .is_err());
+}
+
+#[test]
+fn a_controller_state_rate_follows_its_speed_parameter() {
+    let mut w = lab();
+    let c = &mut w.resources.get_mut("animation.controllers").unwrap()["controllers"]["locomotion"];
+    c["parameters"]["rate"] = json!({"kind":"float","default":1.0});
+    c["states"]["idle"]["speed_parameter"] = json!("rate");
+    w.entities
+        .iter_mut()
+        .find(|e| e.id == "walker")
+        .unwrap()
+        .components
+        .remove("path.follow");
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 60);
+    let a = controller(&r)["time"].as_f64().unwrap();
+    call(
+        &mut r,
+        "animation",
+        "param",
+        json!({"entity":"walker","name":"rate","value":0.0}),
+    )
+    .unwrap();
+    run(&mut r, 60);
+    let b = controller(&r)["time"].as_f64().unwrap();
+    assert!((a - b).abs() < 1e-3, "rate 0 holds the state: {a} {b}");
+    call(
+        &mut r,
+        "animation",
+        "param",
+        json!({"entity":"walker","name":"rate","value":2.0}),
+    )
+    .unwrap();
+    run(&mut r, 60);
+    let c = controller(&r)["time"].as_f64().unwrap();
+    // Twice the normalized progress of the first 60 steps at rate 1.
+    assert!((c - b - 2.0 * a).abs() < 0.01, "{a}: {b} -> {c}");
+}
+
+/// `lab()` with a counting `behavior.program`, an audio cue and `walk` markers.
+fn eventful(controller: bool) -> World {
+    let mut w = lab();
+    let walker = w.entities.iter_mut().find(|e| e.id == "walker").unwrap();
+    walker.components.remove("path.follow");
+    if !controller {
+        walker.components.remove("animation.controller");
+        walker.components.insert(
+            "animation.player".into(),
+            json!({"asset":"axiom-short","clip":"walk","on_end":"looped"}),
+        );
+    }
+    w.capabilities.insert("audio".into(), 1);
+    w.systems.push("audio.events".into());
+    w.resources.insert(
+        "audio.library".into(),
+        json!({"cues":{"chime":{"frequency":880,"duration_ms":90,"gain":0.08}}}),
+    );
+    w.resources.insert(
+        "behavior.program".into(),
+        json!({"variables":{"beats":0,"loops":0,"who":""},
+            "events":{"beat":{"fields":{"entity":"text","clip":"text"}},"looped":{"fields":{}}},
+            "rules":[
+                {"id":"beat","event":"beat","actions":[{"kind":"add","variable":"beats","value":{"kind":"literal","value":1}},{"kind":"set","variable":"who","value":{"kind":"event","field":"clip"}}]},
+                {"id":"looped","event":"looped","actions":[{"kind":"add","variable":"loops","value":{"kind":"literal","value":1}}]}
+            ]}),
+    );
+    w.resources.get_mut("animation.library").unwrap()["markers"] = json!({
+        "walk":[{"at":0.1,"event":"beat","cue":"chime"}],
+        "wave":[{"at":0.5,"event":"beat"}]
+    });
+    w
+}
+
+fn variable(r: &WorldRuntime, name: &str) -> Value {
+    r.observation().metrics["gameplay"]["variables"][name].clone()
+}
+
+#[test]
+fn clip_markers_emit_events_and_cues_once_per_loop_and_on_end_counts_cycles() {
+    let mut r = WorldRuntime::new(eventful(false), 1, axiom_runtime::installed_registry()).unwrap();
+    // walk is one second long: markers at 0.1, 1.1, 2.1; three completed cycles by 3.04 s.
+    run(&mut r, 365);
+    assert_eq!(variable(&r, "beats"), 3);
+    assert_eq!(variable(&r, "loops"), 3);
+    assert_eq!(variable(&r, "who"), "walk");
+    let audio = &r.observation().metrics["audio"];
+    assert_eq!(audio["emitted"], 3, "{audio}");
+    assert_eq!(r.observation().metrics["animation"]["markers_fired"], 9);
+    // Twice the speed: twice the markers in the same time.
+    call(
+        &mut r,
+        "animation",
+        "speed",
+        json!({"entity":"walker","speed":2.0}),
+    )
+    .unwrap();
+    run(&mut r, 120);
+    assert_eq!(variable(&r, "beats"), 5);
+}
+
+#[test]
+fn markers_follow_the_controller_state_and_undeclared_events_are_refused() {
+    let mut r = WorldRuntime::new(eventful(true), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 10);
+    call(
+        &mut r,
+        "animation",
+        "param",
+        json!({"entity":"walker","name":"wave","value":true}),
+    )
+    .unwrap();
+    run(&mut r, 120);
+    assert_eq!(
+        variable(&r, "beats"),
+        1,
+        "the wave marker at 0.5 s fired once"
+    );
+    assert_eq!(variable(&r, "who"), "wave");
+    // A marker naming an event the program does not declare is an explicit error.
+    let mut w = eventful(false);
+    w.resources.get_mut("animation.library").unwrap()["markers"]["walk"][0]["event"] =
+        json!("nope");
+    let e = WorldRuntime::new(w, 1, axiom_runtime::installed_registry())
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap();
+    assert!(
+        e.contains("nope, which behavior.program does not declare"),
+        "{e}"
+    );
+    let mut w = eventful(false);
+    w.resources.get_mut("animation.library").unwrap()["markers"]["walk"][0]["cue"] = json!("boom");
+    let e = WorldRuntime::new(w, 1, axiom_runtime::installed_registry())
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap();
+    assert!(e.contains("cue boom is not in audio.library"), "{e}");
+}
+
+#[test]
+fn an_fsm_continues_after_a_one_shot_clip_with_clip_finished() {
+    let mut w = eventful(false);
+    w.capabilities.insert("fsm".into(), 1);
+    w.systems.push("fsm.step".into());
+    w.resources.insert(
+        "fsm.machines".into(),
+        json!({"machines":{"show":{"initial":"greet","states":{
+            "greet":{"action":{"kind":"stop"},"clip":"wave","clip_loop":false},
+            "go":{"action":{"kind":"stop"},"clip":"walk"}},
+            "transitions":[{"from":"greet","to":"go","when":{"kind":"clip_finished"}}]}}}),
+    );
+    w.entities
+        .iter_mut()
+        .find(|e| e.id == "walker")
+        .unwrap()
+        .components
+        .insert("fsm.agent".into(), json!({"machine":"show"}));
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    let state = |r: &mut WorldRuntime| {
+        call(r, "fsm", "inspect", json!({"id":"walker"})).unwrap()["result"]["state"].clone()
+    };
+    run(&mut r, 60);
+    assert_eq!(state(&mut r), "greet");
+    // wave is 1.6 s: the agent moves on once it has played to its end.
+    run(&mut r, 160);
+    assert_eq!(state(&mut r), "go");
+    assert_eq!(
+        r.observation().metrics["animation"]["players"]["walker"]["clip"],
+        "walk"
+    );
+}

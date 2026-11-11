@@ -2423,3 +2423,47 @@ fn animation_controller_edits_match_animctl() {
         .run_command_with("graph.open_controller", Some("nope"))
         .is_err());
 }
+
+#[test]
+fn clip_marker_commands_match_the_marker_verb() {
+    let lab = animator_lab();
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("anim.target", Some("walker walk"))
+                .unwrap();
+            e.tuning.anim.time = 0.25;
+            vec![e
+                .run_command_with("anim.marker", Some("add event=beat cue=chime"))
+                .unwrap()]
+        },
+        "marker walk add 0.25 event=beat cue=chime",
+    );
+    let marked = headless(
+        &lab,
+        "marker walk add 0.25 event=beat\nmarker walk add 0.5 cue=chime",
+    );
+    assert_parity(
+        marked.clone(),
+        |e| {
+            e.run_command_with("anim.target", Some("walker walk"))
+                .unwrap();
+            vec![e
+                .run_command_with("anim.marker", Some("move 0 0.75"))
+                .unwrap()]
+        },
+        "marker walk move 0 0.75",
+    );
+    assert_parity(
+        marked,
+        |e| {
+            e.run_command_with("anim.target", Some("walker walk"))
+                .unwrap();
+            vec![e.run_command_with("anim.marker", Some("remove 1")).unwrap()]
+        },
+        "marker walk remove 1",
+    );
+    // Without a clip on the timeline the command explains why.
+    let e = Editor::new(lab, 1, None);
+    assert!(e.command_blocked("anim.marker").is_some());
+}

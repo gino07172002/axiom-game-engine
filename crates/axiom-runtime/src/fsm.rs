@@ -70,6 +70,9 @@ pub enum Cond {
         per_tick: f32,
     },
     Always,
+    /// The agent's `animation.player` played its one-shot clip (or its controller's one-shot
+    /// state) to the end.
+    ClipFinished,
 }
 impl Cond {
     fn describe(&self) -> String {
@@ -80,6 +83,7 @@ impl Cond {
             Self::InStateTicks { ticks } => format!("ticks_in_state>={ticks}"),
             Self::Chance { per_tick } => format!("chance({per_tick}/tick)"),
             Self::Always => "always".into(),
+            Self::ClipFinished => "clip_finished".into(),
         }
     }
 }
@@ -233,7 +237,7 @@ impl Machines {
                         finite(*per_tick, 0.0, 1.0),
                         "machine {id}: chance per_tick 0..1"
                     ),
-                    Cond::Always => {}
+                    Cond::Always | Cond::ClipFinished => {}
                 }
             }
         }
@@ -287,6 +291,11 @@ pub fn editor_kinds(condition: bool) -> Vec<(&'static str, Value, Value)> {
                 ),
             ),
             ("always", json!({"kind":"always"}), object(json!({}))),
+            (
+                "clip_finished",
+                json!({"kind":"clip_finished"}),
+                object(json!({})),
+            ),
         ]
     } else {
         vec![
@@ -602,6 +611,13 @@ impl FsmSystem {
             // Inspection must not consume randomness; report the probability instead.
             Cond::Chance { per_tick } => (Some(*per_tick), false),
             Cond::Always => (None, true),
+            Cond::ClipFinished => (
+                None,
+                state
+                    .animation_cues
+                    .finished
+                    .contains(&self.agents.ids[agent]),
+            ),
         }
     }
 
