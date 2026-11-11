@@ -211,6 +211,7 @@ impl RuntimeSystem for GeometrySystem {
                     .material
                     .as_ref()
                     .map(|m| m.id.clone()),
+                surface: state.compiled.entities[*slot].surface,
             });
         }
     }

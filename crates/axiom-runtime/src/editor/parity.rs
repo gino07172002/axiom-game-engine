@@ -2552,3 +2552,83 @@ fn clip_marker_commands_match_the_marker_verb() {
     let e = Editor::new(lab, 1, None);
     assert!(e.command_blocked("anim.marker").is_some());
 }
+
+#[test]
+fn sky_presets_and_surface_match_acl() {
+    let blank = World::empty("blank");
+    // World ▸ Sky creates render.environment (+ the render capability) with the preset sky
+    // and the sky light; switching mode or removing it edits the same resource.
+    for mode in ["gradient", "procedural"] {
+        assert_parity(
+            blank.clone(),
+            |e| vec![e.run_command_with("world.sky", Some(mode)).unwrap()],
+            &format!("sky {mode}"),
+        );
+    }
+    let lit = headless(&blank, "sky procedural");
+    assert_eq!(lit.capabilities.get("render"), Some(&1));
+    let env = &lit.resources["render.environment"];
+    assert_eq!(env["sky"]["mode"], "procedural");
+    assert_eq!(
+        env["ambient"],
+        serde_json::json!({"mode":"sky","intensity":1.0})
+    );
+    for (mode, script) in [("gradient", "sky gradient"), ("none", "sky none")] {
+        assert_parity(
+            lit.clone(),
+            |e| vec![e.run_command_with("world.sky", Some(mode)).unwrap()],
+            script,
+        );
+    }
+    let cleared = headless(&lit, "sky none");
+    assert_eq!(
+        cleared.resources["render.environment"],
+        serde_json::json!({})
+    );
+    // An authored ambient is kept; the same mode again writes nothing (tuned values stay).
+    let tinted = headless(
+        &blank,
+        "resource create render.environment {\"ambient\":{\"mode\":\"color\",\"color\":[0.2,0.2,0.2],\"intensity\":1}}\nsky gradient",
+    );
+    assert_eq!(
+        tinted.resources["render.environment"]["ambient"]["mode"],
+        "color"
+    );
+    let mut e = Editor::new(lit.clone(), 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    assert!(e
+        .run_command_with("world.sky", Some("procedural"))
+        .unwrap()
+        .is_empty());
+    assert!(e
+        .run_command_with("world.sky", Some("hdri"))
+        .unwrap()
+        .is_empty());
+    let mut s = store(&lit);
+    let error = s
+        .execute(Request::Acl {
+            text: "sky hdri".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("gradient|procedural|none"));
+    // render.surface: Inspector ▸ Add component == `add SEL render.surface`.
+    let cube = headless(&blank, "create cube id=ball");
+    assert_parity(
+        cube.clone(),
+        |e| {
+            e.select(Some("ball".into()));
+            vec![e
+                .run_command_with("object.add_component", Some("render.surface"))
+                .unwrap()]
+        },
+        "add ball render.surface",
+    );
+    let shiny = headless(&cube, "add ball render.surface");
+    assert_eq!(
+        shiny.entity("ball").unwrap().components["render.surface"],
+        serde_json::json!({"metallic":0.0,"smoothness":0.5})
+    );
+}

@@ -1407,9 +1407,12 @@ impl WorldRuntime {
             }
             if let Some(mesh) = &e.mesh {
                 let start = frame.instances.len() as u32;
-                frame
-                    .instances
-                    .extend(mesh.parts.iter().map(|p| Instance::part(matrices[i], p)));
+                frame.instances.extend(mesh.parts.iter().map(|p| {
+                    let mut instance = Instance::part(matrices[i], p);
+                    [instance.material[2], instance.material[3]] =
+                        crate::presentation::surface_params(e.surface);
+                    instance
+                }));
                 if let Some(material) = &e.material {
                     let end = frame.instances.len() as u32;
                     if let Some((range, _)) = frame

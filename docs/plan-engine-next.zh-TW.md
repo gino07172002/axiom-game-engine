@@ -205,7 +205,49 @@
 - **配置**:`tests/animator.rs::steady_controller_steps_do_not_allocate` 以每執行緒計數配置器量 240 步:無播放器 480 次、片段播放器 480 次、控制器 480 次 → 動畫系統本身 0 次(480 = 世界步進其他部分每步 2 次,與動畫無關)。重構前 `step` 每步 clone 整個播放器(含姿勢 Vec)。retarget / twist / IK 與蒙皮輸出(`extract` 的頂點 Vec)仍會配置,未改。未做 release A/B,不宣稱效能改善。
 - **審查**:兩次 fresh-context 審查。第一次:Problems 快取混用兩種圖(修)、片段清單快取不分控制器(修)、失敗步留下部分 IK 結果(修)、回滾 / 重新啟用後速度取樣跳動(修)、永不觸發的 exit_time(驗證拒絕)、缺片段只在 runtime 報錯(維持,與 `player.clip` 一致)。第二次:熱重載重放已過標記、轉移當步漏掉離開狀態的標記與 `on_end`、play+seek 重放、反向播放旗標、失敗的 play 清掉 clip_finished(全部修正並加測試);同一片段標記剛好在循環接縫的 f32 邊界、混合樹主片段切換屬已知限制。
 
+### R 繪圖品質(worktree `wr`,branch `work-wr`)
+
+**ADR R-1:反射走「天空環境反射(解析式,不用 cubemap)」,不做反射探針與 SSR(這一輪)**
+
+| 方案 | MX150 成本 | 品質 | 編輯 / AI | 確定性 | 是否需要重工作 |
+|---|---|---|---|---|---|
+| A. 反射探針 cubemap(指令觸發擷取) | 每個探針擷取 = 6 次場景 pass(一次性);執行期每像素 1 次 cube 取樣 + box projection;每個探針 6×N² 貼圖記憶體 + mip | 看得到其他物體(靜態時) | 需要探針元件、擷取指令、快取(依內容雜湊、放在 revision 外)、失效規則、gizmo | 擷取的是「那一刻」的執行期畫面(動態物件、粒子、動畫時間會進去),同一 revision 可能擷取出不同結果,要另外定義「擷取哪一個狀態」 | 擷取必須是明確指令或背景工作;不能隱性重擷取 |
+| B. SSR | 每幀全螢幕 ray march(MX150 1080p 估計數 ms);forward renderer 沒有法線 G-buffer,要加 MRT 或從深度重建 | 只反射畫面內的東西,邊緣 / 被遮住處破洞,要 fallback | 幾乎不用編寫 | 依視角變化,不影響內容 | 每幀成本,多相機 viewport 要各算一次 |
+| C. **天空環境反射(採用)** | 每個 opted-in 像素約數十個 ALU(估計;實測見下)(解析天空求值 + Schlick),零貼圖、零擷取 | 只反射天空(smoothness 低時模糊到 trilight),不反射物體 | 一個元件 `render.surface {metallic, smoothness}`,Inspector 直接加 | 純函式,完全確定 | 無 |
+
+決定:C。理由:(1)計畫允許的降級方案就是 cubemap 環境反射,C 的畫面等同「只有天空的 cubemap」但省掉貼圖與擷取;(2)A 的擷取確定性與快取失效設計是一整條工作線的量,這一輪的時間要留給驗證;(3)B 在 MX150 上成本最高,而且 forward 管線沒有法線緩衝。A 列為下一步(`render.surface` 與 `axiom_environment()` 是它的接點:之後探針只要替換 `axiom_environment` 的來源)。成本實測(release A/B)見 `docs/lighting.zh-TW.md`「量測(天空、反射、網格陰影)」:反射與網格投影在雜訊內,天空背景約 +2 ms / 幀(MX150、機器同時有其他編譯,不穩定)。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+
+- 「反射探針或 SSR」→ 天空環境反射(ADR R-1)。
+- 「匯入網格接收陰影」→ 接收 **並且投射**(只在編寫了燈光的世界):只接收不投射時角色腳下沒有影子,看起來更假;投射的條件和接收相同,舊內容包(沒有編寫燈光)的陰影貼圖不變。
+- 天空光不是新的獨立元件,而是 `ambient` 的第三種模式 `sky`(CPU 積分天空成 trilight),沿用既有的 trilight 管線與 shader。
+- 背景天空原本計畫用 vertex→fragment 傳 NDC;在 MX150 Vulkan 驅動(32.0.15.6614)上「vs 用陣列索引角點 + 輸出 varying」這個組合讓 `nvoglv64.dll` 在建立 pipeline 時 access violation(每個內容包啟動即崩潰,事件記錄可查)。改成 fragment 用 `@builtin(position)` 與新的 `sky_viewport` global 自己算 NDC,舊版背景分支一字不改。
+- 第一輪 A/B 顯示天空背景約 +1.9 ms(6/7),所以把編寫的天空改到不透明幾何之後畫(只算看得到的像素);第二輪 A/B 量不出這個改動的差別(見 lighting 文件),因為不改變畫面而保留,不宣稱有改善。
+- 事故紀錄:二分搜尋驅動崩潰時,一個 PowerShell `[IO.File]::WriteAllText` 用了相對路徑,寫到了**主工作樹**的 `crates/axiom-runtime/src/scene.wgsl`(.NET 的 cwd 是 D:\rust_learn,不是 worktree)。發現後立刻用 `git checkout` 還原該檔(diff 確認內容全是我的實驗碼,主工作樹之後 `git status` 乾淨)。期間若主工作樹的代理剛好在編譯,可能看過一次失敗的 shader。
+- 新增第一方示範包 `content/render-lab`(程序天空 + 天空光、拋光地面、金屬方塊、鉻球 `render.geometry`、無表面的對照方塊、遮棚、`fighter.glb`——和 `content/action` 同一個本專案角色檔)。
+
+**Milestones(每個都 commit 在 `work-wr`)**
+
+| Milestone | 內容 |
+|---|---|
+| M1 walking skeleton | `render.environment.sky`(gradient / procedural)型別 + 驗證 + schema;`SkyParams`(CPU)與 `axiom_sky`(WGSL)同一公式;`ambient: sky`;Globals 加 `inv_view_proj` / 天空 4 個 vec4 / `sky_viewport`(stride 3072 → 3328,8 相機 26 KB);`ops::set_sky` + ACL `sky` + `world.sky` + World 視窗 SKY 列;parity 測試 |
+| M2 網格陰影 | `shadow.wgsl` 共用;網格 camera group 加陰影貼圖 + 比較取樣器(接收);`vs_mesh_shadow` + 獨立 uniform-only group 的投影 pass(避免同一 pass 既取樣又寫入陰影貼圖);只在編寫燈光的世界生效 |
+| M3 反射 | `render.surface` 元件(ADR R-1);方塊 `material.zw`、網格 `Draw.params.zw` 編碼 (metallic, smoothness+1),0 = 沒有元件 = 舊路徑 |
+| M4 驗證 | 示範包、截圖、舊包逐像素比對、smoke、release A/B、fresh-context 審查與修正 |
+
+**驗證紀錄**
+
+- `cargo fmt`、`cargo clippy --workspace --all-targets -D warnings` 乾淨;`cargo test --workspace` 701 通過 / 0 失敗(基準 692,新增 9)。
+- 舊內容包逐像素(1440×900 smoke,改動前 exe 是 base commit 重編的 debug 版):axiom-town / shader-lab / effects-tour / action / mascot / street 0 差異;light-lab 2、two-cameras 4、rts 1 個像素差 1/255;fps 132 個像素全在 HUD 右上 16×13 的數字區(同一個舊 exe 連跑兩次也有 51 個,是 HUD 數字不是渲染)。
+- `editor-smoke-test` ok:true;`editor-world-parity` identical:true;`street-editor-parity` identical:true;`build-street`:content/street 不變;`m0-smoke-test` PASS;`effects-smoke-test` PASS(36 站全擷取,機器同時有其他代理在編譯,仍在時限內)。
+- 截圖(實際看過):`artifacts/wr/wr-{procedural,gradient}-{1080,768}.png`、`wr-sunset-1080.png`;編輯器 `artifacts/captures/wr-editor-{1080,768}.png`(World 視窗 SKY 列 + Inspector `render.surface`)。網格接收陰影另外用「把網格輸出改成陰影值」的暫時 shader 確認(角色在柱子陰影線上 = 全藍),之後把示範場景調成只有軀幹在遮棚陰影裡。
+- Fresh-context 審查:無嚴重錯誤;確認並修正 — 日盤大小在 3° 以下幾乎不變(邊緣寬度改成跟日盤成比例,加測試)、`set_sky` 經 f32 重寫整個資源(改成只改 `/sky`、`/ambient` 的 JSON)、World 按鈕與 ACL 同模式行為不一致(同模式一律空批次)、缺 Rust/WGSL Globals 大小測試(加 naga 測試)、網格投影 alpha 規則沒測試(抽成 `casts_shadow` + 測試)、文件提到不存在的量測段落(補上 A/B)、背景天空不套色調曲線(文件說明)。
+
 ### 整合補記(2026-11-12,整合者)
 
 - 原計畫:P、E、A 各自合併。→ 變成:P 與 A 各自新增了 `Checkpoint.systems` 與 `RuntimeSystem` 存讀檔 hook(P:`checkpoint_state` / `restore_checkpoint_state`;A:`save_state` / `load_state`)。→ 合併時統一成 A 的 `save_state` / `load_state`(存檔可回報錯誤、讀檔可改 runtime state),P 的 `physics.step` 改實作這組 hook;「存檔缺少某系統狀態」改由 `WorldRuntime::load_system_states` 統一拒絕,錯誤訊息帶系統 ID。為什麼:同一份存檔不能有兩套語意。
 - `editor/ui.rs` 的 Edit Graph 按鈕:保留 E 的「只在展開的卡片顯示」(收合卡片的 `draft.form` 屬於另一個元件)並加上 A 的 `animation.controller` 分支。
+
+- R 合併:`render.rs` 的 `Globals` 同時有 R 的天空欄位(`inv_view_proj`、`sky`、`sky_viewport`)與 E 的 Unlit 改寫(`unlit_globals`)。**已知限制**:`render.surface` 反射由每個物件自己的材質參數開啟,`unlit_globals` 關不掉,所以 Unlit 檢視下金屬 / 光滑物件仍會映出天空。要修需在 shader 加全域旗標(得在 MX150 上重驗管線),列為後續。
+- 四線合併後的 effects smoke:36 站截圖與所有 bridge 檢查通過,最後一步(900 幀限 60 秒)逾時。A/B(同一 effects DB、debug、各 2 輪、60 / 300 幀):先前通過 effects smoke 的 3f52dea、合併 R 前的 2806e5a、四線合併版,300 幀都是 45–47 秒(約 145 ms/幀,`render_present_acquire_wait` 佔絕大部分)。三版一致 → 不是程式退化,是機器目前 GPU 比 FE 那次(900 幀約 27 秒)慢約 5 倍;原因未查明(接電、平衡電源計畫、GPU 無其他程序)。沒有放寬腳本時限;待機器恢復後重跑。

@@ -35,6 +35,8 @@ struct WorldRows {
     resources: Vec<Row>,
     missing_resources: Vec<String>,
     heading: [String; 3],
+    /// `render.environment` sky mode: none | gradient | procedural.
+    sky: &'static str,
 }
 
 impl WorldRows {
@@ -143,6 +145,17 @@ impl WorldRows {
             missing_systems,
             resources,
             missing_resources,
+            sky: match world
+                .resources
+                .get("render.environment")
+                .and_then(|e| e.get("sky"))
+                .and_then(|s| s.get("mode"))
+                .and_then(Value::as_str)
+            {
+                Some("gradient") => "gradient",
+                Some("procedural") => "procedural",
+                _ => "none",
+            },
         }
     }
 }
@@ -185,6 +198,7 @@ enum WorldRequest {
     ResourceCreate(String, String),
     ResourceRemove(String),
     ResourceOpen(String),
+    Sky(String),
 }
 
 /// Inspector tag chips: the tag being typed and the chips of the current selection.
@@ -413,6 +427,7 @@ impl Editor {
                 ops::create_resource(&world, &registry, &id, value)
             }
             WorldRequest::ResourceRemove(id) => ops::remove_resource(&world, &id),
+            WorldRequest::Sky(mode) => ops::set_sky(&world, &registry, &mode),
             WorldRequest::ResourceOpen(id) => {
                 if self.dirty() {
                     self.set_error("Apply or reload the inspector draft first");
@@ -492,6 +507,7 @@ impl Editor {
                 self.world_request(WorldRequest::ResourceCreate(id, json))
             }
             "world.resource_remove" => self.world_request(WorldRequest::ResourceRemove(arg.into())),
+            "world.sky" => self.world_request(WorldRequest::Sky(arg.into())),
             other => {
                 self.set_error(format!("{other} takes no argument"));
                 None
@@ -682,6 +698,29 @@ impl Editor {
                                         .desired_width(f32::INFINITY),
                                 );
                             }
+                            ui.separator();
+                            ui.label(RichText::new("SKY · render.environment").small().color(MUTED));
+                            ui.horizontal(|ui| {
+                                for (mode, label, hint) in [
+                                    ("gradient", "Gradient", "Zenith / horizon / ground colours; adds the sky light (ambient mode sky) when no ambient is authored"),
+                                    ("procedural", "Procedural", "Daylight sky following the first directional light; adds the sky light when no ambient is authored"),
+                                    ("none", "None", "Legacy background; removes the sky and a sky-mode ambient"),
+                                ] {
+                                    let item = ui
+                                        .selectable_label(rows.sky == mode, label)
+                                        .on_hover_text(hint);
+                                    #[cfg(test)]
+                                    rects.push((format!("world:sky:{mode}"), item.rect));
+                                    if item.clicked() && rows.sky != mode {
+                                        requests.push(WorldRequest::Sky(mode.into()));
+                                    }
+                                }
+                            });
+                            ui.label(
+                                RichText::new("Tune it in the Inspector: open render.environment above.")
+                                    .small()
+                                    .color(MUTED),
+                            );
                         });
                 });
                 if !enabled {

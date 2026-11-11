@@ -29,7 +29,7 @@ pub(crate) fn cube_vertex_layouts() -> [wgpu::VertexBufferLayout<'static>; 2] {
     ]
 }
 /// Per-view uniform slot (dynamic offset); a multiple of the 256-byte offset alignment.
-pub(crate) const GLOBALS_STRIDE: u32 = 3072;
+pub(crate) const GLOBALS_STRIDE: u32 = 3328;
 /// Bytes of `Globals` (the WGSL struct in lighting.wgsl must match).
 pub(crate) const GLOBALS_SIZE: u64 = std::mem::size_of::<Globals>() as u64;
 const _: () = assert!(GLOBALS_SIZE <= GLOBALS_STRIDE as u64);
@@ -45,6 +45,9 @@ struct Globals {
     suns: [crate::lighting::GpuSun; crate::lighting::GPU_SUNS],
     ambient: [[f32; 4]; 3],
     fog: [f32; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    sky: [[f32; 4]; 4],
+    sky_viewport: [f32; 4],
 }
 
 /// Draw commands the last `Renderer::render` recorded, counted on the CPU while recording (no
@@ -76,6 +79,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    sky_late_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     shadow_bind: wgpu::BindGroup,
@@ -337,37 +341,44 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sky"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_sky"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_sky"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        // Legacy background: drawn first, over everything (depth Always). An authored sky is
+        // drawn after the opaque geometry instead (LessEqual against the cleared far depth),
+        // so only the pixels where sky shows run its per-pixel direction and sky formula.
+        let sky = |label: &'static str, depth_compare: wgpu::CompareFunction| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_sky"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_sky"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let sky_pipeline = sky("sky", wgpu::CompareFunction::Always);
+        let sky_late_pipeline = sky("authored sky", wgpu::CompareFunction::LessEqual);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shared unit cube"),
             contents: bytemuck::cast_slice(&cube_vertices()),
@@ -380,7 +391,8 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let egui = egui_wgpu::Renderer::new(&device, format, None, 1, false);
-        let meshes = crate::mesh_render::MeshRenderer::new(&device, format, &uniform);
+        let meshes =
+            crate::mesh_render::MeshRenderer::new(&device, format, &uniform, &shadow, &sampler);
         let shaders = crate::shader_gpu::ShaderGpu::new(&device, format, &layout, meshes.layouts());
         let vfx = crate::vfx_gpu::VfxGpu::new(&device, format, &uniform, &depth);
         let post =
@@ -398,6 +410,7 @@ impl Renderer {
             pipeline,
             shadow_pipeline,
             sky_pipeline,
+            sky_late_pipeline,
             uniform,
             bind,
             shadow_bind,
@@ -562,6 +575,7 @@ impl Renderer {
         }
         let lighting = crate::lighting::pack(snapshot);
         let light_vp = lighting.light_vp;
+        let sky = lighting.sky_uniform();
         let mut uniforms = vec![0_u8; views.len() * GLOBALS_STRIDE as usize];
         let mut geometry = snapshot.instances.clone();
         let shared = geometry.len() as u32;
@@ -603,9 +617,9 @@ impl Renderer {
                     v.camera.far,
                 ),
             };
+            let view_proj = projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up);
             let mut global = Globals {
-                view_proj: (projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up))
-                    .to_cols_array_2d(),
+                view_proj: view_proj.to_cols_array_2d(),
                 light_vp: light_vp.to_cols_array_2d(),
                 eye_time: [v.eye.x, v.eye.y, v.eye.z, snapshot.tick as f32 / 120.0],
                 accent: [
@@ -631,6 +645,14 @@ impl Renderer {
                 suns: lighting.suns,
                 ambient: lighting.ambient,
                 fog: lighting.fog,
+                inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+                sky,
+                sky_viewport: [
+                    viewport[0] * self.config.width as f32,
+                    viewport[1] * self.config.height as f32,
+                    viewport[2] * self.config.width as f32,
+                    viewport[3] * self.config.height as f32,
+                ],
             };
             if self.unlit_view == Some(v.id.as_str()) {
                 unlit_globals(&mut global);
@@ -730,6 +752,12 @@ impl Renderer {
                     stats.add(1, 12 * range.len() as u64);
                 }
             }
+            // Imported / procedural meshes cast only where they also receive (authored
+            // lighting), so the legacy look keeps its cube-only shadow map.
+            if lighting.authored {
+                let (calls, triangles) = self.meshes.draw_shadow(&mut pass, &self.shaders);
+                stats.add(calls, triangles);
+            }
             drop(pass);
             self.timer
                 .mark(&mut encoder, crate::gpu_timing::Section::Shadows);
@@ -779,15 +807,24 @@ impl Renderer {
             pass.set_viewport(x * width, y * height, w * width, h * height, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
-            stats.add(1, 1);
+            let late_sky = lighting.sky.mode != crate::lighting::SKY_NONE;
+            if !late_sky {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
+                stats.add(1, 1);
+            }
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
             for blend in [false, true] {
                 if blend {
                     pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
+                    // After every opaque draw, before the transparent ones (they blend over it).
+                    if late_sky {
+                        pass.set_pipeline(&self.sky_late_pipeline);
+                        pass.draw(0..3, 0..1);
+                        stats.add(1, 1);
+                    }
                     pass.set_vertex_buffer(0, self.vertices.slice(..));
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                 }
@@ -1162,5 +1199,30 @@ mod unlit_tests {
             .ambient
             .iter()
             .all(|a| a[0] == a[1] && a[1] == a[2] && a[0] > 1.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The Rust `Globals` and the WGSL `Globals` of every shader that binds it have the
+    /// same size (a mismatch either fails at draw time or silently misreads fields).
+    #[test]
+    fn rust_and_wgsl_globals_have_the_same_size() {
+        for source in [
+            crate::lighting::SCENE_WGSL,
+            crate::lighting::MESH_WGSL,
+            crate::lighting::VFX_DRAW_WGSL,
+        ] {
+            let module = naga::front::wgsl::parse_str(source).unwrap();
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("Globals"))
+                .unwrap();
+            let naga::TypeInner::Struct { span, .. } = ty.inner else {
+                panic!("Globals is not a struct");
+            };
+            assert_eq!(u64::from(span), super::GLOBALS_SIZE);
+        }
     }
 }

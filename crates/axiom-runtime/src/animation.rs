@@ -914,6 +914,7 @@ impl RuntimeSystem for AnimationSystem {
                         .material
                         .as_ref()
                         .map(|m| m.id.clone()),
+                    surface: state.compiled.entities[slot].surface,
                 });
             }
             if p.config.debug_skeleton {

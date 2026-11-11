@@ -30,6 +30,8 @@ cargo build -p axiom
 
 Assets 的縮圖:模型(靜止姿勢、材質顏色)與材質(以材質 tint 著色的球,**不是**材質的自訂 shader)由背景 job 在編輯器的 GPU 上離屏渲染後讀回,圖片在 CPU 解碼縮放;結果以內容雜湊存成 `<db>.thumbs/<hash>.png`(不進修訂,刪掉只會重新產生)。看得到的格子缺縮圖時自動排一個小 job(一次最多 24 個),**Thumbnails** 產生全部;進度顯示在工具列與狀態列,可 Cancel。貼圖最多同時保留 64 張(128×128,共 4 MiB),最久沒畫的先釋放,再出現時從磁碟快取載回;每幀最多上傳 4 張。沒有 GPU 時模型與材質縮圖標為失敗(橘點),不會卡住。AI:`assets [KIND]`、`usages KIND:ID`、`asset place|create|rename …`(`discover assets`),`editor_view {command:"asset.find_usages", arg:"model:hero"}`。
 
+World 視窗最下方的 **SKY** 列有 Gradient / Procedural / None 三個按鈕(目前的模式反白),等於 World ▸ Sky…(`world.sky`)與 ACL `sky gradient|procedural|none`;天空的細部數值在 Inspector 開 `render.environment` 調整,`render.surface`(金屬度 / 平滑度,反射天空)從 Inspector ▸ Add component 加入。見 [lighting.zh-TW.md](lighting.zh-TW.md)。
+
 World 視窗的資源列會在 Inspector 載入資源草稿。可指定 JSON pointer 僅載入所需欄位，例如 `action.abilities` 的 `/abilities/slash2`。Preview、Apply、Reload 和 Copy JSON 沿用交易及修訂衝突規則。每次載入限制為 64 KiB，較大的資源可用更窄的 JSON pointer 檢查。
 
 新增的物件有穩定 ID。名稱可更換，指向 ID 的引用會繼續有效。複製會複製單一物件與它的父層、場景成員關係。刪除物件時，子物件保留本地變換並成為根物件。交易會驗證仍指向已刪物件的型別化引用。重新掛父層時可保留世界姿態，若所需的本地變換含剪切，會回報診斷。

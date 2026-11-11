@@ -145,6 +145,8 @@ EDIT (any number, atomic):
   system add|remove ID            scheduled system (+ its capability and the systems it runs after)
   resource create ID [JSON]       registered resource with JSON or its default (+ capability/systems)
   resource remove ID
+  sky gradient|procedural|none    render.environment sky preset (+ ambient mode sky when no ambient);
+                                  none removes the sky and a sky ambient (World ▸ Sky)
   Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
@@ -429,6 +431,7 @@ enum Statement {
     SystemRemove(String),
     ResourceCreate(String, Option<Value>),
     ResourceRemove(String),
+    Sky(String),
     AddComponent(Box<Selection>, String, Option<Value>),
     Array(Box<Selection>, String, crate::ops::ArrayEdit),
     Reset(Box<Selection>, String),
@@ -1074,6 +1077,10 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             ("remove", 3) => Statement::ResourceRemove(arg(2)?.clone()),
             _ => bail!("use: resource create ID [JSON] | resource remove ID"),
         },
+        "sky" => {
+            ensure!(tokens.len() == 2, "use: sky gradient|procedural|none");
+            Statement::Sky(arg(1)?.clone())
+        }
         "add" => {
             ensure!(
                 (3..=4).contains(&tokens.len()),
@@ -2245,6 +2252,7 @@ pub fn run(
             Statement::SystemRemove(id) => crate::ops::remove_system(w, r, &id),
             Statement::ResourceCreate(id, value) => crate::ops::create_resource(w, r, &id, value),
             Statement::ResourceRemove(id) => crate::ops::remove_resource(w, &id),
+            Statement::Sky(mode) => crate::ops::set_sky(w, r, &mode),
             Statement::AddComponent(select, component, value) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_component(w, r, &ids, &component, value)),
             Statement::Array(select, f, edit) => crate::ops::edit_array(w, r, &select, &f, &edit),

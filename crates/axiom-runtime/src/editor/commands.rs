@@ -334,6 +334,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         "World",
         "RESOURCE",
     ),
+    a("world.sky", "Sky…", "World", "gradient|procedural|none"),
     a("event.declare", "Declare Event…", "World", "NAME"),
     c(
         "world.migrate_camera_blockers",
@@ -640,6 +641,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "world.system_remove",
     "world.resource_create",
     "world.resource_remove",
+    "world.sky",
     "event.declare",
     "world.migrate_camera_blockers",
     "game.main_camera",
@@ -986,6 +988,7 @@ impl Editor {
             | "world.system_remove"
             | "world.resource_create"
             | "world.resource_remove"
+            | "world.sky"
             | "event.declare"
             | "world.migrate_camera_blockers"
                 if busy =>
@@ -1901,6 +1904,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "world.system_remove": "system remove ID",
                 "world.resource_create": "resource create ID [JSON]",
                 "world.resource_remove": "resource remove ID",
+                "world.sky": "sky gradient|procedural|none (World ▸ Sky; tune: set resources[id=render.environment] sky/… VALUE)",
                 "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
                 "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
                 "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",
