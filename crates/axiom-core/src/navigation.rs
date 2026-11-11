@@ -443,6 +443,13 @@ fn collider_rect(collider: &crate::Collider, m: Mat4, floor_y: f32) -> Option<Re
             add(m.transform_point3(Vec3::Y * half_height), r);
             add(m.transform_point3(-Vec3::Y * half_height), r);
         }
+        crate::ColliderShape::Sphere { radius } => {
+            let (scale, _, _) = m.to_scale_rotation_translation();
+            add(
+                m.transform_point3(Vec3::ZERO),
+                radius * scale.abs().max_element(),
+            );
+        }
     }
     let band = (floor_y + OBSTACLE_BAND.0, floor_y + OBSTACLE_BAND.1);
     (lo.is_finite() && hi.is_finite() && hi.y > band.0 && lo.y < band.1)

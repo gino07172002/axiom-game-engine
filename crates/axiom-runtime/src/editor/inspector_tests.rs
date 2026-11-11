@@ -566,6 +566,15 @@ fn options_dialogs_create_what_their_acl_line_creates() {
             vec![("Speed (m/s)", "2.5"), ("Radius (m)", "0.4")],
         ),
         (
+            "object.rigid_body",
+            vec!["a", "b"],
+            vec![
+                ("Kind", "kinematic"),
+                ("Mass (kg)", "2.5"),
+                ("Collider (fit to mesh when missing)", "sphere"),
+            ],
+        ),
+        (
             "object.follow_path",
             vec!["a", "route"],
             vec![("Speed (m/s)", "3"), ("At the end", "ping_pong")],

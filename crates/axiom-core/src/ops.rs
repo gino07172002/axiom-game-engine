@@ -1359,6 +1359,129 @@ pub fn add_nav_agent(world: &World, ids: &[String], options: &NavOptions) -> Res
     Ok(edits)
 }
 
+/// Options of Object ▸ Add Rigid Body / ACL `physics SEL body`; `None` keeps the defaults
+/// (dynamic, 1 kg, existing collider or a fitted box).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BodyOptions {
+    pub kind: Option<crate::physics::BodyKind>,
+    pub mass: Option<f32>,
+    /// `box`, `sphere` or `capsule`: (re)fit a collider of that shape to the render mesh.
+    pub shape: Option<String>,
+}
+
+/// A collider of `shape` enclosing the entity's own `render.mesh` parts in its local space
+/// (a 1 m cube without a mesh). Colliders are centered on the entity, so the fit is
+/// symmetric: each half extent is the farthest mesh point on that axis.
+fn fitted_collider(world: &World, id: &str, shape: &str) -> Result<Collider> {
+    let entity = world
+        .entity(id)
+        .ok_or_else(|| not_found(entity_path(id), format!("entity '{id}' not found")))?;
+    let mut half = glam::Vec3::ZERO;
+    if let Some(mesh) = world
+        .resolved_components(entity)
+        .remove("render.mesh")
+        .and_then(|v| serde_json::from_value::<RenderMesh>(v).ok())
+    {
+        for part in &mesh.parts {
+            let m = part.transform.matrix();
+            for j in 0..8 {
+                let s = |bit: usize| if j & bit == 0 { -0.5 } else { 0.5 };
+                half = half.max(m.transform_point3(glam::Vec3::new(s(1), s(2), s(4))).abs());
+            }
+        }
+    }
+    if half.min_element() < 0.001 {
+        half = half.max(glam::Vec3::splat(0.5));
+    }
+    let shape = match shape {
+        "box" => ColliderShape::Box {
+            half_extents: half.to_array(),
+        },
+        "sphere" => ColliderShape::Sphere {
+            radius: half.max_element(),
+        },
+        "capsule" => {
+            let radius = half.x.max(half.z);
+            ColliderShape::Capsule {
+                half_height: (half.y - radius).max(0.001),
+                radius,
+            }
+        }
+        other => {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                "/shape",
+                format!("unknown collider shape '{other}' (use box, sphere, capsule)"),
+            ))
+        }
+    };
+    let collider = Collider::new(shape);
+    collider.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            format!("{}/components/physics.collider", entity_path(id)),
+            format!("{e:#}"),
+        )
+    })?;
+    Ok(collider)
+}
+
+/// Object ▸ Add Rigid Body (ACL `physics SEL body [kind=] [mass=] [shape=]`): puts a
+/// `physics.body` (defaults plus `options`) on each entity, replacing an existing one, and a
+/// `physics.collider` fitted to its render mesh when it has none (or when `shape` is given).
+/// Adds the `physics` capability and the `physics.step` system when missing. Children,
+/// entities with another mover and colliders under a body fail when the batch commits
+/// (`invalid_physics` / `physics_conflict`).
+pub fn add_rigid_body(world: &World, ids: &[String], options: &BodyOptions) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the objects that should become rigid bodies",
+        ));
+    }
+    let mut body = crate::physics::RigidBody::default();
+    body.kind = options.kind.unwrap_or(body.kind);
+    body.mass = options.mass.unwrap_or(body.mass);
+    body.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            format!("/components/{}", crate::physics::BODY),
+            format!("{e:#}"),
+        )
+    })?;
+    let mut edits = enable_system(world, Some("physics"), Some(crate::physics::SYSTEM));
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        if !seen.insert(id) {
+            continue;
+        }
+        let has_collider = world.entity(id).is_some_and(|e| {
+            world
+                .resolved_components(e)
+                .contains_key("physics.collider")
+        });
+        if let Some(shape) = options
+            .shape
+            .as_deref()
+            .or((!has_collider).then_some("box"))
+        {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: "physics.collider".into(),
+                value: json!(fitted_collider(world, id, shape)?),
+            }));
+        }
+        edits.push(Edit::Core(CoreEdit::SetComponent {
+            entity: id.clone(),
+            component: crate::physics::BODY.into(),
+            value: json!(body),
+        }));
+    }
+    Ok(edits)
+}
+
 /// Nav ▸ Set Target (editor: selected object, or a click on the ground; ACL `nav SEL target`):
 /// writes `nav.agent/target` on each agent; `None` clears it. The target entity must exist
 /// and must not be the agent itself; the resulting agent must stay valid (a point target

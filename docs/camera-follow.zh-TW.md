@@ -49,7 +49,7 @@
 
 | 來源 | 形狀 |
 |---|---|
-| `physics.collider` box / capsule | 方塊依實體世界矩陣(含縮放,和導航格子相同);膠囊端點依矩陣、半徑乘最大縮放 |
+| `physics.collider` box / capsule / sphere | 方塊依實體世界矩陣(含縮放,和導航格子相同);膠囊端點依矩陣、半徑乘最大縮放;球是兩端點重合的膠囊 |
 | `nav.blocker` | XZ 矩形(和行走者相同:實體編寫的位置 + offset,不旋轉)。高度 = 同一個實體自己的 `render.mesh` 部件包圍盒;**沒有 mesh 時視為無限高**(隱形牆) |
 | 有 `camera.blocker` 元件(或已棄用的 tag `camera_blocker`)的實體的 `render.mesh` 部件 | 每個部件一個有向方塊(單位方塊 × 部件矩陣) |
 

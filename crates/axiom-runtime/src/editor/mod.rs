@@ -1289,6 +1289,12 @@ impl Editor {
             .collect()
     }
 
+    /// Object ▸ Add Rigid Body (`ACL: physics SEL body [kind=] [mass=] [shape=]`).
+    pub(super) fn add_rigid_bodies(&mut self, options: &ops::BodyOptions) -> Option<Action> {
+        let result = ops::add_rigid_body(&self.world, &self.selection(), options);
+        self.op_write(result, None)
+    }
+
     /// Object ▸ Add Nav Agent (`ACL: nav SEL agent [speed=] [radius=]`).
     pub(super) fn add_nav_agents(&mut self, options: &ops::NavOptions) -> Option<Action> {
         let result = ops::add_nav_agent(&self.world, &self.selection(), options);

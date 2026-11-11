@@ -80,3 +80,61 @@
 ## 執行紀錄
 
 (各工作線完成後補上)
+
+### P 物理(worktree `wp`,分支 `work-wp`)
+
+**ADR:自寫求解器 vs rapier3d(先 spike、量測,不用猜)**
+
+| 項目 | rapier3d 0.23.1(採用) | 自寫小型求解器(未採用) |
+|---|---|---|
+| 依賴 / 授權 | **已在依賴樹**(FPS 的角色控制器與射線查詢已用,`simd-stable`),新增 crate 數 0;Apache-2.0;dimforge 持續維護 | 無新依賴 |
+| 編譯時間 | 量測:見下方「補記 1」 | 未實作,無法量測;估計新增約 2–3k 行(箱-箱 SAT + 接觸流形裁切 + 熱啟動 + 島嶼睡眠),本身編譯很快 |
+| 執行檔大小 | 量測:見「補記 1」 | 無法量測(未實作) |
+| 確定性 | 量測:同程序兩個執行期逐位元相同(測試 `identical_runs_and_checkpoints_are_deterministic`);**兩個新程序**跑 `examples/physics-lab.scenario.json` 的 `state_hash` 相同(`dd7f29b2e5d16220`);debug 與 release 見「補記 1」。原因可讀碼確認:未開 `enhanced-determinism` 時 rapier/parry 的雜湊表是 `rustc_hash::FxHashMap`(無隨機種子),唯一的 `std::HashMap` 只在移除碰撞體時查表、不迭代。不保證跨 CPU / OS | 可完全掌握,但堆疊穩定(熱啟動、多點流形)要自己做對,是本計畫最大的風險 |
+| typed storage | 本模組自己的表是型別化的(`Vec<Entry>` + slot 索引);rapier 的 arena 也是型別化結構 | 同 |
+| checkpoint | rapier 的完整內部狀態只有 `serde-serialize` 特性能存(另需重編 nalgebra/parry 並存很大的接觸圖),**不採用**;改存每個剛體的速度、角速度、睡眠與睡眠計時(transform 原本就存),讀檔重建求解器:同一份存檔讀兩次逐位元相同,但不等於沒存檔一路跑下去(接觸快取重建) | 可把接觸快取一起存 |
+| 每步配置 | release 量測:整個 step 15 / 21 / 27 次配置(64 / 256 / 1024 剛體,約 3 / 12 / 49 KB),來自 rapier 內部暫存;本模組的步進迴圈不配置 | 可做到 0 |
+
+決定:用 rapier3d。理由是它已經在依賴樹裡(增量成本只有連結進來的程式碼),堆疊 / 睡眠 / 摩擦 / 彈性 / CCD 都是成熟實作,確定性在本機同一執行檔下量測成立;自寫求解器要花的時間主要在堆疊穩定度,與本計畫的風險表(「致命」)不相稱。代價:每步有少量 rapier 內部配置、checkpoint 不是逐位元延續。
+
+**補記 1(ADR 量測,release,同一台機器同時有其他 agent 編譯)**:
+- 執行檔大小 A/B:`axiom.exe` release 有 `physics.step` 34,052,487 B,只拿掉 `physics::register`(其餘相同,rapier 的角色控制器 / 查詢仍由 FPS 連結)33,412,878 B → 物理管線與本模組 **+639,609 B(+1.9%)**。
+- 增量編譯(改一行後重建 `axiom-runtime` + 連結 `axiom`,release,各 1 輪):有 8.1 min、沒有 8.7 min — 差異小於機器負載造成的雜訊,量不出物理模組的編譯成本;rapier3d 本身在基準就已經編譯(0 個新 crate)。
+- debug 與 release 執行檔跑同一個 scenario:`state_hash` 都是 `dd7f29b2e5d16220`(與兩個 debug 新程序相同)。
+- 自寫求解器的編譯時間與大小沒有實作,因此沒有量測(上表標為估計)。
+
+**Milestone**
+
+- M1(walking skeleton,`eef6fb8`):`physics.body` + `physics.step`,一個動態箱子落到靜態地板:headless 測試 `a_dynamic_box_falls_onto_a_static_floor_and_sleeps`,以及 `content/physics-lab` 的 GPU 執行(`play --smoke-frames 360 --screenshot`,MX150 / Vulkan)。
+- M2(同一 commit):`sphere` 形狀、`friction` / `restitution`(較大者生效)、運動學剛體、跟隨者(被其他系統移動的碰撞體推箱子:`core.motion`、`path.follow`、`nav.agent`、FPS 玩家都有測試)、睡眠、出界停用、checkpoint `systems` 狀態、熱重載、`physics.impulse|set_velocity|inspect|summary`、預算 1024。
+- M3(同一 commit):`ops::add_rigid_body` + ACL `physics SEL body …` + 編輯器 Object ▸ Add Rigid Body(選項對話框)+ parity 測試;Inspector 由型別化 schema 產生表單,Play 時即時區顯示 `physics.inspect`;場景視口 gizmo 依角色著色。
+- M4(同一 commit):示範內容包 `content/physics-lab`(塔、金字塔、落下的箱堆、斜坡上的球、推箱子的 porter;只用內建方塊與程序球體)+ `examples/physics-lab.scenario.json` + `Play Physics Lab.cmd`。
+- 審查修正(`440811f`):見下方。
+
+**驗證**:fmt;clippy `-D warnings` 0 警告;`cargo test --workspace` 708 passed / 0 failed / 5 ignored(基準 692 → +16:`tests/physics.rs` 16 個,另有 core、parity、對話框測試併入既有測試);editor-smoke ok:true(DB 已刪);editor-world-parity identical:true(1→13);street-editor-parity identical:true(8→16);build-street:content/street 不變;m0 GPU smoke PASS(`artifacts/m0-*.png` 已看過);示範截圖 `artifacts/captures/wp-demo-{1080,768}.png`、`wp-editor-gizmos-{1080,768}.png`(已看過)。
+
+**Release 量測**(`perf_bench --generated-physics N --ticks 600`,每欄是 3 輪交錯執行的 p50 中位數;所有剛體 `can_sleep:false`、4 個一疊,全部醒著且有接觸;機器同時有其他 agent 在編譯,數字偏高):
+
+| 剛體 | step p50(ms) | 3 輪 p50 | p95 中位數 |
+|---|---|---|---|
+| 64 | 0.28 | 0.33 / 0.28 / 0.13 | 0.32 |
+| 256 | 0.74 | 0.98 / 0.51 / 0.74 | 1.15 |
+| 1024 | 2.65 | 3.69 / 2.65 / 2.58 | 3.96 |
+
+睡著的剛體幾乎不花時間(示範包 12 秒後 21/23 睡著)。1024 剛體全醒時約 2.6 ms / 步(120 Hz → 每幀最多 2 步 ≈ 5.3 ms),所以預算定為 1024。
+
+**Fresh-context 審查**(子代理只看需求與 diff):1 個 bug + 4 個風險 + 2 個 nit,修正如下(`440811f`):
+1. bug:在未啟用場景中建立的剛體,碰撞體被建成 disabled,rapier 在剛體啟用時不會重新啟用它 → 場景啟用後箱子穿過地板。改為碰撞體一律啟用、由剛體開關;測試 `bodies_built_in_an_inactive_scene_collide_once_it_is_active`。
+2. 熱重載會蓋掉剛改的運動學速度 → 只有編寫的速度沒變才沿用;測試 `hot_reload_applies_edited_velocities_and_moves_unbodied_colliders_with_their_entity`。
+3. 拿掉剛體後靜態碰撞體留在編寫位置、畫面在落點 → 重載 / 讀檔時靜態碰撞體跟隨實體目前姿勢(同上測試)。
+4. 編譯期預算只算剛體、執行期算剛體 + 跟隨者 → 編譯期也算跟隨者。
+5. nit:對話框無法要求重新擬合成箱子 → Collider 欄位預設 `keep`。編輯模式 gizmo 把跟隨者畫成靜態 → 依 movers 判斷。
+未修(記錄):f32 欄位寫入 JSON 時會變長(`0.05000000074505806`),與既有元件(如 `nav.agent`)相同的慣例;checkpoint 讀檔後不是逐位元延續(見 ADR)。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+
+- 「靜態 / 動態 / kinematic」:靜態不是 `physics.body` 的一種,而是「沒有剛體的碰撞體」(既有語意,向後相容,舊內容自動成為物理場景)。另外多了「跟隨者」:被其他系統移動的碰撞體 → 位置驅動的運動學剛體,角色控制器不必改程式碼就能推箱子(單向:角色不會被箱子擋)。
+- restitution 合併規則用「較大者」而非 rapier 預設的平均:否則彈力球在預設地板上彈力減半(測試先失敗才改)。
+- 跟隨者單步超過 0.5 m 或 0.2 rad 視為瞬移:示範包第一次跑時 ping_pong 路徑在端點瞬間轉身 180°,換算成 377 rad/s 角速度,把貼著的箱子甩到 -1268 m;加了回歸測試 `a_follower_turning_around_does_not_fling_the_crate_it_pushed`。
+- FPS 競技場碰撞忽略剛體(否則動態箱子會被當成固定牆,且旋轉後違反 FPS 的軸對齊檢查)。FPS 的地板只在 FPS 模擬內,物理看不到 — 記在 docs/physics.zh-TW.md 限制。
+- Action 控制器排在動畫 / 音訊之後,它的角色以上一步姿勢推箱子(差 1/120 秒),不為此改排程。

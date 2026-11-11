@@ -24,6 +24,7 @@ mod ops_ui;
 mod ops_world;
 pub mod package;
 pub mod path;
+pub mod physics;
 pub mod protocol;
 pub mod raycast;
 pub mod registry;

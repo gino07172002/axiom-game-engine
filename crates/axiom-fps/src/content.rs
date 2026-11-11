@@ -123,12 +123,10 @@ pub fn convert(old: &LegacyWorld) -> Result<World> {
     )?;
     player.set(
         "physics.collider",
-        Collider {
-            shape: ColliderShape::Capsule {
-                half_height: 0.55,
-                radius: 0.35,
-            },
-        },
+        Collider::new(ColliderShape::Capsule {
+            half_height: 0.55,
+            radius: 0.35,
+        }),
     )?;
     player.set(
         "fps.controller",
@@ -189,12 +187,10 @@ pub(crate) fn sentinel(old: &LegacyWorld, i: usize) -> Result<Entity> {
     )?;
     e.set(
         "physics.collider",
-        Collider {
-            shape: ColliderShape::Capsule {
-                half_height: 0.5,
-                radius: 0.4,
-            },
-        },
+        Collider::new(ColliderShape::Capsule {
+            half_height: 0.5,
+            radius: 0.4,
+        }),
     )?;
     e.set(
         "fps.sentinel",
@@ -217,11 +213,9 @@ pub(crate) fn cover_entity(o: &Obstacle, accent: [f32; 3]) -> Result<Entity> {
     )?;
     e.set(
         "physics.collider",
-        Collider {
-            shape: ColliderShape::Box {
-                half_extents: o.size.map(|v| v * 0.5),
-            },
-        },
+        Collider::new(ColliderShape::Box {
+            half_extents: o.size.map(|v| v * 0.5),
+        }),
     )?;
     e.set("fps.cover", json!({"id":o.id}))?;
     e.set(
@@ -263,7 +257,11 @@ pub fn from_world(w: &World) -> Result<LegacyWorld> {
         .count();
     let mut obstacles = vec![];
     for e in &w.entities {
-        if e.components.contains_key("fps.sentinel") || e.id == session.player {
+        // Rigid bodies move (physics.step); the FPS arena only collides with static shapes.
+        if e.components.contains_key("fps.sentinel")
+            || e.id == session.player
+            || e.components.contains_key(axiom_core::physics::BODY)
+        {
             continue;
         }
         if let Some(v) = e.components.get("physics.collider") {

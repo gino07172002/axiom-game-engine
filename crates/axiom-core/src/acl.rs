@@ -37,6 +37,8 @@ EDIT (any number, atomic):
   create obstacle P               1 m cube + nav.blocker (agents walk around it; id obstacle)
   nav SEL agent [speed=M/S] [radius=M]   nav.agent on each object (no target yet)
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
+  physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule]   physics.body on each
+                                  object (+ physics.collider fitted to its mesh when missing or shape= given)
   interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
                                   (defaults: event interacted declared with interactor/target, action interact -> KeyE)
   audio clip ID tone|engine|fountain|creak|footstep   procedural clip in audio.library (no audio files)
@@ -395,6 +397,7 @@ enum Statement {
     NavAgent(Box<Selection>, crate::ops::NavOptions),
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
     Interact(Box<Selection>, crate::ops::InteractOptions),
+    RigidBody(Box<Selection>, crate::ops::BodyOptions),
     AudioClip(String, String),
     AudioSource(Box<Selection>, Box<crate::ops::AudioSourceOptions>),
     AudioListener(String),
@@ -1266,6 +1269,36 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             }
             Statement::Interact(select, options)
         }
+        "physics" => {
+            let select = Box::new(selector(arg(1)?)?);
+            ensure!(
+                arg(2)?.as_str() == "body",
+                "use: physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule]"
+            );
+            let mut options = crate::ops::BodyOptions::default();
+            for t in &tokens[3..] {
+                let (k, v) = t
+                    .split_once('=')
+                    .with_context(|| format!("option '{t}' must be key=value"))?;
+                match k {
+                    "kind" => {
+                        options.kind = Some(match v {
+                            "dynamic" => crate::physics::BodyKind::Dynamic,
+                            "kinematic" => crate::physics::BodyKind::Kinematic,
+                            other => bail!(
+                                "unknown kind '{other}' (use dynamic, kinematic; static scenery is a physics.collider without a body)"
+                            ),
+                        })
+                    }
+                    "mass" => {
+                        options.mass = Some(v.parse::<f32>().context("mass must be a number")?)
+                    }
+                    "shape" => options.shape = Some(v.to_owned()),
+                    other => bail!("unknown option '{other}' (use kind, mass, shape)"),
+                }
+            }
+            Statement::RigidBody(select, options)
+        }
         "tween" => tween(tokens)?,
         "audio" => audio(tokens)?,
         "fsm" => fsm(tokens)?,
@@ -2064,6 +2097,8 @@ pub fn run(
                 .and_then(|ids| crate::ops::set_nav_target(w, &ids, target.as_ref())),
             Statement::Interact(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
+            Statement::RigidBody(select, options) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_rigid_body(w, &ids, &options)),
             Statement::AudioClip(id, preset) => crate::ops::add_audio_clip(w, &id, &preset),
             Statement::AudioSource(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_audio_source(w, &ids, &options)),

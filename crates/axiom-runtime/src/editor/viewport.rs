@@ -921,6 +921,8 @@ const GIZMO_CAMERA: Color32 = Color32::from_rgb(170, 186, 206);
 const GIZMO_CAMERA_ACTIVE: Color32 = Color32::from_rgb(255, 214, 92);
 const GIZMO_BLOCKER: Color32 = Color32::from_rgb(255, 146, 72);
 const GIZMO_COLLIDER: Color32 = Color32::from_rgb(110, 232, 150);
+const GIZMO_BODY: Color32 = Color32::from_rgb(96, 186, 255);
+const GIZMO_KINEMATIC: Color32 = Color32::from_rgb(244, 196, 86);
 const GIZMO_AGENT: Color32 = Color32::from_rgb(232, 140, 255);
 const GIZMO_LIGHT: Color32 = Color32::from_rgb(255, 222, 120);
 const GIZMO_LIGHT_OFF: Color32 = Color32::from_rgb(130, 120, 90);
@@ -1171,7 +1173,8 @@ fn draw_nav_grid(
 /// shapes (see `draw_light_gizmo`), `trigger.zone` wireframes (occupancy is drawn by the Play
 /// preview overlay), `nav.blocker`
 /// rectangles (XZ at the authored position + offset, like the runtime), `physics.collider`
-/// boxes/capsules and `fsm.agent` body radii. Returns the number of shapes drawn.
+/// boxes/capsules/spheres (scaled like `physics.step`, colored by physics role) and
+/// `fsm.agent` body radii. Returns the number of shapes drawn.
 fn draw_component_gizmos(
     painter: &egui::Painter,
     view: &ProjectionView,
@@ -1187,6 +1190,7 @@ fn draw_component_gizmos(
         shapes: 0,
     };
     let state = &runtime.state.compiled;
+    let physics = runtime.system::<crate::physics::PhysicsSystem>();
     for (i, e) in state
         .entities
         .iter()
@@ -1326,10 +1330,39 @@ fn draw_component_gizmos(
             );
         }
         if let Some(collider) = &e.collider {
+            // The simulated shape: scale applied like physics.step (box extents per axis,
+            // capsule / sphere radius by the largest scale). Colors: static green, dynamic
+            // blue, kinematic / follower amber; sleeping bodies dimmed during Play.
+            let role = physics.and_then(|p| p.role(i)).unwrap_or(match &e.body {
+                Some(b) if b.kind == axiom_core::physics::BodyKind::Kinematic => "kinematic",
+                Some(_) => "dynamic",
+                None if axiom_core::navigation::moved_by_system(
+                    &state.entities,
+                    &state.parents,
+                    &runtime.state.registry.movers,
+                    i,
+                ) =>
+                {
+                    "follower"
+                }
+                None => "static",
+            });
+            let mut color = match role {
+                "dynamic" => GIZMO_BODY,
+                "kinematic" | "follower" => GIZMO_KINEMATIC,
+                _ => GIZMO_COLLIDER,
+            };
+            if physics.and_then(|p| p.sleeping(i)) == Some(true) {
+                color = color.gamma_multiply(0.45);
+            }
+            if selected == Some(i) {
+                color = Color32::WHITE;
+            }
+            let (scale, _, _) = matrices[i].to_scale_rotation_translation();
+            let round = scale.abs().max_element();
             match collider.shape {
                 axiom_core::ColliderShape::Box { half_extents } => {
-                    let m = Mat4::from_rotation_translation(rotation, position)
-                        * Mat4::from_scale(Vec3::from_array(half_extents) * 2.0);
+                    let m = matrices[i] * Mat4::from_scale(Vec3::from_array(half_extents) * 2.0);
                     let corner = |j: usize| {
                         m.transform_point3(Vec3::new(
                             (j & 1) as f32 - 0.5,
@@ -1340,7 +1373,7 @@ fn draw_component_gizmos(
                     for j in 0..8 {
                         for bit in [1, 2, 4] {
                             if j & bit == 0 {
-                                pen.line(corner(j), corner(j | bit), GIZMO_COLLIDER);
+                                pen.line(corner(j), corner(j | bit), color);
                             }
                         }
                     }
@@ -1349,17 +1382,24 @@ fn draw_component_gizmos(
                     half_height,
                     radius,
                 } => {
-                    let top = position + y * half_height;
-                    let bottom = position - y * half_height;
+                    let radius = radius * round;
+                    let top = position + y * half_height * scale.y.abs();
+                    let bottom = position - y * half_height * scale.y.abs();
                     for c in [top, bottom] {
-                        pen.loop_through(&arc(c, x, z, radius, 0.0, TAU, 17)[..16], GIZMO_COLLIDER);
+                        pen.loop_through(&arc(c, x, z, radius, 0.0, TAU, 17)[..16], color);
                     }
                     for side in [x, -x, z, -z] {
-                        pen.line(top + side * radius, bottom + side * radius, GIZMO_COLLIDER);
+                        pen.line(top + side * radius, bottom + side * radius, color);
                     }
                     for side in [x, z] {
-                        pen.open(&arc(top, side, y, radius, 0.0, PI, 9), GIZMO_COLLIDER);
-                        pen.open(&arc(bottom, side, -y, radius, 0.0, PI, 9), GIZMO_COLLIDER);
+                        pen.open(&arc(top, side, y, radius, 0.0, PI, 9), color);
+                        pen.open(&arc(bottom, side, -y, radius, 0.0, PI, 9), color);
+                    }
+                }
+                axiom_core::ColliderShape::Sphere { radius } => {
+                    let radius = radius * round;
+                    for (a, b) in [(x, z), (x, y), (y, z)] {
+                        pen.loop_through(&arc(position, a, b, radius, 0.0, TAU, 25)[..24], color);
                     }
                 }
             }

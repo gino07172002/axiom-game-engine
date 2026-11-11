@@ -10,6 +10,7 @@
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-audio 256`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-camera 8x1024`
 //! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-fsm 256x1024`
+//! `cargo run [--release] -p axiom-runtime --example perf_bench -- --generated-physics 256`
 //!
 //! Prints one JSON object: headless step time (p50/p95/p99), allocations per step and per
 //! `WorldRuntime::render_frame`, observation building, `RuntimeState::clone` cost,
@@ -92,6 +93,33 @@ fn generated(count: usize) -> Result<World> {
         "entities":entities,
         "scenes":[{"id":"main","entities":ids,"active":true}],
         "resources":{"render.settings":{"accent":[0.2,0.9,0.7],"shadow_extent":60}}
+    }))?)
+}
+
+/// `bodies` dynamic 1 m crates (`physics.body`, `can_sleep` false so every step solves all
+/// of them) in columns of 4 on a static floor, 2 m apart, released with a small gap and a
+/// tilt: the awake, contact-heavy cost of `physics.step`.
+fn generated_physics(bodies: usize) -> Result<World> {
+    let mut entities = vec![
+        json!({"id":"floor","components":{"core.transform":{"position":[0,-0.5,0]},
+        "physics.collider":{"shape":{"shape":"box","half_extents":[80,0.5,80]}}}}),
+    ];
+    let side = (bodies.div_ceil(4) as f32).sqrt().ceil() as usize;
+    for i in 0..bodies {
+        let column = i / 4;
+        let (x, z) = (
+            (column % side) as f32 * 2.0 - side as f32,
+            (column / side) as f32 * 2.0 - side as f32,
+        );
+        entities.push(json!({"id":format!("crate/{i}"),"components":{
+            "core.transform":{"position":[x,0.55 + (i % 4) as f32 * 1.1,z],"rotation":[0,0.0499792,0,0.9987503]},
+            "physics.collider":{"shape":{"shape":"box","half_extents":[0.5,0.5,0.5]}},
+            "physics.body":{"can_sleep":false}}}));
+    }
+    Ok(serde_json::from_value(json!({
+        "schema_version":2,"id":format!("physics-{bodies}"),"title":"Physics bench",
+        "capabilities":{"core":1,"physics":1},"systems":["physics.step"],
+        "entities":entities
     }))?)
 }
 
@@ -435,6 +463,9 @@ fn main() -> Result<()> {
             .context("--generated-camera CAMERASxCOLLIDERS")?;
         let world = generated_camera(cameras.parse()?, colliders.parse()?)?;
         (world.id.clone(), world)
+    } else if let Some(bodies) = arg("--generated-physics") {
+        let world = generated_physics(bodies.parse()?)?;
+        (world.id.clone(), world)
     } else if let Some(sources) = arg("--generated-audio") {
         let world = generated_audio(sources.parse()?)?;
         (world.id.clone(), world)
@@ -508,6 +539,10 @@ fn main() -> Result<()> {
         });
     let nav = runtime.observation().metrics.get("nav").map(|n| {
         json!({"grid":n["grid"],"budget":n["budget"],"moving":n["moving"],"pending":n["pending"],"failed":n["failed"],"arrived":n["arrived"],"preview":preview})
+    });
+    // Rigid bodies: counters after the measured steps.
+    let physics = runtime.observation().metrics.get("physics").map(|p| {
+        json!({"dynamic":p["dynamic"],"awake":p["awake"],"sleeping":p["sleeping"],"contacts":p["contacts"]})
     });
     // Follow cameras: what the last step's casts did.
     let camera = runtime.observation().metrics.get("camera").map(|c| {
@@ -669,6 +704,7 @@ fn main() -> Result<()> {
         "nav":nav,
         "audio":audio,
         "camera":camera,
+        "physics":physics,
         "process_memory_after_runtime":memory_runtime,
         "process_memory_end":axiom_runtime::measure::process_memory(),
     });

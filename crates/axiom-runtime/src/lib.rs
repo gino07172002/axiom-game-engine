@@ -30,6 +30,7 @@ pub mod nameplate;
 pub mod narrative;
 pub mod nav_agent;
 pub mod path_follow;
+pub mod physics;
 pub mod postfx;
 mod postfx_gpu;
 pub mod presentation;
@@ -71,6 +72,7 @@ pub fn installed_registry() -> world::RuntimeRegistry {
     path_follow::register(&mut r);
     tween::register(&mut r);
     nav_agent::register(&mut r);
+    physics::register(&mut r);
     camera_rig::register(&mut r);
     nameplate::register(&mut r);
     ui_effects::register(&mut r);

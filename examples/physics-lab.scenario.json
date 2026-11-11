@@ -1,0 +1,14 @@
+{"ticks":1440,"assertions":[
+ {"kind":"finite"},
+ {"kind":"field","entity":"tower/5","field":"/position/1","op":"ge","value":5.4},
+ {"kind":"field","entity":"tower/5","field":"/position/1","op":"le","value":5.7},
+ {"kind":"field","entity":"pyramid/5","field":"/position/1","op":"ge","value":2.4},
+ {"kind":"field","entity":"drop/5","field":"/position/1","op":"lt","value":6.0},
+ {"kind":"field","entity":"ball/red","field":"/position/0","op":"gt","value":-1.0},
+ {"kind":"field","entity":"cargo/0","field":"/position/0","op":"lt","value":1.0},
+ {"kind":"field","entity":"cargo/0","field":"/position/0","op":"gt","value":-4.0},
+ {"kind":"call","action":"physics.summary","pointer":"/dynamic","op":"eq","value":23},
+ {"kind":"call","action":"physics.summary","pointer":"/followers","op":"eq","value":1},
+ {"kind":"call","action":"physics.summary","pointer":"/sleeping","op":"ge","value":10},
+ {"kind":"call","action":"physics.inspect","args":{"id":"tower/0"},"pointer":"/sleeping","op":"eq","value":true}
+]}
