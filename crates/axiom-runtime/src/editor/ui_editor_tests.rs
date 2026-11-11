@@ -290,6 +290,142 @@ fn effect_form_button_command_and_removal_match_acl() {
     );
 }
 
+/// Canvas zoom: the wheel zooms around the pointer, middle-drag pans, `ui.zoom` and the
+/// readout button; none of it writes. Drags at 200 % and 50 % move the document point by the
+/// screen delta / scale and commit exactly one `ui place` each.
+#[test]
+fn zoomed_canvas_drags_in_document_pixels_and_zoom_is_view_only() {
+    let start = town();
+    let mut h = Harness::new(start.clone());
+    let view = h.rect("ui_editor:view");
+    assert_eq!(h.rect("ui_editor:canvas"), view, "100 % = fit to the tab");
+    let fit = view.width() / 1280.0;
+    let wheel = |dy: f32| Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, dy),
+        modifiers: Modifiers::NONE,
+    };
+    let to_screen = |canvas: Rect, scale: f32, x: f32, y: f32| canvas.min + vec2(x, y) * scale;
+    // Wheel 2x over the affection bar: it stays under the pointer.
+    let at = h.rect("ui_canvas:affection").center();
+    assert!(h.frame(vec![Event::PointerMoved(at)]).is_empty());
+    assert!(h.frame(vec![wheel(2.0f32.ln() / 0.003)]).is_empty());
+    h.frame(vec![]);
+    assert!((h.editor.ui_editor.zoom() - 2.0).abs() < 1e-3);
+    let canvas = h.rect("ui_editor:canvas");
+    assert!((canvas.width() - 2.0 * view.width()).abs() < 0.5);
+    assert_eq!(h.rect("ui_editor:view"), view, "the view does not move");
+    assert!(h.rect("ui_canvas:affection").center().distance(at) < 2.0);
+    // Drag at 200 % into the top cell: document delta = screen delta / (fit * 2).
+    let scale = fit * 2.0;
+    let target = to_screen(canvas, scale, 470.0, 100.0);
+    assert!(view.contains(target), "{target:?} outside {view:?}");
+    assert!(h
+        .frame(vec![Event::PointerMoved(at), press(at, true)])
+        .is_empty());
+    for step in 1..=10 {
+        let p = at + (target - at) * (step as f32 / 10.0);
+        assert!(h.frame(vec![Event::PointerMoved(p)]).is_empty());
+        let delta = h.editor.ui_editor.drag_doc_delta().unwrap();
+        let expected = (p - at) / scale;
+        assert!(
+            (delta - expected).length() < 1e-3,
+            "{delta:?} != {expected:?}"
+        );
+    }
+    let released = h.frame(vec![press(target, false)]);
+    assert!(h.editor.ui_editor.drag_doc_delta().is_none());
+    h.commit(released);
+    let top = acl(&start, "ui place affection top");
+    assert_eq!(h.world(), top);
+    // Middle-drag pans the canvas (the view stays), without a write.
+    let canvas = h.rect("ui_editor:canvas");
+    let grab = view.center();
+    let middle = |pos: Pos2, pressed: bool| Event::PointerButton {
+        pos,
+        button: PointerButton::Middle,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let mut actions = h.frame(vec![Event::PointerMoved(grab), middle(grab, true)]);
+    for step in 1..=4 {
+        actions.extend(h.frame(vec![Event::PointerMoved(
+            grab + vec2(-10.0, 8.0) * step as f32,
+        )]));
+    }
+    actions.extend(h.frame(vec![middle(grab + vec2(-40.0, 32.0), false)]));
+    actions.extend(h.frame(vec![]));
+    assert!(actions.is_empty());
+    let panned = h.rect("ui_editor:canvas");
+    assert!((panned.min - canvas.min - vec2(-40.0, 32.0)).length() < 0.5);
+    assert_eq!(h.rect("ui_editor:view"), view);
+    // 50 % (command, around the view's center): drag the bar to the top-right cell.
+    assert!(h
+        .editor
+        .run_command_with("ui.zoom", Some("50%"))
+        .unwrap()
+        .is_empty());
+    h.frame(vec![]);
+    assert_eq!(h.editor.ui_editor.zoom(), 0.5);
+    let canvas = h.rect("ui_editor:canvas");
+    let scale = fit * 0.5;
+    assert!((canvas.width() - 0.5 * view.width()).abs() < 0.5);
+    let from = h.rect("ui_canvas:affection").center();
+    let target = to_screen(canvas, scale, 1100.0, 100.0);
+    assert!(view.contains(target) && canvas.contains(target));
+    assert!(h
+        .frame(vec![Event::PointerMoved(from), press(from, true)])
+        .is_empty());
+    for step in 1..=10 {
+        let p = from + (target - from) * (step as f32 / 10.0);
+        assert!(h.frame(vec![Event::PointerMoved(p)]).is_empty());
+        let delta = h.editor.ui_editor.drag_doc_delta().unwrap();
+        let expected = (p - from) / scale;
+        assert!(
+            (delta - expected).length() < 1e-3,
+            "{delta:?} != {expected:?}"
+        );
+    }
+    let released = h.frame(vec![press(target, false)]);
+    let edits = h.commit(released);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(h.world(), acl(&top, "ui place affection top_right"));
+    // Limits, arguments and the readout (= fit); none of it writes.
+    let center = view.center();
+    let mut actions = h.frame(vec![Event::PointerMoved(center)]);
+    for _ in 0..12 {
+        actions.extend(h.frame(vec![wheel(-400.0)]));
+    }
+    assert!(actions.is_empty());
+    assert_eq!(h.editor.ui_editor.zoom(), super::ui_editor::ZOOM_MIN);
+    for _ in 0..10 {
+        h.editor.run_command_with("ui.zoom", Some("in")).unwrap();
+    }
+    assert_eq!(h.editor.ui_editor.zoom(), super::ui_editor::ZOOM_MAX);
+    for bad in ["3", "10%", "big", "nan"] {
+        assert!(
+            h.editor.run_command_with("ui.zoom", Some(bad)).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(h.click("ui_editor:zoom").is_empty());
+    assert_eq!(h.editor.ui_editor.zoom(), 1.0, "the readout fits");
+    h.frame(vec![]);
+    assert_eq!(h.rect("ui_editor:canvas"), view);
+    h.editor.run_command_with("ui.zoom", Some("1.5")).unwrap();
+    h.editor.run_command_with("ui.zoom", Some("fit")).unwrap();
+    h.frame(vec![]);
+    assert_eq!(h.rect("ui_editor:canvas"), view);
+    assert_eq!(h.world(), acl(&top, "ui place affection top_right"));
+    // Registered like graph.zoom; without an argument it only shows the tab.
+    assert!(super::commands::command("ui.zoom").is_some());
+    assert!(h
+        .editor
+        .run_command_with("ui.zoom", None)
+        .unwrap()
+        .is_empty());
+}
+
 #[test]
 fn missing_strings_are_counted_per_locale() {
     let mut world = town();

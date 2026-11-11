@@ -61,6 +61,16 @@ pub(crate) struct UiEditorState {
     /// The widget pressed on the canvas (and where), and the one being dragged.
     press: Option<(String, Pos2)>,
     drag: Option<String>,
+    /// Document point (reference-resolution pixels) under the pointer at the press and now,
+    /// while a widget is pressed.
+    press_doc: Option<(Pos2, Pos2)>,
+    /// Canvas zoom relative to fitting the tab (0 = never set = 1), pan of the canvas from
+    /// the fitted position in screen points, a middle-button pan in progress, and the size of
+    /// the canvas view when last drawn (`ui.zoom` zooms around its center).
+    zoom: f32,
+    pan: Vec2,
+    panning: bool,
+    view_size: Vec2,
     /// egui time the effect preview of the selected widget started.
     playing: Option<f64>,
     /// Kind offered by Add effect.
@@ -171,14 +181,63 @@ impl EffectVisuals for CanvasFx<'_> {
     }
 }
 
+impl UiEditorState {
+    /// Canvas zoom relative to fitting the tab (1 = fit).
+    pub(super) fn zoom(&self) -> f32 {
+        if self.zoom > 0.0 {
+            self.zoom
+        } else {
+            1.0
+        }
+    }
+
+    /// Sets the zoom (clamped) keeping the document point under `anchor` (relative to the
+    /// view's top-left corner, screen points) where it is.
+    fn zoom_around(&mut self, anchor: Vec2, zoom: f32) {
+        let old = self.zoom();
+        let new = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.pan = anchor - (anchor - self.pan) * (new / old);
+        self.zoom = new;
+    }
+
+    /// Fit: 100 %, no pan.
+    fn fit(&mut self) {
+        self.zoom = 1.0;
+        self.pan = Vec2::ZERO;
+    }
+
+    /// While a widget is pressed: how far the pointer moved since the press, in document
+    /// (reference-resolution) pixels.
+    #[cfg(test)]
+    pub(super) fn drag_doc_delta(&self) -> Option<Vec2> {
+        self.press_doc.map(|(from, to)| to - from)
+    }
+}
+
+/// UI Editor canvas zoom limits (`ui.zoom`, wheel), relative to fitting the tab.
+pub(super) const ZOOM_MIN: f32 = 0.25;
+pub(super) const ZOOM_MAX: f32 = 2.0;
+/// Screen points of the canvas that always stay inside the view while panning.
+const KEEP_VISIBLE: f32 = 48.0;
+
 fn region_index(r: Region) -> usize {
     GRID.iter().position(|g| *g == r).unwrap_or(0)
 }
 
-/// The drop cell under `p` (3 x 3 grid over the canvas).
-fn cell_at(canvas: Rect, p: Pos2) -> Region {
-    let col = (((p.x - canvas.min.x) / canvas.width() * 3.0).floor() as i32).clamp(0, 2);
-    let row = (((p.y - canvas.min.y) / canvas.height() * 3.0).floor() as i32).clamp(0, 2);
+/// Screen point -> document point (reference-resolution pixels) on a canvas drawn at `canvas`
+/// for a document of `size`.
+fn to_doc(canvas: Rect, size: Vec2, p: Pos2) -> Pos2 {
+    let d = p - canvas.min;
+    Pos2::new(
+        d.x * size.x / canvas.width(),
+        d.y * size.y / canvas.height(),
+    )
+}
+
+/// The drop cell at document point `doc` (3 x 3 grid over the reference resolution).
+fn region_at(size: Vec2, doc: Pos2) -> Region {
+    let col = ((doc.x / size.x * 3.0).floor() as i32).clamp(0, 2);
+    let row = ((doc.y / size.y * 3.0).floor() as i32).clamp(0, 2);
     GRID[(row * 3 + col) as usize]
 }
 
@@ -334,6 +393,35 @@ impl Editor {
         self.ui_editor.playing = Some(f64::NAN);
     }
 
+    /// `ui.zoom in|out|reset|fit|FACTOR|N%`: canvas zoom around the view's center (view only).
+    pub(super) fn ui_zoom_command(&mut self, arg: Option<&str>) -> anyhow::Result<()> {
+        let Some(arg) = arg.map(str::trim).filter(|a| !a.is_empty()) else {
+            self.show_dock(Dock::UiEditor);
+            self.notice(
+                "Wheel over the UI canvas zooms around the pointer; middle-drag pans; the % button fits",
+            );
+            return Ok(());
+        };
+        let st = &mut self.ui_editor;
+        let current = st.zoom();
+        let zoom = match arg {
+            "in" => current * 1.25,
+            "out" => current / 1.25,
+            "reset" | "fit" => {
+                st.fit();
+                return Ok(());
+            }
+            number => super::graph::parse_zoom(number, ZOOM_MIN, ZOOM_MAX).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ui.zoom takes in|out|reset|fit or a zoom {ZOOM_MIN}..{ZOOM_MAX} of the fitted canvas (e.g. 1.5 or 150%)"
+                )
+            })?,
+        };
+        let center = st.view_size / 2.0;
+        st.zoom_around(center, zoom);
+        Ok(())
+    }
+
     /// Commits the open effect form and field drafts (before the selection moves on).
     fn ui_flush(&mut self, st: &mut UiEditorState, doc: &UiDocument, actions: &mut Vec<Action>) {
         if let Some(draft) = st.effect_draft.take() {
@@ -458,6 +546,20 @@ impl Editor {
             if ui.checkbox(&mut show, "Nameplates").changed() {
                 st.hide_nameplates = !show;
             }
+            ui.separator();
+            // Fixed width: the toolbar must not rewrap (and move the canvas) while zooming.
+            let r = ui
+                .add(
+                    egui::Button::new(format!("{:.0}%", st.zoom() * 100.0))
+                        .min_size(Vec2::new(56.0, 0.0)),
+                )
+                .on_hover_text(
+                    "Zoom (100 % = fit to the tab): wheel over the canvas zooms around the pointer, middle-drag pans; click to fit",
+                );
+            self.rects.insert("ui_editor:zoom".into(), r.rect);
+            if r.clicked() {
+                st.fit();
+            }
         });
         let area = ui.available_rect_before_wrap();
         let (_, w, h) = RESOLUTIONS[st.resolution.min(3)];
@@ -478,14 +580,70 @@ impl Editor {
             area.width(),
             area.height() - plates - PANEL_BELOW,
         ));
-        let scale = beside.max(below);
-        let canvas = Rect::from_min_size(area.min, size * scale);
+        let fitted = beside.max(below);
+        // The view is where the canvas fits the tab; zoom and pan move the canvas inside it
+        // (view state only, never a revision).
+        let view = Rect::from_min_size(area.min, size * fitted);
         let panel = if beside >= below {
-            Rect::from_min_max(Pos2::new(canvas.max.x + 8.0, area.min.y), area.max)
+            Rect::from_min_max(Pos2::new(view.max.x + 8.0, area.min.y), area.max)
         } else {
-            Rect::from_min_max(Pos2::new(area.min.x, canvas.max.y + plates + 4.0), area.max)
+            Rect::from_min_max(Pos2::new(area.min.x, view.max.y + plates + 4.0), area.max)
         };
+        st.view_size = view.size();
+        // Only pointer positions on the view itself (not on a menu or popup above it).
+        let on_view = |p: Pos2| {
+            view.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id())
+        };
+        let (hover, wheel, pinch, middle_pressed, middle_down, moved) = ui.input(|i| {
+            (
+                i.pointer.hover_pos(),
+                i.raw_scroll_delta.y,
+                i.zoom_delta(),
+                i.pointer.button_pressed(egui::PointerButton::Middle),
+                i.pointer.middle_down(),
+                i.pointer.delta(),
+            )
+        });
+        // Wheel (or pinch / Ctrl+wheel; egui reports Ctrl+wheel as both, use one) zooms around
+        // the pointer and uses the scroll up; not while a widget press or a pan is held.
+        let held = st.press.is_some() || st.panning;
+        if let Some(p) = hover.filter(|p| !held && on_view(*p)) {
+            let factor = if (pinch - 1.0).abs() > 1e-4 {
+                pinch
+            } else {
+                (wheel * 0.003).exp()
+            };
+            if (factor - 1.0).abs() > 1e-4 {
+                st.zoom_around(p - view.min, st.zoom() * factor);
+                ui.input_mut(|i| {
+                    i.raw_scroll_delta = Vec2::ZERO;
+                    i.smooth_scroll_delta = Vec2::ZERO;
+                });
+            }
+        }
+        // Middle-drag pans (from the frame after the press: this frame's pointer delta may
+        // come from before it).
+        if st.panning {
+            if middle_down {
+                st.pan += moved;
+            } else {
+                st.panning = false;
+            }
+        }
+        if middle_pressed && st.press.is_none() && hover.is_some_and(on_view) {
+            st.panning = true;
+        }
+        // `draw_canvas` never draws smaller than 5 %.
+        let scale = (fitted * st.zoom()).max(0.05);
+        let canvas_size = size * scale;
+        // Keep part of the canvas in the view so it cannot be panned out of reach.
+        let keep = Vec2::splat(KEEP_VISIBLE).min(canvas_size);
+        let lo = keep - canvas_size;
+        let hi = (view.size() - keep).max(lo);
+        st.pan = st.pan.clamp(lo, hi);
+        let canvas = Rect::from_min_size(view.min + st.pan, canvas_size);
         self.rects.insert("ui_editor:canvas".into(), canvas);
+        self.rects.insert("ui_editor:view".into(), view);
         // Preview locale: set on the cached state when switched (never rebuilt or copied).
         if g.locale.as_ref() != Some(&locale) {
             g.locale = Some(locale.clone());
@@ -526,8 +684,9 @@ impl Editor {
         if fx.is_some() {
             ui.ctx().request_repaint();
         }
-        // Canvas background, chrome and drop grid.
-        let painter = ui.painter_at(canvas);
+        // Canvas background, chrome and drop grid (clipped to the view when zoomed in).
+        let painter = ui.painter_at(view);
+        painter.rect_filled(view, 0.0, super::theme::FIELD);
         painter.rect_filled(canvas, 0.0, Color32::from_rgb(38, 52, 58));
         painter.rect_filled(
             Rect::from_min_max(Pos2::new(canvas.min.x, canvas.center().y), canvas.max),
@@ -556,7 +715,7 @@ impl Editor {
                 egui::Order::Foreground,
                 egui::Id::new("ui_canvas_overlay"),
             ))
-            .with_clip_rect(canvas);
+            .with_clip_rect(canvas.intersect(view));
         if st.drag.is_some() {
             for r in GRID {
                 let cell = cell_rect(canvas, r);
@@ -584,13 +743,14 @@ impl Editor {
             g,
             &mut st.canvas,
             fx.as_ref().map(|f| f as &dyn EffectVisuals),
+            view.intersect(ui.clip_rect()),
         );
         if plates > 0.0 {
             // The game draws these over the 3D view at each entity; here they are listed in a
-            // row under the canvas, painted by the same function.
+            // row under the canvas view, painted by the same function.
             let strip = Rect::from_min_size(
-                Pos2::new(canvas.min.x, canvas.max.y),
-                Vec2::new(canvas.width().max(panel.min.x - canvas.min.x - 8.0), plates),
+                Pos2::new(view.min.x, view.max.y),
+                Vec2::new(view.width().max(panel.min.x - view.min.x - 8.0), plates),
             );
             let painter = ui.painter_at(strip);
             caption_at(&painter, strip.min + Vec2::new(2.0, 6.0), "ui.nameplate");
@@ -633,14 +793,16 @@ impl Editor {
                 .find(|(_, r)| r.contains(p))
                 .map(|(i, _)| doc.widgets[*i].id().to_owned())
         };
-        // Only presses that land on the canvas itself (not on a menu or popup above it).
-        let on_canvas = |p: Pos2| {
-            canvas.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id())
-        };
-        if pressed {
+        // Only presses that land on the visible canvas (not on a menu or popup above it).
+        let on_canvas = |p: Pos2| canvas.contains(p) && on_view(p);
+        if pressed && !st.panning {
             st.press = pos
                 .filter(|p| on_canvas(*p))
                 .and_then(|p| hit(p).map(|id| (id, p)));
+            st.press_doc = st.press.as_ref().map(|(_, p)| {
+                let at = to_doc(canvas, size, *p);
+                (at, at)
+            });
             if let Some((id, _)) = st.press.clone() {
                 if st.selected.as_deref() != Some(&id) {
                     self.ui_flush(st, doc, actions);
@@ -650,23 +812,32 @@ impl Editor {
             }
         }
         if let (Some((id, origin)), Some(p), true) = (&st.press, pos, down) {
+            if let Some((_, now)) = &mut st.press_doc {
+                *now = to_doc(canvas, size, p);
+            }
             if st.drag.is_none() && origin.distance(p) > 6.0 {
                 st.drag = Some(id.clone());
             }
         }
+        // Where a drop would land: the region of the document point under the pointer.
+        let drop_at = |p: Pos2| {
+            (canvas.contains(p) && view.contains(p))
+                .then(|| region_at(size, to_doc(canvas, size, p)))
+        };
         let mut place = None;
         if released {
             if let (Some(id), Some(p)) = (st.drag.take(), pos) {
-                if canvas.contains(p) {
-                    let to = cell_at(canvas, p);
+                if let Some(to) = drop_at(p) {
                     if doc.regions.get(&id) != Some(&to) {
                         place = Some((id, to));
                     }
                 }
             }
             st.press = None;
+            st.press_doc = None;
         } else if !down {
             st.press = None;
+            st.press_doc = None;
             st.drag = None;
         }
         let hovered = pos.filter(|p| on_canvas(*p)).and_then(hit);
@@ -682,8 +853,8 @@ impl Editor {
                 );
             }
         }
-        if let (Some(dragged), Some(p)) = (&st.drag, pos.filter(|p| canvas.contains(*p))) {
-            let to = cell_at(canvas, p);
+        if let (Some(dragged), Some((p, to))) = (&st.drag, pos.and_then(|p| Some((p, drop_at(p)?))))
+        {
             overlay.rect_filled(
                 cell_rect(canvas, to).shrink(2.0),
                 4.0,
@@ -692,7 +863,16 @@ impl Editor {
             caption_at(
                 &overlay,
                 p + Vec2::new(12.0, 12.0),
-                &format!("{dragged} -> {}", ops::region_name(to)),
+                &match st.press_doc {
+                    // The document point too (reference-resolution pixels, any zoom).
+                    Some((_, at)) => format!(
+                        "{dragged} -> {} ({:.0}, {:.0})",
+                        ops::region_name(to),
+                        at.x,
+                        at.y
+                    ),
+                    None => format!("{dragged} -> {}", ops::region_name(to)),
+                },
             );
             ui.ctx().request_repaint();
         }

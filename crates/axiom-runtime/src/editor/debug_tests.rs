@@ -448,6 +448,51 @@ fn profiler_shows_gpu_timestamp_times_or_says_why_not() {
     assert_eq!(h.editor.debug.profiler.gpu_len, 0);
 }
 
+/// At 1366x768 the Profiler opens in the short bottom dock: every GPU pass group (and the
+/// frame total) is inside the visible body without scrolling, next to the CPU table.
+#[test]
+fn profiler_gpu_rows_fit_the_bottom_dock_at_768() {
+    use crate::gpu_timing::{GpuFrame, Section};
+    let mut h = Harness::new(town());
+    h.open("profiler");
+    let profiler = &mut h.editor.debug.profiler;
+    profiler.gpu_timing = Some(Ok(()));
+    // Every phase the app marks, and every pass group measured.
+    let phases = [
+        ("writes_bridge", 0.1),
+        ("poll_reload_proposals", 0.1),
+        ("simulate", 1.0),
+        ("jobs_overlay_ui", 2.0),
+        ("actions_history_audio", 0.1),
+        ("extract", 1.0),
+        ("render_present", 6.0),
+        ("render_present_acquire_wait", 3.0),
+        ("observation", 0.2),
+    ];
+    let mut frame = GpuFrame::default();
+    for s in Section::ALL {
+        frame.ms[s as usize] = 0.25;
+    }
+    frame.total = 1.75;
+    for _ in 0..4 {
+        profiler.push_frame(&phases, 14.0, 2);
+        profiler.push_gpu(&frame);
+    }
+    h.frame();
+    h.frame();
+    let body = h.editor.rects["profiler:body"];
+    assert!(
+        body.height() < 300.0,
+        "the 768 bottom dock is short: {body:?}"
+    );
+    let title = h.editor.rects["profiler:gpu"];
+    let last = h.editor.rects["profiler:gpu:frame"];
+    assert!(
+        body.contains_rect(title) && body.contains_rect(last),
+        "GPU table {title:?}..{last:?} below the fold of {body:?}"
+    );
+}
+
 #[test]
 fn record_command_arms_play_and_refuses_bad_names() {
     let dir = std::env::temp_dir().join(format!("axiom-m8-record-{}", std::process::id()));

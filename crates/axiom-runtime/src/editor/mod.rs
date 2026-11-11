@@ -2386,6 +2386,7 @@ impl Editor {
             "last_commit_ms":self.writes.get("last_commit_ms"),
             "writes":self.writes,
             "graph":self.graph_observation(),
+            "ui_editor":{"zoom":(self.ui_editor.zoom() * 1000.0).round() / 1000.0},
             "debug":self.debug.observation(),
             "tuning":self.tuning_observation(),
             "ghosts":self.ghost_observation(),

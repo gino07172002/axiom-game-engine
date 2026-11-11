@@ -75,6 +75,8 @@ struct Surface<'a> {
     fx: Option<&'a dyn EffectVisuals>,
     /// Widget rectangles drawn (widget index, layout rect), for the editor canvas.
     rects: Option<&'a mut Vec<(usize, egui::Rect)>>,
+    /// Layout-space clip of the editor canvas (its visible part when zoomed in).
+    clip: Option<egui::Rect>,
 }
 
 pub fn draw(
@@ -126,6 +128,7 @@ pub fn draw(
         salt: "bound_region",
         fx,
         rects: None,
+        clip: None,
     };
     draw_regions(ctx, g, state, &mut actions, &mut surface);
     let unplaced = g.compiled.widgets.iter().any(|w| region_of(w).is_none());
@@ -203,7 +206,11 @@ fn draw_regions(
         }
         let rects = &mut s.rects;
         let canvas = s.area.is_some();
+        let clip = s.clip;
         area.show(ctx, |ui| {
+            if let Some(clip) = clip {
+                ui.set_clip_rect(ui.clip_rect().intersect(clip));
+            }
             if canvas {
                 // The editor reads the pointer itself; canvas text is not selectable.
                 ui.style_mut().interaction.selectable_labels = false;
@@ -250,8 +257,10 @@ fn draw_regions(
 
 /// The editor's UI canvas: the document's regions and widgets drawn by the same code as the
 /// game HUD, laid out in a virtual `size` screen (with `top` pixels of session chrome) and
-/// scaled into `rect`. Nothing in it is interactive; button clicks never run commands.
+/// scaled into `rect`, painted only inside `clip` (screen space). Nothing in it is
+/// interactive; button clicks never run commands.
 /// Returns each drawn widget's rectangle in screen space (widget index, rect).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_canvas(
     ctx: &egui::Context,
     rect: egui::Rect,
@@ -260,6 +269,7 @@ pub fn draw_canvas(
     g: &Gameplay,
     state: &mut UiState,
     fx: Option<&dyn EffectVisuals>,
+    clip: egui::Rect,
 ) -> Vec<(usize, egui::Rect)> {
     let Some(doc) = &g.compiled.ui else {
         return vec![];
@@ -269,6 +279,7 @@ pub fn draw_canvas(
         .max(0.05);
     let screen = egui::Rect::from_min_size(rect.min, size);
     let transform = egui::emath::TSTransform::new(rect.min.to_vec2() * (1.0 - scale), scale);
+    let layout_clip = transform.inverse().mul_rect(clip);
     let mut actions = vec![];
     let mut rects = vec![];
     state.targets.clear();
@@ -278,6 +289,7 @@ pub fn draw_canvas(
         salt: "ui_canvas_region",
         fx,
         rects: Some(&mut rects),
+        clip: Some(layout_clip),
     };
     draw_regions(ctx, g, state, &mut actions, &mut surface);
     for region in REGIONS {
@@ -298,6 +310,7 @@ pub fn draw_canvas(
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, 0.0])
             .interactable(false)
             .show(ctx, |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(layout_clip));
                 ui.style_mut().interaction.selectable_labels = false;
                 egui::Frame::new()
                     .fill(ctx.style().visuals.panel_fill)
