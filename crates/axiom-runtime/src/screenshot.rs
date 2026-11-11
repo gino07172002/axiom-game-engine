@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const JOB_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const JOB_TIMEOUT: Duration = Duration::from_secs(20);
 const JOIN_LIMIT: Duration = Duration::from_millis(500);
 /// A request no rendered frame picked up within this time fails (window minimized).
 pub(crate) const PENDING_LIMIT: Duration = Duration::from_secs(10);
@@ -46,6 +46,34 @@ pub(crate) fn validate_path(text: &str) -> anyhow::Result<PathBuf> {
         path.file_stem().is_some_and(|s| !s.is_empty()),
         "screenshot path needs a file name"
     );
+    // Either relative (resolved against the working directory) or a plain absolute path on a
+    // local drive: no drive-relative `C:a.png`, root-relative `\a.png`, UNC shares, verbatim
+    // or device paths, and no reserved device names.
+    use std::path::{Component, Prefix};
+    let mut components = path.components().peekable();
+    let plain = match components.peek() {
+        Some(Component::Prefix(p)) => {
+            matches!(p.kind(), Prefix::Disk(_))
+                && path.has_root()
+                && components.nth(1) == Some(Component::RootDir)
+        }
+        Some(Component::RootDir) => !cfg!(windows),
+        _ => true,
+    };
+    anyhow::ensure!(
+        plain,
+        "screenshot path must be relative or an absolute path on a local drive (C:\\…)"
+    );
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
+    anyhow::ensure!(!reserved, "screenshot path uses a reserved device name");
     Ok(if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -258,7 +286,12 @@ impl Loopback {
                 "ok":true,"path":path,"width":width,"height":height,
                 "region":if request.view {"view"} else {"window"},"ms":ms
             }),
-            Err(error) => json!({"ok":false,"error":error,"path":request.path}),
+            Err(error) => {
+                // Same shape as a refused request (`error`, `diagnostics`), plus the path.
+                let mut value = axiom_core::error_response(&anyhow::anyhow!(error));
+                value["path"] = json!(request.path);
+                value
+            }
         };
         if let Some(reply) = request.reply.take() {
             let _ = reply.try_send(value.clone());
@@ -283,8 +316,28 @@ mod tests {
     fn paths_must_be_png_without_parent_components() {
         assert!(validate_path("shots/a.png").unwrap().is_absolute());
         assert!(validate_path("C:/tmp/A.PNG").is_ok() || cfg!(not(windows)));
-        for bad in ["", "a.jpg", "../a.png", "x/../a.png", ".png", "noext"] {
+        for bad in [
+            "",
+            "a.jpg",
+            "../a.png",
+            "x/../a.png",
+            ".png",
+            "noext",
+            "NUL.png",
+            "com1.png",
+        ] {
             assert!(validate_path(bad).is_err(), "{bad}");
+        }
+        if cfg!(windows) {
+            for bad in [
+                "C:a.png",
+                "\\a.png",
+                "\\\\host\\share\\x.png",
+                "\\\\.\\pipe\\x.png",
+                "\\\\?\\C:\\x.png",
+            ] {
+                assert!(validate_path(bad).is_err(), "{bad}");
+            }
         }
     }
 

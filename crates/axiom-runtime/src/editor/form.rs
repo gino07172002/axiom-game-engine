@@ -1268,7 +1268,7 @@ fn reference(
         .into_iter()
         .find(|k| k.location() == Some((resource, at)));
     let mut combo = egui::ComboBox::from_id_salt(("ref", pointer));
-    if asset.is_some() {
+    if asset.is_some() && !(current.is_empty() || mixed || !known) {
         combo = combo.width(
             (room(ui) - 52.0 - 2.0 * ui.spacing().button_padding.x - 16.0).clamp(48.0, 220.0),
         );
