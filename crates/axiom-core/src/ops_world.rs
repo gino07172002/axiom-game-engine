@@ -543,9 +543,10 @@ pub fn remove_resource(world: &World, id: &str) -> Result<Vec<Edit>> {
 
 /// World ▸ Sky / ACL `sky gradient|procedural|none`. `gradient` / `procedural` put that preset
 /// sky in `render.environment` (created with its capability when missing) and, when no ambient
-/// is authored, the sky light `ambient: {mode: sky}`; a sky already in that mode keeps its
-/// values (empty batch). `none` removes the sky and a sky-mode ambient (other ambient and fog
-/// stay). Unchanged = empty batch.
+/// is authored, the sky light `ambient: {mode: sky}`. A sky already in that mode = empty batch
+/// (tuned values and the ambient stay as authored). `none` removes the sky and a sky-mode
+/// ambient (other ambient and fog stay). Only `sky` / `ambient` change: the other authored
+/// values are copied as they are, never re-serialised. Unchanged = empty batch.
 pub fn set_sky(world: &World, registry: &Registry, mode: &str) -> Result<Vec<Edit>> {
     const PATH: &str = "/resources/render.environment/sky";
     let preset = match mode {
@@ -557,36 +558,35 @@ pub fn set_sky(world: &World, registry: &Registry, mode: &str) -> Result<Vec<Edi
             )
         })?),
     };
-    let current: Option<crate::light::RenderEnvironment> = world
-        .resources
-        .get("render.environment")
-        .map(|v| serde_json::from_value(v.clone()))
-        .transpose()
-        .map_err(|e| invalid("/resources/render.environment", format!("{e:#}")))?;
-    let mut env = current.clone().unwrap_or_default();
+    let current = world.resources.get("render.environment");
+    let mut value = current.cloned().unwrap_or_else(|| json!({}));
+    let Some(env) = value.as_object_mut() else {
+        return Err(invalid(
+            "/resources/render.environment",
+            "render.environment must be an object",
+        ));
+    };
+    fn mode_of(v: Option<&Value>) -> Option<&str> {
+        v.and_then(|v| v.get("mode")).and_then(Value::as_str)
+    }
+    let current_mode = mode_of(env.get("sky")).map(str::to_owned);
     match preset {
         None => {
-            env.sky = None;
-            if env.sky_ambient().is_some() {
-                env.ambient = None;
+            env.remove("sky");
+            if mode_of(env.get("ambient")) == Some("sky") {
+                env.remove("ambient");
             }
         }
+        Some(_) if current_mode.as_deref() == Some(mode) => return Ok(vec![]),
         Some(sky) => {
-            let replace = env
-                .sky
-                .as_ref()
-                .is_none_or(|s| std::mem::discriminant(s) != std::mem::discriminant(&sky));
-            if replace {
-                env.sky = Some(sky);
-            }
-            env.ambient
-                .get_or_insert(crate::light::Ambient::Sky { intensity: 1.0 });
+            env.insert("sky".into(), json!(sky));
+            env.entry("ambient")
+                .or_insert_with(|| json!(crate::light::Ambient::Sky { intensity: 1.0 }));
         }
     }
-    if current.as_ref() == Some(&env) || (current.is_none() && env.sky.is_none()) {
+    if current == Some(&value) || (current.is_none() && mode == "none") {
         return Ok(vec![]);
     }
-    let value = json!(env);
     if current.is_none() {
         return create_resource(world, registry, "render.environment", Some(value));
     }

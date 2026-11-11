@@ -1956,10 +1956,23 @@ fn set_sky_presets_keep_authored_values() {
     let env = s.current().unwrap().1.resources["render.environment"].clone();
     assert_eq!(env["sky"]["mode"], "gradient");
     assert_eq!(env["ambient"]["mode"], "color");
+    // Untouched values are copied, not re-serialised through f32 (0.019999999552965164).
     assert_eq!(
-        env["fog"]["density"].as_f64().map(|d| (d * 100.0).round()),
-        Some(2.0)
+        env["fog"],
+        serde_json::json!({"color":[0.1,0.1,0.1],"density":0.02})
     );
+    // The same mode again is an empty batch even without an ambient: the World ▸ Sky button
+    // (which skips the highlighted mode) and `sky MODE` agree.
+    let mut bare = sky.clone();
+    bare.resources
+        .get_mut("render.environment")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("ambient");
+    assert!(ops::set_sky(&bare, &registry, "procedural")
+        .unwrap()
+        .is_empty());
     // `none` drops the sky and a sky-mode ambient only.
     let cleared = apply(ops::set_sky(&sky, &registry, "none").unwrap());
     assert_eq!(

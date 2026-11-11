@@ -499,13 +499,7 @@ impl MeshRenderer {
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             for (i, m) in mesh.materials.iter().enumerate() {
-                use crate::shader::Alpha;
-                let opaque = match surface.unwrap_or(Alpha::Inherit) {
-                    Alpha::Inherit => matches!(m.alpha, AlphaMode::Opaque),
-                    Alpha::Opaque => true,
-                    _ => false,
-                };
-                if !opaque || m.range.is_empty() {
+                if !casts_shadow(surface, m.alpha) || m.range.is_empty() {
                     continue;
                 }
                 pass.set_bind_group(1, &m.bind, &[((active.first + i) * 256) as u32]);
@@ -515,6 +509,16 @@ impl MeshRenderer {
             }
         }
         (calls, triangles)
+    }
+}
+/// A mesh primitive casts into the sun depth pass when it is opaque after any surface material
+/// (`inherit` keeps the primitive's own glTF alpha); masked and blended primitives do not.
+pub(crate) fn casts_shadow(surface: Option<crate::shader::Alpha>, primitive: AlphaMode) -> bool {
+    use crate::shader::Alpha;
+    match surface.unwrap_or(Alpha::Inherit) {
+        Alpha::Inherit => matches!(primitive, AlphaMode::Opaque),
+        Alpha::Opaque => true,
+        Alpha::Mask | Alpha::Blend | Alpha::Additive | Alpha::Multiply => false,
     }
 }
 fn upload_texture(
@@ -558,4 +562,24 @@ fn upload_texture(
         },
     );
     texture.create_view(&Default::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shader::Alpha;
+
+    #[test]
+    fn only_opaque_primitives_cast_sun_shadows() {
+        assert!(casts_shadow(None, AlphaMode::Opaque));
+        assert!(!casts_shadow(None, AlphaMode::Mask(0.5)));
+        assert!(!casts_shadow(None, AlphaMode::Blend));
+        assert!(casts_shadow(Some(Alpha::Inherit), AlphaMode::Opaque));
+        assert!(!casts_shadow(Some(Alpha::Inherit), AlphaMode::Blend));
+        // A surface material's own alpha wins over the primitive's.
+        assert!(casts_shadow(Some(Alpha::Opaque), AlphaMode::Blend));
+        for alpha in [Alpha::Mask, Alpha::Blend, Alpha::Additive, Alpha::Multiply] {
+            assert!(!casts_shadow(Some(alpha), AlphaMode::Opaque));
+        }
+    }
 }

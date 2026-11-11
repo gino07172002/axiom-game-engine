@@ -179,7 +179,9 @@ impl SkyParams {
             let above = ((y + 0.02) / 0.04).clamp(0.0, 1.0);
             let mut glow = cos.powi(12) * self.haze * above;
             if disk && self.sun_cos <= 1.0 {
-                let t = ((cos - (self.sun_cos - 0.0004)) / 0.0005).clamp(0.0, 1.0);
+                // Soft edge a quarter of the disk's own cosine span, so the size scales.
+                let edge = (1.0 - self.sun_cos).max(1e-6) * 0.25;
+                let t = ((cos - (self.sun_cos - edge)) / (2.0 * edge)).clamp(0.0, 1.0);
                 glow += t * t * (3.0 - 2.0 * t) * 12.0 * above;
             }
             for (v, s) in c.iter_mut().zip(self.sun_color) {
@@ -758,6 +760,27 @@ mod tests {
             bare.radiance(toward(60.0), true),
             bare.radiance(toward(60.0), false)
         );
+        // sun_size_degrees is the disk's diameter: full inside 0.4 x size from the centre,
+        // nothing beyond 0.6 x size, for small and large disks alike.
+        for size in [0.5_f32, 3.0] {
+            let s = SkyParams::new(
+                Some(&Sky::Procedural {
+                    sun_size_degrees: size,
+                    atmosphere: 1.0,
+                    ground_color: [0.2; 3],
+                    exposure: 1.0,
+                }),
+                toward(60.0),
+                [1.0; 3],
+            );
+            let disk = |offset: f32| {
+                let d = toward(60.0 + offset);
+                s.radiance(d, true)[0] - s.radiance(d, false)[0]
+            };
+            assert!((disk(0.0) - 12.0).abs() < 1e-3, "{size}: {}", disk(0.0));
+            assert!((disk(0.4 * size) - 12.0).abs() < 1e-2, "{size}");
+            assert_eq!(disk(0.6 * size), 0.0, "{size}");
+        }
         // The sun of the frame is sun 0: the first directional light.
         let mut f = frame();
         f.environment = serde_json::from_value(json!({"sky":{"mode":"procedural"}})).unwrap();

@@ -29,7 +29,10 @@ fn axiom_sky(d:vec3<f32>,disk:bool)->vec3<f32> {
  if mode>1.5 {
   let cs=max(dot(d,g.suns[0].direction_shadow.xyz),0.0);let above=clamp((y+0.02)/0.04,0.0,1.0);
   var glow=pow(cs,12.0)*g.sky_sun.y*above;
-  if disk&&g.sky_sun.x<=1.0 {glow+=smoothstep(0.0,1.0,clamp((cs-(g.sky_sun.x-0.0004))/0.0005,0.0,1.0))*12.0*above;}
+  if disk&&g.sky_sun.x<=1.0 {
+   let edge=max(1.0-g.sky_sun.x,0.000001)*0.25;
+   glow+=smoothstep(0.0,1.0,clamp((cs-(g.sky_sun.x-edge))/(2.0*edge),0.0,1.0))*12.0*above;
+  }
   c+=g.suns[0].color.rgb*glow*g.sky_ground.w;
  }
  return c;

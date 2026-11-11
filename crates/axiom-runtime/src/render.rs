@@ -1004,3 +1004,28 @@ fn cube_vertices() -> Vec<Vertex> {
     }
     vertices
 }
+
+#[cfg(test)]
+mod tests {
+    /// The Rust `Globals` and the WGSL `Globals` of every shader that binds it have the
+    /// same size (a mismatch either fails at draw time or silently misreads fields).
+    #[test]
+    fn rust_and_wgsl_globals_have_the_same_size() {
+        for source in [
+            crate::lighting::SCENE_WGSL,
+            crate::lighting::MESH_WGSL,
+            crate::lighting::VFX_DRAW_WGSL,
+        ] {
+            let module = naga::front::wgsl::parse_str(source).unwrap();
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("Globals"))
+                .unwrap();
+            let naga::TypeInner::Struct { span, .. } = ty.inner else {
+                panic!("Globals is not a struct");
+            };
+            assert_eq!(u64::from(span), super::GLOBALS_SIZE);
+        }
+    }
+}

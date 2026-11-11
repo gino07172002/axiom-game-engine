@@ -90,7 +90,8 @@
 | `gradient` | `zenith_color`、`horizon_color`、`ground_color`(rgb 0..1,必填)、`exponent` 0.1..8(預設 1)、`intensity` 0..8(預設 1) | 依**視線方向**:地平線以上 `mix(horizon, zenith, pow(up, exponent))`,地平線以下約 10° 內漸變到 ground |
 | `procedural` | `sun_size_degrees` 0..10(預設 1.5,0 = 不畫日盤)、`atmosphere` 0..4(預設 1,越大地平線霧帶越高、日落越紅;0 = 整片天頂色)、`ground_color`、`exposure` 0..8(預設 1) | 解析式日光天空,跟著**第一盞啟用的 directional**(沒有時是預設太陽)的方向與顏色:太陽高 = 藍天,接近地平線 = 暖色地平線,低於地平線 = 夜色;太陽周圍有光暈與日盤。**近似**,不是物理散射解算 |
 
-- 背景天空在每個 view 用 inverse view-projection 算出像素的世界方向,所以會跟著相機轉;多相機各自正確。**正交相機**的每個像素方向相同,整片是同一個顏色。
+- 背景天空在每個 view 用 inverse view-projection 算出像素的世界方向,所以會跟著相機轉;多相機各自正確(NDC 由像素位置和該 view 的 viewport 矩形算出:把 NDC 當 vertex→fragment varying 傳的版本在 MX150 Vulkan 驅動 32.0.15.6614 建立 pipeline 時直接當掉)。**正交相機**的每個像素方向相同,整片是同一個顏色。
+- 背景天空**不套**色調曲線與霧(跟舊版背景一樣直接輸出,只截到 1,所以 `gradient` 寫的顏色就是畫面上的顏色);物體上的反射與天空光則和其他光照一樣經過 `x/(x+0.7)` 與霧。所以完美鏡面裡的天空會比背後的天空暗一些,遠方霧化的地面也不會和地平線完全融合。
 - `ambient: {"mode":"sky","intensity":k}` = **天空光**:CPU 每幀用固定 16×16 方向格點(等立體角)積分天空(不含日盤),得到法線朝上 / 水平(四個方位平均)/ 朝下的 irradiance/π,再乘 `k` 當作 trilight。必須同時有 `sky`,否則交易失敗(`ambient mode sky requires a sky`)。
 - 只寫 `sky` 不寫 ambient:背景換成天空,環境光仍是舊版預設。
 - 編輯器:World 視窗 ▸ **SKY** 列的 Gradient / Procedural / None 按鈕,或 World 選單 ▸ Sky…(`world.sky gradient|procedural|none`);ACL `sky gradient|procedural|none`。兩者同一個 `ops::set_sky`:沒有 `render.environment` 時建立它(並補 `render` capability),放入預設天空,沒有編寫 ambient 時加上 `ambient: sky`;同一模式再按一次不寫入(保留調整過的數值);`none` 移除天空與 sky 模式的 ambient(其他 ambient、fog 保留)。細部數值在 Inspector 開 `render.environment` 調整(`*_color` 欄位是色票),或 `set resources[id=render.environment] sky/exposure 1.4`。
@@ -111,6 +112,7 @@
 ## 和舊版的相容性
 
 - 沒有 `render.light` directional、也沒有 `render.environment` 的世界,畫面跟改動前一樣:axiom-town、fps、shader-lab、action、effects-tour 在同一個視窗大小下前後截圖逐像素比對,576,000 像素中最多 2 個像素差 1/255(浮點捨入)。
+- 天空 / 反射 / 網格陰影這一版(工作線 R):沒有編寫燈光的內容包逐像素比對不變(axiom-town、fps、shader-lab、light-lab、effects-tour、action、two-cameras、mascot、rts,1440×900 smoke 截圖:同一 exe 連跑兩次的雜訊只有 fps HUD 右上角 16×13 的數字區;改動前後其餘差異最多 2 個像素差 1/255)。**已經編寫燈光**的內容包裡的網格會開始接收 / 投射陰影,這是刻意的改變(light-lab 沒有網格,所以不變)。
 - 匯入的三角網格(角色、glTF、`render.geometry`):沒有編寫燈光時仍用原本的平光公式(不接收也不投射陰影,舊畫面不變);世界一旦編寫了 directional、`render.environment`(ambient / fog / sky 任一項),網格改用和方塊相同的模型(環境光 + 平行光 + 局部光 + 霧 + 色調曲線),並且:
   - **接收** sun 0 的陰影(同一張 2048² 陰影貼圖、同樣的 3×3 PCF;網格的 camera bind group 多了陰影貼圖與比較取樣器,自訂材質的 `SurfaceInput.shadow` 也是實際值);
   - **投射**陰影:不透明的 primitive(材質 alpha opaque,或自訂材質 alpha opaque)在 sun depth pass 畫進陰影貼圖(不剔除背面,深度偏移和方塊相同);mask / blend 不投射。自訂材質的 `vertex_offset` 不影響投影(陰影用未位移的幾何)。
