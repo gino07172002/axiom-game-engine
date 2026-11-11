@@ -540,13 +540,73 @@ fn the_physics_lab_scenario_passes_and_replays_identically() {
         )
         .unwrap()
         .world;
-        let scenario = serde_json::from_str(include_str!(
-            "../../../examples/physics-lab.scenario.json"
-        ))
-        .unwrap();
+        let scenario =
+            serde_json::from_str(include_str!("../../../examples/physics-lab.scenario.json"))
+                .unwrap();
         axiom_runtime::scenario::run(world, 1, registry, scenario).unwrap()
     };
     let (a, b) = (run(), run());
     assert_eq!(a["ok"], true);
     assert_eq!(a["state_hash"], b["state_hash"]);
+}
+
+#[test]
+fn bodies_built_in_an_inactive_scene_collide_once_it_is_active() {
+    let mut w = world(json!([floor(), crate_at("late", [0.0, 3.0, 0.0])]));
+    w.scenes.push(axiom_core::Scene {
+        id: "later".into(),
+        entities: vec!["late".into()],
+        active: false,
+    });
+    let mut r = runtime(w);
+    steps(&mut r, 60);
+    assert_eq!(position(&r, "late").y, 3.0, "inactive: not simulated");
+    // Scene activation (what sync_scenes does when gameplay switches scenes).
+    let slot = r.state.compiled.indices["late"];
+    r.state.compiled.enabled[slot] = true;
+    steps(&mut r, 360);
+    assert!(
+        (position(&r, "late").y - 0.5).abs() < 0.02,
+        "{}",
+        position(&r, "late")
+    );
+}
+
+#[test]
+fn hot_reload_applies_edited_velocities_and_moves_unbodied_colliders_with_their_entity() {
+    let start = world(json!([floor(),
+        {"id":"belt","components":{"core.transform":{"position":[0,0.5,-5]},
+            "physics.collider":{"shape":{"shape":"box","half_extents":[0.5,0.5,0.5]}},
+            "physics.body":{"kind":"kinematic","velocity":[1,0,0]}}},
+        crate_at("lid", [8.0, 4.0, 0.0])]));
+    let mut r = runtime(start.clone());
+    steps(&mut r, 120);
+    // Edited kinematic velocity takes effect at once.
+    let mut next = start.clone();
+    next.entity_mut("belt").unwrap().components.insert(
+        "physics.body".into(),
+        json!({"kind":"kinematic","velocity":[0,0,2]}),
+    );
+    r.reconcile(next.clone(), 2).unwrap();
+    let v = call(&mut r, "inspect", json!({"id":"belt"})).unwrap()["velocity"].clone();
+    assert_eq!(v, json!([0.0, 0.0, 2.0]));
+    // The lid lands; removing its body leaves a static collider where it landed, so a crate
+    // dropped onto that spot rests on top of it.
+    steps(&mut r, 300);
+    let landed = position(&r, "lid");
+    assert!((landed.y - 0.5).abs() < 0.02);
+    next.entity_mut("lid")
+        .unwrap()
+        .components
+        .remove("physics.body");
+    next.entities
+        .push(serde_json::from_value(crate_at("drop", [landed.x, 3.0, landed.z])).unwrap());
+    r.reconcile(next, 3).unwrap();
+    assert_eq!(position(&r, "lid"), landed);
+    steps(&mut r, 360);
+    assert!(
+        (position(&r, "drop").y - 1.5).abs() < 0.05,
+        "{}",
+        position(&r, "drop")
+    );
 }

@@ -191,11 +191,23 @@ pub fn validate_world(
     if bodies == 0 {
         return Ok(());
     }
-    if bodies > MAX_BODIES {
+    // Colliders that another system moves are simulated too (kinematic followers).
+    let simulated = bodies
+        + (0..entities.len())
+            .filter(|&i| {
+                entities[i].body.is_none()
+                    && entities[i].collider.is_some()
+                    && entities[i].transform.is_some()
+                    && crate::navigation::moved_by_system(entities, parents, &registry.movers, i)
+            })
+            .count();
+    if simulated > MAX_BODIES {
         return Err(crate::Diagnostic::error(
             "physics_budget",
             "/entities",
-            format!("physics body budget exceeded ({bodies} > {MAX_BODIES})"),
+            format!(
+                "physics body budget exceeded ({simulated} > {MAX_BODIES} rigid bodies and colliders moved by other systems)"
+            ),
         ));
     }
     let at = |id: &str| format!("/entities/@{}/components/{BODY}", crate::local::escape(id));
@@ -289,7 +301,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&b).unwrap(),
             json!({"kind":"dynamic","mass":1.0,"velocity":[0.0,0.0,0.0],"angular_velocity":[0.0,0.0,0.0],
-                "linear_damping":0.0,"angular_damping":0.05,"gravity_scale":1.0,"can_sleep":true,"ccd":false})
+                "linear_damping":0.0,"angular_damping":0.05f32,"gravity_scale":1.0,"can_sleep":true,"ccd":false})
         );
         let bad = |v: Value| {
             serde_json::from_value::<RigidBody>(v)

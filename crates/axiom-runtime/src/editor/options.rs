@@ -264,8 +264,8 @@ impl OptionsDialog {
                     Field::new(
                         "shape",
                         "Collider (fit to mesh when missing)",
-                        Choice(&["box", "sphere", "capsule"]),
-                        "box",
+                        Choice(&["keep", "box", "sphere", "capsule"]),
+                        "keep",
                     ),
                 ],
             ),

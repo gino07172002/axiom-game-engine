@@ -1336,6 +1336,15 @@ fn draw_component_gizmos(
             let role = physics.and_then(|p| p.role(i)).unwrap_or(match &e.body {
                 Some(b) if b.kind == axiom_core::physics::BodyKind::Kinematic => "kinematic",
                 Some(_) => "dynamic",
+                None if axiom_core::navigation::moved_by_system(
+                    &state.entities,
+                    &state.parents,
+                    &runtime.state.registry.movers,
+                    i,
+                ) =>
+                {
+                    "follower"
+                }
                 None => "static",
             });
             let mut color = match role {

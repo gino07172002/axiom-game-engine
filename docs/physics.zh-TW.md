@@ -55,7 +55,7 @@
 
 - `invalid_physics`:剛體沒有碰撞體、是子實體、世界沒排 `physics.step`;碰撞體掛在剛體的子孫上(不支援複合剛體)。
 - `physics_conflict`:同一實體只能有一個移動者。`physics.body` 也登記在註冊表的 `movers`(`physics.body → physics.step`),所以在剛體上加 `path.follow` / `nav.agent` 也會分別得到 `path_conflict` / `nav_conflict`;導航格子與相機阻擋不把剛體當靜態障礙物。
-- `physics_budget`:剛體超過 1024 個。執行期另外限制「剛體 + 跟隨」合計 1024 個(建立時失敗並說明)。
+- `physics_budget`:剛體加上被其他系統移動的碰撞體(跟隨者)合計超過 1024 個。
 
 ## 執行規則
 
@@ -64,7 +64,7 @@
 - 離原點任一軸超過 10 km 的剛體停用,列在 `out_of_bounds`,不會讓 `core.transform` 超出合法範圍。
 - 執行期 spawn 出帶 `physics.body` 的實體:系統停止並在 `physics.halted` 寫明原因;只有碰撞體的 spawn 不加入模擬,計數在 `ignored_spawns`。
 - 確定性:同一個執行檔、同樣的輸入,結果逐位元相同(scenario 的 `state_hash` 一致;跨程序、debug 與 release 量測見 ADR)。rapier 未開 `enhanced-determinism`,不保證跨 CPU 架構 / 作業系統一致。
-- 熱重載(新 revision):實體 ID 相同且編寫的 transform 沒變的剛體保留模擬中的姿勢、速度與睡眠狀態;改了 transform 的剛體從新的編寫位置靜止開始。接觸快取重建(堆疊在重載瞬間可能有極小的調整)。
+- 熱重載(新 revision):實體 ID 相同且編寫的 transform 沒變的剛體保留模擬中的姿勢、速度與睡眠狀態;改了 transform 的剛體從新的編寫位置靜止開始;改了 `velocity` / `angular_velocity` 的剛體改用新的速度(運動學剛體的行為就是它的速度)。拿掉 `physics.body` 的實體變成靜態碰撞體,停在模擬到的位置。接觸快取重建(堆疊在重載瞬間可能有極小的調整)。
 - **存檔(checkpoint)支援**:世界啟用 `save` capability 時,checkpoint 除了 transform 之外,在 `systems["physics.step"]` 存每個剛體的速度、角速度、睡眠狀態與睡眠計時;讀檔會還原。缺少這份狀態的存檔(例如手改過)明確拒絕,不會默默讓剛體從靜止重來。讀檔後求解器的接觸快取重建,所以「存檔後繼續」與「沒存檔一路跑下去」不保證逐位元相同,但同一份存檔讀兩次一定相同。
 
 ## 執行期指令(AI、UI、行為程式共用)

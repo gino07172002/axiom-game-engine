@@ -259,7 +259,9 @@ impl PhysicsSystem {
                         "physics body budget exceeded (> {MAX_BODIES} dynamic, kinematic and moved colliders)"
                     );
                     let handle = system.bodies.insert(body);
-                    let mut builder = shape(collider, scale).enabled(enabled);
+                    // The body's enabled flag switches its collider (rapier never re-enables a
+                    // collider that was itself built disabled when its body is enabled).
+                    let mut builder = shape(collider, scale);
                     if role == Role::Dynamic {
                         builder = builder.mass(mass);
                     }
@@ -345,7 +347,14 @@ impl PhysicsSystem {
     /// checkpoint load or a hot reload replaced `core.transform`).
     fn sync_poses(&mut self, state: &RuntimeState) {
         for entry in &self.entries {
-            let Some(handle) = entry.body else { continue };
+            let Some(handle) = entry.body else {
+                // A static collider sits where its entity is (a hot reload keeps the simulated
+                // pose of an entity whose body was just removed).
+                let (_, rotation, translation) =
+                    world_matrix(state, entry.slot).to_scale_rotation_translation();
+                self.colliders[entry.collider].set_position(isometry(rotation, translation));
+                continue;
+            };
             let pose = match entry.role {
                 Role::Follower => {
                     let (_, rotation, translation) =
@@ -559,9 +568,15 @@ impl RuntimeSystem for PhysicsSystem {
             else {
                 continue;
             };
+            // An edited velocity (a kinematic body's whole behaviour) restarts from the new value.
+            let velocities = |b: Option<&axiom_core::physics::RigidBody>| {
+                b.map(|b| (b.velocity, b.angular_velocity))
+            };
             if old_entry.role != entry.role
                 || old_entry.out
                 || previous.compiled.entities[old_slot].transform != e.transform
+                || velocities(previous.compiled.entities[old_slot].body.as_ref())
+                    != velocities(e.body.as_ref())
             {
                 continue;
             }
