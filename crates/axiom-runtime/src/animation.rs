@@ -51,6 +51,36 @@ struct Controller {
     overrides: BTreeMap<usize, Quat>,
     fault: Option<String>,
     ik_results: BTreeMap<String, IkResult>,
+    /// `animation.controller`: when present it chooses the clips (and `play` is refused).
+    animator: Option<Animator>,
+    /// Reused pose buffers (sized once): the pose being built, a blend scratch / the next
+    /// `sampled`, and bone globals for validation. Evaluation itself does not allocate unless
+    /// retargeting, twists or IK are configured.
+    accum: Pose,
+    scratch: Pose,
+    globals: Vec<Mat4>,
+}
+/// Per-entity state of an `animation.controller` (cheap to clone: `Arc`s and `Copy` state).
+#[derive(Clone)]
+pub(crate) struct Animator {
+    pub id: Arc<str>,
+    pub compiled: Arc<controller::Compiled>,
+    pub state: controller::State,
+    /// Local position at the previous step (parameters with `source: speed`).
+    last_position: Option<[f32; 3]>,
+    /// `animation.play` cues (FSM entry clips, actions) dropped because the controller owns
+    /// playback; reported in metrics instead of being silently lost.
+    ignored_cues: u32,
+}
+impl Animator {
+    pub(crate) fn describe(&self) -> Value {
+        let mut v = self.compiled.describe(&self.state);
+        v["controller"] = json!(&*self.id);
+        if self.ignored_cues > 0 {
+            v["ignored_cues"] = json!(self.ignored_cues);
+        }
+        v
+    }
 }
 impl Controller {
     fn new(config: Player, lib: &Library, assets: &BTreeMap<String, Arc<Asset>>) -> Result<Self> {
@@ -124,57 +154,115 @@ impl Controller {
             fade: None,
             fault: None,
             ik_results: BTreeMap::new(),
+            animator: None,
+            accum: Pose { local: vec![] },
+            scratch: Pose { local: vec![] },
+            globals: vec![],
             config,
         };
         out.evaluate(0.)?;
         Ok(out)
     }
+    /// Attaches controller `id` (clip lengths come from this player's clips).
+    fn attach(&mut self, id: &str, def: &controller::ControllerDef) -> Result<()> {
+        let clips = self.clips.clone();
+        let compiled =
+            controller::Compiled::compile(def, &|c| clips.get(c).map(|m| m.source.duration))?;
+        self.animator = Some(Animator {
+            id: id.into(),
+            state: compiled.start(),
+            compiled: Arc::new(compiled),
+            last_position: None,
+            ignored_cues: 0,
+        });
+        self.evaluate(0.)
+    }
+    /// The source-skeleton pose of the controller's weighted samples, into `self.accum`.
+    fn blend_samples(&mut self) -> Result<()> {
+        let a = self.animator.as_ref().expect("animator");
+        let samples = a.compiled.samples(&a.state);
+        let mut total = 0.0;
+        for (n, s) in samples.as_slice().iter().enumerate() {
+            let target = if n == 0 {
+                &mut self.accum
+            } else {
+                &mut self.scratch
+            };
+            match a.compiled.clip(s) {
+                Some(id) => self
+                    .clips
+                    .get(id)
+                    .with_context(|| format!("clip not found: {id}"))?
+                    .sample_into(&self.source.skeleton, s.time, false, target)?,
+                None => self.source.skeleton.rest_into(target),
+            }
+            total += s.weight;
+            if n > 0 {
+                self.accum.blend_toward(&self.scratch, s.weight / total)?;
+            }
+        }
+        if samples.len == 0 {
+            self.source.skeleton.rest_into(&mut self.accum);
+        }
+        Ok(())
+    }
     fn evaluate(&mut self, dt: f32) -> Result<()> {
-        let source = if let Some(id) = &self.active {
+        if self.animator.is_some() {
+            self.blend_samples()?;
+        } else if let Some(id) = &self.active {
             self.clips
                 .get(id)
                 .with_context(|| format!("clip not found: {id}"))?
-                .sample(&self.source.skeleton, self.time, self.looping)?
+                .sample_into(
+                    &self.source.skeleton,
+                    self.time,
+                    self.looping,
+                    &mut self.accum,
+                )?;
         } else {
-            self.source.skeleton.rest_pose()
-        };
-        let mut pose = if let Some(rt) = &self.retarget {
-            rt.apply(&source, self.config.retarget.as_ref().unwrap().root_motion)?
-        } else {
-            source
-        };
+            self.source.skeleton.rest_into(&mut self.accum);
+        }
+        if let Some(rt) = &self.retarget {
+            self.accum = rt.apply(
+                &self.accum,
+                self.config.retarget.as_ref().unwrap().root_motion,
+            )?;
+        }
         if let Some(fade) = &mut self.fade {
             fade.elapsed += dt;
             let weight = (fade.elapsed / fade.duration).clamp(0., 1.);
-            pose = Pose::blend(&fade.from, &pose, weight)?;
+            self.accum.blend_from(&fade.from, weight)?;
             if weight >= 1. {
                 self.fade = None;
             }
         }
-        let sampled = pose.clone();
+        // The next `sampled` (before overrides / constraints), committed with the pose.
+        self.scratch.local.clone_from(&self.accum.local);
         for (&i, &rotation) in &self.overrides {
-            pose.local[i].rotation = rotation;
+            self.accum.local[i].rotation = rotation;
         }
         for (id, twist) in &self.twists {
-            at(
-                &format!("/twists/{id}"),
-                twist.apply(&self.asset.skeleton, &mut pose),
-            )?;
+            if let Err(e) = twist.apply(&self.asset.skeleton, &mut self.accum) {
+                return at(&format!("/twists/{id}"), Err(e));
+            }
         }
-        let mut results = BTreeMap::new();
         for (id, ik) in &self.ik {
-            results.insert(
-                id.clone(),
-                at(
-                    &format!("/ik/{id}"),
-                    ik.apply(&self.asset.skeleton, &mut pose),
-                )?,
-            );
+            let result = match ik.apply(&self.asset.skeleton, &mut self.accum) {
+                Ok(r) => r,
+                Err(e) => return at(&format!("/ik/{id}"), Err(e)),
+            };
+            match self.ik_results.get_mut(id) {
+                Some(slot) => *slot = result,
+                None => {
+                    self.ik_results.insert(id.clone(), result);
+                }
+            }
         }
-        self.asset.skeleton.globals(&pose)?;
-        self.pose = pose;
-        self.sampled = sampled;
-        self.ik_results = results;
+        self.asset
+            .skeleton
+            .globals_into(&self.accum, &mut self.globals)?;
+        std::mem::swap(&mut self.pose, &mut self.accum);
+        std::mem::swap(&mut self.sampled, &mut self.scratch);
         self.fault = None;
         Ok(())
     }
@@ -185,11 +273,19 @@ impl Controller {
             let i = self.asset.skeleton.bone(id)?;
             values.insert(id.clone(),json!({"local":self.pose.local[i],"position":globals[i].w_axis.truncate(),"rotation":globals[i].to_scale_rotation_translation().1}));
         }
-        Ok(
-            json!({"asset":self.config.asset,"clip":self.active,"time":self.time,"playing":self.playing,"speed":self.speed,"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values}),
-        )
+        let mut out = json!({"asset":self.config.asset,"clip":self.active,"time":self.time,"playing":self.playing,"speed":self.speed,"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values});
+        if let (Some(a), Some(map)) = (&self.animator, out.as_object_mut()) {
+            map.insert("controller".into(), a.describe());
+        }
+        Ok(out)
     }
     fn play(&mut self, a: PlayArgs) -> Result<()> {
+        if let Some(c) = &self.animator {
+            anyhow::bail!(
+                "this entity is driven by animation controller {}; set its parameters (animation.param) instead of playing clips",
+                c.id
+            );
+        }
         ensure!(
             self.clips.contains_key(&a.clip),
             "clip not found: {}",
@@ -225,6 +321,12 @@ pub(crate) struct Scrub {
 }
 
 impl AnimationSystem {
+    /// Entities driven by an animation controller, with its live state (editor overlay).
+    pub(crate) fn animators(&self) -> impl Iterator<Item = (&str, &Animator)> {
+        self.players
+            .iter()
+            .filter_map(|(id, p)| Some((id.as_str(), p.animator.as_ref()?)))
+    }
     /// Poses `entity` at `seconds` of `clip` (clamped, not looping) until `end_scrub`. The
     /// simulation's controller state is untouched apart from the swapped pose; `None` when
     /// there is no such player or clip, or the pose cannot be evaluated.
@@ -246,6 +348,8 @@ impl AnimationSystem {
                 probe.playing = false;
                 probe.looping = false;
                 probe.fade = None;
+                // The timeline previews the clip itself, not the controller's choice.
+                probe.animator = None;
                 probe.evaluate(0.0).ok()?;
                 (entity.to_owned(), clip.to_owned(), probe.pose)
             }
@@ -353,17 +457,35 @@ pub fn register(registry: &mut RuntimeRegistry) {
                 assets.values().map(|a| a.vertices.len()).sum::<usize>() <= 1_000_000,
                 "total animation vertex budget exceeded"
             );
+            let controllers: controller::Controllers = state
+                .compiled
+                .source
+                .resources
+                .get("animation.controllers")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()?
+                .unwrap_or_default();
             let mut players = BTreeMap::new();
             for e in &state.compiled.entities {
                 if let Some(value) = e.components.get("animation.player") {
                     let config: Player = serde_json::from_value(value.clone())?;
-                    players.insert(
-                        e.id.clone(),
-                        at(
-                            &component_path(&e.id),
-                            Controller::new(config, &lib, &assets),
-                        )?,
-                    );
+                    let mut player = at(
+                        &component_path(&e.id),
+                        Controller::new(config, &lib, &assets),
+                    )?;
+                    if let Some(attach) = e.components.get("animation.controller") {
+                        let path = controller_path(&e.id);
+                        let result = serde_json::from_value::<controller::Attach>(attach.clone())
+                            .map_err(anyhow::Error::from)
+                            .and_then(|a| {
+                                let def = controllers.controllers.get(&a.controller).with_context(
+                                    || format!("animation controller {} missing", a.controller),
+                                )?;
+                                player.attach(&a.controller, def)
+                            });
+                        at(&path, result)?;
+                    }
+                    players.insert(e.id.clone(), player);
                 }
             }
             state.animation_cues.catalog = players
@@ -398,6 +520,10 @@ impl RuntimeSystem for AnimationSystem {
     fn finish_step(&mut self, state: &mut RuntimeState) {
         for cue in std::mem::take(&mut state.animation_cues.pending) {
             if let Some(player) = self.players.get_mut(&cue.entity) {
+                if let Some(a) = &mut player.animator {
+                    a.ignored_cues = a.ignored_cues.saturating_add(1);
+                    continue;
+                }
                 let result = player.play(cue).and_then(|_| player.evaluate(0.0));
                 if let Err(error) = result {
                     player.fault = Some(format!("{error:#}"));
@@ -414,30 +540,67 @@ impl RuntimeSystem for AnimationSystem {
     fn step(&mut self, state: &mut RuntimeState, _: &ActionMap) {
         for cue in std::mem::take(&mut state.animation_cues.pending) {
             if let Some(player) = self.players.get_mut(&cue.entity) {
+                if let Some(a) = &mut player.animator {
+                    a.ignored_cues = a.ignored_cues.saturating_add(1);
+                    continue;
+                }
                 if let Err(error) = player.play(cue) {
                     player.fault = Some(format!("{error:#}"));
                 }
             }
         }
         for (id, p) in &mut self.players {
-            if !state.compiled.enabled[state.compiled.indices[id]] {
+            let slot = state.compiled.indices[id];
+            if !state.compiled.enabled[slot] {
                 continue;
             }
-            let mut next = p.clone();
-            if next.playing {
-                next.time += FIXED_DT * next.speed;
-                if let Some(clip) = next.active.as_ref().and_then(|id| next.clips.get(id)) {
+            // Advanced in place; a failed evaluation rolls back the (`Copy`) playback state
+            // and keeps the last good pose, without cloning the player every step.
+            let saved = (
+                p.time,
+                p.fade.as_ref().map(|f| f.elapsed),
+                p.animator.as_ref().map(|a| (a.state, a.last_position)),
+            );
+            let position = state.transforms[slot].as_ref().map(|t| t.position);
+            if let Some(a) = &mut p.animator {
+                // Bound parameters read this step's movement (also while paused).
+                let speed = match (a.last_position, position) {
+                    (Some(a), Some(b)) => {
+                        let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
+                        (dx * dx + dz * dz).sqrt() / FIXED_DT
+                    }
+                    _ => 0.0,
+                };
+                a.last_position = position;
+                for i in 0..a.compiled.params.len() {
+                    if a.compiled.param_source(i) == Some(controller::ParamSource::Speed) {
+                        a.state.params[i] = speed;
+                    }
+                }
+                if p.playing {
+                    a.compiled.tick(&mut a.state, FIXED_DT * p.speed.max(0.0));
+                }
+            } else if p.playing {
+                p.time += FIXED_DT * p.speed;
+                if let Some(clip) = p.active.as_ref().and_then(|id| p.clips.get(id)) {
                     let duration = clip.source.duration;
-                    if next.looping && duration > 0.0 {
-                        next.time = next.time.rem_euclid(duration);
+                    if p.looping && duration > 0.0 {
+                        p.time = p.time.rem_euclid(duration);
                     } else {
-                        next.time = next.time.clamp(0.0, duration);
+                        p.time = p.time.clamp(0.0, duration);
                     }
                 }
             }
-            match next.evaluate(if next.playing { FIXED_DT } else { 0. }) {
-                Ok(()) => *p = next,
-                Err(e) => p.fault = Some(format!("{e:#}")),
+            if let Err(e) = p.evaluate(if p.playing { FIXED_DT } else { 0. }) {
+                p.time = saved.0;
+                if let (Some(f), Some(elapsed)) = (&mut p.fade, saved.1) {
+                    f.elapsed = elapsed;
+                }
+                if let (Some(a), Some((s, last))) = (&mut p.animator, saved.2) {
+                    a.state = s;
+                    a.last_position = last;
+                }
+                p.fault = Some(format!("{e:#}"));
             }
         }
         if !state.animation_cues.socket_requests.is_empty() {
@@ -537,6 +700,13 @@ impl RuntimeSystem for AnimationSystem {
                     let i = p.asset.skeleton.bone(&a.bone)?;
                     p.overrides.insert(i, a.rotation);
                 }
+                "param" => {
+                    let a: ParamArgs = serde_json::from_value(args.clone())?;
+                    let c = p.animator.as_mut().with_context(|| {
+                        format!("{entity} has no animation.controller (parameters belong to controllers)")
+                    })?;
+                    c.compiled.set_param(&mut c.state, &a.name, a.value)?;
+                }
                 _ => anyhow::bail!("unknown animation action {action}"),
             }
             p.evaluate(0.)?;
@@ -575,6 +745,16 @@ impl RuntimeSystem for AnimationSystem {
                         }
                     }
                     p.evaluate(0.)?;
+                }
+                // A controller keeps its state and parameters by name across edits (live
+                // graph editing in Play), as long as the entity keeps the same controller.
+                if let (Some(a), Some(b)) = (&mut p.animator, &previous.animator) {
+                    if a.id == b.id {
+                        a.state = a.compiled.carry(&b.compiled, &b.state);
+                        a.last_position = b.last_position;
+                        a.ignored_cues = b.ignored_cues;
+                        p.evaluate(0.)?;
+                    }
                 }
             }
         }
@@ -626,7 +806,7 @@ impl RuntimeSystem for AnimationSystem {
     fn metrics(&self) -> BTreeMap<String, Value> {
         BTreeMap::from([(
             "animation".into(),
-            json!({"players":self.players.iter().map(|(id,p)|(id.clone(),json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault}))).collect::<BTreeMap<_,_>>()}),
+            json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()}),
         )])
     }
 }

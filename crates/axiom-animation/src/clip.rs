@@ -141,6 +141,34 @@ impl Track {
     }
 }
 impl CompiledClip {
+    /// [`Self::sample`] into `out` (resized once, then reused): no allocation per call and
+    /// no globals validation (the caller validates the final pose).
+    pub fn sample_into(
+        &self,
+        skeleton: &CompiledSkeleton,
+        time: f32,
+        looping: bool,
+        out: &mut Pose,
+    ) -> Result<()> {
+        ensure!(time.is_finite(), "non-finite sample time");
+        let t = if looping && self.source.duration > 0. {
+            time.rem_euclid(self.source.duration)
+        } else {
+            time.clamp(0., self.source.duration)
+        };
+        skeleton.rest_into(out);
+        for (track, &bone) in self.source.tracks.iter().zip(&self.bones) {
+            let v = track.sample(t);
+            match track.property {
+                Property::Translation => out.local[bone].translation = v.truncate(),
+                Property::Scale => out.local[bone].scale = v.truncate(),
+                Property::Rotation => {
+                    out.local[bone].rotation = Quat::from_array(v.to_array()).normalize()
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn sample(&self, skeleton: &CompiledSkeleton, time: f32, looping: bool) -> Result<Pose> {
         ensure!(time.is_finite(), "non-finite sample time");
         let t = if looping && self.source.duration > 0. {
