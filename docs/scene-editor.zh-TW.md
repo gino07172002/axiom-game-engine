@@ -126,6 +126,7 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 - **Graphs 縮放**:滾輪在游標位置縮放(25 %–200 %,游標下的點不動),工具列的百分比按鈕回到 100 %;Frame 縮小到全部狀態可見(不會放大超過 100 %)。點選、拖曳節點、拉轉移、右鍵選單都換算成畫布單位,拖曳放開仍是一筆 `fsm M node`。AI:`graph.zoom in|out|reset|1.5|150%`,`observe` 的 `editor.graph.zoom`。
 - **Tags 摘要**:Entity 卡片顯示一列「Tags (N)  a, b, … ›」,點一下展開原本的 chip 編輯器(輸入、建議、x 移除;多選時的「tag 2/3」),再點收合;`object.tag` 不帶參數時也會展開。
 - **Prefab 覆寫標記**:prefab 實例覆寫的欄位(元件 patch 裡有的欄位;陣列整個算一個)在 Inspector 左側有藍色條——Transform 的 Position / Rotation° / Scale、元件表單欄位,含有覆寫的物件 / 陣列標頭是淡藍色。標籤右鍵 ▸ Revert to Prefab(每個選取中有此覆寫的實例)/ Apply to Prefab(單選時:這個值寫進 prefab,所有沒覆寫的實例跟著變,這個實例不再覆寫),各一筆 revision。繼承的欄位外觀不變。覆寫集合依 revision 與選取的物件快取。AI:`prefab revert SEL COMPONENT/FIELD`、`prefab apply ID COMPONENT/FIELD`(ACL),`prefab.revert` / `prefab.apply`(編輯器指令)。
+- **陣列內與 JSON 模式的覆寫標記**:陣列不會和 prefab 合併,實例的陣列整個是自己的(陣列標頭的滑鼠提示會說明);陣列裡和 prefab 同位置的值不一樣的欄位(例如 `render.mesh` 的 `parts[1].color`)也有藍色條,包含它的項目索引是淡藍色,和 prefab 相同的項目外觀不變。右鍵 ▸ Revert to Prefab / Apply to Prefab 只複製這一個值(實例的陣列整個等於 prefab 的時候覆寫自動移除),**Revert Whole Array** / **Apply Whole Array** 作用在整個陣列。項目裡 prefab 沒有的鍵也能單獨處理(Revert = 從實例移除、Apply = 加進 prefab 的項目);prefab 的陣列沒有的項目(實例多出來的項目)只能整個陣列處理,選單的單值項目停用(ACL 錯誤 `no_prefab_value`)。元件切到 JSON 模式時,覆寫的鍵在文字左側 gutter 有同樣的藍色條與右鍵選單;JSON 改過還沒套用(或草稿過期)時不畫,避免標錯行。同一組 ACL:`prefab revert SEL render.mesh/parts/1/color`、`prefab apply ID render.mesh/parts/1/color`。
 - **Game 分頁的遊戲 UI**:HUD、對話、提示以 Play Maximized 時的空間(整個編輯器視窗)排版,再依遊戲區大小等比縮小(0.25–1 倍;長寬比不同時短邊對齊、長邊多出空間),所以 Game 分頁看到的是最大化版面的縮小版;滑鼠位置同步換算。
 
 ## 驗證

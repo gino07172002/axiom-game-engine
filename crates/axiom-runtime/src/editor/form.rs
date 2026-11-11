@@ -303,7 +303,7 @@ impl Ctx<'_> {
     /// Whether `pointer` gets an override marker (labels then take right clicks).
     fn marked(&self, pointer: &str) -> bool {
         self.overrides
-            .is_some_and(|(set, _)| set.fields.contains(pointer) || set.within.contains(pointer))
+            .is_some_and(|(set, _)| set.marked(pointer).is_some())
     }
     /// Override marker on `response` (label or header) of the field at `pointer`.
     fn override_marker(
@@ -316,7 +316,7 @@ impl Ctx<'_> {
         let Some((set, apply)) = self.overrides else {
             return;
         };
-        if let Some(action) = super::prefab_overrides::marker(
+        if let Some(picked) = super::prefab_overrides::marker(
             ui,
             response,
             Some(set),
@@ -324,7 +324,7 @@ impl Ctx<'_> {
             apply,
             self.rects.as_deref_mut(),
         ) {
-            out.prefab = Some((pointer.to_owned(), action));
+            out.prefab = Some(picked);
         }
     }
 }
@@ -438,6 +438,14 @@ fn summarize(v: &Value, out: &mut String, limit: usize) {
     }
 }
 
+/// Width left in the row that is actually visible: `available_width` can exceed the panel
+/// (a wide row elsewhere widens the layout), the clip rectangle cannot.
+pub(super) fn room(ui: &Ui) -> f32 {
+    ui.available_width()
+        .min(ui.clip_rect().max.x - ui.cursor().min.x - 2.0)
+        .max(0.0)
+}
+
 /// Width of the label column (fields form a two-column label / value grid).
 const LABEL_WIDTH: f32 = 96.0;
 
@@ -505,6 +513,12 @@ fn field(
                     ),
                 );
             }
+            // One line cut at the visible width (`available_width` can exceed it); laid out
+            // here because the header would lay a `LayoutJob` out without a width limit.
+            title.wrap = egui::text::TextWrapping::truncate_at_width(
+                (room(ui) - ui.spacing().indent - 2.0 * ui.spacing().button_padding.x).max(24.0),
+            );
+            let title = ui.fonts(|f| f.layout_job(title));
             let response = egui::CollapsingHeader::new(title)
                 .id_salt(pointer)
                 .default_open(depth == 0)
@@ -640,12 +654,22 @@ fn array(
                     let item_pointer = format!("{pointer}/{i}");
                     ui.push_id(i, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(
+                            // A marked item's index takes the override marker's right click (an
+                            // item that is an array has its own marked header).
+                            let marked = ctx.marked(&item_pointer) && !items[i].is_array();
+                            let mut index = egui::Label::new(
                                 RichText::new(format!("{i}"))
                                     .small()
                                     .monospace()
-                                    .color(MUTED),
+                                    .color(if marked { super::theme::TEXT } else { MUTED }),
                             );
+                            if marked {
+                                index = index.sense(egui::Sense::click());
+                            }
+                            let index = ui.add(index);
+                            if marked {
+                                ctx.override_marker(ui, &index, &item_pointer, out);
+                            }
                             ui.add_enabled_ui(ctx.structural, |ui| {
                                 let buttons: [(&str, &str, bool, ArrayEdit); 4] = [
                                     ("▲", "up", i > 0, ArrayEdit::Move(i, i.saturating_sub(1))),
@@ -832,7 +856,8 @@ fn leaf(
         }
         Kind::Text => {
             let Value::String(s) = v else { return false };
-            let mut edit = egui::TextEdit::singleline(s).desired_width(170.0);
+            let mut edit =
+                egui::TextEdit::singleline(s).desired_width((room(ui) - 8.0).clamp(40.0, 170.0));
             if mixed {
                 edit = edit.text_color(WARNING);
             }
@@ -1000,7 +1025,7 @@ fn entity(
     let r = ui
         .add(
             egui::Button::new(RichText::new(text).monospace().color(color))
-                .min_size(egui::vec2(150.0, 0.0)),
+                .min_size(egui::vec2(room(ui).clamp(40.0, 150.0), 0.0)),
         )
         .on_hover_text(match (problem, has) {
             (Some("missing"), _) => {
@@ -1225,7 +1250,7 @@ fn json_leaf(ui: &mut Ui, key: &str, v: &mut Value, pointer: &str) -> (bool, egu
         .add(
             egui::TextEdit::singleline(&mut text)
                 .code_editor()
-                .desired_width(170.0)
+                .desired_width((room(ui) - 44.0).clamp(40.0, 170.0))
                 .text_color(if parsed.is_ok() {
                     Color32::LIGHT_GRAY
                 } else {
@@ -1288,8 +1313,35 @@ pub(super) fn color(ui: &mut Ui, v: &mut Value) -> (bool, egui::Rect) {
     } else {
         return (false, egui::Rect::NOTHING);
     };
-    ui.label(RichText::new(v.to_string()).small().weak());
+    // Values read back from f32 print as `0.119999997317791`: show at most 3 decimals and cut
+    // the text at the visible width (`available_width` can exceed it in the Inspector).
+    let text = v
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|x| short_number(x.as_f64().unwrap_or(0.0)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let visible = room(ui);
+    ui.scope(|ui| {
+        ui.set_max_width(visible);
+        ui.add(egui::Label::new(RichText::new(text).small().weak()).truncate())
+            .on_hover_text(v.to_string());
+    });
     (changed, rect)
+}
+
+/// `x` with at most 3 decimals and no trailing zeros (`0.12`, `1`).
+fn short_number(x: f64) -> String {
+    let text = format!("{x:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Changed leaves between two versions of the same shape, as (JSON pointer, new value).

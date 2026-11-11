@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-11 (night) — Claude (Opus 5.5) — follow-up D/FE: Inspector width at 1366×768, prefab override markers inside arrays and in JSON mode; committed on worktree branch `followup-d`
+
+**Done:** `form::color` shows short numbers (`0.12, 0.17, 0.2, 1`) truncated to the visible width (root cause of the tint overflow: f32-widened JSON printed raw). Root cause of the rest of the 768 overflow: the Add Component… / Behavior… combo row never wraps (egui wrapping rows do not wrap unknown-size children), widening every card below; Behavior… now `end_row()`s when it does not fit. Collapsed object summaries pre-laid-out with truncation; text / JSON / entity / filter widths clamped to the visible width (`form::room`). Core `ops::prefab_array_differences` + `revert_prefab_field` / `apply_prefab_field` accept pointers inside an overridden array (copy one value; a key one side lacks is removed / added; array override dropped once equal; `no_prefab_value` for items the prefab lacks). Inspector marks differing values / items inside arrays (menu: this value or Whole Array) and draws the same marks in a JSON-mode gutter (`json_layout` mirrors `to_string_pretty`).
+
+**Verification:** fmt / clippy -D warnings clean; workspace 690 pass / 0 fail / 5 ignored (681 + 9); editor-smoke ok:true (DB deleted); world parity identical:true (1→13); street parity identical:true (8→16); build-street: content/street unchanged. Captures (debug, inspected) `artifacts/captures/fd-{tint-before,tint-after,prefab-array}-{1080,768}.png`, `fd-mesh-before-768.png` in the fd worktree. Fresh-context review: 3 medium + 9 low, fixed except the three recorded in the plan entry.
+
+**Next:** JSON gutter with wrapped rows has no test; no bridge command switches the Inspector to JSON mode (so no GPU capture of the gutter); items the prefab array lacks have only whole-array actions.
+
+**Gotchas added:** in an egui `horizontal_wrapped`, `available_width()` is the whole row width and a ComboBox (a child Ui of unknown size) is never wrapped; one too-wide row grows the parent's max_rect, and every later `set_min_width(available_width())` card inherits the overflow. The Inspector's clip rect is the window edge, ~8 pt right of the panel content. `CollapsingHeader` overrides a `LayoutJob`'s wrap (pass a laid-out Galley to truncate). egui scroll_to_cursor animates: give tests ~30 frames.
+
 ## 2026-11-11 (late) — Claude (Opus 5.5) — integration of follow-ups A/B/C + scenario-job test flake root cause
 
 **Done:** A (930a09f), B (merge c60fe71), C (merge b0795e0) on main, each merge verified on the merged tree before the next. Fixed the two load-sensitive scenario-job tests in `app.rs`.

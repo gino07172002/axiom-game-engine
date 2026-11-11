@@ -483,3 +483,222 @@ fn game_tab_hud_keeps_the_maximized_layout_scaled_into_the_game_area() {
         1.0
     );
 }
+
+/// Texts (visible part) and recorded widgets in the Inspector that end past the right edge of
+/// its content (the "…" panel button's right; cards end there too), as (what, right, edge).
+fn inspector_overflow(h: &Harness, out: &egui::FullOutput) -> Vec<(String, f32, f32)> {
+    let more = h.rect("panel:more:inspector");
+    let edge = more.right() + 0.5;
+    // Below the tab strip, above the status bar (the Inspector is the rightmost dock).
+    let rows = more.bottom()..h.screen.y - 30.0;
+    let texts = out.shapes.iter().filter_map(|c| match &c.shape {
+        Shape::Text(t) => {
+            let r = Rect::from_min_size(t.pos, t.galley.size()).intersect(c.clip_rect);
+            (rows.contains(&t.pos.y) && r.is_positive() && r.right() > edge)
+                .then(|| (t.galley.text().to_owned(), r.right(), edge))
+        }
+        _ => None,
+    });
+    let widgets = h.editor.rects.iter().filter_map(|(key, r)| {
+        let inspector = ["form:", "component:", "behavior:", "override:"]
+            .iter()
+            .any(|p| key.starts_with(p));
+        (inspector && rows.contains(&r.top()) && r.right() > edge)
+            .then(|| (key.clone(), r.right(), edge))
+    });
+    texts.chain(widgets).collect()
+}
+
+#[test]
+fn material_tint_and_form_colour_rows_fit_the_inspector_at_1366x768() {
+    let mut h = Harness::new(package("effects-tour"), vec2(1366.0, 768.0));
+    h.editor.run_command("window.inspector").unwrap();
+    h.editor.select(Some("mat/01-pbr/plinth".into()));
+    h.frame(vec![]);
+    h.frame(vec![]);
+    h.editor.open_material("plinth");
+    h.frame(vec![]);
+    let out = h.frame_out(vec![]).1;
+    // The tint reads as short numbers (the stored value went through f32).
+    assert!(drawn(&out, "0.12, 0.17, 0.2, 1"), "compact tint text");
+    assert_eq!(inspector_overflow(&h, &out), vec![]);
+    // Component forms: colour rows inside array items, vectors, numbers.
+    let mut h = Harness::new(package("axiom-town"), vec2(1366.0, 768.0));
+    h.editor.run_command("window.inspector").unwrap();
+    for (id, components) in [
+        ("plaza/lamp-1", &["render.mesh", "nav.blocker"][..]),
+        ("plaza/bench-east", &["render.mesh"][..]),
+    ] {
+        h.editor.select(Some(id.into()));
+        h.frame(vec![]);
+        h.frame(vec![]);
+        for component in components {
+            h.editor.open_component_after = Some((*component).to_owned());
+            h.editor.select(Some(id.into()));
+            h.frame(vec![]);
+            h.frame(vec![]);
+            // Scrolled to the open component, as `open component:ID` does.
+            h.editor.scroll_component = true;
+            // (The scroll animates over a few frames.)
+            for _ in 0..30 {
+                h.frame(vec![]);
+            }
+            let out = h.frame_out(vec![]).1;
+            let shown = h
+                .editor
+                .rects
+                .iter()
+                .filter(|(k, r)| k.starts_with("form:/") && (110.0..730.0).contains(&r.top()));
+            let shown: Vec<_> = shown.collect();
+            assert!(!shown.is_empty(), "{id} {component}: the form is on screen");
+            if *component == "render.mesh" {
+                assert!(
+                    shown.iter().any(|(k, _)| *k == "form:/parts/0/color"),
+                    "{id}: a colour row inside the parts array is checked"
+                );
+            }
+            assert_eq!(inspector_overflow(&h, &out), vec![], "{id} {component}");
+        }
+    }
+}
+
+/// Axiom Town with lamp-1's render.mesh parts overridden: only item 1's color differs.
+fn lamp_with_blue_part() -> World {
+    acl(
+        &package("axiom-town"),
+        r#"set plaza/lamp-1 render.mesh/parts [{"transform":{"position":[0,1.4,0],"scale":[0.12,2.8,0.12]},"color":[0.16,0.17,0.2]},{"transform":{"position":[0,2.9,0],"scale":[0.42,0.32,0.42]},"color":[0.2,0.6,1],"emission":1.6}]"#,
+    )
+}
+
+fn open_lamp_mesh(start: &World) -> Harness {
+    let mut h = Harness::new(start.clone(), vec2(1700.0, 1600.0));
+    h.editor.run_command("window.inspector").unwrap();
+    h.editor.open_component_after = Some("render.mesh".into());
+    h.editor.select(Some("plaza/lamp-1".into()));
+    h.frame(vec![]);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    h
+}
+
+#[test]
+fn override_markers_inside_arrays_revert_and_apply_one_value_like_acl() {
+    let start = lamp_with_blue_part();
+    let mut h = open_lamp_mesh(&start);
+    // The array (whole override), the item holding the difference and the differing value
+    // are marked; values equal to the prefab's are not.
+    for key in [
+        "override:/parts",
+        "override:/parts/1",
+        "override:/parts/1/color",
+    ] {
+        assert!(h.editor.rects.contains_key(key), "{key}");
+    }
+    for key in [
+        "override:/parts/0",
+        "override:/parts/0/color",
+        "override:/parts/1/emission",
+    ] {
+        assert!(!h.editor.rects.contains_key(key), "{key}");
+    }
+    // Revert this value: the array equals the prefab's again, so the override goes.
+    h.click_with("override:/parts/1/color", PointerButton::Secondary);
+    assert!(h.editor.rects.contains_key("override:revert_array"));
+    let actions = h.click("override:revert");
+    let after = h.commit(actions);
+    assert_eq!(
+        after,
+        acl(
+            &start,
+            "prefab revert plaza/lamp-1 render.mesh/parts/1/color"
+        )
+    );
+    assert!(!after
+        .entity("plaza/lamp-1")
+        .unwrap()
+        .components
+        .contains_key("render.mesh"));
+    assert!(!h.editor.rects.contains_key("override:/parts/1/color"));
+    // Apply this value: the prefab's part 1 turns blue for every lamp.
+    let mut h = open_lamp_mesh(&start);
+    h.click_with("override:/parts/1/color", PointerButton::Secondary);
+    let actions = h.click("override:apply");
+    let after = h.commit(actions);
+    assert_eq!(
+        after,
+        acl(
+            &start,
+            "prefab apply plaza/lamp-1 render.mesh/parts/1/color"
+        )
+    );
+    assert_eq!(
+        after.prefabs["lamp"].components["render.mesh"]["parts"][1]["color"],
+        json!([0.2, 0.6, 1])
+    );
+    // Whole array from an item's menu = ACL on the array.
+    let mut h = open_lamp_mesh(&start);
+    h.click_with("override:/parts/1", PointerButton::Secondary);
+    let actions = h.click("override:revert_array");
+    assert_eq!(
+        h.commit(actions),
+        acl(&start, "prefab revert plaza/lamp-1 render.mesh/parts")
+    );
+}
+
+#[test]
+fn json_mode_marks_overridden_keys_and_reverts_like_acl() {
+    let start = acl(
+        &lamp_with_blue_part(),
+        "set plaza/lamp-1 nav.blocker/half [0.3,0.3]",
+    );
+    let mut h = open_lamp_mesh(&start);
+    h.editor.draft.as_mut().unwrap().json_mode = true;
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let text = h.rect("form:json");
+    let bar = h.rect("override:/parts/1/color");
+    assert!(bar.right() <= text.left(), "the gutter is left of the text");
+    assert!(text.y_range().contains(bar.center().y));
+    // The gutter row is the `"color": [` line of item 1.
+    let set = h.editor.overrides.get("render.mesh").unwrap();
+    let line = set
+        .json_lines
+        .iter()
+        .find(|(_, p)| p == "/parts/1/color")
+        .unwrap()
+        .0;
+    let json = &h.editor.draft.as_ref().unwrap().json;
+    assert!(json.lines().nth(line).unwrap().contains("\"color\": ["));
+    // The bar spans that line's row of the text box (one row per line at this width; the
+    // text starts below the box's 2 pt top margin).
+    let row = bar.height();
+    let expected = text.top() + 2.0 + line as f32 * row;
+    assert!(
+        (bar.top() - expected).abs() < row / 2.0,
+        "bar {bar:?} not on line {line} (row {row}, expected top {expected})"
+    );
+    assert!(h.editor.rects.contains_key("override:/parts"));
+    assert!(!h.editor.rects.contains_key("override:/parts/0"));
+    // Right-click ▸ Revert to Prefab = the ACL verb.
+    h.click_with("override:/parts/1/color", PointerButton::Secondary);
+    let actions = h.click("override:revert");
+    assert_eq!(
+        h.commit(actions),
+        acl(
+            &start,
+            "prefab revert plaza/lamp-1 render.mesh/parts/1/color"
+        )
+    );
+    // An edited (unapplied) JSON draft shows no markers: they describe the committed value.
+    h.editor.open_component_after = Some("nav.blocker".into());
+    h.editor.select(Some("plaza/lamp-1".into()));
+    h.editor.draft.as_mut().unwrap().json_mode = true;
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert!(h.editor.rects.contains_key("override:/half"));
+    let draft = h.editor.draft.as_mut().unwrap();
+    draft.json.push(' ');
+    draft.component_dirty = true;
+    h.frame(vec![]);
+    assert!(!h.editor.rects.contains_key("override:/half"));
+}
