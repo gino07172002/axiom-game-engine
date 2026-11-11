@@ -284,6 +284,18 @@ pub trait RuntimeSystem: Any + Send {
     ) -> Option<Result<Value>> {
         None
     }
+    /// Whether `command` would succeed now, without changing anything (`Some` from the
+    /// system that handles the action). A `batch` checks every item before applying any;
+    /// systems without this hook are checked only against the action's argument schema.
+    fn check_command(
+        &self,
+        _state: &RuntimeState,
+        _capability: &str,
+        _action: &str,
+        _args: &Value,
+    ) -> Option<Result<()>> {
+        None
+    }
     fn screen_pointer(
         &mut self,
         _state: &mut RuntimeState,
@@ -607,6 +619,8 @@ pub struct WorldRuntime {
     bound_seq: u64,
     binding_fault: Option<String>,
     binding_calls: u64,
+    /// The program has `call` actions (rules / narrative): observe shows `calls`.
+    has_calls: bool,
     /// Opt-in wall time of each system's `step` (ms, summed since the last `take_system_profile`;
     /// same order as `system_ids`). `None` = not measured (no `Instant` reads per step).
     system_profile: Option<Vec<f64>>,
@@ -659,40 +673,216 @@ impl WorldRuntime {
             .find_map(|(_, s)| s.as_any_mut()?.downcast_mut::<T>())
     }
     pub fn command(&mut self, command: &axiom_core::gameplay::RuntimeCommand) -> Result<Value> {
+        use axiom_core::gameplay::RuntimeCommand;
         ensure!(
             self.state.events.fault.is_none(),
             "event delivery failed; repair content before issuing gameplay commands"
         );
+        let out = match command {
+            RuntimeCommand::Batch { commands } => self.batch(commands)?,
+            RuntimeCommand::Slide { widget, value } => self.slide(widget, *value)?,
+            other => self.single(other)?,
+        };
+        // Rules that fired may have queued capability calls (`call` actions).
+        self.dispatch_calls();
+        Ok(out)
+    }
+    /// The action exists, its capability is enabled here and `args` fit its schema.
+    fn check_call_schema(&self, capability: &str, action: &str, args: &Value) -> Result<()> {
+        let id = format!("{capability}.{action}");
+        let descriptor = self
+            .registry
+            .authoring
+            .actions
+            .get(&id)
+            .ok_or_else(|| Diagnostic::error("unknown_action", "/command/action", &id))?;
+        ensure!(
+            descriptor.capability == capability
+                && self
+                    .state
+                    .compiled
+                    .source
+                    .capabilities
+                    .contains_key(capability),
+            "capability not enabled in this world"
+        );
+        axiom_core::local::at("/command/args", (descriptor.validate)(args))
+    }
+    /// `check_call_schema` plus the handling system's dry run (`RuntimeSystem::check_command`).
+    fn check_call(&self, capability: &str, action: &str, args: &Value) -> Result<()> {
+        self.check_call_schema(capability, action, args)?;
+        if capability == "input" && action == "activate" {
+            ensure!(self.state.contexts.is_some(), "world has no input contexts");
+            return Ok(());
+        }
+        for (_, system) in &self.systems {
+            if let Some(result) = system.check_command(&self.state, capability, action, args) {
+                return result;
+            }
+        }
+        Ok(())
+    }
+    /// `batch`: every item is checked against the current state (calls by schema and the
+    /// handling system's dry run; gameplay items on a copy, in order) before the first one
+    /// applies, then all apply in order in this tick.
+    fn batch(&mut self, commands: &[axiom_core::gameplay::RuntimeCommand]) -> Result<Value> {
+        use axiom_core::gameplay::{RuntimeCommand, MAX_BATCH};
+        ensure!(
+            (1..=MAX_BATCH).contains(&commands.len()),
+            "a batch holds 1..{MAX_BATCH} commands"
+        );
+        let tick = self.state.tick;
+        let mut gameplay = self.state.gameplay.clone();
+        for (i, c) in commands.iter().enumerate() {
+            axiom_core::local::at(
+                &format!("/command/commands/{i}"),
+                (|| -> Result<()> {
+                    match c {
+                        RuntimeCommand::Batch { .. } | RuntimeCommand::Slide { .. } => {
+                            anyhow::bail!("a batch cannot hold batch or slide commands")
+                        }
+                        RuntimeCommand::Call {
+                            capability,
+                            action,
+                            args,
+                        } => self.check_call(capability, action, args),
+                        other => {
+                            if let RuntimeCommand::Emit { event, .. } = other {
+                                ensure!(
+                                    !self.state.events.owns(event),
+                                    "owned native events may only be published by their registered system"
+                                );
+                            }
+                            gameplay
+                                .as_mut()
+                                .context("world has no gameplay command capability")?
+                                .command(other, tick)
+                        }
+                    }
+                })(),
+            )?;
+        }
+        let mut results = Vec::with_capacity(commands.len());
+        for (i, c) in commands.iter().enumerate() {
+            match self.single(c) {
+                Ok(mut v) => results.push(match v.get_mut("result") {
+                    Some(r) => r.take(),
+                    None => serde_json::json!({"ok":true}),
+                }),
+                Err(e) => {
+                    return Err(e.context(format!(
+                        "batch command {i} failed after passing validation (the state changed in between); commands 0..{i} stay applied"
+                    )))
+                }
+            }
+        }
+        Ok(serde_json::json!({"ok":true,"rev":self.rev,"tick":self.state.tick,"batch":results}))
+    }
+    /// `slide`: the slider's (snapped) value goes to its call command first, then to its
+    /// variable; nothing changes when either is refused.
+    fn slide(&mut self, widget: &str, value: f64) -> Result<Value> {
+        use axiom_core::gameplay::RuntimeCommand;
+        let tick = self.state.tick;
+        let g = self
+            .state
+            .gameplay
+            .as_ref()
+            .context("world has no gameplay command capability")?;
+        let slider = g.slider(widget)?.clone();
+        let v = slider.snap(value)?;
+        let slide = RuntimeCommand::Slide {
+            widget: widget.to_owned(),
+            value: v,
+        };
+        // Visibility and range, on a copy.
+        g.clone().command(&slide, tick)?;
+        let call = slider.call(v);
+        if let Some(RuntimeCommand::Call {
+            capability,
+            action,
+            args,
+        }) = &call
+        {
+            self.check_call(capability, action, args)?;
+        }
+        let result = match &call {
+            Some(c) => self.single(c)?.get_mut("result").map(Value::take),
+            None => None,
+        };
+        self.state
+            .gameplay
+            .as_mut()
+            .context("world has no gameplay command capability")?
+            .command(&slide, tick)?;
+        Ok(
+            serde_json::json!({"ok":true,"rev":self.rev,"tick":self.state.tick,"value":v,"result":result}),
+        )
+    }
+    /// Runs the capability calls rules queued (`call` actions), up to 4 rounds (a call can
+    /// fire events whose rules queue more). Failures are counted and reported in observe
+    /// (`calls`); calls still queued after the last round are dropped and reported.
+    fn dispatch_calls(&mut self) {
+        for _ in 0..4 {
+            let calls = match self.state.gameplay.as_mut() {
+                Some(g) if !g.calls.is_empty() => std::mem::take(&mut g.calls),
+                _ => return,
+            };
+            for call in calls {
+                let result = self.single(&call);
+                let Some(stats) = self.state.gameplay.as_mut().map(|g| &mut g.call_stats) else {
+                    return;
+                };
+                match result {
+                    Ok(_) => stats.run += 1,
+                    Err(e) => {
+                        stats.failed += 1;
+                        let name = match &call {
+                            axiom_core::gameplay::RuntimeCommand::Call {
+                                capability,
+                                action,
+                                ..
+                            } => format!("{capability}.{action}"),
+                            _ => "call".into(),
+                        };
+                        stats.fault = Some(format!("{name}: {e:#}"));
+                    }
+                }
+            }
+        }
+        if let Some(g) = self.state.gameplay.as_mut() {
+            let n = g.calls.len();
+            if n > 0 {
+                g.calls.clear();
+                g.call_stats.failed += n as u64;
+                g.call_stats.fault = Some(format!(
+                    "{n} queued call(s) dropped: calls kept queuing more calls for more than 4 rounds in one step"
+                ));
+            }
+        }
+    }
+    /// One non-batch command (the body of `command`).
+    fn single(&mut self, command: &axiom_core::gameplay::RuntimeCommand) -> Result<Value> {
         if let axiom_core::gameplay::RuntimeCommand::Emit { event, .. } = command {
             ensure!(
                 !self.state.events.owns(event),
                 "owned native events may only be published by their registered system"
             );
         }
+        ensure!(
+            !matches!(
+                command,
+                axiom_core::gameplay::RuntimeCommand::Batch { .. }
+                    | axiom_core::gameplay::RuntimeCommand::Slide { .. }
+            ),
+            "batch and slide commands cannot be nested"
+        );
         if let axiom_core::gameplay::RuntimeCommand::Call {
             capability,
             action,
             args,
         } = command
         {
-            let id = format!("{capability}.{action}");
-            let descriptor = self
-                .registry
-                .authoring
-                .actions
-                .get(&id)
-                .ok_or_else(|| Diagnostic::error("unknown_action", "/command/action", &id))?;
-            ensure!(
-                descriptor.capability == *capability
-                    && self
-                        .state
-                        .compiled
-                        .source
-                        .capabilities
-                        .contains_key(capability),
-                "capability not enabled in this world"
-            );
-            axiom_core::local::at("/command/args", (descriptor.validate)(args))?;
+            self.check_call_schema(capability, action, args)?;
             if capability == "input" && action == "activate" {
                 self.state
                     .contexts
@@ -715,7 +905,7 @@ impl WorldRuntime {
                     );
                 }
             }
-            anyhow::bail!("runtime handler missing for {id}");
+            anyhow::bail!("runtime handler missing for {capability}.{action}");
         }
         self.state
             .gameplay
@@ -913,6 +1103,19 @@ impl WorldRuntime {
             .as_ref()
             .and_then(|g| g.trace.back())
             .map_or(0, |t| t.seq);
+        let has_calls = state.gameplay.as_ref().is_some_and(|g| {
+            let c = &g.compiled;
+            c.rules
+                .iter()
+                .flatten()
+                .flat_map(|r| &r.ops)
+                .chain(
+                    c.nodes
+                        .iter()
+                        .flat_map(|n| n.enter.iter().chain(n.choices.iter().flat_map(|c| &c.ops))),
+                )
+                .any(|op| matches!(op, axiom_core::gameplay::Op::Call(_)))
+        });
         let build_timings = BuildTimings {
             compile_ms,
             shader_library_ms,
@@ -951,6 +1154,7 @@ impl WorldRuntime {
             event_bindings,
             binding_fault: None,
             binding_calls: 0,
+            has_calls,
             system_profile: None,
         })
     }
@@ -1194,6 +1398,7 @@ impl WorldRuntime {
             system.finish_step(&mut self.state);
         }
         self.dispatch_bindings();
+        self.dispatch_calls();
     }
     /// Whether a system acts on screen pointer events (see `RuntimeSystem::uses_screen_pointer`).
     pub fn uses_screen_pointer(&self) -> bool {
@@ -1480,6 +1685,9 @@ impl WorldRuntime {
                 "bindings".into(),
                 serde_json::json!({"events":self.event_bindings.events.len(),"calls":self.binding_calls,"fault":self.binding_fault}),
             );
+        }
+        if let Some(g) = self.state.gameplay.as_ref().filter(|_| self.has_calls) {
+            metrics.insert("calls".into(), serde_json::json!(g.call_stats));
         }
         if !self.shaders.materials.is_empty() {
             metrics.insert("shader".into(), serde_json::json!({"programs": self.shaders.programs.len(), "materials": self.shaders.materials.len()}));

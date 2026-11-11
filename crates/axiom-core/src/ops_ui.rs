@@ -205,6 +205,112 @@ pub fn set_ui_button_command(
     Ok(put(raw))
 }
 
+/// UI Editor ▸ Add Slider / ACL `ui slider add ID TEXT MIN MAX [k=v..]`: appends a slider
+/// widget. The label key must exist in the default catalog; the world's compile checks the
+/// rest (variable type, command, range) when the revision commits.
+pub fn add_ui_slider(world: &World, slider: &Widget) -> Result<Vec<Edit>> {
+    let (mut raw, doc) = document(world)?;
+    let Widget::Slider { id, text, .. } = slider else {
+        return Err(invalid(
+            format!("{DOC_PATH}/widgets"),
+            "not a slider widget",
+        ));
+    };
+    valid_id(id).map_err(|e| invalid(format!("{DOC_PATH}/widgets"), format!("{e:#}")))?;
+    if doc.widgets.iter().any(|w| w.id() == id) {
+        return Err(Diagnostic::error(
+            "id_taken",
+            format!("{DOC_PATH}/widgets"),
+            format!("ui.document already has a widget '{id}'"),
+        ));
+    }
+    if !doc
+        .catalogs
+        .get(&doc.locale)
+        .is_some_and(|c| c.contains_key(text))
+    {
+        return Err(invalid(
+            format!("{DOC_PATH}/catalogs/{}", escape(&doc.locale)),
+            format!("missing localization key {text} (loc key add {text} TEXT first)"),
+        ));
+    }
+    raw.as_object_mut()
+        .expect("ui.document parsed as an object")
+        .entry("widgets")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| invalid(format!("{DOC_PATH}/widgets"), "widgets is not a list"))?
+        .push(json!(slider));
+    Ok(put(raw))
+}
+
+/// Builds a slider from ACL options: `variable=V`, `step=S`, `value=X`,
+/// `call=CAPABILITY.ACTION`, `args={..}`, `arg=NAME`, `when=CONDITION_JSON`.
+pub fn slider_widget(
+    id: &str,
+    text: &str,
+    min: f64,
+    max: f64,
+    options: &[(String, String)],
+) -> Result<Widget> {
+    let number = |k: &str, v: &str| -> Result<f64> {
+        v.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| anyhow::anyhow!("{k} must be a number, not '{v}'"))
+    };
+    let (mut step, mut variable, mut value, mut call, mut args, mut arg) =
+        (None, None, None, None, None, None);
+    let mut when = crate::gameplay::Condition::default();
+    for (k, v) in options {
+        match k.as_str() {
+            "step" => step = Some(number(k, v)?),
+            "value" => value = Some(number(k, v)?),
+            "variable" => variable = Some(v.clone()),
+            "arg" => arg = Some(v.clone()),
+            "call" => {
+                let (c, a) = v
+                    .split_once('.')
+                    .ok_or_else(|| anyhow::anyhow!("call must be CAPABILITY.ACTION"))?;
+                call = Some((c.to_owned(), a.to_owned()));
+            }
+            "args" => {
+                args = Some(
+                    serde_json::from_str::<Value>(v)
+                        .map_err(|e| anyhow::anyhow!("args must be a JSON object: {e}"))?,
+                )
+            }
+            "when" => {
+                when = serde_json::from_str(v)
+                    .map_err(|e| anyhow::anyhow!("when must be a condition JSON: {e}"))?
+            }
+            other => anyhow::bail!(
+                "unknown slider option '{other}' (variable, step, value, call, args, arg, when)"
+            ),
+        }
+    }
+    if args.is_some() && call.is_none() {
+        anyhow::bail!("args go with call=CAPABILITY.ACTION");
+    }
+    let command = call.map(|(capability, action)| RuntimeCommand::Call {
+        capability,
+        action,
+        args: args.unwrap_or_else(|| json!({})),
+    });
+    Ok(Widget::Slider {
+        id: id.to_owned(),
+        text: text.to_owned(),
+        min,
+        max,
+        step,
+        variable,
+        value,
+        command,
+        arg,
+        when,
+    })
+}
+
 /// UI Editor ▸ element form: changed fields of one widget (pointers relative to the widget),
 /// the same `set_field`s as ACL `set widgets[id=WIDGET] F VALUE`.
 pub fn set_ui_widget_fields(

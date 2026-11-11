@@ -458,7 +458,13 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ui.button",
         "UI: Button Command…",
         "World",
-        "WIDGET emit EVENT|locale L|choose NODE CHOICE|call CAP ACTION [JSON]",
+        "WIDGET emit EVENT|locale L|choose NODE CHOICE|call CAP ACTION [JSON]|batch [COMMANDS]",
+    ),
+    a(
+        "ui.slider",
+        "UI: Add Slider…",
+        "World",
+        "add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME]",
     ),
     a(
         "ui.effect_add",
@@ -537,6 +543,18 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ID event add TICK SOUND|ID event move I TICK|ID event sound I SOUND|ID event remove I",
     ),
     a("anim.target", "Animation: Model / Clip…", "Window", "ENTITY [CLIP]"),
+    a(
+        "anim.stage",
+        "Animation: Choreography Stage…",
+        "World",
+        "ID set {\"actors\":[..],\"after\"?:{..}} | ID remove",
+    ),
+    a(
+        "object.parts",
+        "Object ▸ Clickable Body Parts…",
+        "Object",
+        "auto RADIUS [event=E] | add ID BONE radius=R [to=BONE] [length=M] | remove ID | event E|none | clear",
+    ),
     a("anim.scrub", "Animation: Scrub to…", "Window", "SECONDS"),
     a(
         "anim.marker",
@@ -622,6 +640,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.camera_follow",
     "object.main_camera",
     "object.camera_blocker",
+    "object.parts",
     "object.tween_clip",
     "tween.record_key",
     "tween.remove_key",
@@ -650,6 +669,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ability.edit",
     "vfx.edit",
     "shader.edit",
+    "anim.stage",
     "merge.commit",
     "prefab.revert",
     "prefab.apply",
@@ -906,6 +926,7 @@ impl Editor {
             | "object.camera_follow"
             | "object.main_camera"
             | "object.camera_blocker"
+            | "object.parts"
             | "object.tween_clip"
             | "object.tag"
             | "object.add_component"
@@ -968,6 +989,7 @@ impl Editor {
             | "object.camera_follow"
             | "object.main_camera"
             | "object.camera_blocker"
+            | "object.parts"
             | "object.tween_clip"
             | "tween.record_key"
             | "tween.remove_key"
@@ -1023,8 +1045,8 @@ impl Editor {
             "ui.preview_effects" if self.ui_editor.selected.is_none() => {
                 Some("select a widget in the UI Editor")
             }
-            "ui.place" | "ui.style" | "ui.button" | "ui.effect_add" | "ui.effect_set"
-            | "ui.effect_remove"
+            "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
+            | "ui.effect_set" | "ui.effect_remove"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")
@@ -1873,7 +1895,11 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.interactable": "interact SEL [event=] [prompt=] [range=] [action=]",
                 "object.audio_source": "audio SEL source [clip=] [volume=] [loop=] [autoplay=] [spatial=] [min=] [max=] [rolloff=]",
                 "object.audio_listener": "audio ID listener",
-                "object.camera_follow": "camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=] [zoom=] [radius=] [collide=]",
+                "object.camera_follow": "camera CAMERAS follow TARGET [distance=] [min=] [max=] [yaw=] [pitch=] [height=] [orbit=] [zoom=] [radius=] [collide=] [drag=on|off] [bone=BONE]",
+                "object.parts": "parts SEL auto RADIUS [event=E] | add ID BONE radius=R [to=BONE] [length=M] | remove ID | event E|none | clear",
+                "anim.stage": "stage ID set {JSON} | stage ID remove (runtime: call animation.stage {stage})",
+                "ui.slider": "ui slider add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME] (runtime: command slide {widget, value})",
+                "ui.button_batch": "ui button WIDGET batch [COMMANDS] (1..16 commands in one tick, all validated first)",
                 "object.main_camera": "camera main ID",
                 "object.camera_blocker": "camera SEL blocker on|off (Inspector render.mesh: Blocks follow cameras)",
                 "world.migrate_camera_blockers": "migrate camera_blocker (also: axiom migrate)",

@@ -286,6 +286,15 @@ impl Kinds {
                     json!({"kind":"end","ending":""}),
                     object(json!({"ending":text("ending ID")})),
                 ),
+                (
+                    "call",
+                    json!({"kind":"call","capability":"","action":"","args":{}}),
+                    object(json!({
+                        "capability":text("capability (e.g. animation)"),
+                        "action":text("action (e.g. stage, play, param)"),
+                        "args":{"type":"object","description":"action arguments (edit as JSON)"}
+                    })),
+                ),
             ]),
             operands: kinds(vec![
                 (
@@ -302,6 +311,15 @@ impl Kinds {
                     "event",
                     json!({"kind":"event","field":""}),
                     object(json!({"field":text("field of the triggering event")})),
+                ),
+                (
+                    "animation",
+                    json!({"kind":"animation","entity":"","field":"clip"}),
+                    object(json!({
+                        "entity":{"type":"string","x-ref":"entity","x-has":"animation.player"},
+                        "field":{"type":"string","enum":["clip","time","normalized","speed","playing","finished","state","param"]},
+                        "param":text("controller parameter (field param only)")
+                    })),
                 ),
             ]),
         }

@@ -571,40 +571,23 @@ impl Registry {
         for f in &self.world_validators {
             f(w)?;
         }
-        if let Some(value) = w.resources.get("ui.document") {
-            let doc: crate::gameplay::UiDocument = serde_json::from_value(value.clone())?;
-            for widget in &doc.widgets {
-                if let crate::gameplay::Widget::Button {
-                    id,
-                    command:
-                        crate::gameplay::RuntimeCommand::Call {
-                            capability,
-                            action,
-                            args,
-                        },
-                    ..
-                } = widget
-                {
-                    let path = format!(
-                        "{}/command",
-                        crate::local::Target::Widget { id: id.clone() }.path()
-                    );
-                    let descriptor = self
-                        .actions
-                        .get(&format!("{capability}.{action}"))
-                        .ok_or_else(|| {
-                            Diagnostic::error("unknown_action", format!("{path}/action"), action)
-                        })?;
-                    if !w.capabilities.contains_key(capability) {
-                        return Err(Diagnostic::error(
-                            "missing_capability",
-                            format!("{path}/capability"),
-                            capability,
-                        ));
-                    }
-                    crate::local::at(&format!("{path}/args"), (descriptor.validate)(args))?;
-                }
+        // UI button / slider commands (and batch items), `call` rule and narrative actions.
+        for call in crate::gameplay::authored_calls(w)? {
+            let path = &call.path;
+            let descriptor = self
+                .actions
+                .get(&format!("{}.{}", call.capability, call.action))
+                .ok_or_else(|| {
+                    Diagnostic::error("unknown_action", format!("{path}/action"), &call.action)
+                })?;
+            if !w.capabilities.contains_key(&call.capability) {
+                return Err(Diagnostic::error(
+                    "missing_capability",
+                    format!("{path}/capability"),
+                    &call.capability,
+                ));
             }
+            crate::local::at(&format!("{path}/args"), (descriptor.validate)(&call.args))?;
         }
         Ok(())
     }

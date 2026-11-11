@@ -21,6 +21,24 @@ pub struct Progress {
     pub pending: Vec<PendingEvent>,
     pub locale: Option<String>,
     pub held_inputs: Vec<String>,
+    /// Capability calls of `call` actions (absent when none ran: older saves load).
+    #[serde(default, skip_serializing_if = "CallStats::is_empty")]
+    pub calls: CallStats,
+}
+/// Outcome of the capability calls `call` actions queued (observe `calls`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CallStats {
+    pub run: u64,
+    pub failed: u64,
+    /// The last failure (calls are recoverable: the simulation continues).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<String>,
+}
+impl CallStats {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Trace {
@@ -55,6 +73,13 @@ pub struct Gameplay {
     pub fault: Option<Value>,
     /// Derived each step by `interact.focus`; not part of saves.
     pub prompt: Option<Prompt>,
+    /// Capability calls queued by `call` actions, dispatched by the runtime right after the
+    /// step or command that queued them (always empty between steps; not part of saves).
+    pub calls: Vec<RuntimeCommand>,
+    /// Animation reads (`CompiledGameplay::animation_reads`), published by
+    /// `animation.evaluate` each step; derived, not part of saves.
+    pub animation: Vec<Scalar>,
+    pub call_stats: CallStats,
 }
 struct Budget(usize);
 impl Budget {
@@ -81,6 +106,13 @@ impl Gameplay {
             trace: VecDeque::new(),
             fault: None,
             prompt: None,
+            calls: vec![],
+            call_stats: CallStats::default(),
+            animation: compiled
+                .animation_reads
+                .iter()
+                .map(AnimationRead::initial)
+                .collect(),
             compiled: std::sync::Arc::new(compiled),
         };
         if let Some(n) = g.compiled.start {
@@ -108,6 +140,7 @@ impl Gameplay {
             Read::Literal(v) => v,
             Read::Variable(i) => &self.values[*i],
             Read::Event(i) => &payload[*i],
+            Read::Animation(i) => &self.animation[*i],
         }
     }
     fn test_budget(&self, t: &Test, p: &[Scalar], b: &mut Budget) -> Result<bool> {
@@ -174,6 +207,19 @@ impl Gameplay {
                     self.ending = Some(e.clone());
                     self.record(tick, "ending", e);
                 }
+                Op::Call(call) => {
+                    let (capability, action, args) = &**call;
+                    ensure!(
+                        self.calls.len() < MAX_QUEUED_CALLS,
+                        "capability call budget exceeded ({MAX_QUEUED_CALLS} queued)"
+                    );
+                    self.calls.push(RuntimeCommand::Call {
+                        capability: capability.clone(),
+                        action: action.clone(),
+                        args: args.clone(),
+                    });
+                    self.record(tick, "call", &format!("{capability}.{action}"));
+                }
             }
         }
         Ok(())
@@ -235,9 +281,67 @@ impl Gameplay {
     pub fn command(&mut self, command: &RuntimeCommand, tick: u64) -> Result<()> {
         let mut next = self.clone();
         let mut b = Budget(0);
+        next.apply(command, tick, &mut b)?;
+        next.drain(tick, &mut b)?;
+        next.fault = None;
+        *self = next;
+        Ok(())
+    }
+    /// The slider `widget` of the document.
+    pub fn slider(&self, widget: &str) -> Result<&BoundSlider> {
+        self.compiled
+            .widgets
+            .iter()
+            .find_map(|w| match w {
+                BoundWidget::Slider(s) if s.id == widget => Some(&**s),
+                _ => None,
+            })
+            .with_context(|| format!("unknown slider {widget}"))
+    }
+    /// The value slider `s` shows: its variable, else `fallback` (the UI's last value).
+    pub fn slider_value(&self, s: &BoundSlider, fallback: Option<f64>) -> f64 {
+        match s.variable {
+            Some(i) => crate::ui_effects::number(&self.values[i]),
+            None => fallback.unwrap_or(s.value),
+        }
+    }
+    fn apply(&mut self, command: &RuntimeCommand, tick: u64, b: &mut Budget) -> Result<()> {
+        let next = self;
         match command {
             RuntimeCommand::Call { .. } => {
                 anyhow::bail!("native capability calls must be dispatched by WorldRuntime")
+            }
+            RuntimeCommand::Batch { commands } => {
+                ensure!(
+                    (1..=MAX_BATCH).contains(&commands.len()),
+                    "a batch holds 1..{MAX_BATCH} commands"
+                );
+                for (i, c) in commands.iter().enumerate() {
+                    ensure!(
+                        !matches!(
+                            c,
+                            RuntimeCommand::Batch { .. } | RuntimeCommand::Slide { .. }
+                        ),
+                        "a batch cannot hold batch or slide commands"
+                    );
+                    axiom_core::local::at(&format!("/commands/{i}"), next.apply(c, tick, b))?;
+                }
+            }
+            RuntimeCommand::Slide { widget, value } => {
+                let s = next.slider(widget)?.clone();
+                ensure!(
+                    next.test_budget(&s.when, &[], b)?,
+                    "slider {widget} is hidden (its when condition is false)"
+                );
+                let v = s.snap(*value)?;
+                if let Some(i) = s.variable {
+                    next.values[i] = if s.integer {
+                        Scalar::Int(v as i64)
+                    } else {
+                        Scalar::Number(v)
+                    };
+                }
+                next.record(tick, "slide", widget);
             }
             RuntimeCommand::Choose { node, choice } => {
                 let n = next.node.context("no active narrative")?;
@@ -252,12 +356,12 @@ impl Gameplay {
                     .context("unknown choice")?
                     .clone();
                 ensure!(
-                    next.test_budget(&c.when, &[], &mut b)?,
+                    next.test_budget(&c.when, &[], b)?,
                     "choice condition is false"
                 );
                 next.record(tick, "choice", choice);
-                next.ops(&c.ops, &[], tick, &mut b)?;
-                next.enter(c.next, tick, &mut b)?;
+                next.ops(&c.ops, &[], tick, b)?;
+                next.enter(c.next, tick, b)?;
             }
             RuntimeCommand::Emit { event, fields } => {
                 let schema = next
@@ -292,9 +396,6 @@ impl Gameplay {
                 next.locale = Some(locale.clone());
             }
         }
-        next.drain(tick, &mut b)?;
-        next.fault = None;
-        *self = next;
         Ok(())
     }
     pub fn step(&mut self, input: &crate::ActionMap, tick: u64) {
@@ -367,6 +468,7 @@ impl Gameplay {
             pending: self.pending.iter().cloned().collect(),
             locale: self.locale.clone(),
             held_inputs: self.held.clone(),
+            calls: self.call_stats.clone(),
         }
     }
     pub fn restore(&mut self, p: &Progress, tick: u64) -> Result<()> {
@@ -473,6 +575,8 @@ impl Gameplay {
             "invalid saved inputs"
         );
         next.held = p.held_inputs.clone();
+        next.calls.clear();
+        next.call_stats = p.calls.clone();
         next.fault = None;
         next.trace.clear();
         *self = next;
@@ -531,6 +635,7 @@ impl Gameplay {
             .collect();
         self.trace = old.trace.clone();
         self.trace_sequence = old.trace_sequence;
+        self.call_stats = old.call_stats.clone();
         self.record(tick, "activation", "behavior.execute");
         Ok(())
     }
@@ -580,10 +685,33 @@ impl Gameplay {
                     };
                     Some((id.clone(), json!((n / max).clamp(0.0, 1.0))))
                 }
+                BoundWidget::Slider(s) if s.variable.is_some() && self.test(&s.when) => {
+                    Some((s.id.clone(), json!(self.slider_value(s, None))))
+                }
                 _ => None,
             })
             .collect::<BTreeMap<_, _>>();
-        json!({"bindings":bindings,"variables":self.progress().variables,"node":self.node.map(|n|&self.compiled.nodes[n].id),"ending":self.ending,"choices":self.choices().iter().map(|c|json!({"id":c.id,"text":self.text(&c.text)})).collect::<Vec<_>>(),"active_scenes":self.progress().active_scenes,"pending_events":self.pending.len(),"locale":self.locale,"trace":self.trace,"error":self.fault})
+        let mut out = json!({"bindings":bindings,"variables":self.progress().variables,"node":self.node.map(|n|&self.compiled.nodes[n].id),"ending":self.ending,"choices":self.choices().iter().map(|c|json!({"id":c.id,"text":self.text(&c.text)})).collect::<Vec<_>>(),"active_scenes":self.progress().active_scenes,"pending_events":self.pending.len(),"locale":self.locale,"trace":self.trace,"error":self.fault});
+        // Only when used, so other worlds keep their observation (and state_hash).
+        if !self.animation.is_empty() {
+            out["animation_reads"] = self
+                .compiled
+                .animation_reads
+                .iter()
+                .zip(&self.animation)
+                .map(|(r, v)| {
+                    let name = json!(r.field);
+                    let mut key = format!("{}.{}", r.entity, name.as_str().unwrap_or("?"));
+                    if let Some(p) = &r.param {
+                        key.push('.');
+                        key.push_str(p);
+                    }
+                    (key, json!(v))
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
+        out
     }
 }
 pub struct BehaviorSystem;

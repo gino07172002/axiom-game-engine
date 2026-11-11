@@ -36,6 +36,11 @@ struct Rig {
     target_set: bool,
     /// Sorted slots that never block this camera: the target and its descendants.
     excluded: Vec<usize>,
+    /// `(target ID, bone)` socket the look point follows (`target_bone`), the key of
+    /// `animation_cues.sockets` kept here so a step looks it up without allocating.
+    socket: Option<(String, String)>,
+    /// Pointer drag in progress: (start screen position, yaw goal, pitch goal at the start).
+    drag: Option<([f32; 2], f32, f32)>,
     /// Goals (radians / meters) that input and `camera.follow.set` move.
     yaw_goal: f32,
     pitch_goal: f32,
@@ -75,6 +80,11 @@ impl Rig {
             target_id: def.target.clone(),
             target_set: false,
             excluded: vec![],
+            socket: def
+                .target_bone
+                .as_ref()
+                .map(|b| (def.target.clone(), b.clone())),
+            drag: None,
             yaw_goal: 0.0,
             pitch_goal: 0.0,
             distance_goal: 0.0,
@@ -134,6 +144,8 @@ impl Rig {
         json!({
             "id": self.id,
             "target": self.target_id,
+            "bone": self.socket.as_ref().map(|(_, b)| b),
+            "dragging": self.drag.is_some(),
             "enabled": self.def.enabled,
             "started": self.started,
             "desired": round(self.distance, 1000.0),
@@ -319,7 +331,7 @@ impl CameraRigSystem {
         }))
     }
 
-    fn set(&mut self, state: &RuntimeState, args: &Value) -> Result<Value> {
+    fn set(&mut self, state: &mut RuntimeState, args: &Value) -> Result<Value> {
         let i = self.rig(args)?;
         let r = &self.rigs[i];
         let target = match args.get("target").and_then(Value::as_str) {
@@ -377,12 +389,32 @@ impl CameraRigSystem {
                 "yaw must be -3600..3600 degrees"
             );
         }
+        // `bone`: a bone of the (new) target to look at, or null for its pivot.
+        let bone = match args.get("bone") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(Value::String(b)) => Some(Some(b.clone())),
+            Some(_) => anyhow::bail!("bone must be a bone name or null"),
+        };
+        let target_id = target.map_or_else(
+            || r.target_id.clone(),
+            |t| state.compiled.entities[t].id.clone(),
+        );
+        if let Some(Some(b)) = &bone {
+            request_socket(state, &target_id, b)?;
+        }
         let r = &mut self.rigs[i];
         if let Some(t) = target {
             r.target = t;
-            r.target_id = state.compiled.entities[t].id.clone();
+            r.target_id = target_id.clone();
             r.target_set = true;
             r.exclude(state);
+            if bone.is_none() {
+                r.socket = None;
+            }
+        }
+        if let Some(b) = bone {
+            r.socket = b.map(|b| (target_id, b));
         }
         if let Some(d) = distance {
             r.distance_goal = d;
@@ -398,6 +430,26 @@ impl CameraRigSystem {
         }
         Ok(r.json(state, &self.names, &self.grid))
     }
+}
+
+/// Asks `animation.evaluate` (which steps before the rig) to publish the world matrix of
+/// `bone` of `target` every step.
+fn request_socket(state: &mut RuntimeState, target: &str, bone: &str) -> Result<()> {
+    let bones = state.animation_cues.bone_names.get(target).with_context(|| {
+        format!("target_bone needs an animation.player on {target} (and the animation.evaluate system)")
+    })?;
+    ensure!(
+        bones.contains(bone),
+        "{target} has no bone {bone} (e.g. {})",
+        bones.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+    );
+    state
+        .animation_cues
+        .socket_requests
+        .entry(target.to_owned())
+        .or_default()
+        .insert(bone.to_owned());
+    Ok(())
 }
 
 /// IDs of the cameras whose `render.camera.active` is set.
@@ -497,7 +549,15 @@ impl RuntimeSystem for CameraRigSystem {
                     .clamp(def.min_distance, def.max_distance);
                 r.goals_set = true;
             }
-            let pivot = pivot(state, r.target) + Vec3::Y * def.look_height;
+            let base = match r
+                .socket
+                .as_ref()
+                .and_then(|key| state.animation_cues.sockets.get(key))
+            {
+                Some(m) => m.w_axis.truncate(),
+                None => pivot(state, r.target),
+            };
+            let pivot = base + Vec3::Y * def.look_height;
             let enabled = &state.compiled.enabled;
             let excluded = &r.excluded;
             let skip = |owner: u32| {
@@ -623,6 +683,15 @@ impl RuntimeSystem for CameraRigSystem {
                     r.exclude(next);
                 }
             }
+            // A bone chosen by camera.follow.set stays while its target and bone exist.
+            match &o.socket {
+                Some((t, b)) => {
+                    if *t == r.target_id && request_socket(next, t, b).is_ok() {
+                        r.socket = o.socket.clone();
+                    }
+                }
+                None => r.socket = None,
+            }
         }
         if let Some(id) = &old.activated {
             if old.authored_active == self.authored_active
@@ -699,6 +768,42 @@ impl RuntimeSystem for CameraRigSystem {
     fn metrics(&self) -> std::collections::BTreeMap<String, Value> {
         std::collections::BTreeMap::from([("camera".into(), self.summary())])
     }
+    fn uses_screen_pointer(&self) -> bool {
+        self.rigs.iter().any(|r| r.def.input.drag)
+    }
+    /// `input.drag`: a primary-button drag orbits active drag-enabled follow cameras. Each
+    /// move sets the goals from the drag start (absolute), so a run of moves between two
+    /// steps acts as its last one, as scenario recordings require.
+    fn screen_pointer(&mut self, state: &mut RuntimeState, pointer: &ScreenPointer) -> Result<()> {
+        for r in &mut self.rigs {
+            let def = &r.def;
+            let live = def.input.drag
+                && def.enabled
+                && state.compiled.enabled[r.slot]
+                && state.compiled.entities[r.slot]
+                    .camera
+                    .as_ref()
+                    .is_some_and(|c| c.active);
+            match pointer.kind {
+                PointerKind::PrimaryDown if live => {
+                    r.drag = Some((pointer.screen, r.yaw_goal, r.pitch_goal));
+                }
+                PointerKind::Move => {
+                    if let Some((start, yaw, pitch)) = r.drag.filter(|_| live) {
+                        let dx = pointer.screen[0] - start[0];
+                        let dy = pointer.screen[1] - start[1];
+                        r.yaw_goal = wrap(yaw - dx * def.input.drag_yaw.to_radians());
+                        r.pitch_goal = (pitch + dy * def.input.drag_pitch.to_radians())
+                            .clamp(def.min_pitch.to_radians(), def.max_pitch.to_radians());
+                        r.goals_set = true;
+                    }
+                }
+                PointerKind::PrimaryUp => r.drag = None,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 fn id_arg(v: &Value) -> Result<()> {
@@ -713,7 +818,7 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.action(
         "camera.follow.set",
         "camera",
-        json!({"id":"follow camera entity ID","target":"optional entity ID to follow (kept across hot reload while camera.follow is unchanged)","distance":"optional meters within min_distance..max_distance","yaw":"optional degrees","pitch":"optional degrees within min_pitch..max_pitch","effect":"moves the goals; the camera eases there (rotation_smoothing) and the look point trails to a new target (position_smoothing)"}),
+        json!({"id":"follow camera entity ID","target":"optional entity ID to follow (kept across hot reload while camera.follow is unchanged)","bone":"optional bone of the target's skeleton to look at, or null for the pivot (a new target without bone looks at its pivot)","distance":"optional meters within min_distance..max_distance","yaw":"optional degrees","pitch":"optional degrees within min_pitch..max_pitch","effect":"moves the goals; the camera eases there (rotation_smoothing) and the look point trails to a new target (position_smoothing)"}),
         |v| {
             id_arg(v)?;
             for k in ["distance", "yaw", "pitch"] {
@@ -726,6 +831,12 @@ pub fn register(r: &mut RuntimeRegistry) {
             }
             if let Some(t) = v.get("target") {
                 ensure!(t.is_string(), "target must be an entity ID");
+            }
+            if let Some(b) = v.get("bone") {
+                ensure!(
+                    b.is_string() || b.is_null(),
+                    "bone must be a bone name or null"
+                );
             }
             Ok(())
         },
@@ -745,6 +856,21 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring
         .action("camera.summary", "camera", json!({}), |_| Ok(()));
     r.factories.insert("camera.rig".into(), |state| {
-        Ok(Box::new(CameraRigSystem::new(state)?))
+        let system = CameraRigSystem::new(state)?;
+        for rig in &system.rigs {
+            if let Some((target, bone)) = &rig.socket {
+                request_socket(state, target, bone).map_err(|e| {
+                    axiom_core::Diagnostic::error(
+                        "invalid_camera",
+                        format!(
+                            "/entities/@{}/components/camera.follow/target_bone",
+                            axiom_core::local::escape(&rig.id)
+                        ),
+                        format!("{e:#}"),
+                    )
+                })?;
+            }
+        }
+        Ok(Box::new(system))
     });
 }

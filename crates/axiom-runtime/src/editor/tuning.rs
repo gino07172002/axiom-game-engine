@@ -56,6 +56,7 @@ impl Editor {
             "ability.edit" => ("ability", Dock::Animation),
             "vfx.edit" => ("vfx", Dock::Vfx),
             "shader.edit" => ("shader", Dock::Inspector),
+            "anim.stage" => ("stage", Dock::Animation),
             "input.capture" => return self.input_capture_command(arg).map(|_| vec![]),
             "loc.filter" => {
                 self.tuning.loc.filter = arg.unwrap_or_default().to_owned();

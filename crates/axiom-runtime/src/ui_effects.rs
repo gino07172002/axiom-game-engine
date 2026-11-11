@@ -168,6 +168,7 @@ pub fn widget_visible(g: &Gameplay, w: &BoundWidget) -> bool {
             .is_some_and(|n| g.compiled.nodes[n].choices.iter().any(|c| g.test(&c.when))),
         BoundWidget::Image(_, image) => g.images.contains_key(image),
         BoundWidget::Progress(..) => true,
+        BoundWidget::Slider(s) => g.test(&s.when),
     }
 }
 
@@ -425,6 +426,7 @@ fn widget_name(w: &BoundWidget) -> &str {
         | BoundWidget::Choices(id)
         | BoundWidget::Image(id, _)
         | BoundWidget::Progress(id, ..) => id,
+        BoundWidget::Slider(s) => &s.id,
     }
 }
 

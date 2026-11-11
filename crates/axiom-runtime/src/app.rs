@@ -71,6 +71,9 @@ struct App {
     egui_state: Option<egui_winit::State>,
     keys: HashSet<KeyCode>,
     mouse_down: bool,
+    /// Mouse wheel notches over the game not yet stepped (+ = away from the user). Each fixed
+    /// step consumes one as the pseudo key `WheelUp` / `WheelDown` (input.bindings axes).
+    wheel: f32,
     focused: bool,
     captured: bool,
     last: Instant,
@@ -746,6 +749,7 @@ impl App {
             egui_state: None,
             keys: HashSet::new(),
             mouse_down: false,
+            wheel: 0.0,
             focused: true,
             captured: false,
             last: Instant::now(),
@@ -1400,10 +1404,24 @@ impl App {
         let max = (12.0 * scale.max(1.0)).ceil() as u32;
         let mut steps = 0;
         while self.accumulator >= FIXED_DT && steps < max {
+            let notch = if self.wheel >= 1.0 {
+                Some("WheelUp")
+            } else if self.wheel <= -1.0 {
+                Some("WheelDown")
+            } else {
+                None
+            };
+            let wheeled = notch.map(|key| {
+                self.wheel -= self.wheel.signum();
+                let mut keys = keys.clone();
+                keys.insert(key.into());
+                ActionMap::from_bindings(&self.runtime.bindings, &keys)
+            });
+            let input = wheeled.as_ref().unwrap_or(&input);
             if let Some(recorder) = self.recorder() {
-                recorder.step(&input);
+                recorder.step(input);
             }
-            self.runtime.step(&input);
+            self.runtime.step(input);
             self.accumulator -= FIXED_DT;
             steps += 1;
         }
@@ -3135,6 +3153,19 @@ impl ApplicationHandler for App {
                     && self.pointer_to_game(consumed)
                 {
                     self.screen_pointer(crate::world::PointerKind::SecondaryDown);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.ui.playing
+                    && !self.ui.console
+                    && !self.captured
+                    && self.pointer_to_game(consumed)
+                {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
+                    };
+                    self.wheel = (self.wheel + notches).clamp(-8.0, 8.0);
                 }
             }
             WindowEvent::CloseRequested => event_loop.exit(),

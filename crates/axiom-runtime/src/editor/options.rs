@@ -310,6 +310,8 @@ impl OptionsDialog {
                     ),
                     Field::new("radius", "Collision radius (m)", Number, "0.2"),
                     Field::new("collide", "Stop at walls", Bool, "on"),
+                    Field::new("drag", "Mouse drag orbits", Bool, "off"),
+                    Field::new("bone", "Look at bone", Text, ""),
                 ],
             ),
             "behavior.fsm_agent" => {
@@ -664,6 +666,8 @@ impl OptionsDialog {
                     look_height: self.number("height")?,
                     radius: self.number("radius")?,
                     collision: self.bool("collide"),
+                    drag: self.bool("drag"),
+                    bone: self.text("bone").filter(|b| !b.is_empty()),
                     ..Default::default()
                 };
                 editor.camera_follow_selection(&options)

@@ -142,6 +142,14 @@ AI 可以執行同一批指令:`discover editor_commands` 列出所有 ID,再以
 - **陣列內與 JSON 模式的覆寫標記**:陣列不會和 prefab 合併,實例的陣列整個是自己的(陣列標頭的滑鼠提示會說明);陣列裡和 prefab 同位置的值不一樣的欄位(例如 `render.mesh` 的 `parts[1].color`)也有藍色條,包含它的項目索引是淡藍色,和 prefab 相同的項目外觀不變。右鍵 ▸ Revert to Prefab / Apply to Prefab 只複製這一個值(實例的陣列整個等於 prefab 的時候覆寫自動移除),**Revert Whole Array** / **Apply Whole Array** 作用在整個陣列。項目裡 prefab 沒有的鍵也能單獨處理(Revert = 從實例移除、Apply = 加進 prefab 的項目);prefab 的陣列沒有的項目(實例多出來的項目)只能整個陣列處理,選單的單值項目停用(ACL 錯誤 `no_prefab_value`)。元件切到 JSON 模式時,覆寫的鍵在文字左側 gutter 有同樣的藍色條與右鍵選單;JSON 改過還沒套用(或草稿過期)時不畫,避免標錯行。同一組 ACL:`prefab revert SEL render.mesh/parts/1/color`、`prefab apply ID render.mesh/parts/1/color`。
 - **Game 分頁的遊戲 UI**:HUD、對話、提示以 Play Maximized 時的空間(整個編輯器視窗)排版,再依遊戲區大小等比縮小(0.25–1 倍;長寬比不同時短邊對齊、長邊多出空間),所以 Game 分頁看到的是最大化版面的縮小版;滑鼠位置同步換算。
 
+## 編排與互動(工作線 W2c,2026-11-12)
+
+詳見 `docs/choreography.zh-TW.md`。編輯器入口(全部與 ACL 同一個 `ops`,parity 測試見 `docs/editor-parity.zh-TW.md`):
+- **UI Editor**:按鈕指令可為 `batch`(Command 列顯示「N commands in one tick」,Fields 編輯內容;`ui.button W batch [..]`);新 widget 種類 **slider**(`ui.slider add ID TEXT_KEY MIN MAX …`;畫布照常顯示、可拖到區域、Fields 表單編輯 min / max / step / variable / command / arg / when)。遊戲中拖曳 slider 只改畫面上的草稿,放開才送一個 `slide` 指令;方向鍵每次改變送一個。
+- **Graphs ▸ Rules**:動作種類 `call`(capability / action / args),條件運算元種類 `animation`(entity 只列有 `animation.player` 的物件,field 下拉)。
+- **World 選單** `anim.stage ID set {..} | ID remove`:`animation.choreography` 階段。
+- **Object 選單** `object.parts auto R [event=E] | add … | remove ID | event E|none | clear`:選取角色的可點擊部位膠囊。
+- **Object ▸ Camera Follow Selected** 對話框:「Mouse drag orbits」(`input.drag`)、「Look at bone」(`target_bone`)。
 ## 驗證
 
 ```powershell

@@ -19,6 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
+#[path = "animation_choreo.rs"]
+mod choreo;
+#[path = "animation_parts.rs"]
+mod parts;
+
 #[derive(Clone, Default)]
 pub(crate) struct AnimationCues {
     pub pending: Vec<PlayArgs>,
@@ -345,6 +350,12 @@ pub struct AnimationSystem {
     /// The editor's last scrubbed pose: (entity, clip, seconds, pose). A playhead that did not
     /// move reuses it, so an idle preview neither clones nor evaluates per frame.
     scrubbed: Option<(String, String, f32, Pose)>,
+    /// `animation.choreography` stages and the running one (`animation.stage`).
+    choreo: choreo::Choreo,
+    /// `behavior.program` animation reads this system publishes each step.
+    reads: Vec<choreo::ReadSlot>,
+    /// `animation.parts` click capsules.
+    parts: parts::Parts,
 }
 
 /// An entity posed by the editor's Animation timeline for one extraction: only the drawn
@@ -477,6 +488,8 @@ fn load_asset(source: &axiom_animation::authoring::Source) -> Result<Arc<Asset>>
 }
 pub fn register(registry: &mut RuntimeRegistry) {
     axiom_animation::authoring::register(&mut registry.authoring);
+    choreo::register(&mut registry.authoring);
+    parts::register(&mut registry.authoring);
     registry
         .factories
         .insert("animation.evaluate".into(), |state| {
@@ -547,14 +560,22 @@ pub fn register(registry: &mut RuntimeRegistry) {
                 })
                 .collect();
             let (markers, events) = compile_markers(state, &lib, &mut players)?;
-            Ok(Box::new(AnimationSystem {
+            let choreo = choreo::Choreo::build(state, &players)?;
+            let reads = choreo::resolve_reads(state, &players)?;
+            let parts = parts::Parts::build(state, &players)?;
+            let system = AnimationSystem {
                 players,
                 markers,
                 events,
                 fired: 0,
                 emit_fault: None,
                 scrubbed: None,
-            }))
+                choreo,
+                reads,
+                parts,
+            };
+            system.publish(state);
+            Ok(Box::new(system))
         });
 }
 impl RuntimeSystem for AnimationSystem {
@@ -685,7 +706,12 @@ impl RuntimeSystem for AnimationSystem {
                 p.fault = Some(format!("{e:#}"));
             }
         }
+        let stage_done = self.stage_cycles();
         self.fire_markers(state);
+        if stage_done {
+            self.advance_stage(state);
+        }
+        self.publish(state);
         if !state.animation_cues.socket_requests.is_empty() {
             let models = state.matrices();
             state.animation_cues.sockets.clear();
@@ -712,6 +738,13 @@ impl RuntimeSystem for AnimationSystem {
     fn checkpoint_supported(&self) -> bool {
         true
     }
+    fn uses_screen_pointer(&self) -> bool {
+        self.parts.any()
+    }
+    fn screen_pointer(&mut self, state: &mut RuntimeState, pointer: &ScreenPointer) -> Result<()> {
+        self.parts_pointer(state, pointer);
+        Ok(())
+    }
     fn save_state(&self, state: &RuntimeState) -> Option<Result<Value>> {
         let saved = SavedAnimation {
             players: self
@@ -722,6 +755,8 @@ impl RuntimeSystem for AnimationSystem {
             fired: self.fired,
             emit_fault: self.emit_fault.clone(),
             finished: state.animation_cues.finished.iter().cloned().collect(),
+            stage: self.choreo.save(),
+            picks: self.parts.save(),
         };
         Some(serde_json::to_value(saved).map_err(Into::into))
     }
@@ -742,6 +777,9 @@ impl RuntimeSystem for AnimationSystem {
             .into_iter()
             .filter(|id| self.players.contains_key(id))
             .collect();
+        self.choreo.load(saved.stage.as_ref())?;
+        self.parts.load(saved.picks.as_ref())?;
+        self.publish(state);
         Ok(())
     }
     fn validate(&self, _: &RuntimeState) -> Result<()> {
@@ -762,88 +800,55 @@ impl RuntimeSystem for AnimationSystem {
             return None;
         }
         Some((|| {
-            let entity = args
-                .get("entity")
-                .and_then(Value::as_str)
-                .context("entity required")?;
-            let old = self
-                .players
-                .get(entity)
-                .with_context(|| format!("animation entity missing: {entity}"))?;
+            if action == "stage" {
+                return self.start_stage(state, choreo::stage_arg(args)?);
+            }
+            if action == "pick" {
+                return self.pick_command(state, args);
+            }
             if action == "inspect" {
+                let entity = args
+                    .get("entity")
+                    .and_then(Value::as_str)
+                    .context("entity required")?;
+                let old = self
+                    .players
+                    .get(entity)
+                    .with_context(|| format!("animation entity missing: {entity}"))?;
                 let args: InspectArgs = serde_json::from_value(args.clone())?;
                 return old.inspect(&args.bones);
             }
-            let mut p = old.clone();
-            match action {
-                "play" => {
-                    p.play(serde_json::from_value(args.clone())?)?;
-                    state.animation_cues.finished.remove(entity);
-                }
-                "seek" => {
-                    let a: SeekArgs = serde_json::from_value(args.clone())?;
-                    p.time = a.seconds;
-                    p.playing = !a.paused;
-                    p.fade = None;
-                    // A jump fires nothing on the way; only a seek to 0 restarts the markers.
-                    p.marker_fresh = a.seconds == 0.0;
-                }
-                "ik" => {
-                    let a: IkArgs = serde_json::from_value(args.clone())?;
-                    let mut c =
-                        p.ik.get(&a.id)
-                            .context("IK constraint missing")?
-                            .source
-                            .clone();
-                    c.target = a.target;
-                    if let Some(pole) = a.pole {
-                        c.pole = pole
-                    }
-                    if let Some(weight) = a.weight {
-                        c.weight = weight
-                    }
-                    p.ik.insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
-                }
-                "twist" => {
-                    let a: TwistArgs = serde_json::from_value(args.clone())?;
-                    let mut c = p
-                        .config
-                        .twists
-                        .get(&a.id)
-                        .context("twist constraint missing")?
-                        .clone();
-                    c.enabled = a.enabled;
-                    p.twists
-                        .insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
-                }
-                "bone" => {
-                    let a: BoneArgs = serde_json::from_value(args.clone())?;
-                    let i = p.asset.skeleton.bone(&a.bone)?;
-                    p.overrides.insert(i, a.rotation);
-                }
-                "speed" => {
-                    let a: SpeedArgs = serde_json::from_value(args.clone())?;
-                    if a.ramp_seconds > 0.0 {
-                        p.ramp = Some((p.speed, a.speed, 0.0, a.ramp_seconds));
-                    } else {
-                        p.speed = a.speed;
-                        p.ramp = None;
-                    }
-                }
-                "param" => {
-                    let a: ParamArgs = serde_json::from_value(args.clone())?;
-                    let c = p.animator.as_mut().with_context(|| {
-                        format!("{entity} has no animation.controller (parameters belong to controllers)")
-                    })?;
-                    c.compiled.set_param(&mut c.state, &a.name, a.value)?;
-                }
-                _ => anyhow::bail!("unknown animation action {action}"),
+            let (entity, p) = self.prepare(action, args)?;
+            if action == "play" {
+                state.animation_cues.finished.remove(&entity);
             }
-            p.evaluate(0.)?;
             let response = p.inspect(&[])?;
-            self.players.insert(entity.to_owned(), p);
+            self.players.insert(entity, p);
+            self.publish(state);
             Ok(response)
         })())
+    }
+    fn check_command(
+        &self,
+        _state: &RuntimeState,
+        capability: &str,
+        action: &str,
+        args: &Value,
+    ) -> Option<Result<()>> {
+        if capability != "animation" {
+            return None;
+        }
+        Some(match action {
+            "stage" => choreo::stage_arg(args).and_then(|s| self.stage_plan(s).map(drop)),
+            "pick" => Ok(()),
+            "inspect" => args
+                .get("entity")
+                .and_then(Value::as_str)
+                .filter(|e| self.players.contains_key(*e))
+                .map(drop)
+                .context("animation entity missing"),
+            _ => self.prepare(action, args).map(drop),
+        })
     }
     fn transfer(
         &mut self,
@@ -894,6 +899,9 @@ impl RuntimeSystem for AnimationSystem {
                 }
             }
         }
+        self.choreo.transfer(&old.choreo);
+        self.parts.transfer(&old.parts);
+        self.publish(next);
         Ok(())
     }
     fn extract(&self, state: &RuntimeState, frame: &mut RenderFrame) {
@@ -949,7 +957,94 @@ impl RuntimeSystem for AnimationSystem {
         if let Some(f) = &self.emit_fault {
             out["emit_fault"] = json!(f);
         }
+        if let Some(stage) = self.choreo.metrics() {
+            out["stage"] = stage;
+        }
+        if let Some(pick) = self.parts.metrics() {
+            out["pick"] = pick;
+        }
         BTreeMap::from([("animation".into(), out)])
+    }
+}
+
+impl AnimationSystem {
+    /// `animation.ACTION args` applied to a copy of the entity's player (nothing changes
+    /// here): the command commits it, `check_command` (batches) only checks it.
+    fn prepare(&self, action: &str, args: &Value) -> Result<(String, Controller)> {
+        let entity = args
+            .get("entity")
+            .and_then(Value::as_str)
+            .context("entity required")?;
+        let old = self
+            .players
+            .get(entity)
+            .with_context(|| format!("animation entity missing: {entity}"))?;
+        let mut p = old.clone();
+        match action {
+            "play" => p.play(serde_json::from_value(args.clone())?)?,
+            "seek" => {
+                let a: SeekArgs = serde_json::from_value(args.clone())?;
+                p.time = a.seconds;
+                p.playing = !a.paused;
+                p.fade = None;
+                // A jump fires nothing on the way; only a seek to 0 restarts the markers.
+                p.marker_fresh = a.seconds == 0.0;
+            }
+            "ik" => {
+                let a: IkArgs = serde_json::from_value(args.clone())?;
+                let mut c =
+                    p.ik.get(&a.id)
+                        .context("IK constraint missing")?
+                        .source
+                        .clone();
+                c.target = a.target;
+                if let Some(pole) = a.pole {
+                    c.pole = pole
+                }
+                if let Some(weight) = a.weight {
+                    c.weight = weight
+                }
+                p.ik.insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
+            }
+            "twist" => {
+                let a: TwistArgs = serde_json::from_value(args.clone())?;
+                let mut c = p
+                    .config
+                    .twists
+                    .get(&a.id)
+                    .context("twist constraint missing")?
+                    .clone();
+                c.enabled = a.enabled;
+                p.twists
+                    .insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
+            }
+            "bone" => {
+                let a: BoneArgs = serde_json::from_value(args.clone())?;
+                let i = p.asset.skeleton.bone(&a.bone)?;
+                p.overrides.insert(i, a.rotation);
+            }
+            "speed" => {
+                let a: SpeedArgs = serde_json::from_value(args.clone())?;
+                if a.ramp_seconds > 0.0 {
+                    p.ramp = Some((p.speed, a.speed, 0.0, a.ramp_seconds));
+                } else {
+                    p.speed = a.speed;
+                    p.ramp = None;
+                }
+            }
+            "param" => {
+                let a: ParamArgs = serde_json::from_value(args.clone())?;
+                let c = p.animator.as_mut().with_context(|| {
+                    format!(
+                        "{entity} has no animation.controller (parameters belong to controllers)"
+                    )
+                })?;
+                c.compiled.set_param(&mut c.state, &a.name, a.value)?;
+            }
+            _ => anyhow::bail!("unknown animation action {action}"),
+        }
+        p.evaluate(0.)?;
+        Ok((entity.to_owned(), p))
     }
 }
 
@@ -1335,6 +1430,12 @@ struct SavedAnimation {
     /// Entities whose one-shot clip had finished (FSM `clip_finished` reads it first).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     finished: Vec<String>,
+    /// `animation.choreography` state (worlds with stages; absent in older checkpoints).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage: Option<choreo::SavedStage>,
+    /// `animation.parts` click counters (worlds with parts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    picks: Option<parts::SavedPicks>,
 }
 
 fn save_layer(c: &controller::Compiled, l: &controller::Layer) -> SavedLayer {

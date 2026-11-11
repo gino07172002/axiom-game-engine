@@ -1407,6 +1407,17 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Object ▸ Clickable Body Parts (`ACL: parts SEL ARGS`) on the selection.
+    pub(super) fn parts_selection(&mut self, arg: &str) -> Option<Action> {
+        let ids = self.selection();
+        let result = axiom_core::acl::parts_edit_text(arg)
+            .and_then(|edit| ops::edit_parts(&self.world, &ids, &edit));
+        if result.as_ref().is_ok_and(Vec::is_empty) {
+            return None;
+        }
+        self.op_write(result, None)
+    }
+
     /// World ▸ Migrate Legacy Camera Blockers (`ACL: migrate camera_blocker`).
     pub(super) fn migrate_camera_blockers(&mut self) -> Option<Action> {
         let result = ops::migrate_camera_blocker_tags(&self.world);
