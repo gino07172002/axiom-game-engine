@@ -79,6 +79,10 @@ struct App {
     frames: u32,
     /// On-demand capture requested over the bridge; written on the next rendered frame.
     pending_capture: Option<PathBuf>,
+    /// Loopback `screenshot` op: one capture at a time, replied when written.
+    shots: crate::screenshot::Loopback,
+    /// Who the screenshot read-back in flight (or about to be recorded) belongs to.
+    grab_owner: Option<GrabOwner>,
     observation: Arc<RwLock<Observation>>,
     _bridge: Option<Bridge>,
     error: Option<anyhow::Error>,
@@ -281,6 +285,16 @@ impl FramePhases {
 }
 
 /// One editor write in the background writer's queue (see `crate::writer`).
+/// The request a screenshot read-back belongs to (loopback: its crop region and scale taken
+/// when the grab was asked for).
+enum GrabOwner {
+    Loopback {
+        region: Option<egui::Rect>,
+        ppp: f32,
+    },
+    Editor,
+}
+
 struct PendingWrite {
     seq: u64,
     kind: WriteKind,
@@ -739,6 +753,8 @@ impl App {
             poll_elapsed: 0.0,
             frames: 0,
             pending_capture: None,
+            shots: Default::default(),
+            grab_owner: None,
             observation,
             _bridge: bridge,
             error: None,
@@ -1771,6 +1787,9 @@ impl App {
                 }
                 result
             }
+            Request::Screenshot { .. } => anyhow::bail!(
+                "screenshot replies when its PNG is written; send it over the loopback bridge (axiom --connect ADDR rpc)"
+            ),
             _ => anyhow::bail!("not a runtime request"),
         }
     }
@@ -2407,6 +2426,31 @@ impl App {
                 return Some(command);
             }
         }
+        // Loopback screenshot: answered once the PNG is written (or the capture failed).
+        if let Request::Screenshot { path, region } = &command.request {
+            let queued = (|| -> Result<()> {
+                let view = match region.as_deref() {
+                    None | Some("window") => false,
+                    Some("view") => true,
+                    Some(other) => anyhow::bail!("region must be window|view, not {other}"),
+                };
+                anyhow::ensure!(self.renderer.is_some(), "no window to capture (headless)");
+                let path = crate::screenshot::validate_path(path)?;
+                self.shots.request(crate::screenshot::Request {
+                    path,
+                    view,
+                    asked: Instant::now(),
+                    reply: None,
+                })
+            })();
+            match queued {
+                Ok(()) => self.shots.set_reply(command.reply),
+                Err(error) => {
+                    let _ = command.reply.send(axiom_core::error_response(&error));
+                }
+            }
+            return None;
+        }
         let editor_view = matches!(command.request, Request::EditorView { .. });
         let before = self.writes.as_ref().map_or(0, |w| w.next_seq);
         // Editor writes this request makes (`editor_view {command}`) are an agent's.
@@ -2487,6 +2531,7 @@ impl App {
                         .device
                         .generate_allocator_report()
                         .map(|r| r.total_allocated_bytes);
+                    editor.vram = Some(renderer.vram.read());
                 }
             }
         }
@@ -2865,6 +2910,58 @@ impl App {
                 out.shapes.clear();
             }
         }
+        // On-demand screenshots (loopback `screenshot`, editor `view.screenshot`) and the
+        // editor Scene view display mode (view state, not content). The renderer maps the
+        // grabbed frame asynchronously; it is handed over on a later frame (never waited for)
+        // to the request that asked for it (`grab_owner`), so a capture never gets a frame
+        // recorded before it was requested. One read-back at a time, the loopback first.
+        self.shots.poll();
+        let ppp = ctx.pixels_per_point();
+        let take_started = Instant::now();
+        if let Some(grabbed) = self.renderer.as_mut().unwrap().take_grab() {
+            eprintln!(
+                "screenshot: frame handed over in {:.2} ms on the main thread",
+                take_started.elapsed().as_secs_f64() * 1000.0
+            );
+            match self.grab_owner.take() {
+                Some(GrabOwner::Loopback { region, ppp }) => {
+                    let crop = grabbed
+                        .as_ref()
+                        .ok()
+                        .zip(region)
+                        .map(|(f, r)| crate::screenshot::physical(r, ppp, f.width, f.height));
+                    self.shots.grabbed(grabbed, crop);
+                }
+                Some(GrabOwner::Editor) => {
+                    if let Some(editor) = &mut self.editor {
+                        editor.grabbed(grabbed, ppp);
+                    }
+                }
+                None => {}
+            }
+        }
+        let in_flight = self.renderer.as_ref().unwrap().grab_in_flight();
+        if self.grab_owner.is_none() && !in_flight {
+            // The crop region of a loopback `view` capture is taken now, at request time.
+            self.grab_owner = if self.shots.wants_grab() {
+                Some(GrabOwner::Loopback {
+                    region: self
+                        .editor
+                        .as_ref()
+                        .filter(|_| self.shots.view())
+                        .and_then(|e| e.capture_region()),
+                    ppp,
+                })
+            } else if self.editor.as_ref().is_some_and(|e| e.wants_grab()) {
+                Some(GrabOwner::Editor)
+            } else {
+                None
+            };
+            self.renderer.as_mut().unwrap().grab = self.grab_owner.is_some();
+        }
+        self.renderer.as_mut().unwrap().unlit_view =
+            self.editor.as_ref().and_then(|e| e.unlit_view());
+        let render_started = Instant::now();
         let rendered = self.renderer.as_mut().unwrap().render(
             &frame,
             &ctx,
@@ -2872,6 +2969,13 @@ impl App {
             game_ctx.as_ref().zip(game_output),
             capture_path,
         )?;
+        if !in_flight && self.renderer.as_ref().unwrap().grab_in_flight() {
+            // The whole frame (normal rendering + recording the copy), once per screenshot.
+            eprintln!(
+                "screenshot: grab frame rendered in {:.1} ms (no GPU wait)",
+                render_started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         if !rendered {
             self.frames -= 1;
             // Keep an on-demand capture for the next frame that actually renders.

@@ -69,6 +69,9 @@ pub(super) struct Spec {
     pub max_items: Option<usize>,
     /// The type has a valid default value (component Reset is offered).
     pub resettable: bool,
+    /// The component's default value (`ops::default_value`): top-level fields still equal
+    /// to it are drawn under the "Advanced" summary row.
+    pub value_default: Option<Value>,
 }
 
 impl Spec {
@@ -85,6 +88,7 @@ impl Spec {
             items: None,
             max_items: None,
             resettable: false,
+            value_default: None,
         }
     }
 
@@ -240,7 +244,8 @@ impl SpecCache {
         self.builds += 1;
         let mut spec = axiom_core::typed_schema::typed_schema(registry, world, id)
             .map_or_else(Spec::auto, |v| Spec::compile(&v));
-        spec.resettable = axiom_core::ops::default_value(world, registry, id).is_some();
+        spec.value_default = axiom_core::ops::default_value(world, registry, id);
+        spec.resettable = spec.value_default.is_some();
         let spec = Arc::new(spec);
         self.map
             .insert(id.to_owned(), (record.cloned(), spec.clone()));
@@ -382,7 +387,15 @@ fn object_fields(
     let auto = Spec::auto();
     // Schema order is not meaningful (alphabetical); the value's own order is kept.
     let keys: Vec<String> = map.keys().cloned().collect();
+    let advanced = if depth == 0 && ctx.filter.is_empty() {
+        advanced_keys(ctx, spec, &keys)
+    } else {
+        vec![]
+    };
     for key in keys {
+        if advanced.contains(&key) {
+            continue;
+        }
         let pointer = format!("{prefix}/{}", escape(&key));
         let child = map.get_mut(&key).expect("key listed above");
         if !matches_filter(ctx.filter, &pointer, child) {
@@ -390,6 +403,77 @@ fn object_fields(
         }
         let field_spec = spec.child(&key).unwrap_or(&auto);
         field(ui, ctx, field_spec, &key, child, &pointer, depth, out);
+    }
+    if advanced.is_empty() {
+        return;
+    }
+    // "Advanced (N): a, b, …" summary row; open, it shows those fields.
+    let id = ui.make_persistent_id("form_advanced");
+    let state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let mut title = egui::text::LayoutJob::default();
+    let body = ui.style().text_styles[&egui::TextStyle::Body].clone();
+    title.append(
+        &format!("Advanced ({})", advanced.len()),
+        0.0,
+        egui::TextFormat::simple(body, MUTED),
+    );
+    if !state.is_open() {
+        title.append(
+            &advanced.join(", "),
+            12.0,
+            egui::TextFormat::simple(egui::FontId::proportional(11.5), MUTED.gamma_multiply(0.75)),
+        );
+    }
+    title.wrap = egui::text::TextWrapping::truncate_at_width(
+        (room(ui) - ui.spacing().indent - 2.0 * ui.spacing().button_padding.x).max(24.0),
+    );
+    let title = ui.fonts(|f| f.layout_job(title));
+    let response = egui::CollapsingHeader::new(title)
+        .id_salt(id)
+        .default_open(false)
+        .show(ui, |ui| {
+            for key in &advanced {
+                let pointer = format!("{prefix}/{}", escape(key));
+                let Some(child) = map.get_mut(key) else {
+                    continue;
+                };
+                let field_spec = spec.child(key).unwrap_or(&auto);
+                field(ui, ctx, field_spec, key, child, &pointer, depth, out);
+            }
+        });
+    ctx.rect("form:advanced".into(), response.header_response.rect);
+    response.header_response.on_hover_text(
+        "Fields still at the component's default value. They move up once a committed value differs.",
+    );
+}
+
+/// Top-level fields drawn under "Advanced": still equal (committed) to the component's default,
+/// not mixed across the selection, not a prefab override, not the header's `enabled`. Only
+/// when that leaves at least two fields above and hides at least two.
+fn advanced_keys(ctx: &Ctx, spec: &Spec, keys: &[String]) -> Vec<String> {
+    let Some(Value::Object(default)) = &spec.value_default else {
+        return vec![];
+    };
+    let hidden: Vec<String> = keys
+        .iter()
+        .filter(|key| {
+            let pointer = format!("/{}", escape(key));
+            key.as_str() != "enabled"
+                && default.get(key.as_str()).is_some()
+                && ctx.base.get(key.as_str()) == default.get(key.as_str())
+                && !ctx
+                    .mixed
+                    .iter()
+                    .any(|m| m == &pointer || m.starts_with(&format!("{pointer}/")))
+                && !ctx.marked(&pointer)
+        })
+        .cloned()
+        .collect();
+    if hidden.len() >= 2 && keys.len() - hidden.len() >= 2 {
+        hidden
+    } else {
+        vec![]
     }
 }
 
@@ -1179,7 +1263,47 @@ fn reference(
     } else {
         current.clone()
     };
-    let r = egui::ComboBox::from_id_salt(("ref", pointer))
+    // Asset kinds keyed by this field's resource map (models, materials, machines, clips).
+    let asset = axiom_core::assets::AssetKind::ALL
+        .into_iter()
+        .find(|k| k.location() == Some((resource, at)));
+    // An asset reference: copy `kind:id` and show it in the Assets tab (`asset.reveal`),
+    // left of the picker so a narrow Inspector clips the picker, not the buttons.
+    if let (Some(kind), false) = (asset, current.is_empty() || mixed || !known) {
+        let reference = format!("{}:{current}", kind.name());
+        let icons = super::icons::Icons::of(ui.ctx());
+        let copy = super::theme::icon_button_sized(
+            ui,
+            icons,
+            super::icons::Icon::Copy,
+            &format!("Copy {reference}"),
+            false,
+            20.0,
+        );
+        ctx.rect(format!("form:{pointer}:copy"), copy.rect);
+        if copy.clicked() {
+            ui.ctx().copy_text(reference.clone());
+        }
+        let show = super::theme::icon_button_sized(
+            ui,
+            icons,
+            super::icons::Icon::Search,
+            &format!("Show {reference} in Assets (asset.reveal)"),
+            false,
+            20.0,
+        );
+        ctx.rect(format!("form:{pointer}:reveal"), show.rect);
+        if show.clicked() {
+            super::asset_browser::request_reveal(ui.ctx(), reference);
+        }
+    }
+    let mut combo = egui::ComboBox::from_id_salt(("ref", pointer));
+    if asset.is_some() && !(current.is_empty() || mixed || !known) {
+        // The buttons are already placed: the picker takes the visible rest of the row.
+        combo =
+            combo.width((room(ui) - 2.0 * ui.spacing().button_padding.x - 16.0).clamp(48.0, 220.0));
+    }
+    let r = combo
         .selected_text(RichText::new(text).color(if known { Color32::LIGHT_GRAY } else { WARNING }))
         .show_ui(ui, |ui| {
             if *kind == Kind::Event && ui.selectable_label(current.is_empty(), "(none)").clicked() {

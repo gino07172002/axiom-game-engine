@@ -33,8 +33,9 @@ pub(crate) enum Filter {
     #[default]
     All,
     Kind(AssetKind),
-    /// Source folder of model / image files.
-    Folder(String),
+    /// A folder of the Assets tree (`Models/content/plaza`, `Prefabs/bulk`): everything at or
+    /// under it.
+    Path(String),
 }
 
 /// The world's assets and everything drawn per cell, built once per world version.
@@ -43,16 +44,106 @@ struct Rows {
     entries: Vec<AssetEntry>,
     /// Lower-case `kind id file` for search.
     haystack: Vec<String>,
-    /// Source folder (files only).
-    folder: Vec<Option<String>>,
+    /// Folder of the Assets tree the entry sits in (`Kind title/...`).
+    vpath: Vec<String>,
     /// List detail (`file · N refs`).
     detail: Vec<String>,
     refs: Vec<usize>,
     requests: Vec<Option<Request>>,
-    /// Tree rows: `All (n)`, one per kind, then folders `(folder, title)`.
-    all_title: String,
+    /// Per kind `(kind, "Title  n", n)` (filter drop-down).
     kind_titles: Vec<(AssetKind, String, usize)>,
-    folders: Vec<(String, String)>,
+    /// The folder tree in display order (depth first).
+    tree: Vec<TreeNode>,
+}
+
+/// One folder of the Assets tree: a kind (depth 0), then the source folders of files or the
+/// `/`-separated prefixes of asset IDs.
+pub(crate) struct TreeNode {
+    pub path: String,
+    pub name: String,
+    pub depth: usize,
+    /// Assets at or under this folder.
+    pub count: usize,
+    pub kind: Option<AssetKind>,
+    pub children: bool,
+}
+
+/// The tree folder of `entry`: the kind title, then the last two source folders of a file
+/// (enough to tell packs apart) or the ID's `/` prefix.
+fn vpath(entry: &AssetEntry) -> String {
+    let root = entry.kind.title();
+    match entry.path.as_deref() {
+        Some(p) => {
+            let cut = p.len() - assets::file_name(p).len();
+            let dir = p[..cut].trim_end_matches(['/', '\\']);
+            let parts: Vec<&str> = dir
+                .rsplit(['/', '\\'])
+                .filter(|s| !s.is_empty() && !s.ends_with(':') && *s != "." && *s != "..")
+                .take(2)
+                .collect();
+            if parts.is_empty() {
+                root.to_owned()
+            } else {
+                let short: Vec<&str> = parts.into_iter().rev().collect();
+                format!("{root}/{}", short.join("/"))
+            }
+        }
+        None => match entry.id.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => format!("{root}/{dir}"),
+            _ => root.to_owned(),
+        },
+    }
+}
+
+/// Whether `vpath` is `folder` or under it.
+fn in_folder(vpath: &str, folder: &str) -> bool {
+    vpath
+        .strip_prefix(folder)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Depth-first folder tree of the entries' folders: kinds in `AssetKind::ALL` order (only
+/// those with assets), children by name.
+fn tree(entries: &[AssetEntry], vpaths: &[String]) -> Vec<TreeNode> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut children: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for v in vpaths {
+        let mut end = 0;
+        let mut parent: Option<&str> = None;
+        for segment in v.split('/') {
+            end += segment.len();
+            let prefix = &v[..end];
+            *count.entry(prefix).or_default() += 1;
+            if let Some(p) = parent {
+                children.entry(p).or_default().insert(prefix);
+            }
+            parent = Some(prefix);
+            end += 1;
+        }
+    }
+    let mut out = vec![];
+    let mut stack: Vec<(&str, usize, Option<AssetKind>)> = AssetKind::ALL
+        .iter()
+        .rev()
+        .filter(|k| entries.iter().any(|e| e.kind == **k))
+        .map(|k| (k.title(), 0, Some(*k)))
+        .collect();
+    while let Some((path, depth, kind)) = stack.pop() {
+        let kids = children.get(path);
+        out.push(TreeNode {
+            path: path.to_owned(),
+            name: path.rsplit('/').next().unwrap_or(path).to_owned(),
+            depth,
+            count: count.get(path).copied().unwrap_or(0),
+            kind,
+            children: kids.is_some(),
+        });
+        if let Some(kids) = kids {
+            stack.extend(kids.iter().rev().map(|k| (*k, depth + 1, None)));
+        }
+    }
+    out
 }
 
 impl Rows {
@@ -62,26 +153,17 @@ impl Rows {
         let mut rows = Rows {
             version,
             haystack: Vec::with_capacity(entries.len()),
-            folder: Vec::with_capacity(entries.len()),
+            vpath: Vec::with_capacity(entries.len()),
             detail: Vec::with_capacity(entries.len()),
             refs: Vec::with_capacity(entries.len()),
             requests: Vec::with_capacity(entries.len()),
-            all_title: format!("All  {}", entries.len()),
             kind_titles: vec![],
-            folders: vec![],
+            tree: vec![],
             entries: vec![],
         };
-        let mut folders: std::collections::BTreeMap<String, usize> = Default::default();
         for e in &entries {
             let file = e.path.as_deref().map(assets::file_name);
             let refs = counts.get(&(e.kind, e.id.clone())).copied().unwrap_or(0);
-            let folder = e.path.as_deref().map(|p| {
-                let cut = p.len() - assets::file_name(p).len();
-                p[..cut].trim_end_matches(['/', '\\']).to_owned()
-            });
-            if let Some(f) = &folder {
-                *folders.entry(f.clone()).or_default() += 1;
-            }
             rows.haystack
                 .push(format!("{} {} {}", e.kind.name(), e.id, file.unwrap_or("")).to_lowercase());
             rows.detail.push(match file {
@@ -89,7 +171,7 @@ impl Rows {
                 None => format!("{refs} ref(s)"),
             });
             rows.refs.push(refs);
-            rows.folder.push(folder);
+            rows.vpath.push(vpath(e));
             rows.requests.push(thumbs::request(world, e));
         }
         for kind in AssetKind::ALL {
@@ -97,16 +179,7 @@ impl Rows {
             rows.kind_titles
                 .push((kind, format!("{}  {n}", kind.title()), n));
         }
-        rows.folders = folders
-            .into_iter()
-            .map(|(f, n)| {
-                // The last two folders are enough to tell packs apart.
-                let parts: Vec<&str> = f.rsplit(['/', '\\']).take(2).collect();
-                let short: Vec<&str> = parts.into_iter().rev().collect();
-                let title = format!("{}  {n}", short.join("/"));
-                (f, title)
-            })
-            .collect();
+        rows.tree = tree(&entries, &rows.vpath);
         rows.entries = entries;
         rows
     }
@@ -116,7 +189,7 @@ impl Rows {
         let keep = match filter {
             Filter::All => true,
             Filter::Kind(k) => e.kind == *k,
-            Filter::Folder(f) => self.folder[i].as_deref() == Some(f.as_str()),
+            Filter::Path(f) => in_folder(&self.vpath[i], f),
         };
         keep && tokens.iter().all(|t| self.haystack[i].contains(t))
     }
@@ -156,6 +229,8 @@ pub(crate) struct AssetBrowser {
     /// Times the row cache / the filtered list were rebuilt (tests: not per frame).
     pub builds: usize,
     pub filters: usize,
+    /// Folders of the tree shown collapsed (all start expanded).
+    pub collapsed: std::collections::HashSet<String>,
 }
 
 /// What a click in the browser asks for (applied after drawing).
@@ -169,6 +244,8 @@ enum Intent {
     CancelRename,
     CloseUsages,
     Command(&'static str),
+    /// Open a tree folder (`asset.folder`); empty = all assets.
+    Folder(String),
 }
 
 fn badge(kind: AssetKind) -> (&'static str, Color32) {
@@ -183,6 +260,117 @@ fn badge(kind: AssetKind) -> (&'static str, Color32) {
         AssetKind::Ui => ("UI", Color32::from_rgb(250, 140, 120)),
         AssetKind::Input => ("INPUT", Color32::from_rgb(200, 200, 200)),
     }
+}
+
+const REVEAL_KEY: &str = "axiom-asset-reveal";
+
+/// A form's asset reference asks to be shown in the Assets tab; the editor runs
+/// `asset.reveal KIND:ID` after drawing (`take_reveal`).
+pub(crate) fn request_reveal(ctx: &egui::Context, reference: String) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(REVEAL_KEY), reference));
+}
+
+impl Editor {
+    /// Runs a reveal a form asked for this frame (same path as the bridge command).
+    pub(super) fn take_reveal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let id = egui::Id::new(REVEAL_KEY);
+        let Some(reference) = ctx.data_mut(|d| d.remove_temp::<String>(id)) else {
+            return;
+        };
+        match self.run_command_with("asset.reveal", Some(&reference)) {
+            Ok(more) => actions.extend(more),
+            Err(e) => self.set_error(format!("{e:#}")),
+        }
+    }
+}
+
+/// Large icon of a cell without a thumbnail image (and while one is being made).
+fn kind_icon(kind: AssetKind) -> Icon {
+    match kind {
+        AssetKind::Model => Icon::Mesh,
+        AssetKind::Image => Icon::Texture,
+        AssetKind::Material => Icon::Material,
+        AssetKind::Shader => Icon::Script,
+        AssetKind::Prefab => Icon::Prefab,
+        AssetKind::Machine => Icon::Fsm,
+        AssetKind::Audio => Icon::Audio,
+        AssetKind::Ui => Icon::UiDocument,
+        AssetKind::Input => Icon::Input,
+    }
+}
+
+/// One row of the folder tree: indent, fold arrow (`Some(open)` when it has children),
+/// folder icon, name and count. Returns the arrow and the whole row.
+fn tree_row(
+    ui: &mut Ui,
+    icons: super::icons::Icons,
+    name: &str,
+    count: &str,
+    depth: usize,
+    selected: bool,
+    fold: Option<bool>,
+) -> (Option<egui::Response>, egui::Response) {
+    const ROW: f32 = 20.0;
+    let width = ui.available_width().max(60.0);
+    let (rect, row) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
+    let x = rect.left() + 4.0 + depth.min(8) as f32 * 12.0;
+    let arrow_rect = Rect::from_min_size(pos2(x, rect.top() + 3.0), vec2(14.0, 14.0));
+    let arrow = fold.map(|_| {
+        ui.interact(arrow_rect, row.id.with("fold"), Sense::click())
+            .on_hover_text("Expand / collapse")
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if selected {
+            painter.rect_filled(rect, theme::RADIUS, theme::ACCENT_SOFT);
+        } else if row.hovered() {
+            painter.rect_filled(rect, theme::RADIUS, Color32::from_white_alpha(8));
+        }
+        if let Some(open) = fold {
+            let icon = if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            icons.paint(painter, arrow_rect, icon, MUTED);
+        }
+        let folder = Rect::from_min_size(pos2(x + 16.0, rect.top() + 2.0), vec2(16.0, 16.0));
+        let icon = if selected || fold == Some(true) {
+            Icon::FolderOpen
+        } else {
+            Icon::Folder
+        };
+        icons.paint(painter, folder, icon, if selected { ACCENT } else { MUTED });
+        let text = if selected {
+            theme::TEXT
+        } else {
+            Color32::LIGHT_GRAY
+        };
+        let count_galley =
+            painter.layout_no_wrap(count.to_owned(), egui::FontId::proportional(11.0), MUTED);
+        let name_left = folder.right() + 5.0;
+        let room = (rect.right() - 6.0 - count_galley.size().x - 6.0 - name_left).max(8.0);
+        let mut job = egui::text::LayoutJob::single_section(
+            name.to_owned(),
+            egui::TextFormat::simple(egui::FontId::proportional(12.5), text),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let galley = ui.fonts(|f| f.layout_job(job));
+        painter.galley(
+            pos2(name_left, rect.center().y - galley.size().y / 2.0),
+            galley,
+            text,
+        );
+        painter.galley(
+            pos2(
+                rect.right() - 6.0 - count_galley.size().x,
+                rect.center().y - count_galley.size().y / 2.0,
+            ),
+            count_galley,
+            MUTED,
+        );
+    }
+    (arrow, row)
 }
 
 /// Where an asset dropped on the scene goes: the ground plane (y = 0) under the pointer, or
@@ -548,10 +736,90 @@ impl Editor {
                     }
                 }
             }
+            ("asset.folder", path) => {
+                self.asset_folder(path.unwrap_or(""))?;
+                self.show_dock(Dock::Assets);
+            }
+            ("asset.reveal", None) => {
+                self.show_dock(Dock::Assets);
+                self.notice("Name the asset: asset.reveal KIND:ID");
+            }
+            ("asset.reveal", Some(arg)) => {
+                let (kind, asset) = assets::parse_reference(arg)?;
+                self.asset_rows();
+                let rows = self.assets.rows.as_ref().expect("built above");
+                let i = rows
+                    .find(kind, &asset)
+                    .ok_or_else(|| anyhow::anyhow!("no {} '{asset}' in this world", kind.name()))?;
+                let path = rows.vpath[i].clone();
+                self.asset_folder(&path)?;
+                // Unfold the folder and its ancestors.
+                let mut end = path.len();
+                loop {
+                    self.assets.collapsed.remove(&path[..end]);
+                    match path[..end].rfind('/') {
+                        Some(cut) => end = cut,
+                        None => break,
+                    }
+                }
+                self.assets.query.clear();
+                self.assets.selected = Some((kind, asset));
+                self.assets.rename = None;
+                self.show_dock(Dock::Assets);
+            }
             (other, Some(_)) => anyhow::bail!("{other} takes no argument"),
             (other, None) => anyhow::bail!("unknown asset command {other}"),
         }
         Ok(actions)
+    }
+
+    /// `asset.folder PATH`: shows the tree folder `PATH` (`Assets/…` or a path from the tree;
+    /// empty or `Assets` = everything). View state only.
+    pub(crate) fn asset_folder(&mut self, path: &str) -> anyhow::Result<()> {
+        let path = path.trim().trim_matches('/');
+        let path = path
+            .strip_prefix("Assets/")
+            .or_else(|| (path == "Assets").then_some(""))
+            .unwrap_or(path);
+        self.asset_rows();
+        let rows = self.assets.rows.as_ref().expect("built above");
+        self.assets.filter = if path.is_empty() {
+            Filter::All
+        } else {
+            let node = rows.tree.iter().find(|n| n.path == path).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no Assets folder '{path}' (folders: {})",
+                    rows.tree
+                        .iter()
+                        .map(|n| n.path.as_str())
+                        .take(24)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            match node.kind {
+                Some(kind) => Filter::Kind(kind),
+                None => Filter::Path(node.path.clone()),
+            }
+        };
+        Ok(())
+    }
+
+    /// Folder paths of the Assets tree in display order (tests).
+    #[cfg(test)]
+    pub(crate) fn asset_tree(&mut self) -> Vec<String> {
+        self.asset_rows();
+        let rows = self.assets.rows.as_ref().expect("built above");
+        rows.tree.iter().map(|n| n.path.clone()).collect()
+    }
+
+    /// The Assets tree's current folder (`observe editor.assets.folder`).
+    pub(crate) fn asset_folder_path(&self) -> &str {
+        match &self.assets.filter {
+            Filter::All => "",
+            Filter::Kind(kind) => kind.title(),
+            Filter::Path(path) => path,
+        }
     }
 
     /// Running thumbnail job for `observe` (`editor.jobs`) and the status bar.
@@ -588,20 +856,27 @@ impl Editor {
             .map(|r| r.kind_titles.iter().map(|(k, _, n)| (*k, *n)).collect())
             .unwrap_or_default();
         ui.horizontal(|ui| {
-            // Breadcrumb: Assets › kind or folder (the root shows everything).
+            // Breadcrumb: Assets › kind › folder … (each segment opens that folder, the same
+            // as `asset.folder PATH`; the root shows everything).
             let root = ui.add(egui::Button::new(RichText::new("Assets").color(theme::TEXT)).frame(false));
             rect!("assets:crumb:root".into(), root.rect);
             if root.clicked() {
-                b.filter = Filter::All;
+                intents.push(Intent::Folder(String::new()));
             }
-            let crumb = match &b.filter {
-                Filter::All => None,
-                Filter::Kind(kind) => Some(kind.title().to_owned()),
-                Filter::Folder(folder) => Some(folder.clone()),
+            let path = match &b.filter {
+                Filter::All => "",
+                Filter::Kind(kind) => kind.title(),
+                Filter::Path(path) => path.as_str(),
             };
-            if let Some(crumb) = crumb {
+            let mut end = 0;
+            for (n, segment) in path.split('/').filter(|s| !s.is_empty()).enumerate() {
+                end += segment.len() + usize::from(n > 0);
                 icons.show(ui, Icon::ChevronRight, 12.0, MUTED);
-                ui.label(RichText::new(crumb).color(theme::TEXT));
+                let r = ui.add(egui::Button::new(RichText::new(segment).color(theme::TEXT)).frame(false));
+                rect!(format!("assets:crumb:{n}"), r.rect);
+                if r.clicked() {
+                    intents.push(Intent::Folder(path[..end].to_owned()));
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: the first widget is the rightmost.
@@ -719,35 +994,65 @@ impl Editor {
                 egui::ScrollArea::vertical()
                     .id_salt("asset_tree_scroll")
                     .show(ui, |ui| {
-                        if ui
-                            .selectable_label(b.filter == Filter::All, &rows.all_title)
-                            .clicked()
-                        {
-                            b.filter = Filter::All;
+                        // Folder tree: Assets/ (everything), the kinds, then source folders /
+                        // ID prefixes; arrows fold, a click opens the folder (`asset.folder`).
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        let selected = match &b.filter {
+                            Filter::All => "",
+                            Filter::Kind(kind) => kind.title(),
+                            Filter::Path(path) => path.as_str(),
+                        };
+                        let mut hidden_below: Option<usize> = None;
+                        let mut toggle = None;
+                        let all = tree_row(
+                            ui,
+                            icons,
+                            "Assets/",
+                            &rows.entries.len().to_string(),
+                            0,
+                            selected.is_empty(),
+                            None,
+                        );
+                        rect!("assets:tree:root".into(), all.1.rect);
+                        if all.1.clicked() {
+                            intents.push(Intent::Folder(String::new()));
                         }
-                        for (kind, title, n) in &rows.kind_titles {
-                            let text = RichText::new(title).color(if *n == 0 {
-                                MUTED
-                            } else {
-                                Color32::LIGHT_GRAY
-                            });
-                            let r = ui.selectable_label(b.filter == Filter::Kind(*kind), text);
-                            rect!(format!("assets:kind:{}", kind.name()), r.rect);
-                            if r.clicked() {
-                                b.filter = Filter::Kind(*kind);
+                        for node in &rows.tree {
+                            if hidden_below.is_some_and(|d| node.depth > d) {
+                                continue;
+                            }
+                            hidden_below = None;
+                            let collapsed = b.collapsed.contains(&node.path);
+                            let fold = node.children.then_some(!collapsed);
+                            let (arrow, r) = tree_row(
+                                ui,
+                                icons,
+                                &node.name,
+                                &node.count.to_string(),
+                                node.depth + 1,
+                                selected == node.path,
+                                fold,
+                            );
+                            #[cfg(test)]
+                            rects.push((
+                                match node.kind {
+                                    Some(kind) => format!("assets:kind:{}", kind.name()),
+                                    None => format!("assets:tree:{}", node.path),
+                                },
+                                r.rect,
+                            ));
+                            if arrow.is_some_and(|a| a.clicked()) {
+                                toggle = Some(node.path.clone());
+                            } else if r.clicked() {
+                                intents.push(Intent::Folder(node.path.clone()));
+                            }
+                            if collapsed {
+                                hidden_below = Some(node.depth);
                             }
                         }
-                        if !rows.folders.is_empty() {
-                            ui.label(RichText::new("FOLDERS").small().color(MUTED));
-                            for (folder, title) in &rows.folders {
-                                let on = matches!(&b.filter, Filter::Folder(f) if f == folder);
-                                if ui
-                                    .selectable_label(on, RichText::new(title).small())
-                                    .on_hover_text(folder)
-                                    .clicked()
-                                {
-                                    b.filter = Filter::Folder(folder.clone());
-                                }
+                        if let Some(path) = toggle {
+                            if !b.collapsed.remove(&path) {
+                                b.collapsed.insert(path);
                             }
                         }
                     });
@@ -949,14 +1254,21 @@ impl Editor {
                             );
                         }
                         other => {
+                            // No image (yet): the kind's icon in its colour, the badge text
+                            // small in the corner.
                             painter.rect_filled(square, 6.0, theme::CARD);
-                            painter.text(
-                                square.center(),
-                                egui::Align2::CENTER_CENTER,
-                                text,
-                                egui::FontId::monospace(if list { 8.0 } else { 15.0 }),
-                                color,
-                            );
+                            let edge = (square.width() * 0.46).max(10.0);
+                            let at = Rect::from_center_size(square.center(), vec2(edge, edge));
+                            icons.paint(painter, at, kind_icon(entry.kind), color);
+                            if !list {
+                                painter.text(
+                                    square.right_bottom() + vec2(-5.0, -4.0),
+                                    egui::Align2::RIGHT_BOTTOM,
+                                    text,
+                                    egui::FontId::monospace(9.0),
+                                    color.gamma_multiply(0.8),
+                                );
+                            }
                             let mark = match other {
                                 Shown::Pending => Some(MUTED),
                                 Shown::Failed => Some(WARNING),
@@ -1128,6 +1440,11 @@ impl Editor {
                 Intent::CancelRename => self.assets.rename = None,
                 Intent::CloseUsages => self.assets.usages = None,
                 Intent::Command(id) => self.invoke(id, actions),
+                Intent::Folder(path) => {
+                    if let Err(e) = self.asset_folder(&path) {
+                        self.set_error(format!("{e:#}"));
+                    }
+                }
             }
         }
     }

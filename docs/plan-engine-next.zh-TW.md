@@ -138,3 +138,39 @@
 - 跟隨者單步超過 0.5 m 或 0.2 rad 視為瞬移:示範包第一次跑時 ping_pong 路徑在端點瞬間轉身 180°,換算成 377 rad/s 角速度,把貼著的箱子甩到 -1268 m;加了回歸測試 `a_follower_turning_around_does_not_fling_the_crate_it_pushed`。
 - FPS 競技場碰撞忽略剛體(否則動態箱子會被當成固定牆,且旋轉後違反 FPS 的軸對齊檢查)。FPS 的地板只在 FPS 模擬內,物理看不到 — 記在 docs/physics.zh-TW.md 限制。
 - Action 控制器排在動畫 / 音訊之後,它的角色以上一步姿勢推箱子(差 1/120 秒),不為此改排程。
+
+### E 編輯器外觀(2026-11-11,worktree `we`,分支 `work-we`,`rigorous-change`)
+
+**先比較再動手**:改版前用主樹的 debug exe 在 Axiom Street 拍 `artifacts/captures/we-before-{1080,768}.png`,與設計圖並排列出差異(下表「之前」欄)。
+
+| 項目 | 設計圖 | 之前(we-before) | 之後(we-after) |
+|---|---|---|---|
+| Hierarchy | 場景 ▸ Environment(Buildings / Props / Vegetation)、Lighting、Characters、Cameras 資料夾樹 | 街道是平的根物件列表(沒有群組資料) | Sakura Plaza 以 `group` 分層;資料夾圖示(展開時打開)、展開箭頭 |
+| Inspector 元件標題 | Components 標題列右側 + Add Component… | Add Component… / Behavior… 兩個下拉在標題下方(768 時兩列) | 標題列右側 + Add Component…(Behavior 範本在同一清單最上面) |
+| Transform | 第一張卡片,Revert / ⋯ | Components 之外的獨立區段,無動作 | Components 下第一張卡片,Revert(`reset SEL core.transform`)+ ⋯(Reset / Copy / Paste),X/Y/Z 紅綠藍 |
+| 元件卡片 | 勾選、圖示、Revert、⋯ | 只有展開的卡片有 Reset / ⋯;收合卡片的勾選唯讀;值裡沒有 `enabled` 的元件不顯示勾選 | 每張卡片 Revert / ⋯;收合卡片可勾(一筆 revision);schema 有 `enabled` 的元件一定顯示勾選 |
+| Advanced | 每張卡片「Advanced  Render Layers (2)…」摘要列 | 只有底部的「Advanced」(用 ID 載入元件) | 展開卡片內「Advanced (N): a, b…」收起仍等於預設值的欄位;底部改名 Load component by ID |
+| 資源欄位 | 名稱 + 複製鈕 | 只有下拉 | 下拉(名稱)+ Copy + Show in Assets(`asset.reveal`) |
+| Assets 左側 | 資料夾樹 | 平的類別清單(含 0 個的類別)+ FOLDERS 文字列 | `Assets/` ▸ 類別 ▸ 來源資料夾 / ID 前綴,箭頭、資料夾圖示、數量 |
+| 麵包屑 | Assets › Characters › Android_01 | Assets › 類別 | 每段可點的完整路徑 |
+| 縮圖 | 模型 / 骨架 / 動畫 / 貼圖 / 材質球 | 模型、圖片、材質;其他是 PFB / SND / UI / INPUT 文字 | 另加 prefab 縮圖(方塊或其模型);其他類別畫圖示 |
+| Scene 工具列 | 格線、相機(截圖)、Snap、Lit ▾、Perspective ▾ | 沒有截圖鈕、沒有著色模式 | 截圖鈕 + Lit / Unlit 下拉 |
+| 狀態列 | VRAM: 1.26 GB | GPU alloc n/a | VRAM 439 MiB(1080)/ 233 MiB(768),提示有預算與共用記憶體 |
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+
+- **Wireframe → 只做 Lit / Unlit**:`POLYGON_MODE_LINE` 要為每條世界 pipeline(方塊、網格 / 骨架、每個自訂材質 hook)各建一份線框版,pipeline 數加倍,且工作線 R 同時在改這些 pipeline;CPU 畫邊線則是每幀大量線段。Unlit 只改那個 view 的 uniform(均勻環境光、無太陽 / 區域光 / 霧,`render.rs::unlit_globals`),沒有新 pipeline、沒有 shader 變更。限制:顏色仍經 tone curve(平塗底色,不是原始貼圖值)。
+- **元件啟用旗標**:沒有新增通用的 `enabled`(要每個 runtime 系統都尊重才有意義,不便宜)。勾選只出現在 schema 本來就有 `enabled` 的元件(讀 registry 的欄位提示 `"bool, default true"`;值裡省略時顯示預設值,沒動過不寫入)。
+- **Advanced 列的「不常用」**:沒有逐元件的欄位分類(要求是通用卡片外框),改用資料定義:已提交值仍等於 `ops::default_value` 的頂層欄位;至少收兩個、外面至少留兩個才出現;篩選、多選值不同、prefab 覆寫時不收。
+- **示範場景的角色**:用第一方吉祥物 glb(`content/mascot`,使用者自己的設計;與 axiom-town 相同的 blob,git 不重複存),外加一個方塊人偶。沒有天空 / 反射探針 / 天空光(工作線 R 的範圍),Lighting 資料夾是太陽 + 兩盞路燈的點光。
+- **VRAM**:`GPU alloc n/a` 的原因是 wgpu 24 只有 D3D12 後端(gpu-allocator)回報 allocator report,這台走 Vulkan(gpu-alloc)。改讀 DXGI `QueryVideoMemoryInfo`(依 PCI vendor / device 對應 adapter):本程序用的專用顯示記憶體,含 swapchain 與驅動配置、不分 API。`windows` 0.58 本來就因 wgpu-hal 的 D3D12 後端在 lock 裡(同版本、同 feature),所以 Cargo.lock 只多一行相依,沒有新 crate。量測:一次讀取(兩個查詢)debug 6.6 µs(100 次平均,`vram::tests`)。
+- **截圖**:沿用既有的讀回(`Renderer::grab`,同一個 COPY_SRC 讀回路徑),裁切、BGRA→RGBA 與 PNG 編碼在背景 job(20 s watchdog、可取消、關閉時 join 500 ms);10 秒內沒有畫出的幀就失敗(視窗最小化時不會卡住指令)。主執行緒不等 GPU(E3 改成非同步 map:審查發現同步讀回在 debug 一幀 434–498 ms;改後抓取幀 3–55 ms,和一般幀同一範圍,交接 0.01 ms;`--screenshot` 的 smoke 截圖路徑維持原本的同步讀回)。截圖包含疊在 Scene 視圖上的編輯器標示(FPS、Frame / Fullscreen 鈕),這是刻意的(看到的就是拍到的)。
+
+**新指令 / 協定**:`view.display_mode lit|unlit`、`view.screenshot [NAME]`、`asset.folder PATH`、`asset.reveal KIND:ID`(都只是檢視狀態,`parity::view_commands_never_write`);`observe` 的 `editor.look`、`editor.vram`;截圖 job 出現在 `editor.jobs` 與狀態列。會改內容的新操作(收合卡片勾選、卡片 / Transform 的 Revert)都是既有 ops 與 ACL(`set SEL C/enabled B`、`reset SEL C`),有 parity 測試。
+
+**證據**:見下方「驗證」段落(由最後一輪填入)。
+
+**範圍追加 E3(使用者,缺口 `docs/gaps-paladin-night.zh-TW.md` E3:`--screenshot` 只在 `--smoke-frames` 結束時拍)**:新協定 op `{"op":"screenshot","path":"…png","region":"window|view"}`(`Request::Screenshot`,runtime 請求;store 無頭時回 `runtime request requires a live engine connection`),遊戲(`axiom play --port`)與編輯器都可用:路徑驗證(`.png`、無 `..`、相對工作目錄或絕對)、一次一個(第二個回錯誤)、寫完才回覆 `{ok, path, width, height, region, ms}`(bridge 與 `--connect` 最多等 32 s)、10 s 內沒有幀接手就回錯誤(完全不畫幀時由用戶端逾時)。審查後修正:只交給請求之後錄下的幀(`GrabOwner`)、`view` 裁切在請求時決定、拒絕磁碟相對 / 根相對 / UNC / 裝置路徑與保留名稱、失敗回覆格式統一、Console 送這個 op 時明確說明;`editor_view {capture}` 仍是同步讀回(未改)。共用 `crate::screenshot`(裁切 / BGRA 轉換 / PNG job,編輯器 `view.screenshot` 也用它;`view.screenshot` 另外接受路徑)。讀回改為非同步 map(`Renderer::take_grab`),主執行緒不等 GPU。端對端(真實 exe,連接埠 47393 / 47394,1600×900):play 與 editor 各 window / view / 相對路徑 / 壞副檔名 / `..` / 壞 region / 連續兩個 / 編輯器指令,全部符合;editor `view` 裁成 Scene 視圖 990×374;結果檔 `e3-results.json` 在工作區 scratchpad。限制:bridge 一次處理一條連線,所以「同時兩個」實際上被 bridge 排隊,拒絕路徑由單元測試 `screenshot::tests::one_capture_at_a_time_and_the_reply_carries_the_size` 覆蓋;遊戲模式的 `region:"view"` 等於整個視窗。
+
+**驗證(最後一輪,709d5d1 之上)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 708 passed / 0 failed / 5 ignored(基準 692;新增 16:`vram`、`chrome::vram_text`、`render::unlit_tests`、`look` ×2、`screenshot` ×4、`inspector_tests` ×3(收合卡片勾選 + Transform Revert、Add Component 標題列、Advanced 列)、`asset_browser_tests` ×2(資料夾樹 / 麵包屑 / reveal、prefab 縮圖請求)、`hierarchy_tests::sakura_plaza_is_a_folder_tree_of_groups`、`thumbs::box_tests`;調整 `thumbnail_job_reports_progress_and_cancels` 的總數 40 → 41(lab 的 prefab 現在也有縮圖)與 `parity::view_commands_never_write` 清單)。`editor-smoke-test.ps1` ok:true(資料庫已刪);`editor-world-parity.ps1` identical:true(13 = 13);`street-editor-parity.ps1` identical:true(16 = 16);`build-street.ps1` 後 `content/street` 無差異;`build-plaza.ps1` 重建後 `content/plaza` 無差異。之前一輪全量測試曾在機器滿載時失敗一次 `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(已知的負載敏感計時斷言,FD 記錄過),最後一輪通過。截圖(debug,已看過):`artifacts/captures/we-before-{1080,768}.png`(主樹 exe、Axiom Street)、`we-after{,-light,-unlit}-{1080,768}.png`(Sakura Plaza)、`we-viewshot-{1080,768}.png`(截圖鈕的輸出)。審查:兩輪 fresh-context(主體 14 項、E3 11 項),已修的見上;記錄未修:`advanced_keys` 與狀態列 VRAM 提示每幀格式化字串(小)、`hint_enabled` 讀的是說明文字(目前每個 `enabled` 提示都寫 `default true`)、`vram::tests` 依賴 WDDM 計數(三次重試)、截圖包含 Scene 視圖上的編輯器標示、雙 GPU 同型號時 DXGI 取第一張。
+**仍與設計圖不同**:沒有天空 / 天空光 / 反射探針(工作線 R);Hierarchy 沒有「SakuraPlaza (Scene)」根列;沒有 Build、Save、場景檔分頁、Modified(unsaved)(M-UI 起的 non-goal);Advanced 列只列欄位名稱(沒有「Render Layers」這類資料);Assets 細節面板仍佔右側;角色是方塊人偶 + 吉祥物(不是設計圖的角色);1366×768 的 Inspector 仍是窄欄(Transform 標籤疊在上一行)。

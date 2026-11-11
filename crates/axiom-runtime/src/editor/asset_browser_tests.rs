@@ -531,7 +531,8 @@ fn thumbnail_job_reports_progress_and_cancels() {
     // Visible to agents: observe lists the running job; the status bar shows it.
     let jobs = h.editor.observation()["jobs"].clone();
     assert_eq!(jobs[0]["kind"], "thumbnails", "{jobs}");
-    assert_eq!(jobs[0]["total"], 40);
+    // 40 images + the lab's primitive prefab (prefabs have thumbnails too).
+    assert_eq!(jobs[0]["total"], 41);
     assert!(h
         .editor
         .run_command("asset.thumbnails")
@@ -702,4 +703,107 @@ fn measure_assets_tab_frame_cost() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn folder_tree_breadcrumb_and_reveal_navigate_the_same_way_as_the_commands() {
+    // Workstream E: Assets/ ▸ kinds ▸ source folders / ID prefixes; view state only.
+    let world = acl(
+        &town(),
+        "asset create prefab props/bench-b from=spot/bench-east",
+    );
+    let mut h = Harness::new(world.clone(), Some(town()));
+    h.rect("assets:tree:root");
+    h.rect("assets:kind:prefab");
+    h.rect("assets:kind:model");
+    // Model files sit in their pack folder; a `/` in a prefab ID is a sub-folder.
+    let models = h
+        .editor
+        .asset_tree()
+        .into_iter()
+        .find(|p| p.starts_with("Models/") && p.ends_with("axiom-town"))
+        .expect("a model source folder");
+    assert!(models.ends_with("content/axiom-town"), "{models}");
+    h.rect("assets:tree:Prefabs/props");
+    // A tree click = asset.folder (breadcrumb shows each segment).
+    h.click("assets:tree:Prefabs/props");
+    h.editor.rects.clear();
+    h.frame(vec![]);
+    assert_eq!(h.editor.asset_folder_path(), "Prefabs/props");
+    let cells: Vec<&String> = h
+        .editor
+        .rects
+        .keys()
+        .filter(|k| k.starts_with("asset:"))
+        .collect();
+    assert_eq!(cells, ["asset:prefab:props/bench-b"], "{cells:?}");
+    h.rect("assets:crumb:1");
+    h.click("assets:crumb:0");
+    assert_eq!(h.editor.asset_folder_path(), "Prefabs");
+    // The bridge path: the same filter, errors name the folders.
+    assert!(h
+        .editor
+        .run_command_with("asset.folder", Some("Prefabs/props"))
+        .unwrap()
+        .is_empty());
+    assert_eq!(h.editor.asset_folder_path(), "Prefabs/props");
+    assert!(h
+        .editor
+        .run_command_with("asset.folder", Some("Nope"))
+        .is_err_and(|e| e.to_string().contains("Prefabs")));
+    h.editor
+        .run_command_with("asset.folder", Some("Assets"))
+        .unwrap();
+    assert_eq!(h.editor.asset_folder_path(), "");
+    // Reveal unfolds and selects; a collapsed folder hides its children.
+    h.editor.assets.collapsed.insert(models.clone());
+    h.editor
+        .run_command_with("asset.reveal", Some("model:axiom-long"))
+        .unwrap();
+    assert_eq!(h.editor.asset_folder_path(), models);
+    assert!(!h.editor.assets.collapsed.contains(&models));
+    assert_eq!(
+        h.editor.observation()["look"]["assets"]["selected"],
+        "model:axiom-long"
+    );
+    assert!(h
+        .editor
+        .run_command_with("asset.reveal", Some("model:nope"))
+        .is_err());
+    assert_eq!(*h.editor.world, world, "navigation never writes");
+}
+
+#[test]
+fn primitive_and_model_prefabs_get_thumbnail_requests() {
+    let world = town();
+    let entries = axiom_core::assets::list(&world);
+    let prefab = |id: &str| {
+        entries
+            .iter()
+            .find(|e| e.kind == AssetKind::Prefab && e.id == id)
+            .unwrap()
+            .clone()
+    };
+    // render.mesh boxes.
+    assert!(super::thumbs::request(&world, &prefab("lamp")).is_some());
+    // A prefab of a model reuses that model's source.
+    let with_model = acl(
+        &world,
+        "create empty id=m\nset m animation.player {\"asset\":\"axiom-long\",\"clip\":\"idle\"}\nasset create prefab hero from=m",
+    );
+    let entries = axiom_core::assets::list(&with_model);
+    let hero = entries
+        .iter()
+        .find(|e| e.kind == AssetKind::Prefab && e.id == "hero")
+        .unwrap();
+    let model = entries
+        .iter()
+        .find(|e| e.kind == AssetKind::Model && e.id == "axiom-long")
+        .unwrap();
+    let (a, b) = (
+        super::thumbs::request(&with_model, hero).unwrap(),
+        super::thumbs::request(&with_model, model).unwrap(),
+    );
+    assert_eq!(a.key.source, b.key.source);
+    assert_eq!(a.key.kind, AssetKind::Prefab);
 }

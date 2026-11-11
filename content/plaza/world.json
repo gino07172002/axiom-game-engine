@@ -1,0 +1,1745 @@
+{
+  "capabilities": {
+    "animation": 1,
+    "core": 1,
+    "render": 1,
+    "shader": 1
+  },
+  "component_schemas": {},
+  "entities": [
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -0.3020833432674408,
+            0.0,
+            -3.620833158493042
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env",
+      "label": "Environment",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.3020833432674408,
+            0.0,
+            3.620833158493042
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.5,
+                0.45,
+                0.48
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  -0.05,
+                  0
+                ],
+                "scale": [
+                  44,
+                  0.1,
+                  40
+                ]
+              }
+            },
+            {
+              "color": [
+                0.76,
+                0.67,
+                0.71
+              ],
+              "grid": true,
+              "transform": {
+                "position": [
+                  0,
+                  0.004,
+                  0
+                ],
+                "scale": [
+                  26,
+                  0.02,
+                  24
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/ground",
+      "label": "PlazaFloor",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -2.0729167461395264,
+            0.0,
+            -7.129166603088379
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/buildings",
+      "label": "Buildings",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -8.625,
+            0.0,
+            -5.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.material": {
+          "id": "plaza-glass"
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.52,
+                0.62,
+                0.82
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  7,
+                  0
+                ],
+                "scale": [
+                  9,
+                  14,
+                  6
+                ]
+              }
+            },
+            {
+              "color": [
+                0.72,
+                0.84,
+                1
+              ],
+              "emission": 0.25,
+              "transform": {
+                "position": [
+                  0,
+                  7,
+                  3.02
+                ],
+                "scale": [
+                  8.2,
+                  13,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                0.92,
+                0.92,
+                0.95
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  14.2,
+                  0
+                ],
+                "scale": [
+                  9.4,
+                  0.4,
+                  6.4
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/buildings/tower-a",
+      "label": "Tower_A",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            3.875,
+            0.0,
+            -8.25
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.48,
+                0.58,
+                0.8
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  9,
+                  0
+                ],
+                "scale": [
+                  10,
+                  18,
+                  7
+                ]
+              }
+            },
+            {
+              "color": [
+                0.7,
+                0.82,
+                1
+              ],
+              "emission": 0.25,
+              "transform": {
+                "position": [
+                  0,
+                  9,
+                  3.52
+                ],
+                "scale": [
+                  9.2,
+                  17,
+                  0.05
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.4,
+                0.6
+              ],
+              "emission": 0.9,
+              "transform": {
+                "position": [
+                  -3,
+                  10,
+                  3.6
+                ],
+                "scale": [
+                  1.2,
+                  6,
+                  0.1
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/buildings/tower-b",
+      "label": "Tower_B",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -12.625,
+            0.0,
+            7.75
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.94,
+                0.9,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.5,
+                  0
+                ],
+                "scale": [
+                  6,
+                  5,
+                  12
+                ]
+              }
+            },
+            {
+              "color": [
+                0.66,
+                0.8,
+                1
+              ],
+              "emission": 0.35,
+              "transform": {
+                "position": [
+                  3.02,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.05,
+                  2.4,
+                  10
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.55,
+                0.68
+              ],
+              "transform": {
+                "position": [
+                  3.3,
+                  3.4,
+                  0
+                ],
+                "scale": [
+                  0.6,
+                  0.15,
+                  10.5
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/buildings/shop-west",
+      "label": "Shops_West",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            17.375,
+            0.0,
+            5.75
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.9,
+                0.88,
+                0.92
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3,
+                  0
+                ],
+                "scale": [
+                  6,
+                  6,
+                  14
+                ]
+              }
+            },
+            {
+              "color": [
+                0.66,
+                0.8,
+                1
+              ],
+              "emission": 0.35,
+              "transform": {
+                "position": [
+                  -3.02,
+                  1.8,
+                  0
+                ],
+                "scale": [
+                  0.05,
+                  2.8,
+                  12
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.45,
+                0.62
+              ],
+              "emission": 1.1,
+              "transform": {
+                "position": [
+                  -3.2,
+                  5.4,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  0.9,
+                  6
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/buildings/shop-east",
+      "label": "Shops_East",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            1.3020833730697632,
+            0.0,
+            3.2208330631256104
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/props",
+      "label": "Props",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -5.5,
+            0.0,
+            1.9000000953674316
+          ],
+          "rotation": [
+            0.0,
+            0.7071068286895752,
+            0.0,
+            0.7071068286895752
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/props/bench-a",
+      "label": "Bench_A",
+      "prefab": "bench",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            3.5,
+            0.0,
+            1.9000000953674316
+          ],
+          "rotation": [
+            0.0,
+            -0.7071068286895752,
+            0.0,
+            0.7071068286895752
+          ]
+        }
+      },
+      "id": "env/props/bench-b",
+      "label": "Bench_B",
+      "prefab": "bench",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            4.0,
+            0.0,
+            -5.599999904632568
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.88,
+                0.87,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.3,
+                  0
+                ],
+                "scale": [
+                  4.2,
+                  0.6,
+                  4.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.45,
+                0.75,
+                1
+              ],
+              "emission": 0.5,
+              "transform": {
+                "position": [
+                  0,
+                  0.58,
+                  0
+                ],
+                "scale": [
+                  3.6,
+                  0.06,
+                  3.6
+                ]
+              }
+            },
+            {
+              "color": [
+                0.9,
+                0.9,
+                0.93
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.2,
+                  0
+                ],
+                "scale": [
+                  0.5,
+                  1.8,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.88,
+                0.87,
+                0.9
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  2.15,
+                  0
+                ],
+                "scale": [
+                  1.6,
+                  0.15,
+                  1.6
+                ]
+              }
+            },
+            {
+              "color": [
+                0.75,
+                0.92,
+                1
+              ],
+              "emission": 0.8,
+              "transform": {
+                "position": [
+                  0,
+                  2.6,
+                  0
+                ],
+                "scale": [
+                  0.18,
+                  0.9,
+                  0.18
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/props/fountain",
+      "label": "Fountain",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -4.0,
+            0.0,
+            -2.5999999046325684
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/props/lamp-a",
+      "label": "LampPost_A",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            2.0,
+            0.0,
+            4.400000095367432
+          ]
+        }
+      },
+      "id": "env/props/lamp-b",
+      "label": "LampPost_B",
+      "prefab": "lamp-post",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.46875,
+            0.0,
+            0.28749990463256836
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/vegetation",
+      "label": "Vegetation",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -7.166666507720947,
+            0.0,
+            -1.6666667461395264
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "env/vegetation/cherry-1",
+      "label": "CherryTree_01",
+      "prefab": "cherry-tree",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            8.333333015441895,
+            0.0,
+            5.3333330154418945
+          ],
+          "rotation": [
+            0.0,
+            0.9396926164627076,
+            0.0,
+            0.3420201539993286
+          ]
+        }
+      },
+      "id": "env/vegetation/cherry-2",
+      "label": "CherryTree_02",
+      "prefab": "cherry-tree",
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -1.1666666269302368,
+            0.0,
+            -3.6666667461395264
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.33,
+                0.6,
+                0.32
+              ],
+              "transform": {
+                "position": [
+                  -2,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  1.6,
+                  0.9,
+                  1.1
+                ]
+              }
+            },
+            {
+              "color": [
+                0.28,
+                0.55,
+                0.3
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.5,
+                  0.2
+                ],
+                "scale": [
+                  1.9,
+                  1,
+                  1.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.36,
+                0.64,
+                0.34
+              ],
+              "transform": {
+                "position": [
+                  2,
+                  0.42,
+                  0
+                ],
+                "scale": [
+                  1.5,
+                  0.85,
+                  1
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.62,
+                0.78
+              ],
+              "transform": {
+                "position": [
+                  -0.6,
+                  0.95,
+                  0.4
+                ],
+                "scale": [
+                  0.5,
+                  0.2,
+                  0.5
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "env/vegetation/bushes",
+      "label": "BushGroup",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            4.066666603088379,
+            0.3333333730697632
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "lighting",
+      "label": "Lighting",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            1.933333396911621,
+            -0.3333333730697632
+          ],
+          "rotation": [
+            -0.3879116475582123,
+            0.27470842003822327,
+            -0.12230806797742844,
+            0.8712638020515442
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.9,
+            0.84
+          ],
+          "intensity": 1.15,
+          "kind": "directional",
+          "shadows": true
+        }
+      },
+      "id": "lighting/sun",
+      "label": "DirectionalLight",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            -3.0,
+            -0.9666666984558104,
+            -3.3333334922790527
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.82,
+            0.6
+          ],
+          "intensity": 2.2,
+          "kind": "point",
+          "range": 7
+        }
+      },
+      "id": "lighting/lamp-a",
+      "label": "LampLight_A",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            3.0,
+            -0.9666666984558104,
+            3.6666665077209473
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.light": {
+          "color": [
+            1,
+            0.82,
+            0.6
+          ],
+          "intensity": 2.2,
+          "kind": "point",
+          "range": 7
+        }
+      },
+      "id": "lighting/lamp-b",
+      "label": "LampLight_B",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.06666666269302368,
+            0.0,
+            -1.1666667461395264
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "characters",
+      "label": "Characters",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "animation.player": {
+          "asset": "axiom-long",
+          "clip": "idle"
+        },
+        "core.transform": {
+          "position": [
+            -0.06666666269302368,
+            0.0,
+            1.1666667461395264
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "characters/axiom",
+      "label": "Axiom_Long",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "animation.player": {
+          "asset": "axiom-short",
+          "clip": "idle",
+          "speed": 0.9
+        },
+        "core.transform": {
+          "position": [
+            -2.2666666507720947,
+            0.0,
+            -0.33333325386047363
+          ],
+          "rotation": [
+            0.0,
+            0.2588190734386444,
+            0.0,
+            0.9659258723258972
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "characters/student-a",
+      "label": "Axiom_Short",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            2.3333334922790527,
+            0.0,
+            -0.8333332538604736
+          ],
+          "rotation": [
+            0.0,
+            -0.2164396196603775,
+            0.0,
+            0.9762960076332092
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.2,
+                0.24,
+                0.36
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.45,
+                  0
+                ],
+                "scale": [
+                  0.36,
+                  0.9,
+                  0.26
+                ]
+              }
+            },
+            {
+              "color": [
+                0.95,
+                0.95,
+                0.97
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.08,
+                  0
+                ],
+                "scale": [
+                  0.46,
+                  0.42,
+                  0.3
+                ]
+              }
+            },
+            {
+              "color": [
+                0.98,
+                0.84,
+                0.76
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.47,
+                  0
+                ],
+                "scale": [
+                  0.3,
+                  0.32,
+                  0.3
+                ]
+              }
+            },
+            {
+              "color": [
+                0.3,
+                0.2,
+                0.18
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.62,
+                  -0.02
+                ],
+                "scale": [
+                  0.34,
+                  0.14,
+                  0.34
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "characters/student-b",
+      "label": "Student_B",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            1.600000023841858,
+            6.5
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "cameras",
+      "label": "Cameras",
+      "prefab": null,
+      "tags": []
+    },
+    {
+      "components": {
+        "core.transform": {
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            -0.0523359589278698,
+            0.0,
+            0.0,
+            0.9986295104026794
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "render.camera": {
+          "active": true,
+          "far": 180.0,
+          "near": 0.03999999910593033,
+          "projection": {
+            "fov_degrees": 75.0,
+            "kind": "perspective"
+          },
+          "viewport": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "id": "cameras/main",
+      "label": "MainCamera",
+      "prefab": null,
+      "tags": []
+    }
+  ],
+  "id": "sakura-plaza",
+  "prefabs": {
+    "bench": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.66,
+                0.44,
+                0.27
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.42,
+                  0
+                ],
+                "scale": [
+                  1.8,
+                  0.08,
+                  0.5
+                ]
+              }
+            },
+            {
+              "color": [
+                0.66,
+                0.44,
+                0.27
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  0.72,
+                  -0.23
+                ],
+                "scale": [
+                  1.8,
+                  0.5,
+                  0.06
+                ]
+              }
+            },
+            {
+              "color": [
+                0.22,
+                0.2,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  -0.75,
+                  0.2,
+                  0
+                ],
+                "scale": [
+                  0.08,
+                  0.4,
+                  0.46
+                ]
+              }
+            },
+            {
+              "color": [
+                0.22,
+                0.2,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0.75,
+                  0.2,
+                  0
+                ],
+                "scale": [
+                  0.08,
+                  0.4,
+                  0.46
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "cherry-tree": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.36,
+                0.23,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.3,
+                  0
+                ],
+                "scale": [
+                  0.45,
+                  2.6,
+                  0.45
+                ]
+              }
+            },
+            {
+              "color": [
+                0.36,
+                0.23,
+                0.2
+              ],
+              "transform": {
+                "position": [
+                  0.5,
+                  2.6,
+                  0.1
+                ],
+                "rotation": [
+                  0,
+                  0,
+                  -0.38,
+                  0.925
+                ],
+                "scale": [
+                  0.25,
+                  1.4,
+                  0.25
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.7,
+                0.83
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  3.5,
+                  0
+                ],
+                "scale": [
+                  3.6,
+                  1.8,
+                  3.2
+                ]
+              }
+            },
+            {
+              "color": [
+                0.98,
+                0.6,
+                0.77
+              ],
+              "transform": {
+                "position": [
+                  0.9,
+                  4.3,
+                  0.4
+                ],
+                "scale": [
+                  2.4,
+                  1.3,
+                  2.2
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.78,
+                0.88
+              ],
+              "transform": {
+                "position": [
+                  -1,
+                  3.1,
+                  -0.6
+                ],
+                "scale": [
+                  2,
+                  1.1,
+                  2
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "lamp-post": {
+      "components": {
+        "core.transform": {},
+        "render.mesh": {
+          "parts": [
+            {
+              "color": [
+                0.18,
+                0.18,
+                0.22
+              ],
+              "transform": {
+                "position": [
+                  0,
+                  1.6,
+                  0
+                ],
+                "scale": [
+                  0.12,
+                  3.2,
+                  0.12
+                ]
+              }
+            },
+            {
+              "color": [
+                1,
+                0.86,
+                0.66
+              ],
+              "emission": 1.6,
+              "transform": {
+                "position": [
+                  0,
+                  3.25,
+                  0
+                ],
+                "scale": [
+                  0.45,
+                  0.3,
+                  0.45
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "relations": [
+    {
+      "kind": "parent",
+      "source": "env/buildings/tower-a",
+      "target": "env/buildings"
+    },
+    {
+      "kind": "parent",
+      "source": "env/buildings/tower-b",
+      "target": "env/buildings"
+    },
+    {
+      "kind": "parent",
+      "source": "env/buildings/shop-west",
+      "target": "env/buildings"
+    },
+    {
+      "kind": "parent",
+      "source": "env/buildings/shop-east",
+      "target": "env/buildings"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props/bench-a",
+      "target": "env/props"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props/bench-b",
+      "target": "env/props"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props/fountain",
+      "target": "env/props"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props/lamp-a",
+      "target": "env/props"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props/lamp-b",
+      "target": "env/props"
+    },
+    {
+      "kind": "parent",
+      "source": "env/vegetation/cherry-1",
+      "target": "env/vegetation"
+    },
+    {
+      "kind": "parent",
+      "source": "env/vegetation/cherry-2",
+      "target": "env/vegetation"
+    },
+    {
+      "kind": "parent",
+      "source": "env/vegetation/bushes",
+      "target": "env/vegetation"
+    },
+    {
+      "kind": "parent",
+      "source": "env/ground",
+      "target": "env"
+    },
+    {
+      "kind": "parent",
+      "source": "env/buildings",
+      "target": "env"
+    },
+    {
+      "kind": "parent",
+      "source": "env/props",
+      "target": "env"
+    },
+    {
+      "kind": "parent",
+      "source": "env/vegetation",
+      "target": "env"
+    },
+    {
+      "kind": "parent",
+      "source": "lighting/sun",
+      "target": "lighting"
+    },
+    {
+      "kind": "parent",
+      "source": "lighting/lamp-a",
+      "target": "lighting"
+    },
+    {
+      "kind": "parent",
+      "source": "lighting/lamp-b",
+      "target": "lighting"
+    },
+    {
+      "kind": "parent",
+      "source": "characters/axiom",
+      "target": "characters"
+    },
+    {
+      "kind": "parent",
+      "source": "characters/student-a",
+      "target": "characters"
+    },
+    {
+      "kind": "parent",
+      "source": "characters/student-b",
+      "target": "characters"
+    },
+    {
+      "kind": "parent",
+      "source": "cameras/main",
+      "target": "cameras"
+    }
+  ],
+  "resource_schemas": {},
+  "resources": {
+    "animation.library": {
+      "assets": {
+        "axiom-long": {
+          "path": "axiom-long.glb"
+        },
+        "axiom-short": {
+          "path": "axiom-short.glb"
+        }
+      }
+    },
+    "render.environment": {
+      "ambient": {
+        "equator": [
+          0.5,
+          0.46,
+          0.52
+        ],
+        "ground": [
+          0.32,
+          0.27,
+          0.3
+        ],
+        "intensity": 0.85,
+        "mode": "gradient",
+        "sky": [
+          0.62,
+          0.66,
+          0.82
+        ]
+      }
+    },
+    "render.settings": {
+      "accent": [
+        1,
+        0.45,
+        0.6
+      ],
+      "shadow_extent": 26
+    },
+    "render.shaders": {
+      "materials": {
+        "fountain-water": {
+          "shader": "lit",
+          "tint": [
+            0.5,
+            0.8199999928474426,
+            1.0,
+            1.0
+          ]
+        },
+        "plaza-glass": {
+          "shader": "lit",
+          "tint": [
+            0.550000011920929,
+            0.7200000286102295,
+            0.949999988079071,
+            1.0
+          ]
+        },
+        "sakura-petal": {
+          "shader": "lit",
+          "tint": [
+            1.0,
+            0.6800000071525574,
+            0.8199999928474426,
+            1.0
+          ]
+        }
+      }
+    }
+  },
+  "scenes": [],
+  "schema_version": 2,
+  "systems": [
+    "animation.evaluate"
+  ],
+  "title": "Sakura Plaza"
+}

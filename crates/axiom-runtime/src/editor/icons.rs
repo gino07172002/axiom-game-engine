@@ -160,6 +160,8 @@ impl Atlas {
         );
         let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
         let handle = ctx.load_texture("editor-icons", image, egui::TextureOptions::LINEAR);
+        // Widgets drawn without the editor at hand (form fields) find the handle here.
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(CONTEXT_KEY), Icons(Some(handle.id()))));
         Ok(Self { handle })
     }
     pub(crate) fn icons(&self) -> Icons {
@@ -170,6 +172,8 @@ impl Atlas {
 /// Copyable handle for drawing icons. `Icons(None)` (atlas failed to load) draws nothing.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Icons(pub(crate) Option<TextureId>);
+
+const CONTEXT_KEY: &str = "axiom-editor-icons";
 
 /// Normalized atlas rectangle of `icon` for drawing at `pixels` physical pixels.
 pub(crate) fn uv(icon: Icon, pixels: f32) -> Rect {
@@ -190,6 +194,11 @@ pub(crate) fn uv(icon: Icon, pixels: f32) -> Rect {
 }
 
 impl Icons {
+    /// The handle of the atlas loaded into `ctx` (draws nothing before it is loaded).
+    pub(crate) fn of(ctx: &egui::Context) -> Self {
+        ctx.data(|d| d.get_temp(egui::Id::new(CONTEXT_KEY)))
+            .unwrap_or_default()
+    }
     /// Paints `icon` filling `rect`, tinted with `color`.
     pub(crate) fn paint(self, painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         if let Some(id) = self.0 {

@@ -97,6 +97,25 @@ pub struct Renderer {
     pub timestamp_query_supported: bool,
     /// Pass-group GPU times (editor Profiler); writes timestamps only while enabled.
     pub timer: crate::gpu_timing::GpuTimer,
+    /// This process's video memory on the adapter (OS counters; see `vram.rs`).
+    pub vram: crate::vram::VideoMemory,
+    /// The view drawn unlit (editor Scene view display mode): see `unlit_globals`.
+    pub unlit_view: Option<&'static str>,
+    /// Read the next presented frame back (editor / loopback screenshot); `take_grab`
+    /// returns it once the asynchronous map completes. Cleared when the copy is recorded.
+    pub grab: bool,
+    grab_readback: Option<Readback>,
+}
+
+/// A grabbed frame being mapped for reading.
+struct Readback {
+    buffer: wgpu::Buffer,
+    stride: u32,
+    width: u32,
+    height: u32,
+    bgra: bool,
+    /// 0 mapping, 1 mapped, 2 failed (set by the map callback).
+    ready: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl Renderer {
@@ -393,6 +412,86 @@ impl Renderer {
             stats: FrameStats::default(),
             timestamp_query_supported,
             timer,
+            vram: crate::vram::VideoMemory::open(info.vendor, info.device),
+            unlit_view: None,
+            grab: false,
+            grab_readback: None,
+        })
+    }
+
+    /// Records a copy of the swapchain texture into a new MAP_READ buffer (`(buffer, padded
+    /// bytes per row)`).
+    fn readback_copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+    ) -> (wgpu::Buffer, u32) {
+        let row = (self.config.width * 4).div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot grab"),
+            size: row as u64 * self.config.height as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        (buffer, row)
+    }
+
+    /// A grab read-back is being mapped.
+    pub fn grab_in_flight(&self) -> bool {
+        self.grab_readback.is_some()
+    }
+
+    /// The grabbed frame once its buffer is mapped (never waits: one `Maintain::Poll`), or the
+    /// reason there is none (surface without read-back, map failure).
+    pub fn take_grab(&mut self) -> Option<Result<crate::screenshot::Frame, String>> {
+        if self.grab && !self.can_capture {
+            self.grab = false;
+            return Some(Err(
+                "this window surface does not support read-back (COPY_SRC)".into(),
+            ));
+        }
+        let ready = self.grab_readback.as_ref()?.ready.clone();
+        let load = || ready.load(std::sync::atomic::Ordering::Acquire);
+        if load() == 0 {
+            // Runs the map callback if the GPU is done; does not block.
+            let _ = self.device.poll(wgpu::Maintain::Poll);
+        }
+        let state = load();
+        if state == 0 {
+            return None;
+        }
+        let r = self.grab_readback.take()?;
+        Some(if state == 1 {
+            Ok(crate::screenshot::Frame {
+                width: r.width,
+                height: r.height,
+                bgra: r.bgra,
+                stride: r.stride,
+                data: crate::screenshot::FrameData::Mapped(r.buffer),
+            })
+        } else {
+            Err("mapping the read-back buffer failed".into())
         })
     }
 
@@ -504,7 +603,7 @@ impl Renderer {
                     v.camera.far,
                 ),
             };
-            let global = Globals {
+            let mut global = Globals {
                 view_proj: (projection * Mat4::look_at_rh(v.eye, v.eye + v.forward, v.up))
                     .to_cols_array_2d(),
                 light_vp: light_vp.to_cols_array_2d(),
@@ -533,6 +632,9 @@ impl Renderer {
                 ambient: lighting.ambient,
                 fog: lighting.fog,
             };
+            if self.unlit_view == Some(v.id.as_str()) {
+                unlit_globals(&mut global);
+            }
             let bytes = bytemuck::bytes_of(&global);
             uniforms[i * GLOBALS_STRIDE as usize..i * GLOBALS_STRIDE as usize + bytes.len()]
                 .copy_from_slice(bytes);
@@ -838,6 +940,14 @@ impl Renderer {
         }
         self.timer
             .mark(&mut encoder, crate::gpu_timing::Section::Ui);
+        // Editor / loopback screenshot: copied into its own buffer and mapped asynchronously
+        // (`take_grab` picks it up on a later frame), so the main thread never waits for the
+        // GPU. One read-back in flight at a time; a `--screenshot` frame grabs on the next one.
+        let grab = screenshot.is_none()
+            && self.can_capture
+            && self.grab_readback.is_none()
+            && std::mem::take(&mut self.grab);
+        let grab_copy = grab.then(|| self.readback_copy(&mut encoder, &frame.texture));
         let capture = if screenshot.is_some() {
             anyhow::ensure!(
                 self.can_capture,
@@ -918,6 +1028,27 @@ impl Renderer {
             drop(mapped);
             buffer.unmap();
         }
+        if let Some((buffer, stride)) = grab_copy {
+            let ready = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+            let flag = ready.clone();
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                flag.store(
+                    if r.is_ok() { 1 } else { 2 },
+                    std::sync::atomic::Ordering::Release,
+                );
+            });
+            self.grab_readback = Some(Readback {
+                buffer,
+                stride,
+                width: self.config.width,
+                height: self.config.height,
+                bgra: matches!(
+                    self.config.format,
+                    wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Bgra8Unorm
+                ),
+                ready,
+            });
+        }
         for id in &output.textures_delta.free {
             self.egui.free_texture(id);
         }
@@ -984,4 +1115,52 @@ fn cube_vertices() -> Vec<Vertex> {
         }
     }
     vertices
+}
+
+/// Editor "Unlit" display: every shader that reads the shared globals (cubes, meshes, custom
+/// material hooks through `axiom_lighting`) sees one uniform white ambient and nothing else:
+/// no suns (so no sun shadow or specular), no local lights, no fog. Colours still pass through
+/// the shaders' tone curve, so this is flat base colour, not the raw texel value.
+fn unlit_globals(global: &mut Globals) {
+    const FLAT: f32 = 1.5;
+    global.accent[3] = 0.0;
+    global.ambient = [
+        [FLAT, FLAT, FLAT, 0.0],
+        // w = 1: the authored-lighting path (meshes otherwise use the legacy key light).
+        [FLAT, FLAT, FLAT, 1.0],
+        [FLAT, FLAT, FLAT, 0.0],
+    ];
+    global.fog = [0.0; 4];
+    // Material surface hooks read sun 0 directly (direction and shadow flag), not the count.
+    for sun in &mut global.suns {
+        *sun = bytemuck::Zeroable::zeroed();
+    }
+}
+
+#[cfg(test)]
+mod unlit_tests {
+    #[test]
+    fn unlit_globals_drop_every_light_and_the_fog() {
+        let mut g: super::Globals = bytemuck::Zeroable::zeroed();
+        g.accent = [1.0, 0.5, 0.5, 7.0];
+        g.ambient = [
+            [0.2, 0.3, 0.4, 2.0],
+            [0.1, 0.1, 0.1, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ];
+        g.fog = [0.5, 0.5, 0.5, 0.01];
+        super::unlit_globals(&mut g);
+        // accent.w = local light count, ambient_sky.w = sun count, ambient_equator.w = authored.
+        assert_eq!(g.accent, [1.0, 0.5, 0.5, 0.0]);
+        assert_eq!(g.ambient[0][3], 0.0);
+        assert_eq!(g.ambient[1][3], 1.0);
+        g.suns[0].direction_shadow = [0.0, 1.0, 0.0, 1.0];
+        super::unlit_globals(&mut g);
+        assert_eq!(g.suns[0].direction_shadow, [0.0; 4]);
+        assert_eq!(g.fog[3], 0.0);
+        assert!(g
+            .ambient
+            .iter()
+            .all(|a| a[0] == a[1] && a[1] == a[2] && a[0] > 1.0));
+    }
 }

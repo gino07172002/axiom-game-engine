@@ -1,0 +1,14 @@
+# Sakura Plaza, stage 0: world id / title, capabilities, lighting environment, materials and the
+# two first-party mascot models (the same files as content/mascot, so git stores them once).
+# Model paths are relative to the working directory while building; scripts/build-plaza.ps1
+# rewrites them relative to the package on export.
+world id sakura-plaza
+world title "Sakura Plaza"
+capability add render
+capability add animation
+resource create render.environment {"ambient":{"mode":"gradient","sky":[0.62,0.66,0.82],"equator":[0.5,0.46,0.52],"ground":[0.32,0.27,0.3],"intensity":0.85}}
+resource create render.settings {"accent":[1,0.45,0.6],"shadow_extent":26}
+resource create animation.library {"assets":{"axiom-long":{"path":"content/plaza/axiom-long.glb"},"axiom-short":{"path":"content/plaza/axiom-short.glb"}}}
+asset create material plaza-glass tint=0.55,0.72,0.95,1
+asset create material sakura-petal tint=1,0.68,0.82,1
+asset create material fountain-water tint=0.5,0.82,1,1

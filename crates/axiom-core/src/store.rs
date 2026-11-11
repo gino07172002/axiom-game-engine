@@ -550,7 +550,8 @@ impl Store {
             Request::Command { .. }
             | Request::Save { .. }
             | Request::Load { .. }
-            | Request::EditorView { .. } => {
+            | Request::EditorView { .. }
+            | Request::Screenshot { .. } => {
                 anyhow::bail!("runtime request requires a live engine connection")
             }
             Request::Schema { topic } => self.registry.schema(topic.as_deref()),

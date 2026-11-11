@@ -87,6 +87,13 @@ impl Bridge {
                             BufReader::new((&mut stream).take(1_048_577)).read_line(&mut line)?;
                             let request = parse_request(line.trim())?;
                             if request.is_runtime() {
+                                // A screenshot answers when its PNG is written (read-back and
+                                // encode take longer than a command in debug builds).
+                                let wait = if matches!(request, Request::Screenshot { .. }) {
+                                    SCREENSHOT_WAIT
+                                } else {
+                                    Duration::from_secs(3)
+                                };
                                 let (reply, result) = std::sync::mpsc::sync_channel(1);
                                 commands
                                     .as_ref()
@@ -96,15 +103,14 @@ impl Bridge {
                                     .try_send(RuntimeRequest {
                                         request,
                                         reply,
-                                        deadline: std::time::Instant::now()
-                                            + Duration::from_secs(3),
+                                        deadline: std::time::Instant::now() + wait,
                                     })
                                     .map_err(|_| {
                                         anyhow::anyhow!(
                                             "runtime command queue full or disconnected"
                                         )
                                     })?;
-                                result.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+                                result.recv_timeout(wait).map_err(|_| {
                                     anyhow::anyhow!("runtime command response timed out")
                                 })
                             } else if let Request::ObserveDelta {
@@ -178,6 +184,10 @@ impl Drop for Bridge {
     }
 }
 
+/// How long the bridge waits for a `screenshot` reply: a frame to pick it up
+/// (`screenshot::PENDING_LIMIT`) plus the encode job's watchdog (`screenshot::JOB_TIMEOUT`).
+pub const SCREENSHOT_WAIT: Duration = Duration::from_secs(32);
+
 pub fn call(address: &str, request: &Request) -> Result<Value> {
     let address: std::net::SocketAddr = address.parse()?;
     anyhow::ensure!(
@@ -185,7 +195,13 @@ pub fn call(address: &str, request: &Request) -> Result<Value> {
         "bridge connections must use a loopback address"
     );
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    // A screenshot answers when its PNG is written (see `SCREENSHOT_WAIT`).
+    let read = if matches!(request, Request::Screenshot { .. }) {
+        SCREENSHOT_WAIT + Duration::from_secs(2)
+    } else {
+        Duration::from_secs(5)
+    };
+    stream.set_read_timeout(Some(read))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     writeln!(stream, "{}", serde_json::to_string(request)?)?;
     let mut line = String::new();

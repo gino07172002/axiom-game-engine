@@ -1,0 +1,58 @@
+# Sakura Plaza, stage 1: Environment (Buildings / Props / Vegetation), engine primitives only.
+# Ground: a tiled plaza floor (grid lines) inside a darker paved border.
+create cube id=env/ground at=0,0,0
+set env/ground render.mesh/parts [{"transform":{"position":[0,-0.05,0],"scale":[44,0.1,40]},"color":[0.5,0.45,0.48]},{"transform":{"position":[0,0.004,0],"scale":[26,0.02,24]},"color":[0.76,0.67,0.71],"grid":true}]
+rename env/ground "PlazaFloor"
+
+# Buildings: glass towers behind the plaza and a low shop row at each side.
+create cube id=env/buildings/tower-a at=-11,0,-16
+set env/buildings/tower-a render.mesh/parts [{"transform":{"position":[0,7,0],"scale":[9,14,6]},"color":[0.52,0.62,0.82]},{"transform":{"position":[0,7,3.02],"scale":[8.2,13,0.05]},"color":[0.72,0.84,1],"emission":0.25},{"transform":{"position":[0,14.2,0],"scale":[9.4,0.4,6.4]},"color":[0.92,0.92,0.95]}]
+create cube id=env/buildings/tower-b at=1.5,0,-19
+set env/buildings/tower-b render.mesh/parts [{"transform":{"position":[0,9,0],"scale":[10,18,7]},"color":[0.48,0.58,0.8]},{"transform":{"position":[0,9,3.52],"scale":[9.2,17,0.05]},"color":[0.7,0.82,1],"emission":0.25},{"transform":{"position":[-3,10,3.6],"scale":[1.2,6,0.1]},"color":[1,0.4,0.6],"emission":0.9}]
+create cube id=env/buildings/shop-west at=-15,0,-3
+set env/buildings/shop-west render.mesh/parts [{"transform":{"position":[0,2.5,0],"scale":[6,5,12]},"color":[0.94,0.9,0.88]},{"transform":{"position":[3.02,1.6,0],"scale":[0.05,2.4,10]},"color":[0.66,0.8,1],"emission":0.35},{"transform":{"position":[3.3,3.4,0],"scale":[0.6,0.15,10.5]},"color":[1,0.55,0.68]}]
+create cube id=env/buildings/shop-east at=15,0,-5
+set env/buildings/shop-east render.mesh/parts [{"transform":{"position":[0,3,0],"scale":[6,6,14]},"color":[0.9,0.88,0.92]},{"transform":{"position":[-3.02,1.8,0],"scale":[0.05,2.8,12]},"color":[0.66,0.8,1],"emission":0.35},{"transform":{"position":[-3.2,5.4,0],"scale":[0.3,0.9,6]},"color":[1,0.45,0.62],"emission":1.1}]
+set env/buildings/tower-a render.material {"id":"plaza-glass"}
+rename env/buildings/tower-a "Tower_A"
+rename env/buildings/tower-b "Tower_B"
+rename env/buildings/shop-west "Shops_West"
+rename env/buildings/shop-east "Shops_East"
+
+# Props: two benches (prefab), the fountain, two lamp posts (prefab).
+create cube id=env/props/bench-a at=-4.5,0,1.5 rot=0,90,0
+set env/props/bench-a render.mesh/parts [{"transform":{"position":[0,0.42,0],"scale":[1.8,0.08,0.5]},"color":[0.66,0.44,0.27]},{"transform":{"position":[0,0.72,-0.23],"scale":[1.8,0.5,0.06]},"color":[0.66,0.44,0.27]},{"transform":{"position":[-0.75,0.2,0],"scale":[0.08,0.4,0.46]},"color":[0.22,0.2,0.22]},{"transform":{"position":[0.75,0.2,0],"scale":[0.08,0.4,0.46]},"color":[0.22,0.2,0.22]}]
+prefab create bench from env/props/bench-a
+instantiate bench id=env/props/bench-b at=4.5,0,1.5 rot=0,-90,0
+rename env/props/bench-a "Bench_A"
+rename env/props/bench-b "Bench_B"
+create cube id=env/props/fountain at=5,0,-6
+set env/props/fountain render.mesh/parts [{"transform":{"position":[0,0.3,0],"scale":[4.2,0.6,4.2]},"color":[0.88,0.87,0.9]},{"transform":{"position":[0,0.58,0],"scale":[3.6,0.06,3.6]},"color":[0.45,0.75,1],"emission":0.5},{"transform":{"position":[0,1.2,0],"scale":[0.5,1.8,0.5]},"color":[0.9,0.9,0.93]},{"transform":{"position":[0,2.15,0],"scale":[1.6,0.15,1.6]},"color":[0.88,0.87,0.9]},{"transform":{"position":[0,2.6,0],"scale":[0.18,0.9,0.18]},"color":[0.75,0.92,1],"emission":0.8}]
+rename env/props/fountain "Fountain"
+create cube id=env/props/lamp-a at=-3,0,-3
+set env/props/lamp-a render.mesh/parts [{"transform":{"position":[0,1.6,0],"scale":[0.12,3.2,0.12]},"color":[0.18,0.18,0.22]},{"transform":{"position":[0,3.25,0],"scale":[0.45,0.3,0.45]},"color":[1,0.86,0.66],"emission":1.6}]
+prefab create lamp-post from env/props/lamp-a
+instantiate lamp-post id=env/props/lamp-b at=3,0,4
+rename env/props/lamp-a "LampPost_A"
+rename env/props/lamp-b "LampPost_B"
+
+# Vegetation: two cherry trees (prefab) and a bush group.
+create cube id=env/vegetation/cherry-1 at=-7,0,-5
+set env/vegetation/cherry-1 render.mesh/parts [{"transform":{"position":[0,1.3,0],"scale":[0.45,2.6,0.45]},"color":[0.36,0.23,0.2]},{"transform":{"position":[0.5,2.6,0.1],"rotation":[0,0,-0.38,0.925],"scale":[0.25,1.4,0.25]},"color":[0.36,0.23,0.2]},{"transform":{"position":[0,3.5,0],"scale":[3.6,1.8,3.2]},"color":[1,0.7,0.83]},{"transform":{"position":[0.9,4.3,0.4],"scale":[2.4,1.3,2.2]},"color":[0.98,0.6,0.77]},{"transform":{"position":[-1,3.1,-0.6],"scale":[2,1.1,2]},"color":[1,0.78,0.88]}]
+prefab create cherry-tree from env/vegetation/cherry-1
+instantiate cherry-tree id=env/vegetation/cherry-2 at=8.5,0,2 rot=0,140,0
+rename env/vegetation/cherry-1 "CherryTree_01"
+rename env/vegetation/cherry-2 "CherryTree_02"
+create cube id=env/vegetation/bushes at=-1,0,-7
+set env/vegetation/bushes render.mesh/parts [{"transform":{"position":[-2,0.45,0],"scale":[1.6,0.9,1.1]},"color":[0.33,0.6,0.32]},{"transform":{"position":[0,0.5,0.2],"scale":[1.9,1,1.2]},"color":[0.28,0.55,0.3]},{"transform":{"position":[2,0.42,0],"scale":[1.5,0.85,1]},"color":[0.36,0.64,0.34]},{"transform":{"position":[-0.6,0.95,0.4],"scale":[0.5,0.2,0.5]},"color":[1,0.62,0.78]}]
+rename env/vegetation/bushes "BushGroup"
+
+# Folders (ops::create_group): Environment > Buildings / Props / Vegetation.
+group entities[id=env/buildings/tower-a,id=env/buildings/tower-b,id=env/buildings/shop-west,id=env/buildings/shop-east] id=env/buildings
+group entities[id=env/props/bench-a,id=env/props/bench-b,id=env/props/fountain,id=env/props/lamp-a,id=env/props/lamp-b] id=env/props
+group entities[id=env/vegetation/cherry-1,id=env/vegetation/cherry-2,id=env/vegetation/bushes] id=env/vegetation
+group entities[id=env/ground,id=env/buildings,id=env/props,id=env/vegetation] id=env
+rename env/buildings "Buildings"
+rename env/props "Props"
+rename env/vegetation "Vegetation"
+rename env "Environment"

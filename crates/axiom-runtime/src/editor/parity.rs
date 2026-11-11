@@ -1056,6 +1056,9 @@ fn view_commands_never_write() {
         "view.left",
         "view.perspective",
         "view.gizmos",
+        "view.display_mode",
+        "view.screenshot",
+        "asset.folder",
         "view.bookmark.save.1",
         "view.bookmark.recall.1",
     ] {
