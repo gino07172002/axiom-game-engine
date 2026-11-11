@@ -5,6 +5,7 @@
 //! A script is either one read statement, or any number of edit statements that commit
 //! together as one revision (compiled against, and CAS-checked at, the current revision).
 use crate::local::{Collection, Format, Op, Predicate, Selection};
+use crate::ops::GraphDoc;
 use crate::*;
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
@@ -103,6 +104,9 @@ EDIT (any number, atomic):
   loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY   (new key: TEXT in the
                                   default locale, empty elsewhere) | loc locale add L [from=L2] | loc locale remove L
   ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
+  marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS
+                                  animation.library clip markers: behavior.program event and / or audio cue,
+                                  fired once per loop iteration (also under an animation controller)
         | ability ID event remove I   action.abilities timeline (TICK < duration, SOUND = audio.library cue)
   vfx ID size START END | vfx ID color r,g,b,a r,g,b,a   vfx.library size curve / colour gradient over life
   vfx ID size_curve T:S T:S .. | none     2..8 keys (t 0..1 increasing) replace size->end_size; none removes
@@ -118,6 +122,15 @@ EDIT (any number, atomic):
                                   (state remove drops its transitions; new transitions wait 120 ticks)
   fsm M node STATE x,y            graph position (editor metadata, ignored by the runtime)
   fsm SEL agent MACHINE [radius=M]   fsm.agent on each object (a missing machine is created)
+ animation controllers (Graphs ▸ Animator; C = animation.controllers controller; positions in editor.layout anim/C):
+  animctl C create [INITIAL] | animctl C remove    one rest-pose state (default idle) | refused while attached
+  animctl C state add|remove|rename|set ..     state {\"motion\":{\"kind\":\"clip\",\"clip\":ID,\"speed\"?,\"looping\"?}
+                                  |{\"kind\":\"blend1d\",\"parameter\":P,\"points\":[{\"at\":V,\"clip\":ID}..]}}; no motion = rest pose
+  animctl C initial S | animctl C transition add FROM|* TO [JSON] | transition remove|move|set ..
+                                  {\"conditions\":[{\"param\":P,\"op\":\"gt|lt|eq|ne|true|false|trigger\",\"value\"?:N}],
+                                   \"duration\":S,\"exit_time\"?:N}; new transitions: exit_time 1, duration 0.2
+  animctl C param set NAME JSON | animctl C param remove NAME   {\"kind\":\"float|bool|trigger\",\"default\"?,\"source\"?:\"speed\"}
+  animctl C node STATE x,y | animctl SEL attach C   animation.controller on each object (needs animation.player)
   behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]
                                   new machine from the template + fsm.agent (dialogue declares E)
   rules: append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] when|actions|event V
@@ -431,6 +444,12 @@ enum Statement {
     FsmEdit(String, crate::ops::FsmEdit),
     FsmNode(String, String, [f32; 2]),
     FsmAgent(Box<Selection>, String, Option<f32>),
+    AnimCreate(String, Option<String>),
+    AnimRemove(String),
+    AnimEdit(String, crate::ops::FsmEdit),
+    AnimNode(String, String, [f32; 2]),
+    AnimParam(String, String, Option<Value>),
+    AnimAttach(Box<Selection>, String),
     Behavior(
         Box<Selection>,
         crate::ops::BehaviorTemplate,
@@ -447,6 +466,7 @@ enum TuningStatement {
     Ability(String, crate::ops::AbilityEventEdit),
     Vfx(String, crate::ops::VfxEdit),
     Shader(String, String),
+    Marker(String, crate::ops::MarkerEdit),
 }
 
 fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
@@ -463,6 +483,16 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
     let tick = |t: &str| -> Result<u32> {
         t.parse()
             .with_context(|| format!("'{t}' is not a tick (0, 1, .. at 120 per second)"))
+    };
+    let seconds = |t: &str| -> Result<f32> {
+        let s: f32 = t
+            .parse()
+            .with_context(|| format!("'{t}' is not a time in seconds"))?;
+        ensure!(
+            s.is_finite() && s >= 0.0,
+            "marker time must be >= 0 seconds"
+        );
+        Ok(s)
     };
     let rgba = |t: &str| -> Result<[f64; 4]> {
         let v = numbers(t)?;
@@ -548,6 +578,35 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
             (*id).into(),
             AbilityEventEdit::Remove { index: index(i)? },
         ),
+        ["marker", clip, "add", at, rest @ ..] => {
+            let mut event = None;
+            let mut cue = None;
+            for t in rest {
+                match t.split_once('=') {
+                    Some(("event", v)) => event = Some(text(v)),
+                    Some(("cue", v)) => cue = Some(text(v)),
+                    _ => bail!("unexpected '{t}' (expected event=E or cue=C)"),
+                }
+            }
+            TuningStatement::Marker(
+                text(clip),
+                crate::ops::MarkerEdit::Add {
+                    at: seconds(at)?,
+                    event,
+                    cue,
+                },
+            )
+        }
+        ["marker", clip, "remove", i] => {
+            TuningStatement::Marker(text(clip), crate::ops::MarkerEdit::Remove(index(i)?))
+        }
+        ["marker", clip, "move", i, at] => TuningStatement::Marker(
+            text(clip),
+            crate::ops::MarkerEdit::Move(index(i)?, seconds(at)?),
+        ),
+        ["marker", ..] => bail!(
+            "use: marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS"
+        ),
         ["ability", ..] => bail!(
             "use: ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND | ability ID event remove I"
         ),
@@ -621,6 +680,7 @@ fn tuning_edits(w: &World, stmt: &TuningStatement) -> Result<Vec<Edit>> {
         TuningStatement::Ability(id, edit) => crate::ops::edit_ability_event(w, id, edit),
         TuningStatement::Vfx(id, edit) => crate::ops::edit_vfx(w, id, edit),
         TuningStatement::Shader(id, wgsl) => crate::ops::set_shader_source(w, id, wgsl),
+        TuningStatement::Marker(clip, edit) => crate::ops::anim_marker(w, clip, edit),
     }
 }
 
@@ -1040,7 +1100,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::EventDeclare(arg(2)?.clone(), fields)
         }
         "ui" => Statement::Ui(ui_statement(tokens)?),
-        "input" | "loc" | "ability" | "vfx" | "shader" => {
+        "input" | "loc" | "ability" | "vfx" | "shader" | "marker" => {
             Statement::Tuning(tuning_statement(tokens)?)
         }
         "rotate" => {
@@ -1302,6 +1362,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "tween" => tween(tokens)?,
         "audio" => audio(tokens)?,
         "fsm" => fsm(tokens)?,
+        "animctl" => animctl(tokens)?,
         "behavior" => behavior(tokens)?,
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
@@ -1769,6 +1830,62 @@ fn fsm(tokens: &[String]) -> Result<Statement> {
     })
 }
 
+/// `animctl` statements (see GRAMMAR): the `fsm` graph grammar on `animation.controllers`,
+/// plus `param set|remove` and `SEL attach C`.
+fn animctl(tokens: &[String]) -> Result<Statement> {
+    const USE: &str = "use: animctl C create|remove | animctl C state add|remove|rename|set .. | animctl C initial S | animctl C transition add|remove|move|set .. | animctl C param set NAME JSON | animctl C param remove NAME | animctl C node S x,y | animctl SEL attach C";
+    let arg = |n: usize| tokens.get(n).map(String::as_str).context(USE);
+    let name = |n: usize| -> Result<String> {
+        Ok(match value(arg(n)?) {
+            Value::String(s) => s,
+            _ => arg(n)?.to_owned(),
+        })
+    };
+    let count = |n: usize| -> Result<()> {
+        ensure!(tokens.len() <= n, "unexpected '{}' ({USE})", tokens[n]);
+        Ok(())
+    };
+    match tokens.get(2).map(String::as_str) {
+        Some("attach") => {
+            count(4)?;
+            return Ok(Statement::AnimAttach(
+                Box::new(selector(arg(1)?)?),
+                name(3)?,
+            ));
+        }
+        Some("param") => {
+            return Ok(match arg(3)? {
+                "set" => {
+                    count(6)?;
+                    Statement::AnimParam(name(1)?, name(4)?, Some(json_value(arg(5)?)?))
+                }
+                "remove" => {
+                    count(5)?;
+                    Statement::AnimParam(name(1)?, name(4)?, None)
+                }
+                other => bail!("unknown animctl param verb '{other}' (set, remove)"),
+            });
+        }
+        Some("agent") | None => bail!("{USE}"),
+        _ => {}
+    }
+    let to_anim = |e: anyhow::Error| {
+        anyhow::anyhow!(
+            "{}",
+            format!("{e:#}")
+                .replace("fsm SEL agent MACHINE", "animctl SEL attach C")
+                .replace("fsm ", "animctl ")
+        )
+    };
+    Ok(match fsm(tokens).map_err(to_anim)? {
+        Statement::FsmCreate(id, initial) => Statement::AnimCreate(id, initial),
+        Statement::FsmRemove(id) => Statement::AnimRemove(id),
+        Statement::FsmEdit(id, edit) => Statement::AnimEdit(id, edit),
+        Statement::FsmNode(id, state, at) => Statement::AnimNode(id, state, at),
+        _ => bail!("{USE}"),
+    })
+}
+
 /// `behavior SEL TEMPLATE [k=v ..]` (Inspector ▸ Behavior templates).
 fn behavior(tokens: &[String]) -> Result<Statement> {
     const USE: &str = "use: behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]";
@@ -2148,6 +2265,21 @@ pub fn run(
             }
             Statement::FsmAgent(select, machine, radius) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::fsm_add_agent(w, r, &ids, &machine, radius)),
+            Statement::AnimCreate(id, initial) => {
+                crate::ops::anim_create(w, r, &id, initial.as_deref())
+            }
+            Statement::AnimRemove(id) => crate::ops::graph_remove(w, GraphDoc::Animator, &id),
+            Statement::AnimEdit(id, edit) => {
+                crate::ops::graph_edit(w, GraphDoc::Animator, &id, &edit)
+            }
+            Statement::AnimNode(id, state, at) => {
+                crate::ops::graph_set_node(w, GraphDoc::Animator, &id, &state, at)
+            }
+            Statement::AnimParam(id, name, def) => {
+                crate::ops::anim_param(w, &id, &name, def.as_ref())
+            }
+            Statement::AnimAttach(select, id) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::anim_attach(w, r, &ids, &id)),
             Statement::Behavior(select, template, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_behavior(w, r, &ids, template, &options)),
             Statement::AssetPlace(kind, id, place) => {

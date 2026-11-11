@@ -1943,8 +1943,9 @@ impl Editor {
             // Graphs tab on a state machine / on the rule table (view only).
             "graph" => self.graph_open(id)?,
             "rules" => self.graph_open_rules(id)?,
+            "animator" => self.graph_open_doc(axiom_core::ops::GraphDoc::Animator, id)?,
             other => anyhow::bail!(
-                "unknown kind {other}; use material, prefab, resource, component, options, graph or rules"
+                "unknown kind {other}; use material, prefab, resource, component, options, graph, animator or rules"
             ),
         }
         Ok(())

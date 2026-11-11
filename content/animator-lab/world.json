@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "animator-lab",
+  "title": "Animator Lab / animation controller",
+  "capabilities": {"animation":1,"behavior":1,"core":1,"path":1,"render":1,"ui":1},
+  "systems": ["path.move","animation.evaluate","behavior.execute"],
+  "entities": [
+    {"id":"track","label":"Walking loop","components":{
+      "core.transform":{},
+      "path.spline":{"points":[[0,0,-2.2],[2.2,0,-1.1],[2.2,0,1.1],[0,0,2.2],[-2.2,0,1.1],[-2.2,0,-1.1]],"closed":true,"interpolation":"catmull_rom"}
+    }},
+    {"id":"walker","label":"Axi (controller)","components":{
+      "core.transform":{"position":[0,0,-2.2]},
+      "animation.player":{"asset":"axiom-short","clip":"idle"},
+      "animation.controller":{"controller":"locomotion"},
+      "path.follow":{"path":"track","speed":1.2,"turn_rate":360}
+    }},
+    {"id":"camera/main","label":"Camera","components":{
+      "core.transform":{"position":[0,3.4,7.6],"rotation":[-0.190809,0,0,0.981627]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":45},"near":0.05,"far":60,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"floor","label":"Floor","components":{
+      "core.transform":{"position":[0,-0.05,0],"scale":[10,0.1,8]},
+      "render.mesh":{"parts":[{"color":[0.11,0.13,0.16],"grid":true}]}
+    }}
+  ],
+  "resources": {
+    "animation.library":{"assets":{"axiom-short":{"path":"axiom-short.glb"}}},
+    "animation.controllers":{"controllers":{
+      "locomotion":{
+        "parameters":{
+          "speed":{"kind":"float","default":0,"source":"speed"},
+          "wave":{"kind":"trigger"}
+        },
+        "initial":"idle",
+        "states":{
+          "idle":{"motion":{"kind":"clip","clip":"idle"}},
+          "move":{"motion":{"kind":"blend1d","parameter":"speed","points":[{"at":1.0,"clip":"walk"},{"at":3.0,"clip":"run"}]}},
+          "wave":{"motion":{"kind":"clip","clip":"wave","looping":false}}
+        },
+        "transitions":[
+          {"from":"idle","to":"move","conditions":[{"param":"speed","op":"gt","value":0.2}],"duration":0.25},
+          {"from":"move","to":"idle","conditions":[{"param":"speed","op":"lt","value":0.2}],"duration":0.3},
+          {"from":"idle","to":"wave","conditions":[{"param":"wave","op":"trigger"}],"duration":0.15},
+          {"from":"wave","to":"idle","exit_time":1.0,"duration":0.2}
+        ]
+      }
+    }},
+    "editor.layout":{"graphs":{"anim/locomotion":{"idle":[40,60],"move":[340,60],"wave":[40,240]}}},
+    "behavior.program":{"variables":{}},
+    "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":10},
+    "ui.document":{
+      "flow":true,
+      "session_controls":false,
+      "locale":"en",
+      "catalogs":{"en":{"title":"ANIMATOR LAB  idle / walk / run by measured speed","stop":"Stop","walk":"Walk 1 m/s","jog":"Jog 2 m/s","run":"Run 3 m/s","wave":"Wave (stop first)"}},
+      "widgets":[
+        {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
+        {"kind":"button","id":"stop","text":"stop","command":{"kind":"call","capability":"path","action":"set_speed","args":{"id":"walker","speed":0}}},
+        {"kind":"button","id":"walk","text":"walk","command":{"kind":"call","capability":"path","action":"set_speed","args":{"id":"walker","speed":1}}},
+        {"kind":"button","id":"jog","text":"jog","command":{"kind":"call","capability":"path","action":"set_speed","args":{"id":"walker","speed":2}}},
+        {"kind":"button","id":"run","text":"run","command":{"kind":"call","capability":"path","action":"set_speed","args":{"id":"walker","speed":3}}},
+        {"kind":"button","id":"wave","text":"wave","command":{"kind":"call","capability":"animation","action":"param","args":{"entity":"walker","name":"wave","value":true}}}
+      ]
+    }
+  }
+}

@@ -172,6 +172,32 @@ impl Editor {
         Ok(())
     }
 
+    /// `anim.marker add [SECONDS] [event=E] [cue=C] | remove I | move I SECONDS` on the
+    /// timeline's clip (`add` without a time uses the playhead) = ACL `marker CLIP ..`.
+    pub(super) fn anim_marker_command(&mut self, arg: Option<&str>) -> anyhow::Result<Vec<Action>> {
+        self.show_dock(Dock::Animation);
+        let Some(arg) = arg else {
+            return Ok(vec![]);
+        };
+        let clip = self
+            .tuning
+            .anim
+            .clip
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("pick a model and clip in the Animation tab"))?;
+        let mut words: Vec<String> = arg.split_whitespace().map(str::to_owned).collect();
+        if words.first().map(String::as_str) == Some("add")
+            && words.get(1).is_none_or(|w| w.parse::<f32>().is_err())
+        {
+            // Rounded to the millisecond so the ACL text and the written value agree.
+            let at = (self.tuning.anim.time * 1000.0).round() / 1000.0;
+            words.insert(1, format!("{at}"));
+        }
+        let statement = format!("marker {clip} {}", words.join(" "));
+        let result = axiom_core::acl::tuning_command_edits(&self.world, &statement);
+        Ok(self.tuning_write(result).into_iter().collect())
+    }
+
     /// `anim.scrub SECONDS` (view only): moves the playhead and previews the pose.
     pub(super) fn anim_scrub_command(&mut self, arg: Option<&str>) -> anyhow::Result<()> {
         self.show_dock(Dock::Animation);

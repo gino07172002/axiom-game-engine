@@ -592,7 +592,7 @@ impl RuntimeSystem for PhysicsSystem {
         self.steps = old.steps;
         Ok(())
     }
-    fn checkpoint_state(&self, state: &RuntimeState) -> Option<Value> {
+    fn save_state(&self, state: &RuntimeState) -> Option<Result<Value>> {
         let bodies = self
             .entries
             .iter()
@@ -611,23 +611,18 @@ impl RuntimeSystem for PhysicsSystem {
                 )
             })
             .collect();
-        serde_json::to_value(SavedPhysics {
-            steps: self.steps,
-            bodies,
-        })
-        .ok()
-    }
-    fn restore_checkpoint_state(
-        &mut self,
-        state: &RuntimeState,
-        saved: Option<&Value>,
-    ) -> Result<()> {
-        let saved: SavedPhysics = serde_json::from_value(
-            saved
-                .context("checkpoint has no physics.step state (saved by an engine without rigid bodies)")?
-                .clone(),
+        Some(
+            serde_json::to_value(SavedPhysics {
+                steps: self.steps,
+                bodies,
+            })
+            .map_err(Into::into),
         )
-        .context("physics.step checkpoint state")?;
+    }
+    fn load_state(&mut self, state: &mut RuntimeState, saved: &Value) -> Result<()> {
+        let state = &*state;
+        let saved: SavedPhysics =
+            serde_json::from_value(saved.clone()).context("physics.step checkpoint state")?;
         let simulated = self.entries.iter().filter(|e| e.role.simulated()).count();
         ensure!(
             saved.bodies.len() == simulated,

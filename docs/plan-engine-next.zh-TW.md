@@ -174,3 +174,38 @@
 
 **驗證(最後一輪,709d5d1 之上)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 708 passed / 0 failed / 5 ignored(基準 692;新增 16:`vram`、`chrome::vram_text`、`render::unlit_tests`、`look` ×2、`screenshot` ×4、`inspector_tests` ×3(收合卡片勾選 + Transform Revert、Add Component 標題列、Advanced 列)、`asset_browser_tests` ×2(資料夾樹 / 麵包屑 / reveal、prefab 縮圖請求)、`hierarchy_tests::sakura_plaza_is_a_folder_tree_of_groups`、`thumbs::box_tests`;調整 `thumbnail_job_reports_progress_and_cancels` 的總數 40 → 41(lab 的 prefab 現在也有縮圖)與 `parity::view_commands_never_write` 清單)。`editor-smoke-test.ps1` ok:true(資料庫已刪);`editor-world-parity.ps1` identical:true(13 = 13);`street-editor-parity.ps1` identical:true(16 = 16);`build-street.ps1` 後 `content/street` 無差異;`build-plaza.ps1` 重建後 `content/plaza` 無差異。之前一輪全量測試曾在機器滿載時失敗一次 `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(已知的負載敏感計時斷言,FD 記錄過),最後一輪通過。截圖(debug,已看過):`artifacts/captures/we-before-{1080,768}.png`(主樹 exe、Axiom Street)、`we-after{,-light,-unlit}-{1080,768}.png`(Sakura Plaza)、`we-viewshot-{1080,768}.png`(截圖鈕的輸出)。審查:兩輪 fresh-context(主體 14 項、E3 11 項),已修的見上;記錄未修:`advanced_keys` 與狀態列 VRAM 提示每幀格式化字串(小)、`hint_enabled` 讀的是說明文字(目前每個 `enabled` 提示都寫 `default true`)、`vram::tests` 依賴 WDDM 計數(三次重試)、截圖包含 Scene 視圖上的編輯器標示、雙 GPU 同型號時 DXGI 取第一張。
 **仍與設計圖不同**:沒有天空 / 天空光 / 反射探針(工作線 R);Hierarchy 沒有「SakuraPlaza (Scene)」根列;沒有 Build、Save、場景檔分頁、Modified(unsaved)(M-UI 起的 non-goal);Advanced 列只列欄位名稱(沒有「Render Layers」這類資料);Assets 細節面板仍佔右側;角色是方塊人偶 + 吉祥物(不是設計圖的角色);1366×768 的 Inspector 仍是窄欄(Transform 標籤疊在上一行)。
+
+### A 動畫控制器(工作線 A,worktree `wa`,分支 `work-wa`)
+
+流程:`rigorous-plan`(本節 milestone 拆解)→ 每個 milestone `rigorous-change`。
+
+**ADR A1:資源 + 元件(不是只用元件)。** 控制器定義放在 `animation.controllers` 資源(`{controllers:{ID:{parameters, initial, states, transitions}}}`),實體用 `animation.controller {controller}` 掛上。比較:(a) 純元件 —— 每個實體各存一份圖,同一套 idle/walk/run 給 20 個 NPC 要改 20 次,Graphs 也得改成編輯元件;(b) 資源 + 元件(選用)—— 與既有 `fsm.machines` + `fsm.agent` 同形,多實體共用一份圖,編輯器、ops、ACL、版面(`editor.layout` 的 `anim/ID`)都能沿用 FSM 的路徑。代價:片段名稱只能在 runtime 對各實體的 `animation.player` 解析(資源驗證時不載入資產),缺片段時 runtime 建置失敗並指出 `/entities/@ID/components/animation.controller` 與狀態名。
+
+**ADR A2:圖形操作共用 FSM 的 ops 與畫布。** `ops_graph` 加 `GraphDoc {Fsm, Animator}`,狀態 / 轉移 / 位置 / 刪除改成 `graph_edit` / `graph_set_node` / `graph_remove`(`fsm_*` 保留為包裝,行為與錯誤碼不變,既有測試全過);兩種圖都是 `{initial, states, transitions:[{from,to,..}]}`,差別只在狀態與轉移的內容。Graphs 分頁多一個 **Animator** 檢視,同一個 Model / 畫布 / 拖曳 / 拉線 / 右鍵,右側換成動畫專用表單(`editor/anim_graph.rs`)。不另做一個圖編輯器,也不引入新 crate。
+
+**ADR A3:執行期求值。** 純邏輯在 `axiom-animation/src/controller.rs`(無 renderer 依賴):`Compiled`(名稱→索引、片段長度)與 `State`(`Copy`:目前層、淡出層、淡入計時、16 個參數的固定陣列)。每個 120 Hz 固定步:更新 `source:"speed"` 參數(實體平面位移 / FIXED_DT)→ 推進目前與淡出中的狀態 → 未淡入時依序檢查轉移(第一個通過者觸發,消耗 trigger)→ 產生最多 4 個加權樣本(2 層 × 1D 混合兩點)。混合樹用正規化時間同步;淡入期間不打斷。runtime 的 `Controller::evaluate` 改用重複使用的姿勢緩衝(`sample_into`、`blend_toward`、`blend_from`、`globals_into`),`step` 不再每步 clone 整個播放器(失敗時回滾 `Copy` 狀態,保留上一個姿勢)。
+- 參數來源:遊戲命令 `animation.param`(`RuntimeCommand::Call`,UI 按鈕、`runtime.bindings`、scenario、loopback、editor Play 都走它)、`source:"speed"`(角色控制器 / FSM 移動 / path.follow 都能驅動,不和特定 genre 綁在一起)。
+- 確定性:控制器狀態在 `metrics.animation.players.ID.controller`,所以在 `state_hash` 裡;scenario 重播雜湊一致,改變 trigger 時間雜湊就不同(測試)。沒有控制器的玩家 metrics 形狀不變(不加 `controller: null`),既有 scenario 雜湊不受影響。
+- Checkpoint:`animation.evaluate` 原本就不支援 checkpoint,`save` 明確失敗並指出該系統(測試);沒有做部分存檔。
+- 衝突:有控制器的實體拒絕 `animation.play`(訊息指向 `animation.param`),FSM / 動作送來的片段 cue 計數在 `ignored_cues`,不默默丟掉。
+
+**Milestones**
+- M1(walking skeleton):控制器型別 + 驗證 + runtime 整合 + `content/animator-lab`(mascot 的 idle / walk / run / wave,沿 path 行走,速度驅動)+ headless 測試 + GPU 畫面。
+- M2:ops(`anim_create` / `anim_param` / `anim_attach` / `anim_problems` + 共用 `graph_*`)、ACL `animctl`、編輯器 Graphs ▸ Animator(畫布、參數表、狀態 / 轉移表單、Play 即時高亮與參數值、淡入進度條)、指令 `graph.open_controller|new_controller|attach_controller|param`、`editor_view {open:"animator:ID"}`、Inspector Edit Graph、parity 測試。
+- M3:驗證(全套 + GPU smoke + 截圖)、審查修正、文件。
+
+**補記(範圍追加,2026-11-12):** 使用者要求在 A 線補上 `docs/gaps-paladin-night.zh-TW.md` 的 A2、A3、D1、D2(通用實作,不複製該內容包)。
+- A2 片段結束 / 標記事件:`animation.library.markers`(片段 → `{at, event?, cue?}`)越過時送 `behavior.program` 事件(宣告了 `entity` / `clip` 文字欄位就填入),循環每圈一次;`animation.player.on_end` 每次完成循環;FSM 新條件 `clip_finished`;控制器內用 `exit_time`,轉移當步先結算離開狀態的最後一步(標記與 `on_end` 不漏)。ACL `marker CLIP add|remove|move`、op `anim_marker`、編輯器 `anim.marker`。
+- A3 速度:runtime 命令 `animation.speed {entity, speed, ramp_seconds?}`(不重置時間,線性漸變,失敗步回滾);控制器狀態 `speed_parameter`(Animator 表單 Rate param)。
+- D1 音效:標記的 `cue` 走既有 `audio.events`,每圈一次;未知 cue / 缺系統在建置時報錯。
+- D2 存檔:`Checkpoint.systems`(新欄位,舊存檔沒有;空時不寫出)+ `RuntimeSystem::save_state / load_state`。動畫存片段、時間、速度與漸變、淡入起始姿勢、骨骼覆寫、IK 目標、twist 開關、控制器狀態(以名稱)與參數;需要狀態的系統遇到缺少該段的存檔明確拒絕。原計畫(M1 時)是「動畫 checkpoint 明確失敗」,改為完整支援,因為使用者把 D2 列為必做。
+- 未做:時間軸上畫出標記(目前只有指令 / ACL / Inspector JSON 可編輯);標記所屬片段若沒有任何 player 會被忽略(不報錯,避免刪掉角色就讓整個世界無法建置);反向播放不觸發標記;混合樹的標記跟隨當步權重最大的片段。
+
+**驗證(debug,MX150,其他工作線同時建置)**:`cargo fmt --all`;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 717 passed / 0 failed / 5 ignored(基準 692;一次全跑時 `editor_kind_templates…` 因新條件數量失敗,已修正後單獨重跑通過;較早一次全跑的 `editor_scenario_runs_in_background…` 500 ms 計時斷言在高負載下失敗、單獨重跑通過,為已知負載敏感測試)。`scripts/editor-smoke-test.ps1 -Port 4917` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true(1→13);`street-editor-parity.ps1` identical:true(8→16);`build-street.ps1` 後 content/street 無變化;`m0-smoke-test.ps1` PASS(`artifacts/m0-two-cameras.png` 已看過)。GPU:`--pack content/animator-lab play --smoke-frames 300 --screenshot artifacts/captures/wa-animator-play.png`(角色沿路徑行走,observe 控制器 state=move、speed≈1.2)。編輯器 Play 中的 Animator 檢視 `artifacts/captures/wa-animator-{1080,768}.png`(邏輯 1920×1080 / 1366×768;move 節點綠色 `live 1`、參數表即時 speed≈2.00),已看過。
+- **配置**:`tests/animator.rs::steady_controller_steps_do_not_allocate` 以每執行緒計數配置器量 240 步:無播放器 480 次、片段播放器 480 次、控制器 480 次 → 動畫系統本身 0 次(480 = 世界步進其他部分每步 2 次,與動畫無關)。重構前 `step` 每步 clone 整個播放器(含姿勢 Vec)。retarget / twist / IK 與蒙皮輸出(`extract` 的頂點 Vec)仍會配置,未改。未做 release A/B,不宣稱效能改善。
+- **審查**:兩次 fresh-context 審查。第一次:Problems 快取混用兩種圖(修)、片段清單快取不分控制器(修)、失敗步留下部分 IK 結果(修)、回滾 / 重新啟用後速度取樣跳動(修)、永不觸發的 exit_time(驗證拒絕)、缺片段只在 runtime 報錯(維持,與 `player.clip` 一致)。第二次:熱重載重放已過標記、轉移當步漏掉離開狀態的標記與 `on_end`、play+seek 重放、反向播放旗標、失敗的 play 清掉 clip_finished(全部修正並加測試);同一片段標記剛好在循環接縫的 f32 邊界、混合樹主片段切換屬已知限制。
+
+### 整合補記(2026-11-12,整合者)
+
+- 原計畫:P、E、A 各自合併。→ 變成:P 與 A 各自新增了 `Checkpoint.systems` 與 `RuntimeSystem` 存讀檔 hook(P:`checkpoint_state` / `restore_checkpoint_state`;A:`save_state` / `load_state`)。→ 合併時統一成 A 的 `save_state` / `load_state`(存檔可回報錯誤、讀檔可改 runtime state),P 的 `physics.step` 改實作這組 hook;「存檔缺少某系統狀態」改由 `WorldRuntime::load_system_states` 統一拒絕,錯誤訊息帶系統 ID。為什麼:同一份存檔不能有兩套語意。
+- `editor/ui.rs` 的 Edit Graph 按鈕:保留 E 的「只在展開的卡片顯示」(收合卡片的 `draft.form` 屬於另一個元件)並加上 A 的 `animation.controller` 分支。

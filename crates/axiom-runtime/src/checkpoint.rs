@@ -26,8 +26,8 @@ pub struct Checkpoint {
     /// Random stream position. Absent in pre-0.4.1 saves, which restore the content seed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rng: Option<u64>,
-    /// Typed state of native systems by system ID (e.g. rigid-body velocities). Absent in
-    /// saves of worlds whose systems keep none.
+    /// Native system state by system ID (`RuntimeSystem::save_state`, e.g. animation
+    /// playback). Absent in older saves; a system that needs it then refuses the load.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub systems: BTreeMap<String, Value>,
 }
@@ -88,7 +88,7 @@ impl WorldRuntime {
             entities,
             gameplay: self.state.gameplay.as_ref().map(|g| g.progress()),
             rng: Some(self.state.rng),
-            systems: self.checkpoint_states(),
+            systems: self.save_system_states()?,
         })
     }
     pub fn restore_checkpoint(&mut self, c: &Checkpoint) -> Result<()> {
@@ -162,7 +162,7 @@ impl WorldRuntime {
         next.runtime_epoch = self.runtime_epoch + 1;
         next.state.next_generation = self.state.next_generation;
         next.state.sync_scenes();
-        next.restore_checkpoint_states(&c.systems)?;
+        next.load_system_states(&c.systems)?;
         next.restored();
         next.assert_valid()?;
         *self = next;

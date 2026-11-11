@@ -72,8 +72,94 @@ pub fn fsm_graph_key(machine: &str) -> String {
     format!("fsm/{machine}")
 }
 
-fn machine_path(machine: &str) -> String {
-    format!("/resources/{FSM_RESOURCE}/machines/{}", escape(machine))
+/// The resource holding every animation controller (registered by the `animation` capability).
+pub const ANIM_RESOURCE: &str = "animation.controllers";
+
+/// Which state graph an edit targets: an `fsm.machines` machine or an
+/// `animation.controllers` controller. Both are `{initial, states:{NAME:{..}},
+/// transitions:[{from, to, ..}]}`, so the same state / transition / layout operations (and
+/// the same Graphs canvas) serve both; only the state and transition bodies differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GraphDoc {
+    #[default]
+    Fsm,
+    Animator,
+}
+
+impl GraphDoc {
+    pub fn resource(self) -> &'static str {
+        match self {
+            Self::Fsm => FSM_RESOURCE,
+            Self::Animator => ANIM_RESOURCE,
+        }
+    }
+    /// The object key of the graphs inside the resource.
+    pub fn root(self) -> &'static str {
+        match self {
+            Self::Fsm => "machines",
+            Self::Animator => "controllers",
+        }
+    }
+    fn short(self) -> &'static str {
+        match self {
+            Self::Fsm => "machine",
+            Self::Animator => "controller",
+        }
+    }
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Fsm => "state machine",
+            Self::Animator => "animation controller",
+        }
+    }
+    /// The ACL verb (error hints).
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Fsm => "fsm",
+            Self::Animator => "animctl",
+        }
+    }
+    /// The `editor.layout` graph key of graph `id`.
+    pub fn layout_key(self, id: &str) -> String {
+        match self {
+            Self::Fsm => fsm_graph_key(id),
+            Self::Animator => format!("anim/{id}"),
+        }
+    }
+    /// The graph `id` in `world`, if any.
+    pub fn graph<'a>(self, world: &'a World, id: &str) -> Option<&'a Value> {
+        world
+            .resources
+            .get(self.resource())?
+            .get(self.root())?
+            .get(id)
+    }
+    /// IDs of every graph of this kind.
+    pub fn ids(self, world: &World) -> Vec<String> {
+        world
+            .resources
+            .get(self.resource())
+            .and_then(|r| r.get(self.root()))
+            .and_then(Value::as_object)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+    /// The body of a state added without one.
+    fn default_state(self) -> Value {
+        match self {
+            Self::Fsm => json!({"action":{"kind":"stop"}}),
+            Self::Animator => json!({}),
+        }
+    }
+}
+
+fn machine_path(g: GraphDoc, machine: &str) -> String {
+    format!(
+        "/resources/{}/{}/{}",
+        g.resource(),
+        g.root(),
+        escape(machine)
+    )
 }
 
 fn invalid(path: impl Into<String>, message: impl Into<String>) -> anyhow::Error {
@@ -91,47 +177,59 @@ fn check_name(path: &str, what: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `fsm.machines` value to edit (an empty one when the world has none).
-fn machines_doc(world: &World) -> Value {
+/// The resource value to edit (an empty one when the world has none).
+fn machines_doc(world: &World, g: GraphDoc) -> Value {
     world
         .resources
-        .get(FSM_RESOURCE)
+        .get(g.resource())
         .cloned()
-        .unwrap_or_else(|| json!({"machines":{}}))
+        .unwrap_or_else(|| json!({ g.root(): {} }))
 }
 
-fn machines_map(doc: &mut Value) -> Result<&mut Map<String, Value>> {
-    doc.get_mut("machines")
+fn machines_map(g: GraphDoc, doc: &mut Value) -> Result<&mut Map<String, Value>> {
+    doc.get_mut(g.root())
         .and_then(Value::as_object_mut)
         .ok_or_else(|| {
             invalid(
-                format!("/resources/{FSM_RESOURCE}/machines"),
-                "fsm.machines machines must be an object",
+                format!("/resources/{}/{}", g.resource(), g.root()),
+                format!("{} {} must be an object", g.resource(), g.root()),
             )
         })
 }
 
-fn machine_mut<'a>(doc: &'a mut Value, machine: &str) -> Result<&'a mut Map<String, Value>> {
-    let machines = machines_map(doc)?;
+fn machine_mut<'a>(
+    g: GraphDoc,
+    doc: &'a mut Value,
+    machine: &str,
+) -> Result<&'a mut Map<String, Value>> {
+    let machines = machines_map(g, doc)?;
     if !machines.contains_key(machine) {
         let names: Vec<&str> = machines.keys().take(8).map(String::as_str).collect();
         let message = format!(
-            "no state machine '{machine}' (machines: {})",
+            "no {} '{machine}' ({}: {})",
+            g.noun(),
+            g.root(),
             names.join(", ")
         );
         return Err(Diagnostic::error(
             "not_found",
-            machine_path(machine),
+            machine_path(g, machine),
             message,
         ));
     }
     machines
         .get_mut(machine)
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| invalid(machine_path(machine), "a machine must be an object"))
+        .ok_or_else(|| {
+            invalid(
+                machine_path(g, machine),
+                format!("a {} must be an object", g.short()),
+            )
+        })
 }
 
 fn states_mut<'a>(
+    g: GraphDoc,
     m: &'a mut Map<String, Value>,
     machine: &str,
 ) -> Result<&'a mut Map<String, Value>> {
@@ -140,49 +238,59 @@ fn states_mut<'a>(
         .as_object_mut()
         .ok_or_else(|| {
             invalid(
-                format!("{}/states", machine_path(machine)),
+                format!("{}/states", machine_path(g, machine)),
                 "states must be an object",
             )
         })
 }
 
-fn transitions_mut<'a>(m: &'a mut Map<String, Value>, machine: &str) -> Result<&'a mut Vec<Value>> {
+fn transitions_mut<'a>(
+    g: GraphDoc,
+    m: &'a mut Map<String, Value>,
+    machine: &str,
+) -> Result<&'a mut Vec<Value>> {
     m.entry("transitions")
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or_else(|| {
             invalid(
-                format!("{}/transitions", machine_path(machine)),
+                format!("{}/transitions", machine_path(g, machine)),
                 "transitions must be an array",
             )
         })
 }
 
-fn require_state(states: &Map<String, Value>, machine: &str, name: &str) -> Result<()> {
+fn require_state(
+    g: GraphDoc,
+    states: &Map<String, Value>,
+    machine: &str,
+    name: &str,
+) -> Result<()> {
     if !states.contains_key(name) {
         return Err(Diagnostic::error(
             "not_found",
-            format!("{}/states/{}", machine_path(machine), escape(name)),
-            format!("machine '{machine}' has no state '{name}'"),
+            format!("{}/states/{}", machine_path(g, machine), escape(name)),
+            format!("{} '{machine}' has no state '{name}'", g.short()),
         ));
     }
     Ok(())
 }
 
-fn set_machines(doc: Value) -> Edit {
+fn set_machines(g: GraphDoc, doc: Value) -> Edit {
     Edit::Core(CoreEdit::SetResource {
-        id: FSM_RESOURCE.into(),
+        id: g.resource().into(),
         value: doc,
     })
 }
 
-/// Capability / system edits a world needs before it can hold `fsm.machines` (the registry's
-/// `fsm` capability and `fsm.step`); nothing when the registry does not know the resource.
-fn fsm_requirements(world: &World, registry: &Registry) -> Vec<Edit> {
-    if world.resources.contains_key(FSM_RESOURCE) {
+/// Capability / system edits a world needs before it can hold the graph resource (for
+/// `fsm.machines` the `fsm` capability and `fsm.step`); nothing when the registry does not
+/// know the resource.
+fn graph_requirements(world: &World, registry: &Registry, g: GraphDoc) -> Vec<Edit> {
+    if world.resources.contains_key(g.resource()) {
         return vec![];
     }
-    crate::ops_world::requirement_edits(world, registry, &requirements(registry, FSM_RESOURCE))
+    crate::ops_world::requirement_edits(world, registry, &requirements(registry, g.resource()))
 }
 
 /// A machine with one state `initial` that does nothing.
@@ -206,51 +314,72 @@ pub fn fsm_create_machine(
     insert_machine(
         world,
         registry,
+        GraphDoc::Fsm,
         machine,
         new_machine(initial.unwrap_or("idle")),
     )
 }
 
-fn insert_machine(
+pub(crate) fn insert_graph(
     world: &World,
     registry: &Registry,
+    g: GraphDoc,
     machine: &str,
     value: Value,
 ) -> Result<Vec<Edit>> {
-    check_name(&machine_path(machine), "machine id", machine)?;
+    insert_machine(world, registry, g, machine, value)
+}
+
+fn insert_machine(
+    world: &World,
+    registry: &Registry,
+    g: GraphDoc,
+    machine: &str,
+    value: Value,
+) -> Result<Vec<Edit>> {
+    check_name(
+        &machine_path(g, machine),
+        &format!("{} id", g.short()),
+        machine,
+    )?;
     if let Some(initial) = value["initial"].as_str() {
         check_name(
-            &format!("{}/initial", machine_path(machine)),
+            &format!("{}/initial", machine_path(g, machine)),
             "state name",
             initial,
         )?;
     }
-    let mut doc = machines_doc(world);
-    let machines = machines_map(&mut doc)?;
+    let mut doc = machines_doc(world, g);
+    let machines = machines_map(g, &mut doc)?;
     if machines.contains_key(machine) {
         return Err(Diagnostic::error(
             "id_taken",
-            machine_path(machine),
-            format!("state machine '{machine}' already exists"),
+            machine_path(g, machine),
+            format!("{} '{machine}' already exists", g.noun()),
         ));
     }
     if machines.len() >= MAX_MACHINES {
         return Err(invalid(
-            machine_path(machine),
-            format!("at most {MAX_MACHINES} state machines"),
+            machine_path(g, machine),
+            format!("at most {MAX_MACHINES} {}s", g.noun()),
         ));
     }
     machines.insert(machine.to_owned(), value);
-    let mut edits = fsm_requirements(world, registry);
-    edits.push(set_machines(doc));
+    let mut edits = graph_requirements(world, registry, g);
+    edits.push(set_machines(g, doc));
     Ok(edits)
 }
 
-/// Entities and prefabs whose `fsm.agent` runs `machine`.
-fn machine_users(world: &World, machine: &str) -> Vec<String> {
+/// Entities and prefabs whose `fsm.agent` runs `machine` (or whose `animation.controller`
+/// names controller `machine`).
+fn machine_users(world: &World, g: GraphDoc, machine: &str) -> Vec<String> {
+    let (component, field) = match g {
+        GraphDoc::Fsm => ("fsm.agent", "machine"),
+        GraphDoc::Animator => ("animation.controller", "controller"),
+    };
     let uses = |c: &BTreeMap<String, Value>| {
-        c.get("fsm.agent")
-            .is_some_and(|a| a["machine"].as_str() == Some(machine))
+        c.get(component)
+            .is_some_and(|a| a[field].as_str() == Some(machine))
     };
     let mut users: Vec<String> = world
         .entities
@@ -271,22 +400,33 @@ fn machine_users(world: &World, machine: &str) -> Vec<String> {
 /// Graphs ▸ Delete machine / ACL `fsm M remove`. Refused while an `fsm.agent` runs it; its
 /// graph positions go with it.
 pub fn fsm_remove_machine(world: &World, machine: &str) -> Result<Vec<Edit>> {
-    let mut doc = machines_doc(world);
-    machine_mut(&mut doc, machine)?;
-    let users = machine_users(world, machine);
+    graph_remove(world, GraphDoc::Fsm, machine)
+}
+
+/// [`fsm_remove_machine`] for either graph kind (ACL `animctl C remove`).
+pub fn graph_remove(world: &World, g: GraphDoc, machine: &str) -> Result<Vec<Edit>> {
+    let mut doc = machines_doc(world, g);
+    machine_mut(g, &mut doc, machine)?;
+    let users = machine_users(world, g, machine);
     if !users.is_empty() {
+        let component = match g {
+            GraphDoc::Fsm => "fsm.agent",
+            GraphDoc::Animator => "animation.controller",
+        };
         return Err(Diagnostic::error(
             "machine_in_use",
-            machine_path(machine),
+            machine_path(g, machine),
             format!(
-                "state machine '{machine}' is used by {}; give them another machine or remove their fsm.agent first",
-                users.join(", ")
+                "{} '{machine}' is used by {}; give them another {} or remove their {component} first",
+                g.noun(),
+                users.join(", "),
+                g.short()
             ),
         ));
     }
-    machines_map(&mut doc)?.remove(machine);
-    let mut edits = vec![set_machines(doc)];
-    edits.extend(layout_edit(world, &fsm_graph_key(machine), |nodes| {
+    machines_map(g, &mut doc)?.remove(machine);
+    let mut edits = vec![set_machines(g, doc)];
+    edits.extend(layout_edit(world, &g.layout_key(machine), |nodes| {
         nodes.clear();
     })?);
     Ok(edits)
@@ -334,49 +474,55 @@ type LayoutChange = Box<dyn FnOnce(&mut BTreeMap<String, [f32; 2]>)>;
 /// `editor.layout` position change of a renamed or removed state). The runtime validator
 /// checks actions and conditions at commit; this checks names, references and budgets.
 pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit>> {
-    let mut doc = machines_doc(world);
-    let m = machine_mut(&mut doc, machine)?;
-    let base = machine_path(machine);
+    graph_edit(world, GraphDoc::Fsm, machine, edit)
+}
+
+/// [`fsm_edit`] for either graph kind (ACL `animctl C state|initial|transition ...`). An
+/// animation transition added without a body waits one cycle of its source state
+/// (`exit_time` 1) and cross-fades 0.2 s; a body given is merged into `{from, to}`.
+pub fn graph_edit(world: &World, g: GraphDoc, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit>> {
+    let mut doc = machines_doc(world, g);
+    let m = machine_mut(g, &mut doc, machine)?;
+    let base = machine_path(g, machine);
     let state_path = |name: &str| format!("{base}/states/{}", escape(name));
     let mut layout: Option<LayoutChange> = None;
     match edit {
         FsmEdit::AddState { name, state } => {
             check_name(&state_path(name), "state name", name)?;
-            let states = states_mut(m, machine)?;
+            let states = states_mut(g, m, machine)?;
             if states.contains_key(name) {
                 return Err(Diagnostic::error(
                     "id_taken",
                     state_path(name),
-                    format!("machine '{machine}' already has a state '{name}'"),
+                    format!("{} '{machine}' already has a state '{name}'", g.short()),
                 ));
             }
             if states.len() >= MAX_STATES {
                 return Err(invalid(
                     state_path(name),
-                    format!("a machine has at most {MAX_STATES} states"),
+                    format!("a {} has at most {MAX_STATES} states", g.short()),
                 ));
             }
-            let state = state
-                .clone()
-                .unwrap_or_else(|| json!({"action":{"kind":"stop"}}));
+            let state = state.clone().unwrap_or_else(|| g.default_state());
             if !state.is_object() {
                 return Err(invalid(state_path(name), "a state must be a JSON object"));
             }
             states.insert(name.clone(), state);
         }
         FsmEdit::RemoveState(name) => {
-            require_state(states_mut(m, machine)?, machine, name)?;
+            require_state(g, states_mut(g, m, machine)?, machine, name)?;
             if m.get("initial").and_then(Value::as_str) == Some(name) {
                 return Err(Diagnostic::error(
                     "fsm_initial",
                     state_path(name),
                     format!(
-                        "'{name}' is the initial state of '{machine}'; make another state initial first (fsm {machine} initial OTHER)"
+                        "'{name}' is the initial state of '{machine}'; make another state initial first ({} {machine} initial OTHER)",
+                        g.verb()
                     ),
                 ));
             }
-            states_mut(m, machine)?.remove(name);
-            transitions_mut(m, machine)?
+            states_mut(g, m, machine)?.remove(name);
+            transitions_mut(g, m, machine)?
                 .retain(|t| t["from"].as_str() != Some(name) && t["to"].as_str() != Some(name));
             let name = name.clone();
             layout = Some(Box::new(move |nodes: &mut BTreeMap<String, [f32; 2]>| {
@@ -385,8 +531,8 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
         }
         FsmEdit::RenameState { from, to } => {
             check_name(&state_path(to), "state name", to)?;
-            let states = states_mut(m, machine)?;
-            require_state(states, machine, from)?;
+            let states = states_mut(g, m, machine)?;
+            require_state(g, states, machine, from)?;
             if from == to {
                 return Ok(vec![]);
             }
@@ -402,7 +548,7 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
             if m.get("initial").and_then(Value::as_str) == Some(from) {
                 m.insert("initial".into(), json!(to));
             }
-            for t in transitions_mut(m, machine)?.iter_mut() {
+            for t in transitions_mut(g, m, machine)?.iter_mut() {
                 for end in ["from", "to"] {
                     if t[end].as_str() == Some(from) {
                         t[end] = json!(to);
@@ -417,8 +563,8 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
             }));
         }
         FsmEdit::SetState { name, state } => {
-            let states = states_mut(m, machine)?;
-            require_state(states, machine, name)?;
+            let states = states_mut(g, m, machine)?;
+            require_state(g, states, machine, name)?;
             if !state.is_object() {
                 return Err(invalid(state_path(name), "a state must be a JSON object"));
             }
@@ -428,20 +574,42 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
             states.insert(name.clone(), state.clone());
         }
         FsmEdit::SetInitial(name) => {
-            require_state(states_mut(m, machine)?, machine, name)?;
+            require_state(g, states_mut(g, m, machine)?, machine, name)?;
             if m.get("initial").and_then(Value::as_str) == Some(name) {
                 return Ok(vec![]);
             }
             m.insert("initial".into(), json!(name));
         }
         FsmEdit::AddTransition { from, to, when } => {
-            let transition = json!({
-                "from": from,
-                "to": to,
-                "when": when.clone().unwrap_or_else(|| json!({"kind":"in_state_ticks","ticks":DEFAULT_TRANSITION_TICKS})),
-            });
-            check_transition(m, machine, &transition, None)?;
-            let list = transitions_mut(m, machine)?;
+            let transition = match g {
+                GraphDoc::Fsm => json!({
+                    "from": from,
+                    "to": to,
+                    "when": when.clone().unwrap_or_else(|| json!({"kind":"in_state_ticks","ticks":DEFAULT_TRANSITION_TICKS})),
+                }),
+                GraphDoc::Animator => {
+                    let mut t = json!({"from": from, "to": to, "duration": 0.2});
+                    match when {
+                        None => t["exit_time"] = json!(1.0),
+                        Some(Value::Object(body)) => {
+                            for (k, v) in body {
+                                if k != "from" && k != "to" {
+                                    t[k] = v.clone();
+                                }
+                            }
+                        }
+                        Some(_) => {
+                            return Err(invalid(
+                                format!("{base}/transitions"),
+                                "a transition body is an object {\"conditions\":[..],\"duration\":S,\"exit_time\":N}",
+                            ))
+                        }
+                    }
+                    t
+                }
+            };
+            check_transition(g, m, machine, &transition, None)?;
+            let list = transitions_mut(g, m, machine)?;
             if list.len() >= MAX_TRANSITIONS {
                 return Err(invalid(
                     format!("{base}/transitions"),
@@ -451,12 +619,12 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
             list.push(transition);
         }
         FsmEdit::RemoveTransition(i) => {
-            let list = transitions_mut(m, machine)?;
+            let list = transitions_mut(g, m, machine)?;
             check_index(&base, *i, list.len())?;
             list.remove(*i);
         }
         FsmEdit::MoveTransition(from, to) => {
-            let list = transitions_mut(m, machine)?;
+            let list = transitions_mut(g, m, machine)?;
             check_index(&base, *from.max(to), list.len())?;
             if from == to {
                 return Ok(vec![]);
@@ -465,18 +633,18 @@ pub fn fsm_edit(world: &World, machine: &str, edit: &FsmEdit) -> Result<Vec<Edit
             list.insert(*to, t);
         }
         FsmEdit::SetTransition(i, transition) => {
-            check_index(&base, *i, transitions_mut(m, machine)?.len())?;
-            check_transition(m, machine, transition, Some(*i))?;
-            let list = transitions_mut(m, machine)?;
+            check_index(&base, *i, transitions_mut(g, m, machine)?.len())?;
+            check_transition(g, m, machine, transition, Some(*i))?;
+            let list = transitions_mut(g, m, machine)?;
             if &list[*i] == transition {
                 return Ok(vec![]);
             }
             list[*i] = transition.clone();
         }
     }
-    let mut edits = vec![set_machines(doc)];
+    let mut edits = vec![set_machines(g, doc)];
     if let Some(change) = layout {
-        edits.extend(layout_edit(world, &fsm_graph_key(machine), change)?);
+        edits.extend(layout_edit(world, &g.layout_key(machine), change)?);
     }
     Ok(edits)
 }
@@ -495,12 +663,13 @@ fn check_index(base: &str, i: usize, len: usize) -> Result<()> {
 /// `{from, to, when}` with known states (`from` may be `*`), different ends and a `when`
 /// object; `at` = the index being replaced (error paths).
 fn check_transition(
+    g: GraphDoc,
     m: &mut Map<String, Value>,
     machine: &str,
     t: &Value,
     at: Option<usize>,
 ) -> Result<()> {
-    let base = machine_path(machine);
+    let base = machine_path(g, machine);
     let path = match at {
         Some(i) => format!("{base}/transitions/{i}"),
         None => format!("{base}/transitions"),
@@ -508,18 +677,24 @@ fn check_transition(
     let (Some(from), Some(to), Some(_)) = (
         t.get("from").and_then(Value::as_str),
         t.get("to").and_then(Value::as_str),
-        t.get("when").filter(|w| w.is_object()),
+        match g {
+            GraphDoc::Fsm => t.get("when").filter(|w| w.is_object()),
+            GraphDoc::Animator => t.as_object().map(|_| t),
+        },
     ) else {
         return Err(invalid(
             path,
-            "a transition is {\"from\":STATE|\"*\",\"to\":STATE,\"when\":{\"kind\":..}}",
+            match g {
+                GraphDoc::Fsm => "a transition is {\"from\":STATE|\"*\",\"to\":STATE,\"when\":{\"kind\":..}}",
+                GraphDoc::Animator => "a transition is {\"from\":STATE|\"*\",\"to\":STATE,\"conditions\":[..],\"duration\":S,\"exit_time\":N}",
+            },
         ));
     };
-    let states = states_mut(m, machine)?;
+    let states = states_mut(g, m, machine)?;
     if from != "*" {
-        require_state(states, machine, from)?;
+        require_state(g, states, machine, from)?;
     }
-    require_state(states, machine, to)?;
+    require_state(g, states, machine, to)?;
     if from == to {
         return Err(invalid(
             path,
@@ -568,9 +743,20 @@ fn layout_edit(
 /// Graph editor node drag / ACL `fsm M node STATE x,y`: the state's graph position in
 /// `editor.layout` (whole canvas units; the runtime never reads it). Unchanged = no edit.
 pub fn fsm_set_node(world: &World, machine: &str, state: &str, at: [f32; 2]) -> Result<Vec<Edit>> {
-    let mut doc = machines_doc(world);
-    let m = machine_mut(&mut doc, machine)?;
-    require_state(states_mut(m, machine)?, machine, state)?;
+    graph_set_node(world, GraphDoc::Fsm, machine, state, at)
+}
+
+/// [`fsm_set_node`] for either graph kind (ACL `animctl C node STATE x,y`).
+pub fn graph_set_node(
+    world: &World,
+    g: GraphDoc,
+    machine: &str,
+    state: &str,
+    at: [f32; 2],
+) -> Result<Vec<Edit>> {
+    let mut doc = machines_doc(world, g);
+    let m = machine_mut(g, &mut doc, machine)?;
+    require_state(g, states_mut(g, m, machine)?, machine, state)?;
     let at = at.map(f32::round);
     if !at
         .iter()
@@ -583,9 +769,9 @@ pub fn fsm_set_node(world: &World, machine: &str, state: &str, at: [f32; 2]) -> 
     }
     // Positions of states removed or renamed through plain `set` are dropped on the way, so
     // they never count against the node budget or attach to a later state of that name.
-    let states: BTreeSet<String> = states_mut(m, machine)?.keys().cloned().collect();
+    let states: BTreeSet<String> = states_mut(g, m, machine)?.keys().cloned().collect();
     let state = state.to_owned();
-    layout_edit(world, &fsm_graph_key(machine), move |nodes| {
+    layout_edit(world, &g.layout_key(machine), move |nodes| {
         nodes.retain(|name, _| states.contains(name));
         nodes.insert(state, at);
     })
@@ -593,11 +779,21 @@ pub fn fsm_set_node(world: &World, machine: &str, state: &str, at: [f32; 2]) -> 
 
 /// Saved graph positions of a machine's states (empty when none are stored).
 pub fn fsm_node_positions(world: &World, machine: &str) -> BTreeMap<String, [f32; 2]> {
+    graph_node_positions(world, GraphDoc::Fsm, machine)
+}
+
+/// [`fsm_node_positions`] for either graph kind.
+pub fn graph_node_positions(
+    world: &World,
+    g: GraphDoc,
+    machine: &str,
+) -> BTreeMap<String, [f32; 2]> {
+    let key = g.layout_key(machine);
     world
         .resources
         .get(LAYOUT_RESOURCE)
         .and_then(|l| l.get("graphs"))
-        .and_then(|g| g.get(fsm_graph_key(machine)))
+        .and_then(|graphs| graphs.get(&key))
         .and_then(|n| serde_json::from_value(n.clone()).ok())
         .unwrap_or_default()
 }
@@ -829,7 +1025,7 @@ pub fn add_behavior(
         };
         push(batch, &mut scratch)?;
     }
-    let batch = insert_machine(&scratch, registry, &machine, value)?;
+    let batch = insert_machine(&scratch, registry, GraphDoc::Fsm, &machine, value)?;
     push(batch, &mut scratch)?;
     let batch = add_component(
         &scratch,
@@ -923,6 +1119,82 @@ pub struct GraphProblem {
     pub message: String,
 }
 
+/// Dangling transition ends and states the initial state cannot reach, for graph `id`
+/// (`{initial, states, transitions}`), with codes `anim_dangling` / `anim_unreachable` (or
+/// the `fsm_` ones). Bounded by the validator budgets.
+pub(crate) fn graph_shape_problems(g: GraphDoc, id: &str, m: &Value, out: &mut Vec<GraphProblem>) {
+    let (dangling, unreachable) = match g {
+        GraphDoc::Fsm => ("fsm_dangling", "fsm_unreachable"),
+        GraphDoc::Animator => ("anim_dangling", "anim_unreachable"),
+    };
+    let base = machine_path(g, id);
+    let empty = Map::new();
+    let states = m["states"].as_object().unwrap_or(&empty);
+    let transitions: &[Value] = m["transitions"].as_array().map_or(&[], |t| t.as_slice());
+    let initial = m["initial"].as_str().unwrap_or("");
+    let mut problem = |code, state: Option<&str>, transition, path: String, message: String| {
+        out.push(GraphProblem {
+            code,
+            machine: id.to_owned(),
+            state: state.map(str::to_owned),
+            transition,
+            path,
+            message,
+        })
+    };
+    if !states.contains_key(initial) {
+        problem(
+            dangling,
+            None,
+            None,
+            format!("{base}/initial"),
+            format!("{id}: initial state '{initial}' does not exist"),
+        );
+    }
+    for (i, t) in transitions.iter().enumerate().take(MAX_TRANSITIONS) {
+        for end in ["from", "to"] {
+            let name = t[end].as_str().unwrap_or("");
+            if !states.contains_key(name) && !(end == "from" && name == "*") {
+                problem(
+                    dangling,
+                    None,
+                    Some(i),
+                    format!("{base}/transitions/{i}/{end}"),
+                    format!("{id}: transition {i} {end} '{name}' does not exist"),
+                );
+            }
+        }
+    }
+    let mut reached = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    if states.contains_key(initial) {
+        reached.insert(initial);
+        queue.push_back(initial);
+    }
+    while let Some(s) = queue.pop_front() {
+        for t in transitions.iter().take(MAX_TRANSITIONS) {
+            let from = t["from"].as_str().unwrap_or("");
+            let Some(to) = t["to"].as_str().filter(|to| states.contains_key(*to)) else {
+                continue;
+            };
+            if (from == s || from == "*") && reached.insert(to) {
+                queue.push_back(to);
+            }
+        }
+    }
+    for name in states.keys().take(MAX_STATES) {
+        if !reached.contains(name.as_str()) && states.contains_key(initial) {
+            problem(
+                unreachable,
+                Some(name),
+                None,
+                format!("{base}/states/{}", escape(name)),
+                format!("{id}: state '{name}' cannot be reached from '{initial}'"),
+            );
+        }
+    }
+}
+
 /// Problems the runtime would hit or that make a graph misleading: states the initial
 /// state can never reach, transitions to states that do not exist, entry events that
 /// `behavior.program` does not declare (or declares with fields other than a text `agent`),
@@ -946,7 +1218,7 @@ pub fn fsm_problems(world: &World) -> Vec<GraphProblem> {
         .get("behavior.program")
         .and_then(|p| p["events"].as_object());
     for (id, m) in machines.iter().take(MAX_MACHINES) {
-        let base = machine_path(id);
+        let base = machine_path(GraphDoc::Fsm, id);
         let empty = Map::new();
         let states = m["states"].as_object().unwrap_or(&empty);
         let transitions: &[Value] = m["transitions"].as_array().map_or(&[], |t| t.as_slice());

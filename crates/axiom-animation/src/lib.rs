@@ -1,6 +1,7 @@
 //! Bounded skeletal assets, poses and constraints. No renderer, window or genre dependencies.
 pub mod authoring;
 pub mod clip;
+pub mod controller;
 pub mod coordinates;
 pub mod humanoid;
 pub mod ik;
@@ -158,6 +159,28 @@ impl CompiledSkeleton {
             local: self.source.bones.iter().map(|b| b.rest).collect(),
         }
     }
+    /// Writes the rest pose into `out` (its buffer is reused once sized).
+    pub fn rest_into(&self, out: &mut Pose) {
+        out.local.clear();
+        out.local.extend(self.source.bones.iter().map(|b| b.rest));
+    }
+    /// [`Self::globals`] into a reused buffer.
+    pub fn globals_into(&self, pose: &Pose, out: &mut Vec<Mat4>) -> Result<()> {
+        ensure!(
+            pose.local.len() == self.source.bones.len(),
+            "pose/skeleton size mismatch"
+        );
+        out.clear();
+        out.resize(pose.local.len(), Mat4::IDENTITY);
+        for &i in &self.order {
+            pose.local[i].validate()?;
+            out[i] = self.source.bones[i]
+                .parent
+                .map_or(Mat4::IDENTITY, |p| out[p])
+                * pose.local[i].matrix();
+        }
+        Ok(())
+    }
     pub fn globals(&self, pose: &Pose) -> Result<Vec<Mat4>> {
         ensure!(
             pose.local.len() == self.source.bones.len(),
@@ -184,6 +207,54 @@ pub struct Pose {
     pub local: Vec<Trs>,
 }
 impl Pose {
+    /// In place: `self = blend(self, other, weight)` (same math as [`Self::blend`]).
+    pub fn blend_toward(&mut self, other: &Self, weight: f32) -> Result<()> {
+        ensure!(
+            self.local.len() == other.local.len()
+                && weight.is_finite()
+                && (0.0..=1.0).contains(&weight),
+            "invalid pose blend"
+        );
+        if weight == 0.0 {
+            return Ok(());
+        }
+        for (a, b) in self.local.iter_mut().zip(&other.local) {
+            if weight == 1.0 {
+                *a = *b;
+            } else {
+                *a = Trs {
+                    translation: a.translation.lerp(b.translation, weight),
+                    scale: a.scale.lerp(b.scale, weight),
+                    rotation: a.rotation.slerp(b.rotation, weight).normalize(),
+                };
+            }
+        }
+        Ok(())
+    }
+    /// In place: `self = blend(from, self, weight)` (a cross-fade out of `from`).
+    pub fn blend_from(&mut self, from: &Self, weight: f32) -> Result<()> {
+        ensure!(
+            self.local.len() == from.local.len()
+                && weight.is_finite()
+                && (0.0..=1.0).contains(&weight),
+            "invalid pose blend"
+        );
+        if weight == 1.0 {
+            return Ok(());
+        }
+        for (b, a) in self.local.iter_mut().zip(&from.local) {
+            if weight == 0.0 {
+                *b = *a;
+            } else {
+                *b = Trs {
+                    translation: a.translation.lerp(b.translation, weight),
+                    scale: a.scale.lerp(b.scale, weight),
+                    rotation: a.rotation.slerp(b.rotation, weight).normalize(),
+                };
+            }
+        }
+        Ok(())
+    }
     pub fn blend(a: &Self, b: &Self, weight: f32) -> Result<Self> {
         ensure!(
             a.local.len() == b.local.len() && weight.is_finite() && (0.0..=1.0).contains(&weight),

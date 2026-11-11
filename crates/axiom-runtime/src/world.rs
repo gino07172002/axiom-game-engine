@@ -304,27 +304,16 @@ pub trait RuntimeSystem: Any + Send {
     fn checkpoint_ready(&self) -> Result<()> {
         Ok(())
     }
-    /// A checkpoint was just loaded into this freshly built system's runtime.
-    fn restored(&mut self, _state: &RuntimeState) {}
-    /// Typed simulation state a checkpoint must carry besides transforms, health and custom
-    /// columns (saved under the system ID); `None` = nothing to save.
-    fn checkpoint_state(&self, _state: &RuntimeState) -> Option<Value> {
+    /// Simulation state this system stores in checkpoints (`Checkpoint.systems`), if any.
+    fn save_state(&self, _state: &RuntimeState) -> Option<Result<Value>> {
         None
     }
-    /// Loads this system's entry of a checkpoint (`None` when it has none) into the freshly
-    /// built system; the runtime already holds the checkpoint's transforms. A system that
-    /// saves state must refuse a checkpoint without it.
-    fn restore_checkpoint_state(
-        &mut self,
-        _state: &RuntimeState,
-        saved: Option<&Value>,
-    ) -> Result<()> {
-        ensure!(
-            saved.is_none(),
-            "native system does not load checkpoint state"
-        );
-        Ok(())
+    /// Restores what `save_state` stored, into this freshly built system (before `restored`).
+    fn load_state(&mut self, _state: &mut RuntimeState, _value: &Value) -> Result<()> {
+        anyhow::bail!("this system stores no checkpoint state")
     }
+    /// A checkpoint was just loaded into this freshly built system's runtime.
+    fn restored(&mut self, _state: &RuntimeState) {}
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         None
@@ -805,28 +794,38 @@ impl WorldRuntime {
         }
         Ok(())
     }
-    /// Each system's checkpoint state (see `RuntimeSystem::checkpoint_state`).
-    pub(crate) fn checkpoint_states(&self) -> BTreeMap<String, Value> {
-        self.systems
-            .iter()
-            .filter_map(|(id, s)| Some((id.clone(), s.checkpoint_state(&self.state)?)))
-            .collect()
+    /// State of every system that stores some (`RuntimeSystem::save_state`).
+    pub(crate) fn save_system_states(&self) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for (id, s) in &self.systems {
+            if let Some(v) = s.save_state(&self.state) {
+                out.insert(
+                    id.clone(),
+                    v.map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?,
+                );
+            }
+        }
+        Ok(out)
     }
-    /// Hands each system its entry of `saved`; entries for systems this world does not run
-    /// are refused.
-    pub(crate) fn restore_checkpoint_states(
-        &mut self,
-        saved: &BTreeMap<String, Value>,
-    ) -> Result<()> {
-        if let Some(id) = saved
-            .keys()
-            .find(|id| !self.systems.iter().any(|(s, _)| s == *id))
-        {
-            anyhow::bail!("checkpoint holds state for system {id}, which this world does not run");
+    /// Loads saved system states; a system that stores state must find it and every saved
+    /// entry must belong to a running system (nothing is dropped silently).
+    pub(crate) fn load_system_states(&mut self, saved: &BTreeMap<String, Value>) -> Result<()> {
+        for id in saved.keys() {
+            ensure!(
+                self.systems.iter().any(|(s, _)| s == id),
+                "checkpoint holds state of system {id}, which this world does not run"
+            );
         }
         for (id, s) in &mut self.systems {
-            s.restore_checkpoint_state(&self.state, saved.get(id))
-                .map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?;
+            match (saved.get(id.as_str()), s.save_state(&self.state).is_some()) {
+                (Some(v), _) => s
+                    .load_state(&mut self.state, v)
+                    .map_err(|e| anyhow::anyhow!("system {id}: {e:#}"))?,
+                (None, true) => anyhow::bail!(
+                    "checkpoint lacks the state of system {id} (saved before it supported checkpoints)"
+                ),
+                (None, false) => {}
+            }
         }
         Ok(())
     }
