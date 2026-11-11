@@ -62,6 +62,21 @@
 - 每條線在本檔「執行紀錄」加一節(含補記:原計畫 → 變成什麼 → 為什麼)。
 - 我(整合者)獨立重跑驗證,依序合併並推送;清掉 worktree 與增量快取。
 
+## 補記(2026-11-12):納入 `docs/gaps-paladin-night.zh-TW.md` 的缺口
+
+原計畫 → 使用者要求補上該清單的全部缺口 → 分兩批:
+
+**併入第一批正在進行的工作線**(同一塊程式碼,順手做最省):
+- A 線加 A2(clip 結束 / 標記點事件送進 behavior)、A3(不重置時間的 `animation.speed`,可漸變)、D1(clip 標記點觸發音效 / 語音,循環每圈觸發)、D2(clip / time / speed / fade 與控制器狀態納入 checkpoint)。
+- E 線加 E3(loopback / editor command 即時截圖到指定路徑,不必重啟)。
+- R 線原本就含 B4(蒙皮網格投射與接收陰影)。
+
+**第二批**(第一批合併後,以新的 main 為基底):
+- **W2a 角色表現 I**(`axiom-animation`):B1 glTF morph target 匯入 + 權重軌 + `animation.morph`;B6 每個 primitive / 材質群組執行期顯示開關(換裝);A5 additive 層與骨骼遮罩。
+- **W2b 角色表現 II**:B2 彈簧骨(含碰撞膠囊,固定步進、確定性);B3 IK 目標綁另一個 entity 的骨骼 socket;B7 look-at 約束(目標可為鏡頭或骨骼)。
+- **W2c 編排與互動**:A1 一個指令同步驅動多個演出者(編排 / 指令列表);A6 `GameAction::Call`;A7 `when` 可讀動畫狀態;C1 Slider widget;C2 滑鼠拖曳環繞 + 焦點綁骨骼(`camera.follow` 已有軸輸入,補映射);C3 骨骼膠囊命中測試回報部位 ID。
+- **W2d 材質與美術管線**:B5 匯入網格的 toon ramp / 描邊 / 臉部陰影控制 / 皮膚 SSS 近似(標明近似);E2 描邊(雙面已支援,經查 `import/gltf.rs` 與 `mesh_render.rs`);E1 網格貼花 / 多層貼圖;E4 GLB 依內容雜湊熱重載(明確指令或檔案監看,背景工作);E5 依 `rigorous-perf` 量測 CPU 蒙皮佔比,有證據才做 GPU 蒙皮。
+
 ## 執行紀錄
 
 (各工作線完成後補上)
