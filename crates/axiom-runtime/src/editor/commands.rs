@@ -196,6 +196,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.obstacle", "Create Obstacle", "Object", ""),
     c("object.nav_agent", "Add Nav Agent", "Object", ""),
     c("object.rigid_body", "Add Rigid Body", "Object", ""),
+    a(
+        "rig.edit",
+        "Rig: Spring / Collider / Look-at / IK Socket…",
+        "Object",
+        "spring|collider|look ID key=value..|spring|collider|look ID remove|ik ID socket=ENTITY[:BONE]|none [offset=x,y,z]|debug on|off",
+    ),
     c(
         "nav.target_object",
         "Nav Target: Selected Object",
@@ -613,6 +619,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.obstacle",
     "object.nav_agent",
     "object.rigid_body",
+    "rig.edit",
     "nav.target_object",
     "nav.target_point",
     "nav.clear_target",
@@ -1005,6 +1012,8 @@ impl Editor {
             "object.drop_to_ground" if nothing => Some("nothing selected"),
             "object.drop_to_ground" if busy => Some("apply or reload the inspector draft first"),
             "prefab.revert" | "prefab.apply" if nothing => Some("nothing selected"),
+            "rig.edit" if nothing => Some("select an animated character"),
+            "rig.edit" if busy => Some("apply or reload the inspector draft first"),
             "prefab.revert" | "prefab.apply" if busy => {
                 Some("apply or reload the inspector draft first")
             }
@@ -1080,6 +1089,9 @@ impl Editor {
         }
         if id.starts_with("prefab.") {
             return self.prefab_command(id, arg);
+        }
+        if id == "rig.edit" {
+            return self.rig_command(arg);
         }
         if id == "play.record"
             || id.starts_with("console.")

@@ -2632,3 +2632,142 @@ fn sky_presets_and_surface_match_acl() {
         serde_json::json!({"metallic":0.0,"smoothness":0.5})
     );
 }
+
+fn rig_lab() -> World {
+    axiom_core::ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/rig-lab"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+#[test]
+fn rig_edits_match_the_rig_verb() {
+    let lab = rig_lab();
+    let on = |ids: &'static [&'static str], arg: &'static str| {
+        move |e: &mut Editor| {
+            e.select(Some(ids[0].into()));
+            for id in &ids[1..] {
+                e.extra.insert((*id).into());
+            }
+            vec![e.run_command_with("rig.edit", Some(arg)).unwrap()]
+        }
+    };
+    // New spring chain + collider on both puppets (one revision), then edits and removals.
+    assert_parity(
+        lab.clone(),
+        on(&["puppet/a", "puppet/b"], "spring arm root=upper.L stiffness=4 gravity=0,-2,0 colliders=head"),
+        "rig entities[id=puppet/a,id=puppet/b] spring arm root=upper.L stiffness=4 gravity=0,-2,0 colliders=head",
+    );
+    assert_parity(
+        lab.clone(),
+        on(
+            &["puppet/a"],
+            "collider hip bone=body radius=0.1 tail=0,0.3,0",
+        ),
+        "rig puppet/a collider hip bone=body radius=0.1 tail=0,0.3,0",
+    );
+    assert_parity(
+        lab.clone(),
+        on(
+            &["puppet/a"],
+            "spring ponytail drag=0.6 tip=hair.3 enabled=off",
+        ),
+        "rig puppet/a spring ponytail drag=0.6 tip=hair.3 enabled=off",
+    );
+    assert_parity(
+        lab.clone(),
+        on(
+            &["puppet/b"],
+            "look gaze target=camera max_yaw=45 bones=head",
+        ),
+        "rig puppet/b look gaze target=camera max_yaw=45 bones=head",
+    );
+    assert_parity(
+        lab.clone(),
+        on(
+            &["puppet/a"],
+            "look eyes bones=head:0.5 target=puppet/b:head smoothing=0.3",
+        ),
+        "rig puppet/a look eyes bones=head:0.5 target=puppet/b:head smoothing=0.3",
+    );
+    assert_parity(
+        lab.clone(),
+        on(&["puppet/b"], "ik hand socket=puppet/a:head offset=0,0.2,0"),
+        "rig puppet/b ik hand socket=puppet/a:head offset=0,0.2,0",
+    );
+    assert_parity(
+        lab.clone(),
+        on(&["puppet/b"], "ik hand socket=none"),
+        "rig puppet/b ik hand socket=none",
+    );
+    assert_parity(
+        lab.clone(),
+        on(&["puppet/a"], "look gaze remove"),
+        "rig puppet/a look gaze remove",
+    );
+    assert_parity(
+        lab.clone(),
+        on(&["puppet/a", "puppet/b"], "debug on"),
+        "rig entities[id=puppet/a,id=puppet/b] debug on",
+    );
+    // Refusals become problems on both paths: a missing collider, a new chain without
+    // root, an entity without animation.player, an unknown option.
+    for (ids, arg) in [
+        (&["puppet/a"][..], "collider nope remove"),
+        (&["puppet/a"][..], "spring cape stiffness=2"),
+        (&["stage/floor"][..], "spring cape root=body"),
+    ] {
+        let mut e = Editor::new(lab.clone(), 1, None);
+        e.set_component_hints(&crate::installed_registry().authoring);
+        e.select(Some(ids[0].into()));
+        assert!(
+            e.run_command_with("rig.edit", Some(arg))
+                .unwrap()
+                .is_empty(),
+            "{arg}"
+        );
+        let mut store = store(&lab);
+        let script = format!("rig {} {arg}", ids[0]);
+        assert!(
+            store
+                .execute(Request::Acl {
+                    text: script.clone(),
+                    preview: false,
+                    expected_rev: None,
+                    propose: false,
+                })
+                .is_err(),
+            "{script}"
+        );
+    }
+    let mut e = Editor::new(lab.clone(), 1, None);
+    e.select(Some("puppet/a".into()));
+    assert!(e
+        .run_command_with("rig.edit", Some("spring hair bogus=1"))
+        .is_err());
+    // Nothing selected: the command says why.
+    let e = Editor::new(lab.clone(), 1, None);
+    assert_eq!(
+        e.command_blocked("rig.edit"),
+        Some("select an animated character")
+    );
+    // Inspector form edit of the new component (same registry-derived form as every
+    // component) equals `set`.
+    assert_parity(
+        lab,
+        |e| {
+            e.select(Some("puppet/a".into()));
+            let entity = e.world.entity("puppet/a").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "animation.spring");
+            draft.form.as_mut().unwrap()["reset_distance"] = serde_json::json!(2.5);
+            draft.form_dirty = true;
+            let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "set puppet/a animation.spring/reset_distance 2.5",
+    );
+}

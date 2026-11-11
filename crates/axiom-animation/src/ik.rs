@@ -12,6 +12,34 @@ pub struct TwoBoneIk {
     pub weight: f32,
     #[serde(default)]
     pub end_rotation: Option<Quat>,
+    /// When set, `target` follows this socket (resolved by the runtime each step from the
+    /// end of the previous step's poses); `target` is the fallback until it resolves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<Socket>,
+}
+/// A point on another entity: its origin, or one of its bones when it has an
+/// `animation.player`, plus `offset` in that bone's (or entity's) local space.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Socket {
+    pub entity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bone: Option<String>,
+    #[serde(default)]
+    pub offset: Vec3,
+}
+impl Socket {
+    pub fn validate(&self) -> Result<()> {
+        axiom_core::valid_id(&self.entity)?;
+        ensure!(
+            self.bone
+                .as_ref()
+                .is_none_or(|b| !b.is_empty() && b.len() <= 256)
+                && self.offset.is_finite(),
+            "invalid socket bone / offset"
+        );
+        Ok(())
+    }
 }
 fn one() -> f32 {
     1.
@@ -40,6 +68,9 @@ impl TwoBoneIk {
                     .is_none_or(|q| q.is_finite() && (q.length_squared() - 1.).abs() < 0.001),
             "invalid IK settings"
         );
+        if let Some(socket) = &self.socket {
+            socket.validate()?;
+        }
         let root = s.bone(&self.root)?;
         let middle = s.bone(&self.middle)?;
         let end = s.bone(&self.end)?;
@@ -67,6 +98,11 @@ impl TwoBoneIk {
 }
 impl CompiledIk {
     pub fn apply(&self, s: &CompiledSkeleton, pose: &mut Pose) -> Result<IkResult> {
+        self.apply_to(s, pose, self.source.target)
+    }
+    /// [`Self::apply`] toward `goal` (model space) instead of the authored one.
+    pub fn apply_to(&self, s: &CompiledSkeleton, pose: &mut Pose, goal: Vec3) -> Result<IkResult> {
+        ensure!(goal.is_finite(), "non-finite IK target");
         let mut work = pose.clone();
         let g = s.globals(&work)?;
         let a = g[self.root].w_axis.truncate();
@@ -75,7 +111,7 @@ impl CompiledIk {
         let l1 = a.distance(b);
         let l2 = b.distance(c);
         ensure!(l1 > 1e-6 && l2 > 1e-6, "collapsed IK chain");
-        let offset = self.source.target - a;
+        let offset = goal - a;
         let distance = offset.length();
         let direction = if distance > 1e-6 {
             offset / distance
@@ -89,7 +125,7 @@ impl CompiledIk {
         if self.source.weight == 0.0 {
             return Ok(IkResult {
                 reachable,
-                residual: c.distance(self.source.target),
+                residual: c.distance(goal),
                 applied_weight: 0.0,
             });
         }
@@ -140,7 +176,7 @@ impl CompiledIk {
         *pose = blended;
         Ok(IkResult {
             reachable,
-            residual: end.distance(self.source.target),
+            residual: end.distance(goal),
             applied_weight: self.source.weight,
         })
     }

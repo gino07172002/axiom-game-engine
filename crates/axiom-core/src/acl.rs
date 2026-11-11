@@ -40,6 +40,14 @@ EDIT (any number, atomic):
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
   physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule]   physics.body on each
                                   object (+ physics.collider fitted to its mesh when missing or shape= given)
+  rig SEL spring CHAIN [root=BONE] [tip=BONE|none] [stiffness=0..64] [drag=0..1] [gravity=x,y,z] [radius=M]
+        [colliders=ID,..|all] [enabled=on|off]   animation.spring chain (new chains need root=)
+  rig SEL collider ID [bone=BONE] [radius=M] [offset=x,y,z] [tail=x,y,z|none]   sphere / capsule on a bone
+  rig SEL look CHAIN [bones=B[:W],..] [target=camera|point:x,y,z|ENTITY[:BONE]] [max_yaw=DEG] [max_pitch=DEG]
+        [weight=0..1] [smoothing=S] [forward=x,y,z] [up=x,y,z] [enabled=on|off]   animation.look_at chain
+  rig SEL spring|collider|look ID remove | rig SEL debug on|off (draw joints, colliders, facing rays)
+  rig SEL ik ID socket=ENTITY[:BONE] [offset=x,y,z] | rig SEL ik ID socket=none   IK target follows a bone
+                                  (one fixed step lag); each SEL needs an animation.player
   interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
                                   (defaults: event interacted declared with interactor/target, action interact -> KeyE)
   audio clip ID tone|engine|fountain|creak|footstep   procedural clip in audio.library (no audio files)
@@ -413,6 +421,7 @@ enum Statement {
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
     Interact(Box<Selection>, crate::ops::InteractOptions),
     RigidBody(Box<Selection>, crate::ops::BodyOptions),
+    Rig(Box<Selection>, crate::ops::RigEdit),
     AudioClip(String, String),
     AudioSource(Box<Selection>, Box<crate::ops::AudioSourceOptions>),
     AudioListener(String),
@@ -1366,6 +1375,11 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             }
             Statement::RigidBody(select, options)
         }
+        "rig" => {
+            let select = Box::new(selector(arg(1)?)?);
+            let rest: Vec<&str> = tokens[2..].iter().map(String::as_str).collect();
+            Statement::Rig(select, crate::ops::parse_rig_edit(&rest)?)
+        }
         "tween" => tween(tokens)?,
         "audio" => audio(tokens)?,
         "fsm" => fsm(tokens)?,
@@ -2223,6 +2237,8 @@ pub fn run(
                 .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
             Statement::RigidBody(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_rigid_body(w, &ids, &options)),
+            Statement::Rig(select, edit) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::rig_edit(w, r, &ids, &edit)),
             Statement::AudioClip(id, preset) => crate::ops::add_audio_clip(w, &id, &preset),
             Statement::AudioSource(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_audio_source(w, &ids, &options)),

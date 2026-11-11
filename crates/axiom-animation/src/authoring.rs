@@ -155,7 +155,12 @@ pub struct SeekArgs {
 pub struct IkArgs {
     pub entity: String,
     pub id: String,
-    pub target: Vec3,
+    /// A fixed model-space target (unbinds a socket).
+    #[serde(default)]
+    pub target: Option<Vec3>,
+    /// Binds the target to another entity's bone (resolved every step).
+    #[serde(default)]
+    pub socket: Option<ik::Socket>,
     #[serde(default)]
     pub pole: Option<Vec3>,
     #[serde(default)]
@@ -211,8 +216,9 @@ pub fn register(r: &mut Registry) {
             )
         });
     r.capabilities.insert("animation".into(), 1);
+    rig::register(r);
     r.resource("animation.library","animation",json!({"assets":"stable ID -> {path, external:false, options:{coordinates?, strict:false}}","clips":"stable ID -> {id,duration,tracks}","profiles":"stable ID -> {mapping:HumanBodyBones->bone ID,reference:bone ID->local TRS}","markers":"clip ID -> [{at:seconds, event?:behavior.program event, cue?:audio cue}] (fired once per loop iteration)"}),|v|{let lib:Library=serde_json::from_value(v.clone())?;ensure!(lib.assets.len()<=32&&lib.clips.len()<=128&&lib.profiles.len()<=64,"animation library budget exceeded");lib.validate_markers()?;for id in lib.assets.keys().chain(lib.clips.keys()).chain(lib.profiles.keys()){axiom_core::valid_id(id)?;}for source in lib.assets.values(){ensure!(!source.path.as_os_str().is_empty(),"asset path missing");if let Some(c)=source.options.coordinates{c.matrix()?;}}Ok(())});
-    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?}","debug_skeleton":"bool","on_end":"optional behavior.program event emitted when the clip completes (each loop)"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
+    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?,socket?:{entity,bone?,offset?} (target follows that bone, one fixed step lag)}","debug_skeleton":"bool","on_end":"optional behavior.program event emitted when the clip completes (each loop)"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
     r.resource_mergers
         .insert("animation.controllers".into(), |a, b| {
             axiom_core::package::merge_resource(a, b, &["controllers"], &[])
@@ -269,6 +275,8 @@ pub fn register(r: &mut Registry) {
                 "animation.player".into(),
                 "animation.controllers".into(),
                 "animation.controller".into(),
+                rig::SPRING.into(),
+                rig::LOOK_AT.into(),
                 "core.transform".into(),
             ],
             writes: vec!["animation.pose".into()],
@@ -378,7 +386,7 @@ pub fn register(r: &mut Registry) {
             Ok(())
         },
     );
-    r.action("animation.ik","animation",json!({"entity":"stable ID","id":"constraint ID","target":"[x,y,z] model meters","pole":"optional [x,y,z]","weight":"optional 0..1"}),|v|{let a:IkArgs=serde_json::from_value(v.clone())?;ensure!(a.target.is_finite()&&a.pole.is_none_or(|p|p.is_finite())&&a.weight.is_none_or(|w|w.is_finite()&&(0.0..=1.).contains(&w)),"invalid IK target");Ok(())});
+    r.action("animation.ik","animation",json!({"entity":"stable ID","id":"constraint ID","target":"[x,y,z] model meters (a fixed target; unbinds a socket)","socket":"{entity, bone?, offset?}: follow another entity's bone (one fixed step lag)","pole":"optional [x,y,z]","weight":"optional 0..1"}),|v|{let a:IkArgs=serde_json::from_value(v.clone())?;ensure!(a.target.is_some()!=a.socket.is_some(),"give either target or socket");if let Some(s)=&a.socket{s.validate()?;}ensure!(a.target.is_none_or(|t|t.is_finite())&&a.pole.is_none_or(|p|p.is_finite())&&a.weight.is_none_or(|w|w.is_finite()&&(0.0..=1.).contains(&w)),"invalid IK target");Ok(())});
     r.action(
         "animation.twist",
         "animation",
@@ -390,7 +398,7 @@ pub fn register(r: &mut Registry) {
     );
     r.action("animation.bone","animation",json!({"entity":"stable ID","bone":"bone ID","rotation":"normalized xyzw local quaternion override"}),|v|{let a:BoneArgs=serde_json::from_value(v.clone())?;ensure!(a.rotation.is_finite()&&(a.rotation.length_squared()-1.).abs()<0.001,"invalid bone rotation");Ok(())});
     r.action("animation.inspect","animation",json!({"entity":"stable ID","bones":"optional up to 64 stable IDs; omitted returns summary only"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.bones.len()<=64,"bone inspection budget exceeded");Ok(())});
-    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed"],"controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","skinning"],"skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
+    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed"],"controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","look-at (animation.look_at)","spring bones (animation.spring)","skinning"],"secondary":"animation.spring chains with bone colliders and animation.look_at chains run at the fixed step after IK; IK sockets and look-at entity / bone targets read the end of the previous step (one step lag); their state is checkpointed","skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
 }
 pub fn component_path(entity: &str) -> String {
     format!(

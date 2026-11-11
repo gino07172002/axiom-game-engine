@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
+mod rig;
+
 #[derive(Clone, Default)]
 pub(crate) struct AnimationCues {
     pub pending: Vec<PlayArgs>,
@@ -76,6 +78,8 @@ struct Controller {
     accum: Pose,
     scratch: Pose,
     globals: Vec<Mat4>,
+    /// `animation.spring` / `animation.look_at` / IK sockets of this entity, if any.
+    rig: Option<Box<rig::Rig>>,
 }
 /// Per-entity state of an `animation.controller` (cheap to clone: `Arc`s and `Copy` state).
 #[derive(Clone)]
@@ -180,6 +184,7 @@ impl Controller {
             accum: Pose { local: vec![] },
             scratch: Pose { local: vec![] },
             globals: vec![],
+            rig: None,
             config,
         };
         out.evaluate(0.)?;
@@ -272,14 +277,24 @@ impl Controller {
         // this list stays empty and allocation-free).
         let mut results = Vec::new();
         for (id, ik) in &self.ik {
-            match ik.apply(&self.asset.skeleton, &mut self.accum) {
+            let result = match self.rig.as_ref().and_then(|r| r.ik_target(id)) {
+                Some(target) => ik.apply_to(&self.asset.skeleton, &mut self.accum, target),
+                None => ik.apply(&self.asset.skeleton, &mut self.accum),
+            };
+            match result {
                 Ok(r) => results.push(r),
                 Err(e) => return at(&format!("/ik/{id}"), Err(e)),
             }
         }
+        if let Some(rig) = &mut self.rig {
+            rig.apply(&self.asset.skeleton, &mut self.accum)?;
+        }
         self.asset
             .skeleton
             .globals_into(&self.accum, &mut self.globals)?;
+        if let Some(rig) = &mut self.rig {
+            rig.commit();
+        }
         for ((id, _), result) in self.ik.iter().zip(results) {
             match self.ik_results.get_mut(id) {
                 Some(slot) => *slot = result,
@@ -345,6 +360,8 @@ pub struct AnimationSystem {
     /// The editor's last scrubbed pose: (entity, clip, seconds, pose). A playhead that did not
     /// move reuses it, so an idle preview neither clones nor evaluates per frame.
     scrubbed: Option<(String, String, f32, Pose)>,
+    /// Reused list of this step's resolved rig targets.
+    rig_points: Vec<Option<Vec3>>,
 }
 
 /// An entity posed by the editor's Animation timeline for one extraction: only the drawn
@@ -521,6 +538,13 @@ pub fn register(registry: &mut RuntimeRegistry) {
                             });
                         at(&path, result)?;
                     }
+                    player.attach_rig(
+                        &e.components,
+                        &format!("/entities/@{}", axiom_core::local::escape(&e.id)),
+                    )?;
+                    if player.rig.is_some() {
+                        at(&component_path(&e.id), player.evaluate(0.))?;
+                    }
                     players.insert(e.id.clone(), player);
                 }
             }
@@ -547,14 +571,17 @@ pub fn register(registry: &mut RuntimeRegistry) {
                 })
                 .collect();
             let (markers, events) = compile_markers(state, &lib, &mut players)?;
-            Ok(Box::new(AnimationSystem {
+            let system = AnimationSystem {
                 players,
                 markers,
                 events,
                 fired: 0,
                 emit_fault: None,
                 scrubbed: None,
-            }))
+                rig_points: vec![],
+            };
+            system.check_rig_targets(state)?;
+            Ok(Box::new(system))
         });
 }
 impl RuntimeSystem for AnimationSystem {
@@ -592,6 +619,7 @@ impl RuntimeSystem for AnimationSystem {
                 }
             }
         }
+        self.resolve_rig_targets(state);
         for (id, p) in &mut self.players {
             let slot = state.compiled.indices[id];
             if !state.compiled.enabled[slot] {
@@ -670,7 +698,15 @@ impl RuntimeSystem for AnimationSystem {
                     }
                 }
             }
-            if let Err(e) = p.evaluate(if p.playing { FIXED_DT } else { 0. }) {
+            if let Some(rig) = &mut p.rig {
+                // Springs and look-at smoothing advance every step, also while paused.
+                rig.dt = FIXED_DT;
+            }
+            let evaluated = p.evaluate(if p.playing { FIXED_DT } else { 0. });
+            if let Some(rig) = &mut p.rig {
+                rig.dt = 0.0;
+            }
+            if let Err(e) = evaluated {
                 p.time = saved.0;
                 (p.speed, p.ramp) = saved_speed;
                 if let (Some(f), Some(elapsed)) = (&mut p.fade, saved.1) {
@@ -795,7 +831,17 @@ impl RuntimeSystem for AnimationSystem {
                             .context("IK constraint missing")?
                             .source
                             .clone();
-                    c.target = a.target;
+                    match (a.target, a.socket) {
+                        (Some(target), None) => {
+                            c.target = target;
+                            c.socket = None;
+                        }
+                        (None, Some(socket)) => {
+                            self.check_socket(state, &socket)?;
+                            c.socket = Some(socket);
+                        }
+                        _ => anyhow::bail!("give either target or socket"),
+                    }
                     if let Some(pole) = a.pole {
                         c.pole = pole
                     }
@@ -803,6 +849,7 @@ impl RuntimeSystem for AnimationSystem {
                         c.weight = weight
                     }
                     p.ik.insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
+                    p.rebind_ik();
                 }
                 "twist" => {
                     let a: TwistArgs = serde_json::from_value(args.clone())?;
@@ -881,6 +928,12 @@ impl RuntimeSystem for AnimationSystem {
                     }
                     p.evaluate(0.)?;
                 }
+                if p.config.asset == previous.config.asset {
+                    if let (Some(a), Some(b)) = (&mut p.rig, &previous.rig) {
+                        a.carry(b);
+                        p.evaluate(0.)?;
+                    }
+                }
                 // A controller keeps its state and parameters by name across edits (live
                 // graph editing in Play), as long as the entity keeps the same controller.
                 if let (Some(a), Some(b)) = (&mut p.animator, &previous.animator) {
@@ -938,10 +991,13 @@ impl RuntimeSystem for AnimationSystem {
                     }
                 }
             }
+            if let Some(rig) = &p.rig {
+                rig.debug_draw(&p.asset.skeleton, &p.pose, model, &mut frame.instances);
+            }
         }
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
+        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}if let Some(r)=&p.rig{v["rig"]=r.metrics();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
         // Only when used, so worlds without markers keep their observation (and state_hash).
         if self.fired > 0 {
             out["markers_fired"] = json!(self.fired);
@@ -1288,6 +1344,9 @@ struct SavedPlayer {
     marker_fresh: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controller: Option<SavedController>,
+    /// Spring / look-at / IK socket state (players with a rig only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rig: Option<rig::SavedRig>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1393,6 +1452,7 @@ impl Controller {
                 .map(|(id, t)| (id.clone(), t.source.enabled))
                 .collect(),
             marker_fresh: self.marker_fresh,
+            rig: self.rig.as_ref().map(|r| r.save()),
             controller: self.animator.as_ref().map(|a| {
                 let c = &a.compiled;
                 SavedController {
@@ -1480,6 +1540,8 @@ impl Controller {
             self.twists
                 .insert(id.clone(), Arc::new(t.compile(&self.asset.skeleton)?));
         }
+        self.rebind_ik();
+        rig::load_rig(self, s.rig.as_ref())?;
         match (&mut self.animator, &s.controller) {
             (None, None) => {}
             (Some(a), Some(saved)) => {

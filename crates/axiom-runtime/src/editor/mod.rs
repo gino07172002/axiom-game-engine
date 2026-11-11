@@ -14,6 +14,7 @@ mod options;
 mod panels;
 pub(crate) mod record;
 mod resource;
+mod rig;
 mod theme;
 mod thumbs;
 mod timeline;
