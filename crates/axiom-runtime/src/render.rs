@@ -104,8 +104,8 @@ pub struct Renderer {
     /// Read the next presented frame back into `grabbed` (editor screenshot; the editor
     /// encodes it off the main thread). Cleared after the read-back.
     pub grab: bool,
-    /// `(width, height, RGBA8 rows)` of the last grabbed frame.
-    pub grabbed: Option<(u32, u32, Vec<u8>)>,
+    /// `(width, height, rows, BGRA order)` of the last grabbed frame (RGBA when false).
+    pub grabbed: Option<(u32, u32, Vec<u8>, bool)>,
 }
 
 impl Renderer {
@@ -914,10 +914,13 @@ impl Renderer {
             for chunk in mapped.chunks(row as usize) {
                 pixels.extend_from_slice(&chunk[..self.config.width as usize * 4]);
             }
-            if matches!(
+            let bgra = matches!(
                 self.config.format,
                 wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Bgra8Unorm
-            ) {
+            );
+            // A grab alone is swizzled by the editor's job (only the cropped rows).
+            let swizzle = bgra && screenshot.is_some();
+            if swizzle {
                 for pixel in pixels.as_chunks_mut::<4>().0 {
                     pixel.swap(0, 2);
                 }
@@ -938,7 +941,12 @@ impl Renderer {
                 png.write_header()?.write_image_data(&pixels)?;
             }
             if grab {
-                self.grabbed = Some((self.config.width, self.config.height, pixels));
+                self.grabbed = Some((
+                    self.config.width,
+                    self.config.height,
+                    pixels,
+                    bgra && !swizzle,
+                ));
             }
         }
         for id in &output.textures_delta.free {
@@ -1023,6 +1031,10 @@ fn unlit_globals(global: &mut Globals) {
         [FLAT, FLAT, FLAT, 0.0],
     ];
     global.fog = [0.0; 4];
+    // Material surface hooks read sun 0 directly (direction and shadow flag), not the count.
+    for sun in &mut global.suns {
+        *sun = bytemuck::Zeroable::zeroed();
+    }
 }
 
 #[cfg(test)]
@@ -1042,6 +1054,9 @@ mod unlit_tests {
         assert_eq!(g.accent, [1.0, 0.5, 0.5, 0.0]);
         assert_eq!(g.ambient[0][3], 0.0);
         assert_eq!(g.ambient[1][3], 1.0);
+        g.suns[0].direction_shadow = [0.0, 1.0, 0.0, 1.0];
+        super::unlit_globals(&mut g);
+        assert_eq!(g.suns[0].direction_shadow, [0.0; 4]);
         assert_eq!(g.fog[3], 0.0);
         assert!(g
             .ambient

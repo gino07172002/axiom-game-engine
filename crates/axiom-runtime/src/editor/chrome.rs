@@ -280,6 +280,10 @@ impl Editor {
                     let (done, total) = job.progress();
                     item(ui, format!("thumbnails {done}/{total}"), WARNING);
                 }
+                if self.screenshot_running() {
+                    item(ui, "screenshot…".into(), WARNING)
+                        .on_hover_text("Writing the Scene view screenshot in the background");
+                }
                 if let Some(job) = &self.scenario_job {
                     let (done, total) = job.progress();
                     item(
@@ -368,14 +372,14 @@ pub(super) fn vram_text(
         }) => {
             let gib = |b: u64| b as f64 / (MIB * 1024.0);
             let text = if *local >= 1 << 30 {
-                format!("VRAM {:.2} GB", gib(*local))
+                format!("VRAM {:.2} GiB", gib(*local))
             } else {
                 format!("VRAM {:.0} MiB", *local as f64 / MIB)
             };
             (
                 text,
                 format!(
-                    "Video memory this process uses on the render adapter (DXGI QueryVideoMemoryInfo, all APIs, swapchain and driver memory included), refreshed every 2 s.\nDedicated: {:.0} MiB of a {:.2} GB budget\nShared system memory: {:.0} MiB\n{alloc_line}",
+                    "Video memory this process uses on the render adapter (DXGI QueryVideoMemoryInfo, all APIs, swapchain and driver memory included), refreshed every 2 s.\nDedicated: {:.0} MiB of a {:.2} GiB budget\nShared system memory: {:.0} MiB\n{alloc_line}",
                     *local as f64 / MIB,
                     gib(*budget),
                     *shared as f64 / MIB,
@@ -435,13 +439,13 @@ mod tests {
         };
         let (text, tip) = super::vram_text(Some(&bytes), None);
         assert_eq!(text, "VRAM 300 MiB");
-        assert!(tip.contains("Shared system memory: 20 MiB") && tip.contains("1.50 GB budget"));
+        assert!(tip.contains("Shared system memory: 20 MiB") && tip.contains("1.50 GiB budget"));
         let big = VramReading::Bytes {
             local: 1290 * mib,
             shared: 0,
             budget: 4096 * mib,
         };
-        assert_eq!(super::vram_text(Some(&big), None).0, "VRAM 1.26 GB");
+        assert_eq!(super::vram_text(Some(&big), None).0, "VRAM 1.26 GiB");
         let gone = VramReading::Unavailable("no DXGI adapter matches PCI 10de:1d12".into());
         let (text, tip) = super::vram_text(Some(&gone), None);
         assert_eq!(text, "VRAM –");

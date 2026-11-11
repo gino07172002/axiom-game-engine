@@ -131,6 +131,7 @@ pub(crate) fn request(world: &axiom_core::World, entry: &AssetEntry) -> Option<R
             if let Some(mesh) = prefab.components.get("render.mesh") {
                 // Primitive prefabs: their boxes in their colours.
                 let parsed: axiom_core::RenderMesh = serde_json::from_value(mesh.clone()).ok()?;
+                parsed.validate().ok()?;
                 let parts = parsed
                     .parts
                     .iter()

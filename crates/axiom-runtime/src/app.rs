@@ -2868,6 +2868,7 @@ impl App {
         }
         // Editor Scene view display mode and screenshot read-back (view state, not content).
         let grab = self.editor.as_ref().is_some_and(|e| e.wants_grab());
+        let render_started = Instant::now();
         if let Some(editor) = &self.editor {
             let renderer = self.renderer.as_mut().unwrap();
             renderer.unlit_view = editor.unlit_view();
@@ -2881,6 +2882,11 @@ impl App {
             capture_path,
         )?;
         if rendered && grab {
+            // Main-thread cost of the read-back frame (GPU wait + copy), logged per screenshot.
+            eprintln!(
+                "screenshot: render + read-back {:.1} ms on the main thread",
+                render_started.elapsed().as_secs_f64() * 1000.0
+            );
             let grabbed = self.renderer.as_mut().unwrap().grabbed.take();
             if let Some(editor) = &mut self.editor {
                 editor.grabbed(grabbed, ctx.pixels_per_point());

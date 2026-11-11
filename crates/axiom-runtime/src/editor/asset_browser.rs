@@ -78,7 +78,7 @@ fn vpath(entry: &AssetEntry) -> String {
             let dir = p[..cut].trim_end_matches(['/', '\\']);
             let parts: Vec<&str> = dir
                 .rsplit(['/', '\\'])
-                .filter(|s| !s.is_empty() && !s.ends_with(':'))
+                .filter(|s| !s.is_empty() && !s.ends_with(':') && *s != "." && *s != "..")
                 .take(2)
                 .collect();
             if parts.is_empty() {

@@ -745,9 +745,12 @@ fn fields_still_at_their_default_fold_under_an_advanced_row() {
         let row = h.rect("form:advanced");
         // The hidden fields are not drawn until the row is opened.
         let first = format!("form:/{}", hidden[0]);
+        h.editor.rects.clear();
+        h.frame(vec![]);
+        assert!(h.editor.rects.contains_key("form:advanced"));
         assert!(
-            !h.editor.rects.contains_key(&first) || h.rect(&first).top() > row.top(),
-            "{first} drawn above the Advanced row"
+            !h.editor.rects.contains_key(&first),
+            "{first} drawn while the Advanced row is closed"
         );
         h.click("form:advanced");
         h.frame(vec![]);

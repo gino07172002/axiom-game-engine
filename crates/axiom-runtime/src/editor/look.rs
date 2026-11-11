@@ -16,6 +16,7 @@ use std::{
 const SCENE_VIEW: &str = "editor.orbit";
 const JOB_TIMEOUT: Duration = Duration::from_secs(20);
 const JOIN_LIMIT: Duration = Duration::from_millis(500);
+const PENDING_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum DisplayMode {
@@ -55,6 +56,7 @@ impl DisplayMode {
 struct Pending {
     path: PathBuf,
     region: Option<egui::Rect>,
+    asked: Instant,
 }
 
 type Written = Result<(PathBuf, u32, u32), String>;
@@ -64,8 +66,10 @@ pub(crate) struct Look {
     pub display: DisplayMode,
     pending: Option<Pending>,
     job: Option<Job<Written>>,
-    /// Result of the last screenshot (`observe editor.screenshot`).
+    /// Result of the last screenshot (`observe editor.look.screenshot`).
     last: Option<Value>,
+    /// Folder for the PNGs (tests); default `artifacts/captures` under the working directory.
+    pub dir: Option<PathBuf>,
 }
 
 impl Drop for Look {
@@ -108,7 +112,12 @@ impl Editor {
                                 && !name.contains(".."),
                             "screenshot name must be 1..64 of [A-Za-z0-9-_.]"
                         );
-                        name.trim_end_matches(".png").to_owned()
+                        let stem = name.trim_end_matches(".png");
+                        anyhow::ensure!(
+                            !stem.is_empty() && stem != ".",
+                            "screenshot name must be 1..64 of [A-Za-z0-9-_.]"
+                        );
+                        stem.to_owned()
                     }
                     None => format!(
                         "scene-{}",
@@ -117,12 +126,16 @@ impl Editor {
                             .map_or(0, |d| d.as_millis())
                     ),
                 };
-                let dir = std::env::current_dir()?.join("artifacts").join("captures");
+                let dir = match &self.look.dir {
+                    Some(dir) => dir.clone(),
+                    None => std::env::current_dir()?.join("artifacts").join("captures"),
+                };
                 self.look.pending = Some(Pending {
                     path: dir.join(format!("{name}.png")),
                     // The Scene view when it is shown, else the whole window.
                     region: (self.scene_visible && self.viewport.is_positive())
                         .then_some(self.viewport),
+                    asked: Instant::now(),
                 });
                 self.notice("Screenshot: capturing the next frame…");
             }
@@ -143,11 +156,15 @@ impl Editor {
 
     /// Host, after a rendered frame that was asked to grab: the frame (physical pixels) or
     /// `None` when the surface cannot be read back. Starts the encode job.
-    pub(crate) fn grabbed(&mut self, frame: Option<(u32, u32, Vec<u8>)>, pixels_per_point: f32) {
+    pub(crate) fn grabbed(
+        &mut self,
+        frame: Option<(u32, u32, Vec<u8>, bool)>,
+        pixels_per_point: f32,
+    ) {
         let Some(pending) = self.look.pending.take() else {
             return;
         };
-        let Some((width, height, pixels)) = frame else {
+        let Some((width, height, pixels, bgra)) = frame else {
             self.screenshot_done(Err(
                 "this window surface does not support read-back (COPY_SRC)".into(),
             ));
@@ -162,7 +179,7 @@ impl Editor {
         let job = Job::spawn("screenshot", label, JOB_TIMEOUT, move |progress| {
             progress.set_total(1);
             let started = Instant::now();
-            let written = write_crop(&path, width, &pixels, crop, progress);
+            let written = write_crop(&path, width, &pixels, bgra, crop, progress);
             progress.set_done(1);
             written.map(|(w, h)| {
                 eprintln!(
@@ -179,8 +196,20 @@ impl Editor {
         }
     }
 
-    /// Every drawn frame: the screenshot job's outcome.
+    /// Every drawn frame: the screenshot job's outcome; a request no rendered frame picked up
+    /// within `PENDING_LIMIT` (minimized window) fails instead of blocking the command.
     pub(super) fn poll_look(&mut self) {
+        if self
+            .look
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.asked.elapsed() > PENDING_LIMIT)
+        {
+            self.look.pending = None;
+            self.screenshot_done(Err(
+                "no frame was rendered within 10 s (window minimized?)".into()
+            ));
+        }
         let Some(job) = &mut self.look.job else {
             return;
         };
@@ -283,6 +312,11 @@ impl Editor {
         })
     }
 
+    /// The running screenshot job for `observe editor.jobs`.
+    pub(super) fn screenshot_job_observation(&self) -> Option<Value> {
+        self.look.job.as_ref().map(|j| j.observation())
+    }
+
     pub(super) fn screenshot_running(&self) -> bool {
         self.look.pending.is_some() || self.look.job.is_some()
     }
@@ -309,6 +343,7 @@ fn write_crop(
     path: &Path,
     width: u32,
     pixels: &[u8],
+    bgra: bool,
     [x, y, w, h]: [u32; 4],
     progress: &crate::jobs::Progress,
 ) -> Result<(u32, u32), String> {
@@ -323,6 +358,11 @@ fn write_crop(
             .get(start..start + w as usize * 4)
             .ok_or("crop outside the frame")?;
         out.extend_from_slice(line);
+    }
+    if bgra {
+        for pixel in out.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
     }
     let text = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     if let Some(parent) = path.parent() {
@@ -385,6 +425,8 @@ mod tests {
     fn a_screenshot_crops_the_scene_view_in_a_background_job() {
         let mut e = Editor::new(lab(), 1, None);
         e.scene_visible = true;
+        let dir = std::env::temp_dir().join(format!("axiom-look-shot-{}", std::process::id()));
+        e.look.dir = Some(dir.clone());
         e.viewport = egui::Rect::from_min_max(egui::pos2(2.0, 1.0), egui::pos2(4.0, 3.0));
         let name = format!("we-look-test-{}", std::process::id());
         assert!(e
@@ -401,7 +443,7 @@ mod tests {
         let pixels: Vec<u8> = (0..4u8)
             .flat_map(|y| (0..6u8).flat_map(move |x| [x, y, 0, 255]))
             .collect();
-        e.grabbed(Some((6, 4, pixels)), 1.5);
+        e.grabbed(Some((6, 4, pixels, false)), 1.5);
         assert!(!e.wants_grab());
         let started = Instant::now();
         while e.look.job.is_some() {
@@ -420,38 +462,48 @@ mod tests {
         );
         let path = PathBuf::from(last["path"].as_str().unwrap());
         assert!(path.ends_with(format!("{name}.png")));
-        std::fs::remove_file(&path).unwrap();
-        // artifacts/captures under the crate when run by cargo test: leave nothing behind.
-        if let Some(captures) = path.parent() {
-            let _ = std::fs::remove_dir(captures);
-            let _ = captures.parent().map(std::fs::remove_dir);
-        }
+        assert!(path.starts_with(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Empty names are refused.
+        assert!(e.run_command_with("view.screenshot", Some(".png")).is_err());
         assert_eq!(e.last_job.as_ref().unwrap()["kind"], "screenshot");
         // No read-back support: an error, not a hang.
         e.run_command("view.screenshot").unwrap();
         e.grabbed(None, 1.0);
         assert_eq!(e.observation()["look"]["screenshot"]["last"]["ok"], false);
         assert!(!e.screenshot_running());
+        // A request no frame picks up fails after the limit instead of blocking the command.
+        e.run_command("view.screenshot").unwrap();
+        e.look.pending.as_mut().unwrap().asked =
+            Instant::now() - PENDING_LIMIT - Duration::from_secs(1);
+        e.poll_look();
+        assert!(!e.screenshot_running());
+        assert_eq!(e.observation()["look"]["screenshot"]["last"]["ok"], false);
     }
 
     #[test]
     fn writes_the_cropped_rows() {
         let dir = std::env::temp_dir().join(format!("axiom-look-{}", std::process::id()));
         let path = dir.join("crop.png");
-        // 4×2 frame: pixel (x, y) = [x, y, 7, 255].
+        // 4×2 frame: pixel (x, y) = [x, y, 7, 255]; BGRA input comes out RGBA.
         let pixels: Vec<u8> = (0..2u8)
             .flat_map(|y| (0..4u8).flat_map(move |x| [x, y, 7, 255]))
             .collect();
         let progress = crate::jobs::Progress::default();
         assert_eq!(
-            write_crop(&path, 4, &pixels, [1, 1, 2, 1], &progress),
+            write_crop(&path, 4, &pixels, false, [1, 1, 2, 1], &progress),
             Ok((2, 1))
         );
-        let decoder = png::Decoder::new(std::fs::File::open(&path).unwrap());
-        let mut reader = decoder.read_info().unwrap();
-        let mut buf = vec![0; reader.output_buffer_size()];
-        reader.next_frame(&mut buf).unwrap();
-        assert_eq!(buf, [1, 1, 7, 255, 2, 1, 7, 255]);
+        let read = || {
+            let decoder = png::Decoder::new(std::fs::File::open(&path).unwrap());
+            let mut reader = decoder.read_info().unwrap();
+            let mut buf = vec![0; reader.output_buffer_size()];
+            reader.next_frame(&mut buf).unwrap();
+            buf
+        };
+        assert_eq!(read(), [1, 1, 7, 255, 2, 1, 7, 255]);
+        write_crop(&path, 4, &pixels, true, [1, 1, 2, 1], &progress).unwrap();
+        assert_eq!(read(), [7, 1, 1, 255, 7, 1, 2, 255]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

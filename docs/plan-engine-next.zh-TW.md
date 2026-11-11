@@ -65,3 +65,34 @@
 ## 執行紀錄
 
 (各工作線完成後補上)
+
+### E 編輯器外觀(2026-11-11,worktree `we`,分支 `work-we`,`rigorous-change`)
+
+**先比較再動手**:改版前用主樹的 debug exe 在 Axiom Street 拍 `artifacts/captures/we-before-{1080,768}.png`,與設計圖並排列出差異(下表「之前」欄)。
+
+| 項目 | 設計圖 | 之前(we-before) | 之後(we-after) |
+|---|---|---|---|
+| Hierarchy | 場景 ▸ Environment(Buildings / Props / Vegetation)、Lighting、Characters、Cameras 資料夾樹 | 街道是平的根物件列表(沒有群組資料) | Sakura Plaza 以 `group` 分層;資料夾圖示(展開時打開)、展開箭頭 |
+| Inspector 元件標題 | Components 標題列右側 + Add Component… | Add Component… / Behavior… 兩個下拉在標題下方(768 時兩列) | 標題列右側 + Add Component…(Behavior 範本在同一清單最上面) |
+| Transform | 第一張卡片,Revert / ⋯ | Components 之外的獨立區段,無動作 | Components 下第一張卡片,Revert(`reset SEL core.transform`)+ ⋯(Reset / Copy / Paste),X/Y/Z 紅綠藍 |
+| 元件卡片 | 勾選、圖示、Revert、⋯ | 只有展開的卡片有 Reset / ⋯;收合卡片的勾選唯讀;值裡沒有 `enabled` 的元件不顯示勾選 | 每張卡片 Revert / ⋯;收合卡片可勾(一筆 revision);schema 有 `enabled` 的元件一定顯示勾選 |
+| Advanced | 每張卡片「Advanced  Render Layers (2)…」摘要列 | 只有底部的「Advanced」(用 ID 載入元件) | 展開卡片內「Advanced (N): a, b…」收起仍等於預設值的欄位;底部改名 Load component by ID |
+| 資源欄位 | 名稱 + 複製鈕 | 只有下拉 | 下拉(名稱)+ Copy + Show in Assets(`asset.reveal`) |
+| Assets 左側 | 資料夾樹 | 平的類別清單(含 0 個的類別)+ FOLDERS 文字列 | `Assets/` ▸ 類別 ▸ 來源資料夾 / ID 前綴,箭頭、資料夾圖示、數量 |
+| 麵包屑 | Assets › Characters › Android_01 | Assets › 類別 | 每段可點的完整路徑 |
+| 縮圖 | 模型 / 骨架 / 動畫 / 貼圖 / 材質球 | 模型、圖片、材質;其他是 PFB / SND / UI / INPUT 文字 | 另加 prefab 縮圖(方塊或其模型);其他類別畫圖示 |
+| Scene 工具列 | 格線、相機(截圖)、Snap、Lit ▾、Perspective ▾ | 沒有截圖鈕、沒有著色模式 | 截圖鈕 + Lit / Unlit 下拉 |
+| 狀態列 | VRAM: 1.26 GB | GPU alloc n/a | VRAM 439 MiB(1080)/ 233 MiB(768),提示有預算與共用記憶體 |
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+
+- **Wireframe → 只做 Lit / Unlit**:`POLYGON_MODE_LINE` 要為每條世界 pipeline(方塊、網格 / 骨架、每個自訂材質 hook)各建一份線框版,pipeline 數加倍,且工作線 R 同時在改這些 pipeline;CPU 畫邊線則是每幀大量線段。Unlit 只改那個 view 的 uniform(均勻環境光、無太陽 / 區域光 / 霧,`render.rs::unlit_globals`),沒有新 pipeline、沒有 shader 變更。限制:顏色仍經 tone curve(平塗底色,不是原始貼圖值)。
+- **元件啟用旗標**:沒有新增通用的 `enabled`(要每個 runtime 系統都尊重才有意義,不便宜)。勾選只出現在 schema 本來就有 `enabled` 的元件(讀 registry 的欄位提示 `"bool, default true"`;值裡省略時顯示預設值,沒動過不寫入)。
+- **Advanced 列的「不常用」**:沒有逐元件的欄位分類(要求是通用卡片外框),改用資料定義:已提交值仍等於 `ops::default_value` 的頂層欄位;至少收兩個、外面至少留兩個才出現;篩選、多選值不同、prefab 覆寫時不收。
+- **示範場景的角色**:用第一方吉祥物 glb(`content/mascot`,使用者自己的設計;與 axiom-town 相同的 blob,git 不重複存),外加一個方塊人偶。沒有天空 / 反射探針 / 天空光(工作線 R 的範圍),Lighting 資料夾是太陽 + 兩盞路燈的點光。
+- **VRAM**:`GPU alloc n/a` 的原因是 wgpu 24 只有 D3D12 後端(gpu-allocator)回報 allocator report,這台走 Vulkan(gpu-alloc)。改讀 DXGI `QueryVideoMemoryInfo`(依 PCI vendor / device 對應 adapter):本程序用的專用顯示記憶體,含 swapchain 與驅動配置、不分 API。`windows` 0.58 本來就因 wgpu-hal 的 D3D12 後端在 lock 裡(同版本、同 feature),所以 Cargo.lock 只多一行相依,沒有新 crate。量測:一次讀取(兩個查詢)debug 6.6 µs(100 次平均,`vram::tests`)。
+- **截圖**:沿用既有的讀回(`Renderer::grab`,同一個 COPY_SRC 讀回路徑),裁切、BGRA→RGBA 與 PNG 編碼在背景 job(20 s watchdog、可取消、關閉時 join 500 ms);10 秒內沒有畫出的幀就失敗(視窗最小化時不會卡住指令)。主執行緒仍要等 GPU 完成讀回並複製整個視窗一次(每次截圖在 stderr 記錄耗時,不是每幀成本)。截圖包含疊在 Scene 視圖上的編輯器標示(FPS、Frame / Fullscreen 鈕),這是刻意的(看到的就是拍到的)。
+
+**新指令 / 協定**:`view.display_mode lit|unlit`、`view.screenshot [NAME]`、`asset.folder PATH`、`asset.reveal KIND:ID`(都只是檢視狀態,`parity::view_commands_never_write`);`observe` 的 `editor.look`、`editor.vram`;截圖 job 出現在 `editor.jobs` 與狀態列。會改內容的新操作(收合卡片勾選、卡片 / Transform 的 Revert)都是既有 ops 與 ACL(`set SEL C/enabled B`、`reset SEL C`),有 parity 測試。
+
+**證據**:見下方「驗證」段落(由最後一輪填入)。

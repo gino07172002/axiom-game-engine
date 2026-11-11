@@ -2073,6 +2073,7 @@ impl Editor {
             .chain(self.asset_job_observation())
             .chain(self.tuning.shader.job.as_ref().map(|j| j.observation()))
             .chain(self.merge_jobs_observation())
+            .chain(self.screenshot_job_observation())
             .collect::<Vec<_>>())
     }
 
