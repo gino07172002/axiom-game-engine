@@ -1939,7 +1939,9 @@ fn set_sky_presets_keep_authored_values() {
     // Tuned values survive pressing the same preset again (empty batch).
     let mut tuned = sky.clone();
     tuned.resources.get_mut("render.environment").unwrap()["sky"]["exposure"] = 1.7.into();
-    assert!(ops::set_sky(&tuned, &registry, "procedural").unwrap().is_empty());
+    assert!(ops::set_sky(&tuned, &registry, "procedural")
+        .unwrap()
+        .is_empty());
     // Another mode replaces the sky but keeps fog and an authored ambient.
     let mut fogged = tuned.clone();
     let env = fogged.resources.get_mut("render.environment").unwrap();
@@ -1954,10 +1956,16 @@ fn set_sky_presets_keep_authored_values() {
     let env = s.current().unwrap().1.resources["render.environment"].clone();
     assert_eq!(env["sky"]["mode"], "gradient");
     assert_eq!(env["ambient"]["mode"], "color");
-    assert_eq!(env["fog"]["density"].as_f64().map(|d| (d * 100.0).round()), Some(2.0));
+    assert_eq!(
+        env["fog"]["density"].as_f64().map(|d| (d * 100.0).round()),
+        Some(2.0)
+    );
     // `none` drops the sky and a sky-mode ambient only.
     let cleared = apply(ops::set_sky(&sky, &registry, "none").unwrap());
-    assert_eq!(cleared.resources["render.environment"], serde_json::json!({}));
+    assert_eq!(
+        cleared.resources["render.environment"],
+        serde_json::json!({})
+    );
     let error = ops::set_sky(&world, &registry, "hdri").unwrap_err();
     assert_eq!(code(error_response(&error)), "invalid_value");
     // The ACL verb is the same op.

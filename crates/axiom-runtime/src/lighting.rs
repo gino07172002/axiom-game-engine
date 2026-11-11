@@ -100,7 +100,8 @@ impl SkyParams {
             let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
-        let mix = |a: [f32; 3], b: [f32; 3], t: f32| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+        let mix =
+            |a: [f32; 3], b: [f32; 3], t: f32| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
         match sky {
             None => Self::NONE,
             Some(Sky::Gradient {
@@ -388,10 +389,8 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
     let local_count = total.min(GPU_LOCAL_LIGHTS);
 
     let env = &frame.environment;
-    let authored = !directional.is_empty()
-        || env.ambient.is_some()
-        || env.fog.is_some()
-        || env.sky.is_some();
+    let authored =
+        !directional.is_empty() || env.ambient.is_some() || env.fog.is_some() || env.sky.is_some();
     // The procedural sky follows sun 0 (the first directional light or the default sun).
     let sky_params = SkyParams::new(
         env.sky.as_ref(),
@@ -698,7 +697,9 @@ mod tests {
 
         // ambient: sky = that trilight times its intensity; the sky reaches the shader.
         let mut f = frame();
-        f.environment = serde_json::from_value(json!({"sky":sky,"ambient":{"mode":"sky","intensity":2}})).unwrap();
+        f.environment =
+            serde_json::from_value(json!({"sky":sky,"ambient":{"mode":"sky","intensity":2}}))
+                .unwrap();
         f.environment.validate().unwrap();
         let p = pack(&f);
         assert!(p.authored);
@@ -756,7 +757,10 @@ mod tests {
             toward(60.0),
             [1.0; 3],
         );
-        assert_eq!(bare.radiance(toward(60.0), true), bare.radiance(toward(60.0), false));
+        assert_eq!(
+            bare.radiance(toward(60.0), true),
+            bare.radiance(toward(60.0), false)
+        );
         // The sun of the frame is sun 0: the first directional light.
         let mut f = frame();
         f.environment = serde_json::from_value(json!({"sky":{"mode":"procedural"}})).unwrap();

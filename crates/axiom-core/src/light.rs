@@ -631,19 +631,33 @@ mod tests {
         let p = parse(json!({"sky":{"mode":"procedural"},"ambient":{"mode":"sky"}})).unwrap();
         assert_eq!(p.sky, Sky::preset("procedural"));
         assert_eq!(p.sky_ambient(), Some(1.0));
-        assert_eq!(p.trilight(), None, "sky light is integrated by the renderer");
+        assert_eq!(
+            p.trilight(),
+            None,
+            "sky light is integrated by the renderer"
+        );
         let g = parse(json!({"sky":{"mode":"gradient","zenith_color":[0,0,1],"horizon_color":[1,1,1],"ground_color":[0,0,0]}})).unwrap();
-        assert!(matches!(g.sky, Some(Sky::Gradient { exponent, intensity, .. }) if exponent == 1.0 && intensity == 1.0));
+        assert!(
+            matches!(g.sky, Some(Sky::Gradient { exponent, intensity, .. }) if exponent == 1.0 && intensity == 1.0)
+        );
         assert!(err(json!({"ambient":{"mode":"sky"}})).contains("requires a sky"));
         assert!(err(json!({"sky":{"mode":"hdri"}})).contains("unknown variant"));
         assert!(err(json!({"sky":{"mode":"procedural","sun":1}})).contains("unknown field"));
-        assert!(err(json!({"sky":{"mode":"procedural","sun_size_degrees":11}})).contains("sun_size"));
+        assert!(
+            err(json!({"sky":{"mode":"procedural","sun_size_degrees":11}})).contains("sun_size")
+        );
         assert!(err(json!({"sky":{"mode":"procedural","atmosphere":-1}})).contains("atmosphere"));
         assert!(err(json!({"sky":{"mode":"procedural","exposure":9}})).contains("exposure"));
         assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[2,0,0],"horizon_color":[1,1,1],"ground_color":[0,0,0]}})).contains("rgb"));
         assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[0,0,0],"horizon_color":[1,1,1],"ground_color":[0,0,0],"exponent":0}})).contains("exponent"));
-        assert!(err(json!({"sky":{"mode":"gradient","zenith_color":[0,0,0]}})).contains("missing field"));
-        assert!(err(json!({"sky":{"mode":"procedural"},"ambient":{"mode":"sky","intensity":11}})).contains("intensity"));
+        assert!(
+            err(json!({"sky":{"mode":"gradient","zenith_color":[0,0,0]}}))
+                .contains("missing field")
+        );
+        assert!(
+            err(json!({"sky":{"mode":"procedural"},"ambient":{"mode":"sky","intensity":11}}))
+                .contains("intensity")
+        );
         for mode in ["gradient", "procedural"] {
             Sky::preset(mode).unwrap().validate().unwrap();
         }

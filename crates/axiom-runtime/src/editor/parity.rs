@@ -2301,7 +2301,10 @@ fn sky_presets_and_surface_match_acl() {
     assert_eq!(lit.capabilities.get("render"), Some(&1));
     let env = &lit.resources["render.environment"];
     assert_eq!(env["sky"]["mode"], "procedural");
-    assert_eq!(env["ambient"], serde_json::json!({"mode":"sky","intensity":1.0}));
+    assert_eq!(
+        env["ambient"],
+        serde_json::json!({"mode":"sky","intensity":1.0})
+    );
     for (mode, script) in [("gradient", "sky gradient"), ("none", "sky none")] {
         assert_parity(
             lit.clone(),
@@ -2310,7 +2313,10 @@ fn sky_presets_and_surface_match_acl() {
         );
     }
     let cleared = headless(&lit, "sky none");
-    assert_eq!(cleared.resources["render.environment"], serde_json::json!({}));
+    assert_eq!(
+        cleared.resources["render.environment"],
+        serde_json::json!({})
+    );
     // An authored ambient is kept; the same mode again writes nothing (tuned values stay).
     let tinted = headless(
         &blank,
@@ -2326,7 +2332,10 @@ fn sky_presets_and_surface_match_acl() {
         .run_command_with("world.sky", Some("procedural"))
         .unwrap()
         .is_empty());
-    assert!(e.run_command_with("world.sky", Some("hdri")).unwrap().is_empty());
+    assert!(e
+        .run_command_with("world.sky", Some("hdri"))
+        .unwrap()
+        .is_empty());
     let mut s = store(&lit);
     let error = s
         .execute(Request::Acl {

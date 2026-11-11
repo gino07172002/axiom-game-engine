@@ -57,8 +57,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) world: vec3<f3
         return vec4<f32>(mix(vec3<f32>(0.018,0.032,0.055),vec3<f32>(0.12,0.18,0.21),horizon),1.0);
     }
     // Authored sky: the world direction through this pixel. NDC comes from the pixel and the
-    // view's viewport rectangle: passing NDC as a varying from vs_sky crashed the NVIDIA
-    // MX150 Vulkan driver (32.0.15.6614) inside pipeline creation.
+    // view's viewport rectangle: a vs_sky that indexes its corner array and also passes NDC
+    // as a varying crashed the NVIDIA MX150 Vulkan driver (32.0.15.6614) in pipeline creation.
     let rel=(p.xy-g.sky_viewport.xy)/max(g.sky_viewport.zw,vec2<f32>(1.0));
     let ndc=vec2<f32>(rel.x*2.0-1.0,1.0-rel.y*2.0);
     let near=g.inv_view_proj*vec4<f32>(ndc,0.0,1.0);
