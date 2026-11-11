@@ -246,11 +246,19 @@ impl Controller {
                 return at(&format!("/twists/{id}"), Err(e));
             }
         }
+        // IK results are committed with the pose (IK solving allocates anyway; without IK
+        // this list stays empty and allocation-free).
+        let mut results = Vec::new();
         for (id, ik) in &self.ik {
-            let result = match ik.apply(&self.asset.skeleton, &mut self.accum) {
-                Ok(r) => r,
+            match ik.apply(&self.asset.skeleton, &mut self.accum) {
+                Ok(r) => results.push(r),
                 Err(e) => return at(&format!("/ik/{id}"), Err(e)),
-            };
+            }
+        }
+        self.asset
+            .skeleton
+            .globals_into(&self.accum, &mut self.globals)?;
+        for ((id, _), result) in self.ik.iter().zip(results) {
             match self.ik_results.get_mut(id) {
                 Some(slot) => *slot = result,
                 None => {
@@ -258,9 +266,6 @@ impl Controller {
                 }
             }
         }
-        self.asset
-            .skeleton
-            .globals_into(&self.accum, &mut self.globals)?;
         std::mem::swap(&mut self.pose, &mut self.accum);
         std::mem::swap(&mut self.sampled, &mut self.scratch);
         self.fault = None;
@@ -552,6 +557,10 @@ impl RuntimeSystem for AnimationSystem {
         for (id, p) in &mut self.players {
             let slot = state.compiled.indices[id];
             if !state.compiled.enabled[slot] {
+                // Re-enabled entities start a fresh speed sample (no jump across the gap).
+                if let Some(a) = &mut p.animator {
+                    a.last_position = None;
+                }
                 continue;
             }
             // Advanced in place; a failed evaluation rolls back the (`Copy`) playback state
@@ -559,7 +568,7 @@ impl RuntimeSystem for AnimationSystem {
             let saved = (
                 p.time,
                 p.fade.as_ref().map(|f| f.elapsed),
-                p.animator.as_ref().map(|a| (a.state, a.last_position)),
+                p.animator.as_ref().map(|a| a.state),
             );
             let position = state.transforms[slot].as_ref().map(|t| t.position);
             if let Some(a) = &mut p.animator {
@@ -596,9 +605,9 @@ impl RuntimeSystem for AnimationSystem {
                 if let (Some(f), Some(elapsed)) = (&mut p.fade, saved.1) {
                     f.elapsed = elapsed;
                 }
-                if let (Some(a), Some((s, last))) = (&mut p.animator, saved.2) {
+                // The position read this step stays the reference for the next speed sample.
+                if let (Some(a), Some(s)) = (&mut p.animator, saved.2) {
                     a.state = s;
-                    a.last_position = last;
                 }
                 p.fault = Some(format!("{e:#}"));
             }

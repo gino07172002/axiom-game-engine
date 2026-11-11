@@ -211,17 +211,18 @@ impl Editor {
     }
 
     /// Clip IDs offered by the forms: those of the players that run the open controller
-    /// (every player's when none does yet). Cached per world version.
+    /// (every player's when none does yet). Cached per world version and controller.
     pub(super) fn anim_refresh_clips(&mut self, runtime: &WorldRuntime) {
+        let controller = self.graph.machine.as_deref().unwrap_or_default();
         if self
             .graph
             .anim_clips
             .as_ref()
-            .is_some_and(|(v, _)| *v == self.world_version)
+            .is_some_and(|(v, c, _)| *v == self.world_version && c == controller)
         {
             return;
         }
-        let controller = self.graph.machine.clone().unwrap_or_default();
+        let controller = controller.to_owned();
         let catalog = &runtime.state.animation_cues.catalog;
         let users: Vec<&str> = self
             .world
@@ -240,7 +241,7 @@ impl Editor {
                 clips.extend(list.keys().cloned());
             }
         }
-        self.graph.anim_clips = Some((self.world_version, clips.into_iter().collect()));
+        self.graph.anim_clips = Some((self.world_version, controller, clips.into_iter().collect()));
     }
 
     /// Graphs ▸ Animator ▸ New controller / `graph.new_controller ID` (ACL `animctl ID create`).
@@ -325,7 +326,7 @@ impl Editor {
             .graph
             .anim_clips
             .as_ref()
-            .map(|(_, c)| c.clone())
+            .map(|(_, _, c)| c.clone())
             .unwrap_or_default();
         let mut draft = self.graph.element.take().expect("set above");
         let mut request = None;

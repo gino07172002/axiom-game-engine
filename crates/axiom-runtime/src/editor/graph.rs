@@ -70,7 +70,7 @@ pub(crate) struct GraphUi {
     /// The other kind's open graph, restored when the view switches back.
     stash: Option<String>,
     /// Animator view: clip IDs the controller's entities have (per world version).
-    anim_clips: Option<(u64, Vec<String>)>,
+    anim_clips: Option<(u64, String, Vec<String>)>,
     /// Animator view in Play: the first controlled entity of the open controller, its
     /// parameter values (parallel to the declared parameters) and the blend-in weight of
     /// its current state while a cross-fade runs.
@@ -98,7 +98,11 @@ pub(crate) struct GraphUi {
     rule: Option<RuleDraft>,
     /// Selected rule (index into `rules`).
     pub rule_index: Option<usize>,
-    problems: Option<((u64, u64), Vec<GraphProblem>)>,
+    /// Checks of one graph kind, keyed by (world version, queued writes, kind).
+    problems: Option<((u64, u64, GraphDoc), Vec<GraphProblem>)>,
+    /// The Problems tab's state machine checks (its own cache: the canvas may show the
+    /// animator's), keyed by (world version, queued writes).
+    rows: Option<((u64, u64), Vec<GraphProblem>)>,
     kinds: Option<Kinds>,
     /// Agents in each node's state this frame (Play), parallel to the model's nodes.
     live: Vec<u16>,
@@ -1213,12 +1217,18 @@ impl Editor {
     fn graph_refresh(&mut self) {
         let version = self.world_version;
         let key = (version, self.graph.edits);
-        if self.graph.problems.as_ref().is_none_or(|(k, _)| *k != key) {
+        let problem_key = (key.0, key.1, self.graph.doc);
+        if self
+            .graph
+            .problems
+            .as_ref()
+            .is_none_or(|(k, _)| *k != problem_key)
+        {
             let problems = match self.graph.doc {
                 GraphDoc::Fsm => ops::fsm_problems(self.graph_world()),
                 GraphDoc::Animator => ops::anim_problems(self.graph_world()),
             };
-            self.graph.problems = Some((key, problems));
+            self.graph.problems = Some((problem_key, problems));
         }
         if self.graph.machine.is_none() {
             self.graph.machine = self.graph.doc.ids(&self.world).into_iter().next();
@@ -1733,7 +1743,7 @@ impl Editor {
             },
             // Fresh even when the Graphs / Problems tabs are not drawn (agents rely on it).
             "problems": match &self.graph.problems {
-                Some((k, p)) if *k == (self.world_version, self.graph.edits) => p.len(),
+                Some((k, p)) if *k == (self.world_version, self.graph.edits, self.graph.doc) => p.len(),
                 _ => match self.graph.doc {
                     GraphDoc::Fsm => ops::fsm_problems(self.graph_world()).len(),
                     GraphDoc::Animator => ops::anim_problems(self.graph_world()).len(),
@@ -2376,17 +2386,13 @@ impl Editor {
 
     /// Problems tab: the static state machine checks (cached per revision), each with Open.
     pub(super) fn graph_problem_rows(&mut self, ui: &mut Ui) {
-        if self
-            .graph
-            .problems
-            .as_ref()
-            .is_none_or(|(k, _)| *k != (self.world_version, self.graph.edits))
-        {
+        let key = (self.world_version, self.graph.edits);
+        if self.graph.rows.as_ref().is_none_or(|(k, _)| *k != key) {
             let problems = ops::fsm_problems(self.graph_world());
-            self.graph.problems = Some(((self.world_version, self.graph.edits), problems));
+            self.graph.rows = Some((key, problems));
         }
         let mut open = None;
-        let problems = &self.graph.problems.as_ref().expect("set above").1;
+        let problems = &self.graph.rows.as_ref().expect("set above").1;
         if problems.is_empty() {
             return;
         }
@@ -2800,7 +2806,9 @@ impl Editor {
         self.graph
             .problems
             .as_ref()
-            .map_or(&[], |(_, p)| p.as_slice())
+            .map(|(_, p)| p)
+            .or(self.graph.rows.as_ref().map(|(_, p)| p))
+            .map_or(&[], |p| p.as_slice())
     }
 
     #[cfg(test)]

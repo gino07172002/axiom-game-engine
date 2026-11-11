@@ -307,6 +307,21 @@ impl ControllerDef {
                 "{}: exit_time 0..1000",
                 at()
             );
+            // A one-shot state stops at normalized time 1 and a speed-0 state never advances:
+            // a later exit time from them would never fire.
+            if let (Some(e), Some(s)) = (t.exit_time, self.states.get(&t.from)) {
+                let (looping, speed) = match &s.motion {
+                    None => (true, 1.0),
+                    Some(Motion::Clip { looping, speed, .. })
+                    | Some(Motion::Blend1d { looping, speed, .. }) => (*looping, *speed),
+                };
+                ensure!(
+                    (looping || e <= 1.0) && (speed > 0.0 || e == 0.0),
+                    "{}: exit_time {e} never fires from {} (one-shot states stop at 1, speed-0 states at 0)",
+                    at(),
+                    t.from
+                );
+            }
             ensure!(
                 !t.conditions.is_empty() || t.exit_time.is_some(),
                 "{}: needs a condition or an exit_time (else it fires at once)",
@@ -942,6 +957,10 @@ mod tests {
         let mut d = locomotion();
         d.transitions[3].exit_time = None;
         assert!(format!("{:#}", d.validate().unwrap_err()).contains("exit_time"));
+        let mut d = locomotion();
+        d.transitions[3].exit_time = Some(1.5);
+        let e = format!("{:#}", d.validate().unwrap_err());
+        assert!(e.contains("never fires from hop"), "{e}");
         let mut d = locomotion();
         d.initial = "nope".into();
         assert!(d.validate().is_err());

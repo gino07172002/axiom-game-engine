@@ -1792,8 +1792,14 @@ fn animctl(tokens: &[String]) -> Result<Statement> {
         Some("agent") | None => bail!("{USE}"),
         _ => {}
     }
-    let to_anim =
-        |e: anyhow::Error| anyhow::anyhow!("{}", format!("{e:#}").replace("fsm ", "animctl "));
+    let to_anim = |e: anyhow::Error| {
+        anyhow::anyhow!(
+            "{}",
+            format!("{e:#}")
+                .replace("fsm SEL agent MACHINE", "animctl SEL attach C")
+                .replace("fsm ", "animctl ")
+        )
+    };
     Ok(match fsm(tokens).map_err(to_anim)? {
         Statement::FsmCreate(id, initial) => Statement::AnimCreate(id, initial),
         Statement::FsmRemove(id) => Statement::AnimRemove(id),
