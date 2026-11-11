@@ -65,3 +65,22 @@
 ## 執行紀錄
 
 (各工作線完成後補上)
+
+### A 動畫控制器(工作線 A,worktree `wa`,分支 `work-wa`)
+
+流程:`rigorous-plan`(本節 milestone 拆解)→ 每個 milestone `rigorous-change`。
+
+**ADR A1:資源 + 元件(不是只用元件)。** 控制器定義放在 `animation.controllers` 資源(`{controllers:{ID:{parameters, initial, states, transitions}}}`),實體用 `animation.controller {controller}` 掛上。比較:(a) 純元件 —— 每個實體各存一份圖,同一套 idle/walk/run 給 20 個 NPC 要改 20 次,Graphs 也得改成編輯元件;(b) 資源 + 元件(選用)—— 與既有 `fsm.machines` + `fsm.agent` 同形,多實體共用一份圖,編輯器、ops、ACL、版面(`editor.layout` 的 `anim/ID`)都能沿用 FSM 的路徑。代價:片段名稱只能在 runtime 對各實體的 `animation.player` 解析(資源驗證時不載入資產),缺片段時 runtime 建置失敗並指出 `/entities/@ID/components/animation.controller` 與狀態名。
+
+**ADR A2:圖形操作共用 FSM 的 ops 與畫布。** `ops_graph` 加 `GraphDoc {Fsm, Animator}`,狀態 / 轉移 / 位置 / 刪除改成 `graph_edit` / `graph_set_node` / `graph_remove`(`fsm_*` 保留為包裝,行為與錯誤碼不變,既有測試全過);兩種圖都是 `{initial, states, transitions:[{from,to,..}]}`,差別只在狀態與轉移的內容。Graphs 分頁多一個 **Animator** 檢視,同一個 Model / 畫布 / 拖曳 / 拉線 / 右鍵,右側換成動畫專用表單(`editor/anim_graph.rs`)。不另做一個圖編輯器,也不引入新 crate。
+
+**ADR A3:執行期求值。** 純邏輯在 `axiom-animation/src/controller.rs`(無 renderer 依賴):`Compiled`(名稱→索引、片段長度)與 `State`(`Copy`:目前層、淡出層、淡入計時、16 個參數的固定陣列)。每個 120 Hz 固定步:更新 `source:"speed"` 參數(實體平面位移 / FIXED_DT)→ 推進目前與淡出中的狀態 → 未淡入時依序檢查轉移(第一個通過者觸發,消耗 trigger)→ 產生最多 4 個加權樣本(2 層 × 1D 混合兩點)。混合樹用正規化時間同步;淡入期間不打斷。runtime 的 `Controller::evaluate` 改用重複使用的姿勢緩衝(`sample_into`、`blend_toward`、`blend_from`、`globals_into`),`step` 不再每步 clone 整個播放器(失敗時回滾 `Copy` 狀態,保留上一個姿勢)。
+- 參數來源:遊戲命令 `animation.param`(`RuntimeCommand::Call`,UI 按鈕、`runtime.bindings`、scenario、loopback、editor Play 都走它)、`source:"speed"`(角色控制器 / FSM 移動 / path.follow 都能驅動,不和特定 genre 綁在一起)。
+- 確定性:控制器狀態在 `metrics.animation.players.ID.controller`,所以在 `state_hash` 裡;scenario 重播雜湊一致,改變 trigger 時間雜湊就不同(測試)。沒有控制器的玩家 metrics 形狀不變(不加 `controller: null`),既有 scenario 雜湊不受影響。
+- Checkpoint:`animation.evaluate` 原本就不支援 checkpoint,`save` 明確失敗並指出該系統(測試);沒有做部分存檔。
+- 衝突:有控制器的實體拒絕 `animation.play`(訊息指向 `animation.param`),FSM / 動作送來的片段 cue 計數在 `ignored_cues`,不默默丟掉。
+
+**Milestones**
+- M1(walking skeleton):控制器型別 + 驗證 + runtime 整合 + `content/animator-lab`(mascot 的 idle / walk / run / wave,沿 path 行走,速度驅動)+ headless 測試 + GPU 畫面。
+- M2:ops(`anim_create` / `anim_param` / `anim_attach` / `anim_problems` + 共用 `graph_*`)、ACL `animctl`、編輯器 Graphs ▸ Animator(畫布、參數表、狀態 / 轉移表單、Play 即時高亮與參數值、淡入進度條)、指令 `graph.open_controller|new_controller|attach_controller|param`、`editor_view {open:"animator:ID"}`、Inspector Edit Graph、parity 測試。
+- M3:驗證(全套 + GPU smoke + 截圖)、審查修正、文件。

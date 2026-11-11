@@ -1656,8 +1656,19 @@ impl Editor {
             ("graph.new_controller", Some(c)) => self.anim_new_controller(c),
             ("graph.attach_controller", Some(c)) => self.anim_attach(c),
             ("graph.param", Some(spec)) => self.anim_param_command(spec)?,
+            // Without an argument: show where a person picks it (like graph.open).
             ("graph.new_controller" | "graph.attach_controller" | "graph.param", None) => {
-                anyhow::bail!("{id} needs an argument (see discover editor)")
+                self.show_dock(Dock::Graphs);
+                self.graph_set_doc(GraphDoc::Animator);
+                self.graph.view = View::Animator;
+                self.notice(match id {
+                    "graph.new_controller" => "Graphs › Animator › New controller…: type an ID",
+                    "graph.attach_controller" => {
+                        "Pass a controller ID (graph.attach_controller ID; ACL animctl SEL attach ID)"
+                    }
+                    _ => "Add or edit parameters in the Animator parameter table",
+                });
+                None
             }
             ("graph.open", Some(machine)) => {
                 self.graph_open(machine)?;

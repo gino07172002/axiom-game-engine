@@ -71,3 +71,22 @@ cargo build --workspace
 ```
 
 `scripts/blender-rigify-fixture.py` 可重新產生內建 Rigify 測試資產與 Blender 比對資料。`scripts/unity-humanoid-smoke.ps1` 接受 Unity Editor 與含 Humanoid `Walking` clip 的 FBX，使用臨時專案驗證匯出。附 `-Model` 可接著跑到 PMX 的重定向、腳部蒙皮和原生渲染。Unity 6000.6.0f1 的 Walking 已驗證實際 Avatar 求值、150 條來源軌道和 PMX 腳部位移。兩條驗證路徑分別記錄在 `artifacts/animation-validation.json` 與 `artifacts/animation-unity-validation.json`。
+
+## 動畫控制器(animation.controllers)
+
+狀態機式的動畫控制器,讓遊戲只設定參數,由控制器決定播哪個片段。控制器宣告在 `animation.controllers` 資源(可多個實體共用),實體用 `animation.controller {"controller":ID}` 掛上(同一實體必須有 `animation.player`;控制器存在時 `animation.play` 會被拒絕,FSM / 動作的片段 cue 會被計數在 `ignored_cues`,不會默默丟掉)。
+
+- **參數**:`float`、`bool`、`trigger`(第一個用到它的轉移觸發時自動清除)。`float` 可設 `"source":"speed"`:每個固定步從實體 transform 的平面位移量測速度(m/s),所以角色控制器、FSM 移動、path.follow、tween 都能直接驅動,不需要寫程式。
+- **狀態**:`motion` 是單一片段(`{"kind":"clip","clip":ID,"speed"?,"looping"?}`)、1D 混合樹(`{"kind":"blend1d","parameter":P,"points":[{"at":V,"clip":ID}…]}`,參數兩側的兩個點線性混合,片段依正規化時間同步,例如 walk / run 步伐對齊),或省略 = rest pose。
+- **轉移**:依列表順序檢查,第一個通過的觸發(`from` 可為 `*`)。`conditions` 全部成立(`gt/lt/eq/ne` 比 float、`true/false` 比 bool、`trigger`),可加 `exit_time`(來源狀態正規化時間,1 = 一個循環),`duration` 是交叉淡入秒數。淡入期間不打斷(下一個轉移等淡入結束)。
+- **執行期**:`animation.evaluate` 每個 120 Hz 固定步先更新綁定參數,再推進目前狀態(與淡出中的前一狀態)並檢查轉移,最後把最多 4 個加權片段取樣混成姿勢。控制器狀態是固定大小的 `Copy` 值、姿勢緩衝區重複使用,步進不配置記憶體(`tests/animator.rs::steady_controller_steps_do_not_allocate` 用計數配置器量到 240 步 0 次配置;retarget、twist、IK、蒙皮輸出仍沿用既有路徑,會配置)。
+- **命令**:`animation.param {entity,name,value}`(UI 按鈕、`runtime.bindings`、scenario、loopback 都走同一個 `RuntimeCommand::Call`);`animation.inspect` 與 `observe` 的 `metrics.animation.players.ID.controller` 回報目前狀態、淡出狀態、淡入比例、參數與觸發次數。
+- **確定性與存檔**:控制器狀態在 `state_hash` 內(observe metrics),同一 scenario 重播雜湊一致。動畫系統不支援 checkpoint:`save` 明確失敗並指出 `animation.evaluate`,不會只存一半。
+- **編輯中熱重載**:修改控制器時,同名狀態與參數保留(例如 Play 中在 Graphs ▸ Animator 改轉移),狀態被刪掉時回到初始狀態。
+
+```powershell
+.\target\debug\axiom.exe --db data/animator-lab.sqlite --pack content/animator-lab play --start
+.\target\debug\axiom.exe --db data/animator-lab.sqlite call animation.param '{"entity":"walker","name":"wave","value":true}' --ticks 120
+```
+
+ACL:`animctl C create|remove`、`animctl C state add|remove|rename|set ..`、`animctl C initial S`、`animctl C transition add|remove|move|set ..`、`animctl C param set NAME JSON | param remove NAME`、`animctl C node S x,y`、`animctl SEL attach C`。示範內容包 `content/animator-lab` 只用 mascot 已提交的第一方片段(idle / walk / run / wave),角色沿 path 行走,UI 按鈕改 path 速度,控制器自動在 idle、walk↔run 混合與 wave 之間切換。
