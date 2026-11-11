@@ -183,6 +183,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("path.remove_point", "Remove Path Point", "Object", ""),
     c("object.obstacle", "Create Obstacle", "Object", ""),
     c("object.nav_agent", "Add Nav Agent", "Object", ""),
+    c("object.rigid_body", "Add Rigid Body", "Object", ""),
     c(
         "nav.target_object",
         "Nav Target: Selected Object",
@@ -561,6 +562,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "path.remove_point",
     "object.obstacle",
     "object.nav_agent",
+    "object.rigid_body",
     "nav.target_object",
     "nav.target_point",
     "nav.clear_target",
@@ -845,6 +847,7 @@ impl Editor {
             | "object.group"
             | "object.follow_path"
             | "object.nav_agent"
+            | "object.rigid_body"
             | "object.interactable"
             | "object.audio_source"
             | "object.audio_listener"
@@ -903,6 +906,7 @@ impl Editor {
             | "path.remove_point"
             | "object.obstacle"
             | "object.nav_agent"
+            | "object.rigid_body"
             | "nav.target_object"
             | "nav.target_point"
             | "nav.clear_target"
@@ -1128,6 +1132,7 @@ impl Editor {
             "path.remove_point" => actions.extend(self.remove_path_point()),
             "object.obstacle" => actions.extend(self.create_object("obstacle")),
             "object.nav_agent" => actions.extend(self.add_nav_agents(&Default::default())),
+            "object.rigid_body" => actions.extend(self.add_rigid_bodies(&Default::default())),
             "nav.target_object" => actions.extend(self.nav_target_selection()),
             "nav.target_point" => {
                 self.scene_input.nav_pick = true;
@@ -1804,6 +1809,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "path.point_drag": "path ID move I x,y,z",
                 "object.obstacle": "create obstacle",
                 "object.nav_agent": "nav SEL agent [speed=] [radius=]",
+                "object.rigid_body": "physics SEL body [kind=dynamic|kinematic] [mass=] [shape=box|sphere|capsule]",
                 "nav.target_object": "nav AGENTS target ENTITY",
                 "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
                 "nav.clear_target": "nav AGENTS target none",

@@ -9,7 +9,7 @@
 //! authored in degrees.
 //!
 //! What blocks the camera (static geometry, collected once when the runtime is built, at the
-//! authored pose): `physics.collider` boxes and capsules, `nav.blocker` rectangles, and the
+//! authored pose): `physics.collider` shapes, `nav.blocker` rectangles, and the
 //! `render.mesh` parts of entities with the [`BLOCKER_COMPONENT`] marker (or the deprecated
 //! [`BLOCKER_TAG`]). Entities moved by a system (any
 //! mover component, `path.follow`, or under one) and the followed target's own hierarchy
@@ -294,7 +294,7 @@ pub fn follow_schema() -> Value {
         "rotation_smoothing": "half-life seconds 0..5, default 0.1: yaw, pitch and distance approach their goals (input, camera.follow.set)",
         "input": "{yaw_axis, pitch_axis, zoom_axis: input.bindings axis names (\"\" = none; keys are never hard-coded), yaw_speed deg/s 0..720 default 120, pitch_speed default 60, zoom_speed m/s 0..100 default 4}",
         "collision": format!("{{enabled default true, radius meters 0..{MAX_COLLISION_RADIUS} default 0.2 (sphere cast), recover half-life seconds 0..5 default 0.25}}: the camera stops in front of blockers at once and moves back out smoothly; never closer than min_distance"),
-        "blockers": format!("static, at the authored pose: physics.collider box/capsule, nav.blocker (height = the entity's own render.mesh bounds, else unbounded), render.mesh parts of entities with the {BLOCKER_COMPONENT} component (or the deprecated tag {BLOCKER_TAG}). Moving entities (any mover, path.follow, or under one), the target's hierarchy and entities in inactive scenes never block"),
+        "blockers": format!("static, at the authored pose: physics.collider box/capsule/sphere, nav.blocker (height = the entity's own render.mesh bounds, else unbounded), render.mesh parts of entities with the {BLOCKER_COMPONENT} component (or the deprecated tag {BLOCKER_TAG}). Moving entities (any mover, path.follow, or under one), the target's hierarchy and entities in inactive scenes never block"),
         "enabled": "bool, default true: a disabled follow leaves the camera where it is",
         "requires": "render.camera and core.transform on the same entity; the camera must be a root entity (no parent); system camera.rig (capability camera)",
         "conflicts": "authoring error camera_conflict: another mover on the camera, or a resource that drives the camera (e.g. action.session / fps / rts camera field); tween transform tracks and path.follow report tween_conflict / path_conflict",
@@ -378,6 +378,15 @@ pub fn collider_shape(collider: &crate::Collider, m: Mat4) -> Shape {
             Shape::Capsule {
                 a: m.transform_point3(Vec3::Y * half_height),
                 b: m.transform_point3(-Vec3::Y * half_height),
+                radius: radius * scale.abs().max_element(),
+            }
+        }
+        crate::ColliderShape::Sphere { radius } => {
+            let (scale, _, _) = m.to_scale_rotation_translation();
+            let center = m.transform_point3(Vec3::ZERO);
+            Shape::Capsule {
+                a: center,
+                b: center,
                 radius: radius * scale.abs().max_element(),
             }
         }

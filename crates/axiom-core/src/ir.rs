@@ -200,6 +200,7 @@ impl World {
             let audio_listener = decode::<crate::audio::AudioListener>(&c, "audio.listener")?;
             let camera_follow = decode::<crate::camera::CameraFollow>(&c, "camera.follow")?;
             let collider = decode::<Collider>(&c, "physics.collider")?;
+            let body = decode::<crate::physics::RigidBody>(&c, crate::physics::BODY)?;
             let health = decode::<Health>(&c, "core.health")?;
             let motion = decode::<Motion>(&c, "core.motion")?;
             ensure!(
@@ -213,6 +214,7 @@ impl World {
                     && interact.is_none()
                     && camera_follow.is_none()
                     && collider.is_none()
+                    && body.is_none()
                     && motion.is_none())
                     || transform.is_some(),
                 "spatial component requires core.transform on {}",
@@ -247,6 +249,7 @@ impl World {
                 audio_listener,
                 camera_follow,
                 collider,
+                body,
                 health,
                 motion,
             });
@@ -358,6 +361,7 @@ impl World {
         crate::navigation::validate_world(self, r, &entities, &ids, &parents)?;
         crate::tween::validate_world(self, r, &entities, &ids, &parents)?;
         crate::camera::validate_world(self, r, &entities, &ids, &parents)?;
+        crate::physics::validate_world(self, r, &entities, &parents)?;
         let schedule = r.schedule(self)?;
         r.validate_world(self)?;
         Ok(CompiledWorld {
@@ -602,15 +606,37 @@ impl Camera {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ColliderShape {
-    Box { half_extents: [f32; 3] },
-    Capsule { half_height: f32, radius: f32 },
+    Box {
+        half_extents: [f32; 3],
+    },
+    /// Along the local Y axis: `half_height` is half the segment between the cap centers.
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
+    Sphere {
+        radius: f32,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Collider {
     pub shape: ColliderShape,
+    /// Contact friction coefficient for `physics.step` (absent = engine default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friction: Option<f32>,
+    /// Bounciness 0..1 for `physics.step` (absent = 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restitution: Option<f32>,
 }
 impl Collider {
+    pub fn new(shape: ColliderShape) -> Self {
+        Self {
+            shape,
+            friction: None,
+            restitution: None,
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         let v = match self.shape {
             ColliderShape::Box { half_extents } => half_extents.to_vec(),
@@ -618,11 +644,23 @@ impl Collider {
                 half_height,
                 radius,
             } => vec![half_height, radius],
+            ColliderShape::Sphere { radius } => vec![radius],
         };
         ensure!(
             v.iter()
                 .all(|&n| n.is_finite() && (0.001..=10000.0).contains(&n)),
             "invalid collider dimensions"
+        );
+        ensure!(
+            self.friction
+                .is_none_or(|f| f.is_finite() && (0.0..=crate::physics::MAX_FRICTION).contains(&f)),
+            "friction must be 0..{}",
+            crate::physics::MAX_FRICTION
+        );
+        ensure!(
+            self.restitution
+                .is_none_or(|r| r.is_finite() && (0.0..=1.0).contains(&r)),
+            "restitution must be 0..1"
         );
         Ok(())
     }
@@ -891,6 +929,8 @@ pub struct CompiledEntity {
     pub audio_listener: Option<crate::audio::AudioListener>,
     pub camera_follow: Option<crate::camera::CameraFollow>,
     pub collider: Option<Collider>,
+    /// `physics.body` (dynamic / kinematic rigid body; needs `physics.collider`).
+    pub body: Option<crate::physics::RigidBody>,
     pub health: Option<Health>,
     pub motion: Option<Motion>,
 }

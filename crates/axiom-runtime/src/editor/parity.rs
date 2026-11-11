@@ -2284,3 +2284,85 @@ fn prefab_revert_and_apply_match_acl() {
         );
     }
 }
+
+#[test]
+fn rigid_bodies_match_acl() {
+    // Add Rigid Body on the selection: a box collider fitted to each mesh, a default dynamic
+    // body, the physics capability and physics.step once.
+    let start = headless(
+        &lab(),
+        "create cube id=crate at=0,3,0\ncreate cube id=ball at=2,3,0\nset ball core.transform/scale [0.5,0.5,0.5]",
+    );
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("crate".into()));
+            e.extra.insert("ball".into());
+            vec![e.run_command("object.rigid_body").unwrap()]
+        },
+        "physics entities[id=crate,id=ball] body",
+    );
+    let bodies = headless(&start, "physics entities[id=crate,id=ball] body");
+    assert_eq!(bodies.capabilities.get("physics"), Some(&1));
+    assert_eq!(
+        bodies
+            .systems
+            .iter()
+            .filter(|s| *s == "physics.step")
+            .count(),
+        1
+    );
+    let crate_box = &bodies.entity("crate").unwrap().components;
+    assert_eq!(
+        crate_box["physics.collider"],
+        serde_json::json!({"shape":{"shape":"box","half_extents":[0.5,0.5,0.5]}})
+    );
+    assert_eq!(crate_box["physics.body"]["kind"], "dynamic");
+    // Options (the dialog's fields) on one object: kinematic, mass, a sphere re-fit.
+    assert_parity(
+        bodies.clone(),
+        |e| {
+            e.select(Some("ball".into()));
+            vec![e
+                .add_rigid_bodies(&axiom_core::ops::BodyOptions {
+                    kind: Some(axiom_core::physics::BodyKind::Kinematic),
+                    mass: Some(3.0),
+                    shape: Some("sphere".into()),
+                })
+                .into_iter()
+                .collect()]
+        },
+        "physics ball body kind=kinematic mass=3 shape=sphere",
+    );
+    // Inspector form edits: the body's mass and the collider's contact material.
+    for (component, field, value, script) in [
+        (
+            "physics.body",
+            "mass",
+            serde_json::json!(4.0),
+            "set crate physics.body/mass 4.0",
+        ),
+        (
+            "physics.collider",
+            "restitution",
+            serde_json::json!(0.6),
+            "set crate physics.collider/restitution 0.6",
+        ),
+    ] {
+        assert_parity(
+            bodies.clone(),
+            |e| {
+                e.select(Some("crate".into()));
+                let entity = e.world.entity("crate").unwrap().clone();
+                let world = e.world.clone();
+                let draft = e.draft.as_mut().unwrap();
+                draft.open_component(&world, &entity, component);
+                draft.form.as_mut().unwrap()[field] = value;
+                draft.form_dirty = true;
+                let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+                vec![vec![e.write(edits, None)]]
+            },
+            script,
+        );
+    }
+}

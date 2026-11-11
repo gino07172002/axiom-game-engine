@@ -402,11 +402,11 @@ pub fn default_value(world: &World, registry: &Registry, id: &str) -> Option<Val
         "nav.agent" => Some(json!(crate::navigation::NavAgent::default())),
         "interact.target" => Some(json!(crate::interact::InteractTarget::default())),
         "audio.listener" => Some(json!(crate::audio::AudioListener::default())),
-        "physics.collider" => Some(json!(Collider {
-            shape: ColliderShape::Box {
-                half_extents: [0.5; 3]
-            }
-        })),
+        "physics.collider" => Some(json!(Collider::new(ColliderShape::Box {
+            half_extents: [0.5; 3]
+        }))),
+        crate::physics::BODY => typed::<crate::physics::RigidBody>(),
+        crate::physics::SETTINGS => typed::<crate::physics::PhysicsSettings>(),
         "render.environment" => typed::<crate::light::RenderEnvironment>(),
         "nav.grid" => Some(json!(crate::navigation::NavSettings::default())),
         "audio.library" => typed::<crate::audio::AudioLibrary>(),

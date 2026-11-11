@@ -210,9 +210,23 @@ impl Registry {
         r.component(
             "physics.collider",
             "physics",
-            json!({"shape":"box + half_extents[3] | capsule + half_height, radius"}),
+            json!({"shape":"box + half_extents[3] | capsule + half_height, radius (along local Y) | sphere + radius","friction":format!("optional number 0..{}, default 0.5 (physics.step; two touching colliders use the average)", crate::physics::MAX_FRICTION),"restitution":"optional number 0..1, default 0 (physics.step bounciness; the larger of two touching colliders applies)"}),
             |v| typed(v, Collider::validate),
         );
+        r.component(
+            crate::physics::BODY,
+            "physics",
+            crate::physics::body_schema(),
+            |v| typed(v, crate::physics::RigidBody::validate),
+        );
+        r.resource(
+            crate::physics::SETTINGS,
+            "physics",
+            crate::physics::settings_schema(),
+            |v| typed(v, crate::physics::PhysicsSettings::validate),
+        );
+        r.movers
+            .insert(crate::physics::BODY.into(), crate::physics::SYSTEM.into());
         r.resource(
             "render.settings",
             "render",
@@ -257,6 +271,23 @@ impl Registry {
                 phase: 25,
                 reads: vec!["trigger.zone".into(), "core.transform".into()],
                 writes: vec!["runtime.events".into()],
+                after: vec![],
+            },
+        );
+        r.systems.insert(
+            crate::physics::SYSTEM.into(),
+            SystemDescriptor {
+                id: crate::physics::SYSTEM.into(),
+                capability: "physics".into(),
+                // After the movers (fsm 8, motion 10, path 12, nav 13, tween 14, rts 15,
+                // fps 20) so kinematic followers push from this step's pose (action.simulate
+                // runs after animation / audio: its actors push with the previous step's
+                // pose); before trigger.detect (25) so zones see the bodies' new positions.
+                // Static colliders and followers are read too, but only physics.body
+                // schedules the system.
+                phase: 22,
+                reads: vec![crate::physics::BODY.into(), crate::physics::SETTINGS.into()],
+                writes: vec!["core.transform".into()],
                 after: vec![],
             },
         );

@@ -251,6 +251,24 @@ impl OptionsDialog {
                     ),
                 ],
             ),
+            "object.rigid_body" => (
+                "Add Rigid Body",
+                vec![
+                    Field::new("kind", "Kind", Choice(&["dynamic", "kinematic"]), "dynamic"),
+                    Field::new(
+                        "mass",
+                        "Mass (kg)",
+                        Number,
+                        schema_default(axiom_core::physics::BODY, "mass", "1"),
+                    ),
+                    Field::new(
+                        "shape",
+                        "Collider (fit to mesh when missing)",
+                        Choice(&["box", "sphere", "capsule"]),
+                        "box",
+                    ),
+                ],
+            ),
             "object.camera_follow" => (
                 "Camera Follow Selected",
                 vec![
@@ -496,6 +514,7 @@ impl OptionsDialog {
                 None => format!("follow {sel} PATH {options}"),
             },
             "object.nav_agent" => format!("nav {sel} agent {options}"),
+            "object.rigid_body" => format!("physics {sel} body {options}"),
             "object.camera_follow" => match editor.camera_targets() {
                 Some((cameras, target)) => {
                     format!("camera {} follow {target} {options}", list(&cameras))
@@ -622,6 +641,18 @@ impl OptionsDialog {
                     radius: self.number("radius")?,
                 };
                 editor.add_nav_agents(&options)
+            }
+            "object.rigid_body" => {
+                let kind = self.text("kind").map(|k| match k.as_str() {
+                    "kinematic" => axiom_core::physics::BodyKind::Kinematic,
+                    _ => axiom_core::physics::BodyKind::Dynamic,
+                });
+                let options = ops::BodyOptions {
+                    kind,
+                    mass: self.number("mass")?,
+                    shape: self.text("shape"),
+                };
+                editor.add_rigid_bodies(&options)
             }
             "object.camera_follow" => {
                 let options = ops::CameraFollowOptions {
