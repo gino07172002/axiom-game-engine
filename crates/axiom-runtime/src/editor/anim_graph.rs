@@ -288,9 +288,185 @@ impl Editor {
         Ok(self.graph_write(result))
     }
 
-    /// The Animator side panel: parameters, then the selected state / transition.
+    /// `graph.layer "NAME JSON|remove"` on the open controller (ACL
+    /// `animctl C layer set NAME JSON` / `animctl C layer remove NAME`).
+    pub(super) fn anim_layer_command(&mut self, spec: &str) -> anyhow::Result<Option<Action>> {
+        let (name, rest) = spec
+            .trim()
+            .split_once(char::is_whitespace)
+            .ok_or_else(|| anyhow::anyhow!("graph.layer takes NAME JSON|remove"))?;
+        let def = match rest.trim() {
+            "remove" => None,
+            json => Some(serde_json::from_str::<Value>(json)?),
+        };
+        let controller = self
+            .graph
+            .machine
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("open an animation controller first"))?;
+        let result = ops::anim_layer(self.graph_world(), &controller, name, def.as_ref());
+        Ok(self.graph_write(result))
+    }
+
+    /// Layer table: each layer's clip, mode, weight and mask; add / remove. A settled edit is
+    /// one revision per changed layer (`ops::anim_layer`, like ACL `animctl C layer ..`).
+    fn anim_layers_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let Some(controller) = self.graph.machine.clone() else {
+            return;
+        };
+        let committed = self
+            .graph_element_root()
+            .map(|c| c.get("layers").cloned().unwrap_or_else(|| json!([])))
+            .unwrap_or_else(|| json!([]));
+        let reload = match &self.graph.anim_layers {
+            Some(d) => d.controller != controller || (!d.dirty && d.value != committed),
+            None => true,
+        };
+        if reload {
+            self.graph.anim_layers = Some(ParamsDraft {
+                controller: controller.clone(),
+                base: committed.clone(),
+                value: committed,
+                dirty: false,
+            });
+        }
+        let clips = self
+            .graph
+            .anim_clips
+            .as_ref()
+            .map(|(_, _, c)| c.clone())
+            .unwrap_or_default();
+        let mut draft = self.graph.anim_layers.take().expect("set above");
+        ui.label(RichText::new("LAYERS").strong().color(ACCENT))
+            .on_hover_text("Applied in order over the states: override blends toward the layer's clip, additive adds its motion relative to frame 0 (ACL: animctl C layer set NAME JSON)");
+        let mut remove = None;
+        if let Some(list) = draft.value.as_array_mut() {
+            egui::Grid::new("anim_layers")
+                .num_columns(5)
+                .spacing([6.0, 3.0])
+                .show(ui, |ui| {
+                    for (i, layer) in list.iter_mut().enumerate() {
+                        let name = layer["name"].as_str().unwrap_or("?").to_owned();
+                        // The mask (bones / subtrees) is summarized here; it is edited as JSON
+                        // (graph.layer / animctl C layer set).
+                        let mask = &layer["mask"];
+                        let count = mask["bones"].as_array().map_or(0, Vec::len)
+                            + mask["subtrees"].as_array().map_or(0, Vec::len);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&name).strong());
+                            ui.label(
+                                RichText::new(if count == 0 {
+                                    "all bones".to_owned()
+                                } else {
+                                    format!("mask {count}")
+                                })
+                                .small()
+                                .color(MUTED),
+                            )
+                            .on_hover_text(mask.to_string());
+                        });
+                        draft.dirty |=
+                            clip_combo(ui, ("anim_layer_clip", i), &clips, &mut layer["clip"]);
+                        let additive = layer["mode"] == "additive";
+                        if ui
+                            .selectable_label(
+                                additive,
+                                if additive { "additive" } else { "override" },
+                            )
+                            .on_hover_text("Click to switch override / additive")
+                            .clicked()
+                        {
+                            if additive {
+                                if let Some(o) = layer.as_object_mut() {
+                                    o.remove("mode");
+                                }
+                            } else {
+                                layer["mode"] = json!("additive");
+                            }
+                            draft.dirty = true;
+                        }
+                        let mut w = layer.get("weight").cloned().unwrap_or(json!(1.0));
+                        if drag(ui, &mut w, 0.0..=1.0, 0.01) {
+                            layer["weight"] = w;
+                            draft.dirty = true;
+                        }
+                        if ui
+                            .small_button(RichText::new("x").color(WARNING))
+                            .on_hover_text("Remove layer (ACL: animctl C layer remove NAME)")
+                            .clicked()
+                        {
+                            remove = Some(name);
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+        let mut add = None;
+        ui.horizontal(|ui| {
+            let id = egui::Id::new("anim_layer_new");
+            let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+            ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text("new layer")
+                    .desired_width(110.0),
+            );
+            let can = !text.trim().is_empty() && !clips.is_empty();
+            if ui
+                .add_enabled(can, egui::Button::new("Add"))
+                .on_hover_text("An override layer playing the first clip; pick its clip, mode and weight in the table")
+                .clicked()
+            {
+                add = Some(text.trim().to_owned());
+                text.clear();
+            }
+            ui.data_mut(|d| d.insert_temp(id, text));
+        });
+        let mut write = vec![];
+        if draft.dirty && settled(ui, self.saving) {
+            if let (Some(base), Some(value)) = (draft.base.as_array(), draft.value.as_array()) {
+                for layer in value {
+                    if !base.contains(layer) {
+                        let name = layer["name"].as_str().unwrap_or_default().to_owned();
+                        write.push((name, layer.clone()));
+                    }
+                }
+            }
+            draft.base = draft.value.clone();
+            draft.dirty = false;
+        }
+        self.graph.anim_layers = Some(draft);
+        for (name, def) in write {
+            let result = ops::anim_layer(self.graph_world(), &controller, &name, Some(&def));
+            actions.extend(self.graph_write(result));
+        }
+        let taken = |name: &str| {
+            self.graph_element_root()
+                .and_then(|c| c["layers"].as_array())
+                .is_some_and(|l| l.iter().any(|x| x["name"] == name))
+        };
+        if let Some(name) = add.as_deref().filter(|n| taken(n)) {
+            // Add never replaces: a set with an existing name would drop its settings.
+            self.set_error(format!("layer {name} already exists"));
+        } else if let (Some(name), Some(clip)) = (add, clips.first()) {
+            let result = ops::anim_layer(
+                self.graph_world(),
+                &controller,
+                &name,
+                Some(&json!({ "clip": clip })),
+            );
+            actions.extend(self.graph_write(result));
+        }
+        if let Some(name) = remove {
+            let result = ops::anim_layer(self.graph_world(), &controller, &name, None);
+            actions.extend(self.graph_write(result));
+        }
+    }
+
+    /// The Animator side panel: parameters and layers, then the selected state / transition.
     pub(super) fn anim_panel(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         self.anim_params_panel(ui, actions);
+        ui.separator();
+        self.anim_layers_panel(ui, actions);
         ui.separator();
         let Some(sel) = self.graph.selected.clone() else {
             ui.label(RichText::new("Click a state or transition to edit it. Drag from a state's port to another state to add a transition; double-click empty space to add a state.").small().color(MUTED));

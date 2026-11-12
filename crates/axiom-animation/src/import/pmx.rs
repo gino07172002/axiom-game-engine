@@ -254,6 +254,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
             } else {
                 AlphaMode::Mask(0.1)
             },
+            groups: vec![],
         });
         offset = offset
             .checked_add(count)
@@ -356,5 +357,6 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         clips: vec![],
         diagnostics,
         humanoid: None,
+        morphs: Default::default(),
     })
 }

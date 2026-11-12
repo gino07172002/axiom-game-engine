@@ -112,4 +112,6 @@ pub struct MeshFrame {
     pub material: Option<String>,
     /// The entity's `render.surface` (reflections; used when the world authors lighting).
     pub surface: Option<axiom_core::RenderSurface>,
+    /// Primitives (asset materials) not drawn: one bit per material.
+    pub hidden: axiom_animation::PartMask,
 }

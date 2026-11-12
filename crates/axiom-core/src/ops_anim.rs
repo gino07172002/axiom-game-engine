@@ -78,8 +78,163 @@ fn param_users(c: &Value, name: &str) -> Vec<String> {
             }
         }
     }
+    if let Some(list) = c["layers"].as_array() {
+        for l in list {
+            if l["weight_parameter"] == name {
+                out.push(format!("layer {}", l["name"].as_str().unwrap_or("?")));
+            }
+        }
+    }
     out
 }
+
+/// Most layers one controller may have (the validator's budget).
+pub const MAX_ANIM_LAYERS: usize = 4;
+
+/// Graphs ▸ Animator ▸ Layers / ACL `animctl C layer set NAME JSON` and
+/// `animctl C layer remove NAME`: replaces layer `name` in place or appends it with `def`
+/// (`{"clip":ID,"mode"?:"override|additive","weight"?,"weight_parameter"?,"mask"?:{"bones"?,
+/// "subtrees"?},"speed"?,"looping"?}`; its `name` is set to `name`), or removes it (`None`).
+/// Unchanged = no edit. The clip and mask bones are resolved by the runtime.
+pub fn anim_layer(world: &World, id: &str, name: &str, def: Option<&Value>) -> Result<Vec<Edit>> {
+    let mut doc = controller_doc(world, id)?;
+    let path = format!("{}/layers", controller_path(id));
+    if valid_id(name).is_err() {
+        return Err(Diagnostic::error(
+            "invalid_id",
+            path,
+            format!("invalid layer name '{name}' (1..128 of letters, digits, . _ / -)"),
+        ));
+    }
+    let c = doc["controllers"]
+        .get_mut(id)
+        .and_then(Value::as_object_mut)
+        .expect("checked");
+    let layers = c
+        .entry("layers")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| invalid(&path, "layers must be an array"))?;
+    let at = layers.iter().position(|l| l["name"] == name);
+    match def {
+        Some(def) => {
+            let Some(body) = def.as_object() else {
+                return Err(invalid(path, "a layer is {\"clip\":ID,\"mode\"?,\"weight\"?,\"weight_parameter\"?,\"mask\"?,\"speed\"?,\"looping\"?}"));
+            };
+            if body.get("clip").and_then(Value::as_str).is_none() {
+                return Err(invalid(path, "a layer needs \"clip\":ID"));
+            }
+            let mut layer = serde_json::Map::new();
+            layer.insert("name".into(), json!(name));
+            for (k, v) in body {
+                if k != "name" {
+                    layer.insert(k.clone(), v.clone());
+                }
+            }
+            let layer = Value::Object(layer);
+            match at {
+                Some(i) if layers[i] == layer => return Ok(vec![]),
+                Some(i) => layers[i] = layer,
+                None if layers.len() >= MAX_ANIM_LAYERS => {
+                    return Err(invalid(
+                        path,
+                        format!("a controller has at most {MAX_ANIM_LAYERS} layers"),
+                    ))
+                }
+                None => layers.push(layer),
+            }
+        }
+        None => {
+            let Some(i) = at else {
+                return Err(Diagnostic::error(
+                    "not_found",
+                    path,
+                    format!("controller '{id}' has no layer '{name}'"),
+                ));
+            };
+            layers.remove(i);
+            if layers.is_empty() {
+                c.remove("layers");
+            }
+        }
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetResource {
+        id: ANIM_RESOURCE.into(),
+        value: doc,
+    })])
+}
+
+/// Inspector ▸ animation.player ▸ Parts / `object.mesh_part` / ACL `meshpart SEL hide|show G`:
+/// adds `group` to (hide) or removes it from (show) `animation.player.hidden` on each
+/// selected entity's own `animation.player` (a primitive's material ID or a glTF mesh,
+/// material or node name; resolved against the asset by the runtime). Unchanged = no edit.
+pub fn mesh_part(world: &World, ids: &[String], group: &str, visible: bool) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the animated models whose parts to show or hide",
+        ));
+    }
+    if group.is_empty() || group.len() > 256 {
+        return Err(invalid("/group", "a part name is 1..256 characters"));
+    }
+    let mut edits = vec![];
+    for id in ids {
+        let path = format!("/entities/@{}/components/animation.player", escape(id));
+        let Some(entity) = world.entities.iter().find(|e| &e.id == id) else {
+            return Err(Diagnostic::error(
+                "not_found",
+                format!("/entities/@{}", escape(id)),
+                format!("no entity '{id}'"),
+            ));
+        };
+        let Some(mut player) = entity.components.get("animation.player").cloned() else {
+            return Err(Diagnostic::error(
+                "not_found",
+                path,
+                format!("'{id}' has no animation.player of its own (edit its prefab instead)"),
+            ));
+        };
+        let Some(map) = player.as_object_mut() else {
+            return Err(invalid(path, "animation.player must be an object"));
+        };
+        let mut hidden: Vec<Value> = map
+            .get("hidden")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let listed = hidden.iter().any(|g| g == group);
+        if listed != visible {
+            continue;
+        }
+        if visible {
+            hidden.retain(|g| g != group);
+        } else {
+            if hidden.len() >= MAX_HIDDEN_PARTS {
+                return Err(invalid(
+                    format!("{path}/hidden"),
+                    format!("at most {MAX_HIDDEN_PARTS} hidden parts"),
+                ));
+            }
+            hidden.push(json!(group));
+        }
+        if hidden.is_empty() {
+            map.remove("hidden");
+        } else {
+            map.insert("hidden".into(), Value::Array(hidden));
+        }
+        edits.push(Edit::Core(CoreEdit::SetComponent {
+            entity: id.clone(),
+            component: "animation.player".into(),
+            value: player,
+        }));
+    }
+    Ok(edits)
+}
+
+/// Most entries `animation.player.hidden` may list (the validator's budget).
+pub const MAX_HIDDEN_PARTS: usize = 64;
 
 /// Graphs ▸ Animator ▸ Parameters / ACL `animctl C param set NAME JSON` and
 /// `animctl C param remove NAME`: adds or replaces parameter `name` with `def`
@@ -500,6 +655,121 @@ mod tests {
             .insert("animation.controller".into(), json!({"controller":"ghost"}));
         let codes: Vec<&str> = anim_problems(&w).iter().map(|p| p.code).collect();
         assert_eq!(codes, ["anim_missing_controller", "anim_unreachable"]);
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    fn apply(w: &World, edits: Vec<Edit>) -> World {
+        let mut w = w.clone();
+        for e in edits {
+            e.apply(&mut w, &Registry::core()).unwrap();
+        }
+        w
+    }
+
+    fn code(e: anyhow::Error) -> String {
+        e.downcast_ref::<Diagnostic>().unwrap().code.clone()
+    }
+
+    #[test]
+    fn layers_append_replace_remove_and_guard_their_parameter() {
+        let w = World::empty("t");
+        let w = apply(&w, anim_create(&w, &Registry::core(), "c", None).unwrap());
+        let w = apply(
+            &w,
+            anim_param(&w, "c", "k", Some(&json!({"kind":"float"}))).unwrap(),
+        );
+        let def = json!({"clip":"wave","name":"ignored","weight_parameter":"k"});
+        let w = apply(&w, anim_layer(&w, "c", "a", Some(&def)).unwrap());
+        let w = apply(
+            &w,
+            anim_layer(&w, "c", "b", Some(&json!({"clip":"hop"}))).unwrap(),
+        );
+        let layers = &w.resources[ANIM_RESOURCE]["controllers"]["c"]["layers"];
+        assert_eq!(
+            layers[0],
+            json!({"name":"a","clip":"wave","weight_parameter":"k"})
+        );
+        assert_eq!(layers[1]["name"], "b");
+        // Same body = no edit; a new body replaces in place.
+        assert!(anim_layer(&w, "c", "a", Some(&def)).unwrap().is_empty());
+        let w = apply(
+            &w,
+            anim_layer(&w, "c", "a", Some(&json!({"clip":"run"}))).unwrap(),
+        );
+        assert_eq!(
+            w.resources[ANIM_RESOURCE]["controllers"]["c"]["layers"][0]["clip"],
+            "run"
+        );
+        assert_eq!(
+            code(anim_layer(&w, "c", "a", Some(&json!({"weight":1}))).unwrap_err()),
+            "invalid_value"
+        );
+        assert_eq!(
+            code(anim_layer(&w, "c", "zz", None).unwrap_err()),
+            "not_found"
+        );
+        assert_eq!(
+            code(anim_layer(&w, "c", "bad name", None).unwrap_err()),
+            "invalid_id"
+        );
+        // The budget.
+        let mut full = w.clone();
+        for n in ["x", "y"] {
+            full = apply(
+                &full,
+                anim_layer(&full, "c", n, Some(&json!({"clip":"hop"}))).unwrap(),
+            );
+        }
+        assert_eq!(
+            code(anim_layer(&full, "c", "z", Some(&json!({"clip":"hop"}))).unwrap_err()),
+            "invalid_value"
+        );
+        // A parameter a layer uses cannot be removed; removing the last layer drops the key.
+        let w = apply(&w, anim_layer(&w, "c", "a", Some(&def)).unwrap());
+        assert_eq!(
+            code(anim_param(&w, "c", "k", None).unwrap_err()),
+            "param_in_use"
+        );
+        let w = apply(&w, anim_layer(&w, "c", "a", None).unwrap());
+        let w = apply(&w, anim_layer(&w, "c", "b", None).unwrap());
+        assert!(w.resources[ANIM_RESOURCE]["controllers"]["c"]
+            .get("layers")
+            .is_none());
+    }
+
+    #[test]
+    fn mesh_parts_toggle_the_own_hidden_list() {
+        let mut w = World::empty("t");
+        let mut e = Entity::new("hero");
+        e.components
+            .insert("animation.player".into(), json!({"asset":"a"}));
+        w.entities.push(e);
+        w.entities.push(Entity::new("bare"));
+        let ids = vec!["hero".to_owned()];
+        let w = apply(&w, mesh_part(&w, &ids, "hat", false).unwrap());
+        assert_eq!(
+            w.entities[0].components["animation.player"]["hidden"],
+            json!(["hat"])
+        );
+        assert!(mesh_part(&w, &ids, "hat", false).unwrap().is_empty());
+        let w = apply(&w, mesh_part(&w, &ids, "hat", true).unwrap());
+        assert_eq!(
+            w.entities[0].components["animation.player"],
+            json!({"asset":"a"})
+        );
+        assert!(mesh_part(&w, &ids, "hat", true).unwrap().is_empty());
+        assert_eq!(
+            code(mesh_part(&w, &["bare".into()], "hat", false).unwrap_err()),
+            "not_found"
+        );
+        assert_eq!(
+            code(mesh_part(&w, &[], "hat", false).unwrap_err()),
+            "empty_selection"
+        );
     }
 }
 

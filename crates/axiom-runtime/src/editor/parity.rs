@@ -2509,6 +2509,89 @@ fn animation_controller_edits_match_animctl() {
         .is_err());
 }
 
+fn character_lab() -> World {
+    axiom_core::ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/character-lab"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
+#[test]
+fn animation_layer_and_mesh_part_edits_match_acl() {
+    let lab = character_lab();
+    // Layers: add (appended), replace in place, remove.
+    let add = r#"{"clip":"hop","mode":"additive","weight":0.5,"mask":{"bones":["head"]}}"#;
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("lab"))
+                .unwrap();
+            vec![e
+                .run_command_with("graph.layer", Some(&format!("bob {add}")))
+                .unwrap()]
+        },
+        &format!("animctl lab layer set bob {add}"),
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("lab"))
+                .unwrap();
+            vec![e
+                .run_command_with(
+                    "graph.layer",
+                    Some(r#"wave_arm {"clip":"wave","weight":0.3}"#),
+                )
+                .unwrap()]
+        },
+        r#"animctl lab layer set wave_arm {"clip":"wave","weight":0.3}"#,
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("lab"))
+                .unwrap();
+            vec![e
+                .run_command_with("graph.layer", Some("wave_arm remove"))
+                .unwrap()]
+        },
+        "animctl lab layer remove wave_arm",
+    );
+    // Parts: hide on the selection, show again.
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.select(Some("axi".into()));
+            vec![e
+                .run_command_with("object.mesh_part", Some("hide hair"))
+                .unwrap()]
+        },
+        "meshpart axi hide hair",
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.select(Some("face2".into()));
+            vec![e
+                .run_command_with("object.mesh_part", Some("show hat"))
+                .unwrap()]
+        },
+        "meshpart face2 show hat",
+    );
+    // Without an open controller / a selection the commands explain why.
+    let e = Editor::new(lab, 1, None);
+    assert_eq!(
+        e.command_blocked("graph.layer"),
+        Some("open an animation controller in the Graphs tab")
+    );
+    assert_eq!(
+        e.command_blocked("object.mesh_part"),
+        Some("nothing selected")
+    );
+}
+
 #[test]
 fn clip_marker_commands_match_the_marker_verb() {
     let lab = animator_lab();

@@ -452,6 +452,9 @@ impl Editor {
                 "object.add_component" => {
                     self.notice("Pick it under Inspector › Components › Add component")
                 }
+                "object.mesh_part" => self.notice(
+                    "Pass hide|show PART (a material ID or glTF mesh / material / node name; animation.inspect lists parts)",
+                ),
                 "object.camera_blocker" => self.notice(
                     "Use the Inspector render.mesh checkbox 'Blocks follow cameras', or on|off",
                 ),
@@ -485,6 +488,20 @@ impl Editor {
                 self.edit_tags(&add, &remove)
             }
             "object.add_component" => self.add_component(arg),
+            "object.mesh_part" => {
+                let (verb, part) = split(arg);
+                match verb.as_str() {
+                    "hide" | "show" if !part.is_empty() => {
+                        // A quoted name (spaces) is unquoted like ACL `meshpart`.
+                        let part = serde_json::from_str::<String>(&part).unwrap_or(part);
+                        self.mesh_part_selection(&part, verb == "show")
+                    }
+                    _ => {
+                        self.set_error("object.mesh_part takes hide|show PART");
+                        None
+                    }
+                }
+            }
             "object.camera_blocker" => match arg {
                 "on" => self.camera_blocker_selection(true),
                 "off" => self.camera_blocker_selection(false),

@@ -49,11 +49,13 @@ fn asset(s: CompiledSkeleton) -> Asset {
             texture: None,
             double_sided: false,
             alpha: AlphaMode::Opaque,
+            groups: vec![],
         }],
         textures: vec![],
         clips: vec![],
         diagnostics: vec![],
         humanoid: None,
+        morphs: Default::default(),
     }
 }
 fn near(a: Vec3, b: Vec3) {
@@ -142,6 +144,7 @@ fn clips_interpolate_step_linear_cubic_and_antipodal_rotations() {
         id: "clip".into(),
         duration: 1.,
         tracks: vec![track],
+        morphs: vec![],
     };
     let c = clip.compile(&s).unwrap();
     c.sample(&s, -3.5, true).unwrap();

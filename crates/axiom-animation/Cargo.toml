@@ -11,5 +11,5 @@ serde.workspace = true
 serde_json.workspace = true
 glam.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga"] }
-gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras"] }
 base64 = "0.22"

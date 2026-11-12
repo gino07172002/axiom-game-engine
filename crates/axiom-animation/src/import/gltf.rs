@@ -140,17 +140,29 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
     let mut indices = vec![];
     let mut materials = vec![];
     let mut diagnostics = vec![];
+    let mut morphs = morph::Builder::default();
+    // Node index -> the asset morph targets of its mesh (weight channels target nodes).
+    let mut morph_nodes: BTreeMap<usize, Vec<u16>> = BTreeMap::new();
     for node in doc.nodes() {
         if let Some(mesh) = node.mesh() {
             let joint_map = node
                 .skin()
                 .map(|s| s.joints().map(|j| j.index()).collect::<Vec<_>>());
+            let node_id = skeleton.source.bones[node.index()].id.clone();
+            let targets = mesh_targets(&node, &mesh, &node_id, &mut morphs)?;
+            if !targets.is_empty() {
+                morph_nodes.insert(node.index(), targets.clone());
+            }
             for primitive in mesh.primitives() {
                 ensure!(
                     primitive.mode() == ::gltf::mesh::Mode::Triangles,
                     "only triangle primitives are supported"
                 );
-                ensure!(!primitive.morph_targets().any(|_|true),"glTF morph targets require baking or explicit removal; skeletal import does not silently drop them");
+                ensure!(
+                    primitive.morph_targets().count() == targets.len(),
+                    "every primitive of glTF mesh {} must have the same morph targets",
+                    mesh.index()
+                );
                 ensure!(
                     primitive.get(&::gltf::Semantic::Joints(1)).is_none(),
                     "more than four skin influences must be reduced by the exporter"
@@ -252,6 +264,26 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                     }
                 }
                 indices.extend(local.into_iter().map(|i| i + base));
+                for (j, (dp, dn, _)) in reader.read_morph_targets().enumerate() {
+                    let dp = dp.map(|v| v.collect::<Vec<_>>());
+                    let dn = dn.map(|v| v.collect::<Vec<_>>());
+                    ensure!(
+                        dp.as_ref().is_none_or(|v| v.len() == positions.len())
+                            && dn.as_ref().is_none_or(|v| v.len() == positions.len()),
+                        "morph target attribute count mismatch"
+                    );
+                    for i in 0..positions.len() {
+                        let p = dp.as_ref().map_or(Vec3::ZERO, |v| Vec3::from_array(v[i]));
+                        let n = dn.as_ref().map_or(Vec3::ZERO, |v| Vec3::from_array(v[i]));
+                        morphs.push(
+                            base + i as u32,
+                            targets[j],
+                            // `coord.point` without re-validating the basis per vertex.
+                            basis.transform_vector3(p) * coord.meters_per_unit,
+                            basis.transform_vector3(n),
+                        )?;
+                    }
+                }
                 let mat = primitive.material();
                 let pbr = mat.pbr_metallic_roughness();
                 let texture = pbr
@@ -276,13 +308,16 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                     texture,
                     double_sided: mat.double_sided(),
                     alpha,
+                    groups: part_groups(&[mesh.name(), mat.name(), node.name()]),
                 });
             }
         }
     }
+    let morphs = morphs.finish(vertices.len())?;
     let mut clips = vec![];
     for animation in doc.animations() {
         let mut tracks = vec![];
+        let mut morph_tracks = vec![];
         let mut duration = 0.0_f32;
         for channel in animation.channels() {
             let sampler = channel.sampler();
@@ -300,35 +335,67 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                 ::gltf::animation::Interpolation::Linear => clip::Interpolation::Linear,
                 ::gltf::animation::Interpolation::CubicSpline => clip::Interpolation::CubicSpline,
             };
-            let (property, values) =
-                match reader.read_outputs().context("animation output missing")? {
-                    ReadOutputs::Translations(v) => (
-                        clip::Property::Translation,
-                        v.map(|v| coord.point(Vec3::from_array(v)).map(|v| v.extend(0.)))
-                            .collect::<Result<Vec<_>>>()?,
-                    ),
-                    ReadOutputs::Scales(v) => (
-                        clip::Property::Scale,
-                        v.map(|v| {
-                            coordinates::scale_in_basis(basis, Vec3::from_array(v))
-                                .map(|scale| scale.extend(0.))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    ),
-                    ReadOutputs::Rotations(v) => (
-                        clip::Property::Rotation,
-                        v.into_f32()
-                            .map(|q| {
-                                let xyz = basis.transform_vector3(Vec3::new(q[0], q[1], q[2]))
-                                    * basis.determinant().signum();
-                                xyz.extend(q[3])
-                            })
-                            .collect(),
-                    ),
-                    ReadOutputs::MorphTargetWeights(_) => anyhow::bail!(
-                    "morph weight animation is unsupported; export skeletal channels separately"
-                ),
+            let outputs = reader.read_outputs().context("animation output missing")?;
+            if let ReadOutputs::MorphTargetWeights(weights) = outputs {
+                let node = channel.target().node().index();
+                let targets = morph_nodes.get(&node).with_context(|| {
+                    format!("weights channel targets node {node}, whose mesh has no morph targets")
+                })?;
+                let values = weights.into_f32().collect::<Vec<_>>();
+                let n = targets.len();
+                let factor = if interpolation == clip::Interpolation::CubicSpline {
+                    3
+                } else {
+                    1
                 };
+                ensure!(
+                    values.len() == times.len() * n * factor,
+                    "morph weight output count mismatch"
+                );
+                // glTF interleaves the targets per key (cubic: in-tangents, values,
+                // out-tangents, each n wide); a track holds one target's keys.
+                for (j, &target) in targets.iter().enumerate() {
+                    let mut track = Vec::with_capacity(times.len() * factor);
+                    for k in 0..times.len() {
+                        for part in 0..factor {
+                            track.push(values[(k * factor + part) * n + j]);
+                        }
+                    }
+                    morph_tracks.push(clip::MorphTrack {
+                        target: morphs.targets[target as usize].id.clone(),
+                        interpolation,
+                        times: times.clone(),
+                        values: track,
+                    });
+                }
+                continue;
+            }
+            let (property, values) = match outputs {
+                ReadOutputs::Translations(v) => (
+                    clip::Property::Translation,
+                    v.map(|v| coord.point(Vec3::from_array(v)).map(|v| v.extend(0.)))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+                ReadOutputs::Scales(v) => (
+                    clip::Property::Scale,
+                    v.map(|v| {
+                        coordinates::scale_in_basis(basis, Vec3::from_array(v))
+                            .map(|scale| scale.extend(0.))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                ),
+                ReadOutputs::Rotations(v) => (
+                    clip::Property::Rotation,
+                    v.into_f32()
+                        .map(|q| {
+                            let xyz = basis.transform_vector3(Vec3::new(q[0], q[1], q[2]))
+                                * basis.determinant().signum();
+                            xyz.extend(q[3])
+                        })
+                        .collect(),
+                ),
+                ReadOutputs::MorphTargetWeights(_) => unreachable!("handled above"),
+            };
             tracks.push(clip::Track {
                 bone: skeleton.source.bones[channel.target().node().index()]
                     .id
@@ -346,6 +413,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                 .unwrap_or_else(|| format!("animation/{}", animation.index())),
             duration,
             tracks,
+            morphs: morph_tracks,
         });
     }
     if doc.materials().any(|m| {
@@ -368,5 +436,77 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         clips,
         diagnostics,
         humanoid: None,
+        morphs,
     })
+}
+
+/// Registers the morph targets of `mesh` as instanced by `node` (names from the
+/// `extras.targetNames` convention, else the index; default weights from the node, else the
+/// mesh) and returns their asset indices. A name an earlier node already took is prefixed with
+/// this node's bone ID.
+fn mesh_targets(
+    node: &::gltf::Node,
+    mesh: &::gltf::Mesh,
+    node_id: &str,
+    morphs: &mut morph::Builder,
+) -> Result<Vec<u16>> {
+    let count = mesh
+        .primitives()
+        .next()
+        .map_or(0, |p| p.morph_targets().count());
+    if count == 0 {
+        return Ok(vec![]);
+    }
+    let at = mesh
+        .name()
+        .map_or_else(|| format!("mesh/{}", mesh.index()), str::to_owned);
+    if count > morph::MAX_TARGETS_PER_MESH {
+        return Err(morph::MorphBudget {
+            what: "targets_per_mesh",
+            limit: morph::MAX_TARGETS_PER_MESH,
+            requested: count,
+            at,
+        }
+        .into());
+    }
+    let names: Vec<String> = mesh
+        .extras()
+        .as_ref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).ok())
+        .and_then(|v| {
+            v["targetNames"].as_array().map(|a| {
+                a.iter()
+                    .map(|n| n.as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    let defaults = node.weights().or(mesh.weights()).unwrap_or(&[]);
+    let mut out = Vec::with_capacity(count);
+    for j in 0..count {
+        let name = names
+            .get(j)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| j.to_string());
+        let id = if morphs.has(&name) {
+            format!("{node_id}/{name}")
+        } else {
+            name
+        };
+        let default = defaults.get(j).copied().unwrap_or(0.0);
+        out.push(morphs.add_target(id, default, &at)?);
+    }
+    Ok(out)
+}
+
+/// The non-empty, distinct names that also select a primitive.
+fn part_groups(names: &[Option<&str>]) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for n in names.iter().flatten() {
+        if !n.is_empty() && !out.iter().any(|g| g == n) {
+            out.push((*n).to_owned());
+        }
+    }
+    out
 }

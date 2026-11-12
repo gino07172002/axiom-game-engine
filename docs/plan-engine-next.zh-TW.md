@@ -251,3 +251,24 @@
 
 - R 合併:`render.rs` 的 `Globals` 同時有 R 的天空欄位(`inv_view_proj`、`sky`、`sky_viewport`)與 E 的 Unlit 改寫(`unlit_globals`)。**已知限制**:`render.surface` 反射由每個物件自己的材質參數開啟,`unlit_globals` 關不掉,所以 Unlit 檢視下金屬 / 光滑物件仍會映出天空。要修需在 shader 加全域旗標(得在 MX150 上重驗管線),列為後續。
 - 四線合併後的 effects smoke:36 站截圖與所有 bridge 檢查通過,最後一步(900 幀限 60 秒)逾時。A/B(同一 effects DB、debug、各 2 輪、60 / 300 幀):先前通過 effects smoke 的 3f52dea、合併 R 前的 2806e5a、四線合併版,300 幀都是 45–47 秒(約 145 ms/幀,`render_present_acquire_wait` 佔絕大部分)。三版一致 → 不是程式退化,是機器目前 GPU 比 FE 那次(900 幀約 27 秒)慢約 5 倍;原因未查明(接電、平衡電源計畫、GPU 無其他程序)。沒有放寬腳本時限;待機器恢復後重跑。
+
+### W2a 角色表現 I(worktree `w2a`,分支 `work-w2a`,`rigorous-change`)
+
+範圍:`docs/gaps-paladin-night.zh-TW.md` 的 B1(glTF morph target)、B6(primitive 顯示開關)、A5(additive 圖層與骨骼遮罩)。順序依指示:M1 morph 匯入 → 一個權重命令 → GPU 擷取看到變形;再 B6;再 A5。
+
+**設計決定**
+- **Morph 存法**:稀疏、以頂點為主(`offsets` + `deltas`,CSR),在既有 CPU 蒙皮迴圈裡變形每個頂點前加上 `Σ 權重 × 位移`。比較:(a) 每個玩家一份「已加 morph 的基底頂點」緩衝,權重變了才重算 —— 需要每玩家 24 B × 頂點的常駐記憶體與髒旗標,而且權重被片段驅動時每步都要重算;(b) 在蒙皮迴圈內加(採用)—— 0 額外緩衝、0 每幀配置,權重全為 0 時一個 `any` 就跳過。代價:有非零權重時每幀走一次所有 delta(上限 1,000,000)。
+- **權重來源**:片段的 `morphs` 軌(glTF `weights` 通道每個 target 拆一條)→ 控制器混合 / 淡入 / 圖層 → `animation.morph` 覆寫(覆寫優先,`clear` 交回)。覆寫的漸變在成功求值之後才前進(失敗步不必回滾,也不需要複製緩衝),所以比 `animation.speed` 的漸變晚一步生效,仍是確定性的。
+- **B6 放在動畫系統**:primitive 是播放器資產的一部分,狀態要進 checkpoint 與 `state_hash`;render 端沒有模擬狀態,命令放那裡會在讀檔 / 重播時遺失。選取用材質 ID 或 glTF mesh / 材質 / 節點名稱(`Material.groups`,舊資料 serde 預設空)。編寫部分是 `animation.player.hidden`(ops `mesh_part` = ACL `meshpart` = `object.mesh_part`)。
+- **A5 圖層**:放在 `animation.controllers` 的控制器定義(`layers`,選用、空時不序列化),每層一個片段 + 自己的時間(`State.layers`,固定陣列,仍是 `Copy`)。additive 參考姿勢 = 片段第 0 秒;遮罩在 attach 時解析成骨骼索引(`Arc` 共用)。權重用 `weight_parameter`,所以不需要新命令,`animation.param` 就能控制。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+- 「cap targets per mesh and vertices」→ 上限是每 mesh 64 target、每資產 128 target、1,000,000 個非零位移(而不是頂點數;頂點已有 `MAX_VERTICES`),型別化錯誤 `MorphBudget`;稀疏位移才是實際的記憶體成本。
+- glTF `extras` 特性開啟(讀 `targetNames`;同一個 `gltf` crate 的 feature,Cargo.lock 不變)。
+- 圖層只播單一片段(沒有圖層內混合樹 / 狀態機),寫在 non-goal。
+- 編輯器時間軸刷動(scrub)只換骨骼姿勢,不預覽片段的 morph 權重(記錄,未做)。
+- 執行期:`MeshFrame` 多了 `hidden`(共用檔 `presentation.rs`、`mesh_render.rs`、`geometry.rs` 只加欄位與跳過判斷)。
+
+**驗證(debug,MX150,其他工作線同時建置)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 778 通過 / 1 失敗 / 5 略過 —— 失敗的是新測試 `hot_reload_keeps_morph_overrides…` 用 `assert_eq` 比 f32(0.800000011 ≠ 0.8),改成容差後重跑 `character` 7 / 7 → 779 通過(基準 760,+19)。`editor-smoke-test` ok:true;`editor-world-parity` identical:true(13 = 13);`street-editor-parity` identical:true(16 = 16);`build-street`、`build-plaza` 後 content 無變化;`m0-smoke-test` PASS。GPU 擷取(1600×900,已看過):`artifacts/captures/w2a-character-gpu.png`(tick 120:左頭 stretch 1 / puff 0.5 明顯變形、右頭帽子預設隱藏、Axi 右臂被 additive wave 抬起)、loopback `screenshot` op 的 `w2a-live-commands.png`(`animation.morph` 漸變 puff、`animation.visibility` 顯示帽子 / 隱藏頭髮 / 隱藏另一頂帽子)與 `w2a-live-wave-off.png`(`wave_weight` 0);編輯器 Play 中的 Animator + LAYERS `w2a-animator-{1080,768}.png`。配置:`tests/character.rs::steady_steps_with_morphs_ramps_and_layers_do_not_allocate`(morph 漸變 + additive 圖層 240 步的配置數 = 沒有播放器的世界)。沒有 release A/B,不宣稱效能。
+
+**Fresh-context 審查**:9 項。已修:熱重載以 `Arc::ptr_eq` 判斷同資產(快取外的資產會默默丟掉覆寫與顯示狀態 → 改比 `asset.key`,內容雜湊)、retarget 來源片段的 morph 軌被當成目標資產的(改為依名稱綁定、缺的計數在 `inspect.unbound_morph_tracks`;`animation-retarget` 只烘焙骨骼)、LAYERS 的 Add 會覆蓋同名圖層(改為拒絕)、`clear` + `ramp_seconds` 被接受但忽略(改為拒絕)、編輯器與 ACL 對含空白 / 引號的部位名稱解析不同(編輯器也解 JSON 字串)、additive 縮放除以 0(該軸保留原縮放,加測試)、文件寫遮罩對播放器骨架解析(改為「取樣的骨架,retarget 時是來源骨架」)。記錄未修:隱藏的 primitive 仍計入編輯器點選 / 框選的邊界(`viewport::mesh_bounds`);第 256 個以後的材質(資產驗證本來就限制 256 個,不會發生)。

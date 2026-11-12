@@ -78,5 +78,6 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         clips: b.clips,
         diagnostics: vec![],
         humanoid: Some(b.humanoid),
+        morphs: Default::default(),
     })
 }

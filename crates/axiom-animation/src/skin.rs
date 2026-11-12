@@ -8,6 +8,22 @@ pub enum Skinning {
     DualQuaternion,
 }
 pub fn deform(asset: &Asset, pose: &Pose, mode: Skinning) -> Result<Vec<SkinnedVertex>> {
+    deform_with(asset, pose, mode, &[])
+}
+/// [`deform`] with morph target `weights` (one per target; empty or all zero = none) added to
+/// each vertex before skinning.
+pub fn deform_with(
+    asset: &Asset,
+    pose: &Pose,
+    mode: Skinning,
+    weights: &[f32],
+) -> Result<Vec<SkinnedVertex>> {
+    let morphs = &asset.morphs;
+    let morphed = !morphs.is_empty() && weights.iter().any(|w| *w != 0.);
+    ensure!(
+        !morphed || weights.len() == morphs.targets.len(),
+        "morph weight count mismatch"
+    );
     let globals = asset.skeleton.globals(pose)?;
     let matrices = globals
         .iter()
@@ -28,7 +44,12 @@ pub fn deform(asset: &Asset, pose: &Pose, mode: Skinning) -> Result<Vec<SkinnedV
             .abs_diff_eq(Vec3::ONE, 1e-4)
     });
     let mut out = Vec::with_capacity(asset.vertices.len());
-    for v in &asset.vertices {
+    for (i, v) in asset.vertices.iter().enumerate() {
+        let (base, base_normal) = if morphed {
+            morphs.apply(i, weights, v.position, v.normal)
+        } else {
+            (v.position, v.normal)
+        };
         let sdef = v.sdef.filter(|_| rigid && matches!(mode, Skinning::Auto));
         let (position, normal) = if let Some(d) = sdef {
             let a = v.joints[0];
@@ -44,10 +65,10 @@ pub fn deform(asset: &Asset, pose: &Pose, mode: Skinning) -> Result<Vec<SkinnedV
             };
             let q = (rotations[a] * w + other * (1. - w)).normalize();
             (
-                q * (v.position - d.c)
+                q * (base - d.c)
                     + matrices[a].transform_point3(r0) * w
                     + matrices[b].transform_point3(r1) * (1. - w),
-                q * v.normal,
+                q * base_normal,
             )
         } else if rigid
             && (matches!(mode, Skinning::DualQuaternion)
@@ -73,14 +94,14 @@ pub fn deform(asset: &Asset, pose: &Pose, mode: Skinning) -> Result<Vec<SkinnedV
             let d = dual / length;
             let d = d - q * q.dot(d);
             let translation = (d * q.conjugate()).xyz() * 2.;
-            (q * v.position + translation, q * v.normal)
+            (q * base + translation, q * base_normal)
         } else {
             let mut p = Vec3::ZERO;
             let mut n = Vec3::ZERO;
             for (&j, w) in v.joints.iter().zip(v.weights) {
                 if w > 0. {
-                    p += matrices[j].transform_point3(v.position) * w;
-                    n += normals[j].transform_vector3(v.normal) * w;
+                    p += matrices[j].transform_point3(base) * w;
+                    n += normals[j].transform_vector3(base_normal) * w;
                 }
             }
             (p, n)

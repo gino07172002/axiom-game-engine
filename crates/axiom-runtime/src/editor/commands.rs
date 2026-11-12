@@ -305,6 +305,18 @@ pub(crate) const COMMANDS: &[Command] = &[
         "Object",
         "NAME float|bool|trigger|JSON|remove",
     ),
+    a(
+        "graph.layer",
+        "Animator: Set Layer…",
+        "Object",
+        "NAME JSON|remove",
+    ),
+    a(
+        "object.mesh_part",
+        "Show / Hide Model Part…",
+        "Object",
+        "hide|show PART",
+    ),
     c("window.world", "World Settings…", "World", "Ctrl+9"),
     a("world.set_id", "Set World ID…", "World", "ID"),
     a("world.set_title", "Set World Title…", "World", "TEXT"),
@@ -633,6 +645,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.drop_to_ground",
     "object.tag",
     "object.add_component",
+    "object.mesh_part",
     "world.set_id",
     "world.set_title",
     "world.capability_add",
@@ -909,6 +922,7 @@ impl Editor {
             | "object.tween_clip"
             | "object.tag"
             | "object.add_component"
+            | "object.mesh_part"
                 if nothing =>
             {
                 Some("nothing selected")
@@ -980,6 +994,7 @@ impl Editor {
             | "object.group"
             | "object.tag"
             | "object.add_component"
+            | "object.mesh_part"
             | "world.set_id"
             | "world.set_title"
             | "world.capability_add"
@@ -1922,7 +1937,8 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "behavior.fsm_agent": "fsm SEL agent MACHINE [radius=]",
                 "behavior.patrol": "behavior SEL patrol [machine=] [range=] [speed=] (also guard [tag=], dialogue [tag=] [event=])",
                 "graph": "Graphs tab (editor_view {open: graph:MACHINE | rules:}): fsm M state add|remove|rename|set, fsm M initial S, fsm M transition add|remove|move|set, fsm M node S x,y (node drag), fsm M create|remove",
-                "graph.animator": "Graphs ▸ Animator (editor_view {open: animator:CONTROLLER}, graph.open_controller C): animctl C state add|remove|rename|set, animctl C initial S, animctl C transition add|remove|move|set, animctl C param set|remove, animctl C node S x,y, animctl C create|remove, animctl SEL attach C; graph.new_controller ID, graph.attach_controller C, graph.param NAME KIND|JSON|remove",
+                "graph.animator": "Graphs ▸ Animator (editor_view {open: animator:CONTROLLER}, graph.open_controller C): animctl C state add|remove|rename|set, animctl C initial S, animctl C transition add|remove|move|set, animctl C param set|remove, animctl C layer set|remove, animctl C node S x,y, animctl C create|remove, animctl SEL attach C; graph.new_controller ID, graph.attach_controller C, graph.param NAME KIND|JSON|remove, graph.layer NAME JSON|remove",
+                "object.mesh_part": "meshpart SEL hide|show PART (animation.player.hidden; runtime: animation.visibility)",
                 "graph.rules": "append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] event|when|actions VALUE",
                 "merge": "conflicts PROPOSAL (ACL read), then {op:resolve_proposal,id,approve:true,keep:[PATH..],expected_rev:R (rev= printed by conflicts)} (Proposals ▸ Merge…, Inspector stale draft ▸ Merge…; editor_view {command: merge.open|merge.pick|merge.commit})",
                 "ghost.show": "view only: editor_view {command:\"ghost.show\", arg:\"proposal:N\"|\"rev:N\"|\"off\"}; observe editor.ghosts",

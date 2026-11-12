@@ -6,6 +6,7 @@ pub mod coordinates;
 pub mod humanoid;
 pub mod ik;
 pub mod import;
+pub mod morph;
 pub mod skin;
 pub mod twist;
 use anyhow::{ensure, Context, Result};
@@ -319,6 +320,16 @@ pub struct Material {
     pub texture: Option<usize>,
     pub double_sided: bool,
     pub alpha: AlphaMode,
+    /// Other names that select this primitive (`animation.player.hidden`,
+    /// `animation.visibility`): its glTF mesh, material and node names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+/// One bit per material (primitive) of an asset (at most 256 materials).
+pub type PartMask = [u64; 4];
+/// Whether material `i` is set in `mask`.
+pub fn part_set(mask: &PartMask, i: usize) -> bool {
+    i < 256 && mask[i / 64] & (1 << (i % 64)) != 0
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -338,6 +349,7 @@ pub struct Asset {
     pub clips: Vec<clip::Clip>,
     pub diagnostics: Vec<String>,
     pub humanoid: Option<humanoid::Profile>,
+    pub morphs: morph::Morphs,
 }
 impl Asset {
     pub fn validate(&self) -> Result<()> {
@@ -396,6 +408,7 @@ impl Asset {
             expected == self.indices.len(),
             "material index coverage mismatch"
         );
+        self.morphs.validate(self.vertices.len())?;
         let mut clip_ids = std::collections::BTreeSet::new();
         for clip in &self.clips {
             ensure!(
@@ -403,11 +416,33 @@ impl Asset {
                 "duplicate asset clip ID: {}",
                 clip.id
             );
-            clip.compile(&self.skeleton)?;
+            clip.compile_for(&self.skeleton, &self.morphs)?;
         }
         Ok(())
     }
+    /// Materials (primitives) `selector` names: a material ID or one of its `groups`.
+    pub fn parts(&self, selector: &str) -> PartMask {
+        let mut mask = [0; 4];
+        for (i, m) in self.materials.iter().enumerate().take(256) {
+            if m.id == selector || m.groups.iter().any(|g| g == selector) {
+                mask[i / 64] |= 1 << (i % 64);
+            }
+        }
+        mask
+    }
     pub fn summary(&self) -> serde_json::Value {
+        let mut out = self.base_summary();
+        if !self.morphs.is_empty() {
+            out["morph_targets"] = serde_json::json!(self
+                .morphs
+                .targets
+                .iter()
+                .map(|t| &t.id)
+                .collect::<Vec<_>>());
+        }
+        out
+    }
+    fn base_summary(&self) -> serde_json::Value {
         serde_json::json!({"key":self.key,"bones":self.skeleton.source.bones.len(),"vertices":self.vertices.len(),"triangles":self.indices.len()/3,"materials":self.materials.len(),"textures":self.textures.len(),"clips":self.clips.iter().map(|c|serde_json::json!({"id":c.id,"duration":c.duration,"tracks":c.tracks.len()})).collect::<Vec<_>>(),"sdef_vertices":self.vertices.iter().filter(|v|v.sdef.is_some()).count(),"qdef_vertices":self.vertices.iter().filter(|v|v.dual_quaternion).count(),"diagnostics":self.diagnostics})
     }
 }

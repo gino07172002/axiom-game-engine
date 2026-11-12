@@ -15,6 +15,9 @@ pub const MAX_STATES: usize = 32;
 pub const MAX_TRANSITIONS: usize = 64;
 pub const MAX_CONDITIONS: usize = 8;
 pub const MAX_POINTS: usize = 8;
+pub const MAX_LAYERS: usize = 4;
+/// Most bones / subtrees one layer mask lists (each).
+pub const MAX_MASK_ENTRIES: usize = 64;
 /// Upper bound of [`Samples`]: two layers (cross-fade) of at most two blend points each.
 pub const MAX_SAMPLES: usize = 4;
 /// Marks a sample of the skeleton's rest pose (a state without motion).
@@ -148,6 +151,59 @@ pub struct TransitionDef {
     pub exit_time: Option<f32>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerMode {
+    /// Blends the layer's pose over the base by its weight.
+    #[default]
+    Override,
+    /// Adds the layer's motion relative to its first frame (scaled by the weight).
+    Additive,
+}
+
+fn is_override(m: &LayerMode) -> bool {
+    *m == LayerMode::Override
+}
+
+/// Bones a layer affects: listed bones alone and whole subtrees; both empty = every bone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BoneMask {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bones: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtrees: Vec<String>,
+}
+
+impl BoneMask {
+    pub fn is_empty(&self) -> bool {
+        self.bones.is_empty() && self.subtrees.is_empty()
+    }
+}
+
+/// A layer over the state machine's pose: one clip with its own looping time, applied in list
+/// order after the states blend.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LayerDef {
+    pub name: String,
+    pub clip: String,
+    #[serde(default, skip_serializing_if = "is_override")]
+    pub mode: LayerMode,
+    /// 0..1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub weight: f32,
+    /// Float parameter (clamped to 0..1) that multiplies `weight`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_parameter: Option<String>,
+    #[serde(default, skip_serializing_if = "BoneMask::is_empty")]
+    pub mask: BoneMask,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub speed: f32,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub looping: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ControllerDef {
@@ -157,6 +213,8 @@ pub struct ControllerDef {
     pub states: BTreeMap<String, StateDef>,
     #[serde(default)]
     pub transitions: Vec<TransitionDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<LayerDef>,
 }
 
 /// The `animation.controllers` resource.
@@ -368,6 +426,37 @@ impl ControllerDef {
                 );
             }
         }
+        ensure!(
+            self.layers.len() <= MAX_LAYERS,
+            "at most {MAX_LAYERS} layers"
+        );
+        let mut names = std::collections::BTreeSet::new();
+        for l in &self.layers {
+            let name = &l.name;
+            axiom_core::valid_id(name)?;
+            ensure!(names.insert(name), "duplicate layer {name}");
+            axiom_core::valid_id(&l.clip).with_context(|| format!("layer {name}: clip"))?;
+            ensure!(finite(l.weight, 0.0, 1.0), "layer {name}: weight 0..1");
+            ensure!(finite(l.speed, 0.0, 8.0), "layer {name}: speed 0..8");
+            if let Some(p) = &l.weight_parameter {
+                ensure!(
+                    self.parameters
+                        .get(p)
+                        .is_some_and(|d| d.kind == ParamKind::Float),
+                    "layer {name}: weight_parameter {p} must be a float parameter"
+                );
+            }
+            ensure!(
+                l.mask.bones.len() <= MAX_MASK_ENTRIES && l.mask.subtrees.len() <= MAX_MASK_ENTRIES,
+                "layer {name}: at most {MAX_MASK_ENTRIES} mask bones and subtrees"
+            );
+            for b in l.mask.bones.iter().chain(&l.mask.subtrees) {
+                ensure!(
+                    !b.is_empty() && b.len() <= 256,
+                    "layer {name}: invalid mask bone"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -425,6 +514,38 @@ pub struct Compiled {
     rates: Vec<Option<usize>>,
     transitions: Vec<CTransition>,
     initial: u16,
+    layers: Vec<CLayer>,
+}
+
+#[derive(Clone, Debug)]
+struct CLayer {
+    name: String,
+    clip: String,
+    duration: f32,
+    speed: f32,
+    looping: bool,
+    additive: bool,
+    weight: f32,
+    param: Option<usize>,
+    mask: BoneMask,
+}
+
+/// A layer's playback position: normalized time = `loops + frac`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Phase {
+    pub loops: u32,
+    pub frac: f32,
+}
+
+/// What a layer contributes this step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerSample<'a> {
+    pub clip: &'a str,
+    /// Seconds into the clip.
+    pub time: f32,
+    /// Effective weight (0..1).
+    pub weight: f32,
+    pub additive: bool,
 }
 
 /// One state's playback position: normalized time = `loops + frac`.
@@ -460,6 +581,8 @@ pub struct State {
     pub last_transition: Option<u16>,
     /// Transitions fired since start.
     pub fired: u32,
+    /// Playback position of each layer (`Compiled::layer_count` used).
+    pub layers: [Phase; MAX_LAYERS],
 }
 
 /// One weighted clip sample (`point` = blend point, 0 for a clip, [`REST`] = rest pose).
@@ -568,7 +691,30 @@ impl Compiled {
             .values()
             .map(|s| s.speed_parameter.as_deref().and_then(param))
             .collect();
+        let layers = def
+            .layers
+            .iter()
+            .map(|l| {
+                Ok(CLayer {
+                    duration: duration(&l.clip).with_context(|| {
+                        format!(
+                            "layer {}: clip {} not found on the entity's animation.player",
+                            l.name, l.clip
+                        )
+                    })?,
+                    name: l.name.clone(),
+                    clip: l.clip.clone(),
+                    speed: l.speed,
+                    looping: l.looping,
+                    additive: l.mode == LayerMode::Additive,
+                    weight: l.weight,
+                    param: l.weight_parameter.as_deref().and_then(param),
+                    mask: l.mask.clone(),
+                })
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
+            layers,
             kinds: def.parameters.values().map(|p| p.kind).collect(),
             sources: def.parameters.values().map(|p| p.source).collect(),
             params,
@@ -590,6 +736,7 @@ impl Compiled {
             params: self.defaults,
             last_transition: None,
             fired: 0,
+            layers: [Phase::default(); MAX_LAYERS],
         }
     }
 
@@ -733,6 +880,21 @@ impl Compiled {
     /// One fixed step of `dt` seconds: advance the playing state(s) and the cross-fade, then
     /// (when not fading) take the first passing transition. Returns its index.
     pub fn tick(&self, s: &mut State, dt: f32) -> Option<u16> {
+        for (l, phase) in self.layers.iter().zip(s.layers.iter_mut()) {
+            if l.speed <= 0.0 {
+                continue;
+            }
+            phase.frac += dt * l.speed / l.duration.max(FRAME);
+            if phase.frac >= 1.0 {
+                if l.looping {
+                    let whole = phase.frac.floor();
+                    phase.loops = phase.loops.saturating_add(whole as u32);
+                    phase.frac -= whole;
+                } else {
+                    phase.frac = 1.0;
+                }
+            }
+        }
         let mut current = s.current;
         self.advance(s, &mut current, dt);
         s.current = current;
@@ -867,10 +1029,65 @@ impl Compiled {
         }
     }
 
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn layer_name(&self, i: usize) -> &str {
+        &self.layers[i].name
+    }
+
+    /// Layer `i`'s clip, time and effective weight under `s`.
+    pub fn layer_sample(&self, s: &State, i: usize) -> LayerSample<'_> {
+        let l = &self.layers[i];
+        let factor = l.param.map_or(1.0, |p| s.params[p].clamp(0.0, 1.0));
+        LayerSample {
+            clip: &l.clip,
+            time: s.layers[i].frac.min(1.0) * l.duration,
+            weight: l.weight * factor,
+            additive: l.additive,
+        }
+    }
+
+    /// Bones (indices of `skeleton`) layer `i` affects, sorted; empty = every bone. A mask bone
+    /// the skeleton lacks is an error naming it.
+    pub fn layer_mask(&self, i: usize, skeleton: &CompiledSkeleton) -> Result<Vec<u16>> {
+        let l = &self.layers[i];
+        if l.mask.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut chosen = vec![false; skeleton.source.bones.len()];
+        let mut roots = vec![false; chosen.len()];
+        for b in &l.mask.bones {
+            chosen[skeleton
+                .bone(b)
+                .with_context(|| format!("layer {}: mask bone", l.name))?] = true;
+        }
+        for b in &l.mask.subtrees {
+            roots[skeleton
+                .bone(b)
+                .with_context(|| format!("layer {}: mask subtree", l.name))?] = true;
+        }
+        // Parents come first in `order`, so a subtree flag flows down in one pass.
+        let mut inside = vec![false; chosen.len()];
+        for &i in &skeleton.order {
+            inside[i] = roots[i] || skeleton.source.bones[i].parent.is_some_and(|p| inside[p]);
+        }
+        Ok((0..chosen.len())
+            .filter(|&i| chosen[i] || inside[i])
+            .map(|i| i as u16)
+            .collect())
+    }
+
     /// `old` (of `from`) carried into this controller by state and parameter names (hot
     /// reload); a state that no longer exists restarts at the initial state.
     pub fn carry(&self, from: &Compiled, old: &State) -> State {
         let mut s = self.start();
+        for (i, l) in self.layers.iter().enumerate() {
+            if let Some(j) = from.layers.iter().position(|o| o.name == l.name) {
+                s.layers[i] = old.layers[j];
+            }
+        }
         for (i, name) in self.params.iter().enumerate() {
             if let Some(j) = from.param(name) {
                 if from.kinds[j] == self.kinds[i] {
@@ -906,7 +1123,7 @@ impl Compiled {
             .enumerate()
             .map(|(i, n)| (n.as_str(), self.param_value(s, i)))
             .collect();
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "state": self.states[s.current.state as usize],
             "time": (s.current.normalized() * 1000.0).round() / 1000.0,
             "previous": s.previous.map(|p| &self.states[p.state as usize]),
@@ -914,7 +1131,67 @@ impl Compiled {
             "params": params,
             "last_transition": s.last_transition,
             "transitions": s.fired,
-        })
+        });
+        // Only with layers, so controllers without them keep their observation (state_hash).
+        if !self.layers.is_empty() {
+            out["layers"] = serde_json::Value::Array(
+                (0..self.layers.len())
+                    .map(|i| {
+                        let l = self.layer_sample(s, i);
+                        serde_json::json!({
+                            "name": self.layers[i].name,
+                            "weight": (l.weight * 1000.0).round() / 1000.0,
+                            "time": (l.time * 1000.0).round() / 1000.0,
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        out
+    }
+}
+
+/// Applies a layer to `base` on `bones` (empty = all): `override` blends toward `sample` by
+/// `weight`; `additive` adds `sample`'s difference from `reference` (rotation
+/// `reference⁻¹ · sample` after the base rotation, translation difference, scale ratio), scaled
+/// by `weight`. No allocation.
+pub fn apply_layer(
+    base: &mut Pose,
+    sample: &Pose,
+    reference: &Pose,
+    bones: &[u16],
+    weight: f32,
+    additive: bool,
+) {
+    let all = base.local.len().min(sample.local.len());
+    let mut one = |i: usize| {
+        let (b, l) = (&mut base.local[i], sample.local[i]);
+        if additive {
+            let r = reference.local[i];
+            let delta = (r.rotation.inverse() * l.rotation).normalize();
+            b.rotation = (b.rotation * Quat::IDENTITY.slerp(delta, weight)).normalize();
+            b.translation += (l.translation - r.translation) * weight;
+            // A zero reference scale has no ratio: that axis keeps the base scale.
+            let ratio = Vec3::select(
+                r.scale.abs().cmpgt(Vec3::splat(1e-6)),
+                l.scale / r.scale,
+                Vec3::ONE,
+            );
+            b.scale *= Vec3::ONE.lerp(ratio, weight);
+        } else {
+            b.translation = b.translation.lerp(l.translation, weight);
+            b.scale = b.scale.lerp(l.scale, weight);
+            b.rotation = b.rotation.slerp(l.rotation, weight).normalize();
+        }
+    };
+    if bones.is_empty() {
+        for i in 0..all {
+            one(i);
+        }
+    } else {
+        for &i in bones {
+            one(i as usize);
+        }
     }
 }
 
@@ -1056,6 +1333,143 @@ mod tests {
         let carried = next.carry(&c, &s);
         assert_eq!(next.states[carried.current.state as usize], "move");
         assert_eq!(carried.params[next.param("speed").unwrap()], 2.0);
+    }
+
+    fn layered() -> ControllerDef {
+        let mut d = locomotion();
+        d.parameters.insert(
+            "wave_weight".into(),
+            serde_json::from_value(json!({"kind":"float","default":0.5})).unwrap(),
+        );
+        d.layers = vec![
+            serde_json::from_value(json!({"name":"arm","clip":"walk","mode":"additive","weight_parameter":"wave_weight","mask":{"subtrees":["b1"]}})).unwrap(),
+            serde_json::from_value(json!({"name":"breath","clip":"idle","weight":0.25,"looping":false})).unwrap(),
+        ];
+        d
+    }
+
+    fn skeleton() -> CompiledSkeleton {
+        let bone = |id: &str, parent: Option<usize>| Bone {
+            id: id.into(),
+            aliases: vec![],
+            parent,
+            rest: Trs::default(),
+            inverse_bind: Mat4::IDENTITY,
+        };
+        Skeleton {
+            bones: vec![
+                bone("b0", None),
+                bone("b1", Some(0)),
+                bone("b2", Some(1)),
+                bone("b3", Some(0)),
+            ],
+        }
+        .compile()
+        .unwrap()
+    }
+
+    #[test]
+    fn layers_advance_on_their_own_clock_and_weigh_by_parameter() {
+        let c = Compiled::compile(&layered(), &lengths).unwrap();
+        let mut s = c.start();
+        assert_eq!(c.layer_count(), 2);
+        for _ in 0..60 {
+            c.tick(&mut s, DT);
+        }
+        // walk is 1 s long: half way; idle 2 s: a quarter (one-shot).
+        let arm = c.layer_sample(&s, 0);
+        assert!(arm.additive && (arm.time - 0.5).abs() < 1e-3, "{arm:?}");
+        assert!((arm.weight - 0.5).abs() < 1e-6);
+        let breath = c.layer_sample(&s, 1);
+        assert!(!breath.additive && (breath.time - 0.5).abs() < 1e-3 && breath.weight == 0.25);
+        for _ in 0..600 {
+            c.tick(&mut s, DT);
+        }
+        // The one-shot holds its end; the loop wraps.
+        assert_eq!(c.layer_sample(&s, 1).time, 2.0);
+        assert!(c.layer_sample(&s, 0).time < 1.0);
+        c.set_param(&mut s, "wave_weight", ParamValue::Number(4.0))
+            .unwrap();
+        assert_eq!(c.layer_sample(&s, 0).weight, 1.0);
+        // Observation lists layers only when there are some.
+        assert_eq!(c.describe(&s)["layers"][0]["name"], "arm");
+        let plain = Compiled::compile(&locomotion(), &lengths).unwrap();
+        assert!(plain.describe(&plain.start()).get("layers").is_none());
+        // Hot reload keeps a layer's clock by name.
+        let carried = c.carry(&c, &s);
+        assert_eq!(carried.layers, s.layers);
+    }
+
+    #[test]
+    fn masks_resolve_bones_and_subtrees_and_layers_touch_only_them() {
+        let c = Compiled::compile(&layered(), &lengths).unwrap();
+        let sk = skeleton();
+        assert_eq!(c.layer_mask(0, &sk).unwrap(), [1, 2]);
+        assert!(c.layer_mask(1, &sk).unwrap().is_empty());
+        let mut bad = layered();
+        bad.layers[0].mask.bones = vec!["ghost".into()];
+        let e = Compiled::compile(&bad, &lengths)
+            .unwrap()
+            .layer_mask(0, &sk)
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("ghost"), "{e:#}");
+        // Additive: the layer's rotation relative to its reference is added on the masked bones.
+        let turn = Quat::from_rotation_z(0.6);
+        let mut base = sk.rest_pose();
+        base.local[1].rotation = Quat::from_rotation_x(0.3);
+        let mut sample = sk.rest_pose();
+        for t in &mut sample.local {
+            t.rotation = turn;
+            t.translation = Vec3::X;
+        }
+        let reference = sk.rest_pose();
+        let mut out = base.clone();
+        apply_layer(&mut out, &sample, &reference, &[1, 2], 1.0, true);
+        assert!(out.local[1]
+            .rotation
+            .abs_diff_eq(Quat::from_rotation_x(0.3) * turn, 1e-5));
+        assert_eq!(out.local[1].translation, Vec3::X);
+        assert_eq!(out.local[0], base.local[0]);
+        assert_eq!(out.local[3], base.local[3]);
+        // Override at half weight blends half way; weight 0 changes nothing.
+        let mut half = base.clone();
+        apply_layer(&mut half, &sample, &reference, &[], 0.5, false);
+        assert!((half.local[3].translation - Vec3::X * 0.5).length() < 1e-6);
+        let mut none = base.clone();
+        apply_layer(&mut none, &sample, &reference, &[], 0.0, true);
+        assert_eq!(none.local[1], base.local[1]);
+        // A zero reference scale keeps that axis (no NaN).
+        let mut zero = reference.clone();
+        zero.local[2].scale = Vec3::new(0.0, 1.0, 1.0);
+        let mut grown = sample.clone();
+        grown.local[2].scale = Vec3::new(1.0, 2.0, 1.0);
+        let mut out = base.clone();
+        apply_layer(&mut out, &grown, &zero, &[2], 1.0, true);
+        assert_eq!(out.local[2].scale, Vec3::new(1.0, 2.0, 1.0));
+    }
+
+    #[test]
+    fn invalid_layers_are_refused() {
+        let mut d = layered();
+        d.layers[1].name = "arm".into();
+        assert!(format!("{:#}", d.validate().unwrap_err()).contains("duplicate layer"));
+        let mut d = layered();
+        d.layers[0].weight_parameter = Some("jump".into());
+        assert!(format!("{:#}", d.validate().unwrap_err()).contains("float parameter"));
+        let mut d = layered();
+        d.layers[0].weight = 1.5;
+        assert!(d.validate().is_err());
+        let mut d = layered();
+        d.layers[0].clip = "nope".into();
+        let e = Compiled::compile(&d, &lengths).unwrap_err();
+        assert!(format!("{e:#}").contains("layer arm: clip nope"), "{e:#}");
+        let mut d = layered();
+        while d.layers.len() <= MAX_LAYERS {
+            let mut l = d.layers[1].clone();
+            l.name = format!("l{}", d.layers.len());
+            d.layers.push(l);
+        }
+        assert!(d.validate().is_err());
     }
 
     #[test]
