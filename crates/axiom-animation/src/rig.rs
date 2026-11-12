@@ -410,6 +410,7 @@ impl CompiledSpring {
     /// Advances (`dt > 0`) or re-applies (`dt == 0`) the springs on `pose`, reading `input`
     /// and writing the next state to `out` (committed by the caller once the whole pose
     /// succeeded). `model` maps the entity's model space to world space.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         s: &CompiledSkeleton,
@@ -653,6 +654,7 @@ impl CompiledLook {
     /// animated pose), advancing the smoothing by `dt` (0 = re-apply the stored angles).
     /// Yaw is about the reference bone's up axis, pitch about its right axis, both measured
     /// from its animated forward and clamped; the turn is shared by the chain's bones.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         s: &CompiledSkeleton,

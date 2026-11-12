@@ -551,7 +551,8 @@ impl Rig {
     }
 
     /// Scene-view debug draw (`debug: true` on the component): spring joints (cyan) and
-    /// colliders (magenta), look-at facing rays (yellow).
+    /// colliders (magenta: center and the six axis extremes of each end sphere), look-at facing
+    /// rays (yellow).
     pub(super) fn debug_draw(
         &self,
         s: &CompiledSkeleton,
@@ -576,10 +577,18 @@ impl Rig {
                     model,
                     |p| shapes.borrow_mut().push(cube(p, 0.025, [0.1, 0.9, 1.0])),
                     |a, b, r| {
+                        // Center plus the six axis extremes of each end sphere: shows the
+                        // extent without hiding the character.
                         let mut out = shapes.borrow_mut();
-                        out.push(cube(a, r * 2.0, [1.0, 0.2, 0.9]));
-                        if a != b {
-                            out.push(cube(b, r * 2.0, [1.0, 0.2, 0.9]));
+                        for c in [a, b] {
+                            out.push(cube(c, 0.02, [1.0, 0.2, 0.9]));
+                            for d in [Vec3::X, Vec3::Y, Vec3::Z] {
+                                out.push(cube(c + d * r, 0.012, [1.0, 0.2, 0.9]));
+                                out.push(cube(c - d * r, 0.012, [1.0, 0.2, 0.9]));
+                            }
+                            if a == b {
+                                break;
+                            }
                         }
                     },
                 );

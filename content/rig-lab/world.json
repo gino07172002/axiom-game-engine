@@ -24,7 +24,7 @@
       "animation.look_at":{"chains":{"gaze":{"bones":[{"bone":"neck","weight":0.35},{"bone":"head","weight":0.65}],"target":{"kind":"entity","entity":"puppet/a","bone":"head","offset":[0,0.12,0.1]},"max_yaw":80,"max_pitch":30,"smoothing":0.25}}}
     }},
     {"id":"camera/main","label":"Camera","components":{
-      "core.transform":{"position":[0.9,1.35,2.6],"rotation":[-0.0436,0.1736,0.0077,0.9838]},
+      "core.transform":{"position":[1.6,1.35,2.2],"rotation":[-0.0698,0.3016,0.0221,0.9506]},
       "render.camera":{"projection":{"kind":"perspective","fov_degrees":40},"near":0.05,"far":40,"viewport":[0,0,1,1],"active":true}
     }},
     {"id":"stage/floor","label":"Floor","components":{

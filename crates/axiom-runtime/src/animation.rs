@@ -997,7 +997,8 @@ impl RuntimeSystem for AnimationSystem {
         }
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}if let Some(r)=&p.rig{v["rig"]=r.metrics();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
+        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}
+            if let Some(r)=&p.rig{v["rig"]=r.metrics();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
         // Only when used, so worlds without markers keep their observation (and state_hash).
         if self.fired > 0 {
             out["markers_fired"] = json!(self.fired);
