@@ -17,7 +17,7 @@
 2. `emit` / `choose` / `locale`:依序套用在 gameplay 狀態的**副本**上。
 3. 任一項失敗 → 錯誤帶 `/command/commands/I` 路徑,**什麼都沒套用**。
 
-**限制(誠實申報)**:沒有乾跑 hook 的系統只檢查 schema;若驗證通過、套用時才失敗(例如前一個指令改變了狀態),錯誤會說「commands 0..I stay applied」—— 沒有跨系統的交易回滾(native 系統的狀態不可複製)。目前會失敗的情況只有沒有 `check_command` 的系統。
+**限制(誠實申報)**:有乾跑 hook 的是 `animation.*`(含 `stage`)與 `camera.follow.set` / `camera.activate`;其他系統(physics、nav、tween、fsm、rts、vfx、`input.activate` 的情境名稱…)只檢查參數 schema。驗證通過但套用時才失敗時(那些系統在執行期拒絕,或前面的 `animation.*` 項目改變了後面 `emit` / `choose` 條件讀到的動畫狀態),錯誤會說「commands 0..I stay applied」—— 沒有跨系統的交易回滾(native 系統的狀態不可複製)。規則因 batch 中的 `emit` 排入的 `call` 在整個 batch 之後才分派(順序:batch 項目 → 規則的 call)。
 
 編寫:ACL `ui button WIDGET batch [COMMANDS]`;編輯器 `ui.button WIDGET batch [..]`(同一個 `ops::set_ui_button_command`);UI Editor 的 Command 列顯示「N commands in one tick」,內容在 Fields 編輯。`validate_world` 檢查每個 batch 項目裡的 `call`(`unknown_action` / `missing_capability` / 參數,路徑到 `/commands/I`)。
 
@@ -34,7 +34,7 @@
 | 欄位 | 說明 |
 |---|---|
 | `actors` | 1..16 位演出者,同一實體只能出現一次。每位:`clip`(從 0 播放,`fade_seconds` 0..10、`looping` 預設 true、`speed` -8..8 預設 1);沒有 `clip` 時 `speed` = 改播放速率不重置時間(`ramp_seconds` 0..60 線性漸變,同 `animation.speed`);`params` = 控制器參數(數字或 bool,同 `animation.param`)。至少要有其中一項 |
-| `after` | `entity` 完成 `cycles`(1..1000,預設 1)個片段循環後接著開始 `next`(單次片段 = 播到結尾)。循環數用與 wave-1 片段結束事件(`on_end`)相同的 `crossings` 計算;控制器實體以目前狀態的主片段計(轉移當步也算離開狀態的最後一步) |
+| `after` | `entity` 完成 `cycles`(1..1000,預設 1)個片段循環後接著開始 `next`(單次片段 = 播到結尾;單次片段 `cycles` > 1、速度 ≤ 0 永遠達不到,建置時拒絕)。循環數用與 wave-1 片段結束事件(`on_end`)相同的 `crossings` 計算;控制器實體以目前狀態的主片段計(轉移當步也算離開狀態的最後一步) |
 
 執行期動作 `animation.stage {stage}`:**同一個固定步**套用所有演出者 —— 先在每個玩家的副本上套用並求值,全部成功才一起寫回(真正原子,任一失敗都不改變);成功後成為目前階段(循環數歸零)。`after` 達成時,在**同一步**開始下一個階段;下一階段被拒(不可能在建置驗證後發生,除非執行期改了速度等)時記在 `observe animation.stage.fault`,停止串接。建置時檢查:演出者有 `animation.player`、片段存在、有 `clip` 的演出者不能由控制器驅動、`params` 需要控制器且參數存在、`after.entity` 有玩家、`after.next` 存在(錯誤碼 `invalid_choreography`,路徑到 `/resources/animation.choreography/stages/ID`)。
 
@@ -108,7 +108,7 @@
 ```
 
 - `parts`:`{id, bone, radius 0.005..2 m, to?: 骨頭(膠囊到那個關節) | length?: 沿骨頭 +Y 公尺(兩者皆無 = 球)}`,上限 128。
-- `auto_radius`:另外為每根有父骨的骨頭產生一個「父關節 → 該關節」的膠囊,部位 ID = 父骨名稱。
+- `auto_radius`:另外為每根有父骨的骨頭產生一個「父關節 → 該關節」的膠囊,部位 ID = 父骨名稱(有多個子骨時同一 ID 有多個膠囊)。命中距離以最近的線段點上的球近似(斜向擦過時略大於真正進入點),重疊膠囊的「最近」判定可能偏差。
 - `event`:點擊時送出的 `behavior.program` 事件,只能有文字欄位 `entity` / `part`(宣告了就填入)。
 - 執行期:**主按鈕按下與放開距離 ≤ 畫面 1%** 才算點擊(拖曳環繞不算),用通用指標射線(`WorldRuntime::screen_pointer` 從作用中相機算出)對目前姿勢的所有膠囊做射線-膠囊測試,最近者勝(同距離依實體 / 部位順序,確定)。姿勢只在點擊時讀(每步零成本);每實體 ≤ 128、每世界 ≤ 512 個膠囊。
 - 查詢動作 `animation.pick {origin, direction}`:同一個測試,回 `{entity, part, distance}` 或 null,不改變任何東西。

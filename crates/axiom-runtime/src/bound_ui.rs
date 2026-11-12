@@ -564,6 +564,22 @@ fn draw_widgets(
                 );
             }
             BoundWidget::Slider(s) if visual.forced || g.test(&s.when) => {
+                if flow {
+                    // Label + track + value box; wrap first like buttons do.
+                    let label = ui
+                        .painter()
+                        .layout_no_wrap(
+                            g.text(&s.text),
+                            egui::TextStyle::Body.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        )
+                        .size()
+                        .x;
+                    let width = label + ui.spacing().slider_width + 80.0;
+                    if width > ui.available_size_before_wrap().x {
+                        ui.end_row();
+                    }
+                }
                 drawn = Some(
                     ui.push_id(&s.id, |ui| {
                         with_effects(ui, visual, |ui| slider(ui, g, s, state, actions))

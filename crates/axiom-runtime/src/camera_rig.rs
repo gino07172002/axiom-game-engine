@@ -332,6 +332,49 @@ impl CameraRigSystem {
     }
 
     fn set(&mut self, state: &mut RuntimeState, args: &Value) -> Result<Value> {
+        let SetPlan {
+            rig: i,
+            target,
+            distance,
+            pitch,
+            yaw,
+            bone,
+            target_id,
+        } = self.plan_set(state, args)?;
+        if let Some(Some(b)) = &bone {
+            request_socket(state, &target_id, b)?;
+        }
+        let r = &mut self.rigs[i];
+        if let Some(t) = target {
+            r.target = t;
+            r.target_id = target_id.clone();
+            r.target_set = true;
+            r.exclude(state);
+            if bone.is_none() {
+                r.socket = None;
+            }
+        }
+        if let Some(b) = bone {
+            r.socket = b.map(|b| (target_id, b));
+        }
+        if let Some(d) = distance {
+            r.distance_goal = d;
+            r.goals_set = true;
+        }
+        if let Some(p) = pitch {
+            r.pitch_goal = p.to_radians();
+            r.goals_set = true;
+        }
+        if let Some(y) = yaw {
+            r.yaw_goal = wrap(y.to_radians());
+            r.goals_set = true;
+        }
+        Ok(r.json(state, &self.names, &self.grid))
+    }
+
+    /// Everything `camera.follow.set` checks, without changing anything (also the batch
+    /// dry run).
+    fn plan_set(&self, state: &RuntimeState, args: &Value) -> Result<SetPlan> {
         let i = self.rig(args)?;
         let r = &self.rigs[i];
         let target = match args.get("target").and_then(Value::as_str) {
@@ -401,40 +444,33 @@ impl CameraRigSystem {
             |t| state.compiled.entities[t].id.clone(),
         );
         if let Some(Some(b)) = &bone {
-            request_socket(state, &target_id, b)?;
+            check_bone(state, &target_id, b)?;
         }
-        let r = &mut self.rigs[i];
-        if let Some(t) = target {
-            r.target = t;
-            r.target_id = target_id.clone();
-            r.target_set = true;
-            r.exclude(state);
-            if bone.is_none() {
-                r.socket = None;
-            }
-        }
-        if let Some(b) = bone {
-            r.socket = b.map(|b| (target_id, b));
-        }
-        if let Some(d) = distance {
-            r.distance_goal = d;
-            r.goals_set = true;
-        }
-        if let Some(p) = pitch {
-            r.pitch_goal = p.to_radians();
-            r.goals_set = true;
-        }
-        if let Some(y) = yaw {
-            r.yaw_goal = wrap(y.to_radians());
-            r.goals_set = true;
-        }
-        Ok(r.json(state, &self.names, &self.grid))
+        Ok(SetPlan {
+            rig: i,
+            target,
+            distance,
+            pitch,
+            yaw,
+            bone,
+            target_id,
+        })
     }
 }
 
-/// Asks `animation.evaluate` (which steps before the rig) to publish the world matrix of
-/// `bone` of `target` every step.
-fn request_socket(state: &mut RuntimeState, target: &str, bone: &str) -> Result<()> {
+/// A checked `camera.follow.set`.
+struct SetPlan {
+    rig: usize,
+    target: Option<usize>,
+    distance: Option<f32>,
+    pitch: Option<f32>,
+    yaw: Option<f32>,
+    /// `Some(None)` = back to the pivot.
+    bone: Option<Option<String>>,
+    target_id: String,
+}
+
+fn check_bone(state: &RuntimeState, target: &str, bone: &str) -> Result<()> {
     let bones = state.animation_cues.bone_names.get(target).with_context(|| {
         format!("target_bone needs an animation.player on {target} (and the animation.evaluate system)")
     })?;
@@ -443,6 +479,13 @@ fn request_socket(state: &mut RuntimeState, target: &str, bone: &str) -> Result<
         "{target} has no bone {bone} (e.g. {})",
         bones.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
     );
+    Ok(())
+}
+
+/// Asks `animation.evaluate` (which steps before the rig) to publish the world matrix of
+/// `bone` of `target` every step.
+fn request_socket(state: &mut RuntimeState, target: &str, bone: &str) -> Result<()> {
+    check_bone(state, target, bone)?;
     state
         .animation_cues
         .socket_requests
@@ -770,6 +813,45 @@ impl RuntimeSystem for CameraRigSystem {
     }
     fn uses_screen_pointer(&self) -> bool {
         self.rigs.iter().any(|r| r.def.input.drag)
+    }
+    fn check_command(
+        &self,
+        state: &RuntimeState,
+        capability: &str,
+        action: &str,
+        args: &Value,
+    ) -> Option<Result<()>> {
+        if capability != "camera" {
+            return None;
+        }
+        Some(match action {
+            "follow.set" => self.plan_set(state, args).map(drop),
+            "activate" => (|| {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("camera.activate needs {\"id\":\"camera entity\"}")?;
+                let &slot = state
+                    .compiled
+                    .indices
+                    .get(id)
+                    .context("camera does not exist")?;
+                ensure!(
+                    state.compiled.entities[slot].camera.is_some(),
+                    "{id} has no render.camera"
+                );
+                ensure!(
+                    state.contexts.is_none(),
+                    "this world has input contexts, which own the active cameras"
+                );
+                ensure!(
+                    state.compiled.enabled[slot],
+                    "camera {id} is in an inactive scene"
+                );
+                Ok(())
+            })(),
+            _ => Ok(()),
+        })
     }
     /// `input.drag`: a primary-button drag orbits active drag-enabled follow cameras. Each
     /// move sets the goals from the drag start (absolute), so a run of moves between two

@@ -679,13 +679,14 @@ impl WorldRuntime {
             "event delivery failed; repair content before issuing gameplay commands"
         );
         let out = match command {
-            RuntimeCommand::Batch { commands } => self.batch(commands)?,
-            RuntimeCommand::Slide { widget, value } => self.slide(widget, *value)?,
-            other => self.single(other)?,
+            RuntimeCommand::Batch { commands } => self.batch(commands),
+            RuntimeCommand::Slide { widget, value } => self.slide(widget, *value),
+            other => self.single(other),
         };
-        // Rules that fired may have queued capability calls (`call` actions).
+        // Rules that fired may have queued capability calls (`call` actions), also when a
+        // later batch item failed after earlier ones applied.
         self.dispatch_calls();
-        Ok(out)
+        out
     }
     /// The action exists, its capability is enabled here and `args` fit its schema.
     fn check_call_schema(&self, capability: &str, action: &str, args: &Value) -> Result<()> {
@@ -1517,6 +1518,8 @@ impl WorldRuntime {
                 system.screen_pointer(&mut self.state, &pointer)?;
             }
         }
+        // A click may have fired rules (`animation.parts` events) that queued calls.
+        self.dispatch_calls();
         Ok(())
     }
     pub fn pointer_allowed(&self) -> bool {

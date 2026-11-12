@@ -77,6 +77,32 @@ impl Choreo {
                         format!("after.entity {} has no animation.player", after.entity),
                     ));
                 }
+                // A one-shot clip completes once: more cycles would never be reached.
+                let one_shot = stage
+                    .actors
+                    .iter()
+                    .find(|a| a.entity == after.entity)
+                    .is_some_and(|a| a.clip.is_some() && !a.looping);
+                if one_shot && after.cycles > 1 {
+                    return Err(invalid(
+                        stage_path(id),
+                        format!(
+                            "after.cycles {} on {}'s one-shot clip would never be reached (use 1)",
+                            after.cycles, after.entity
+                        ),
+                    ));
+                }
+                if let Some(a) = stage.actors.iter().find(|a| a.entity == after.entity) {
+                    if a.speed.is_some_and(|s| s <= 0.0) {
+                        return Err(invalid(
+                            stage_path(id),
+                            format!(
+                                "after.entity {} plays at speed <= 0, so its clip never completes a cycle",
+                                after.entity
+                            ),
+                        ));
+                    }
+                }
             }
         }
         Ok(Self {

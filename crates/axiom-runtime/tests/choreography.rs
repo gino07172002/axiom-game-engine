@@ -344,7 +344,7 @@ fn the_slider_sends_one_command_per_change() {
     assert_eq!(variable(&r, "rate"), 2.0);
     // A slider whose call is refused leaves its variable unchanged.
     let mut w = lab();
-    w.resources.get_mut("ui.document").unwrap()["widgets"][10]["command"]["args"]["entity"] =
+    w.resources.get_mut("ui.document").unwrap()["widgets"][9]["command"]["args"]["entity"] =
         json!("stage/floor");
     let mut r = runtime(w);
     assert!(slide(&mut r, 0.5).is_err());
@@ -513,4 +513,63 @@ fn scenario_replay_is_deterministic() {
     let b = axiom_runtime::scenario::run(lab(), 1, axiom_runtime::installed_registry(), scenario())
         .unwrap();
     assert_eq!(a["state_hash"], b["state_hash"]);
+}
+
+#[test]
+fn review_fixes_camera_dry_run_integer_sliders_and_unreachable_cycles() {
+    // A camera call out of range is refused before the emit applies.
+    let mut r = runtime(lab());
+    run(&mut r, 5);
+    let bad = RuntimeCommand::Batch {
+        commands: vec![
+            RuntimeCommand::Emit {
+                event: "fill".into(),
+                fields: Default::default(),
+            },
+            RuntimeCommand::Call {
+                capability: "camera".into(),
+                action: "follow.set".into(),
+                args: json!({"id":"camera/orbit","distance":50}),
+            },
+        ],
+    };
+    let e = format!("{:#}", r.command(&bad).unwrap_err());
+    assert!(e.contains("min_distance..max_distance"), "{e}");
+    assert_eq!(variable(&r, "gauge"), 0.0);
+    let bad_bone = RuntimeCommand::Batch {
+        commands: vec![RuntimeCommand::Call {
+            capability: "camera".into(),
+            action: "follow.set".into(),
+            args: json!({"id":"camera/orbit","bone":"tail"}),
+        }],
+    };
+    assert!(r.command(&bad_bone).is_err());
+    // An integer slider whose range holds no whole number is an authoring error (it would
+    // have no valid value).
+    let mut w = lab();
+    let program = w.resources.get_mut("behavior.program").unwrap();
+    program["variables"]["level"] = json!(0);
+    let doc = w.resources.get_mut("ui.document").unwrap();
+    doc["widgets"].as_array_mut().unwrap().push(
+        json!({"kind":"slider","id":"level","text":"speed","min":0.2,"max":0.8,"variable":"level"}),
+    );
+    let e = format!(
+        "{:#}",
+        axiom_runtime::installed_registry()
+            .authoring
+            .validate_world(&w)
+            .unwrap_err()
+    );
+    assert!(e.contains("whole number"), "{e}");
+    // after.cycles > 1 on a one-shot clip would never advance.
+    let mut w = lab();
+    w.resources.get_mut("animation.choreography").unwrap()["stages"]["greet"]["after"]["cycles"] =
+        json!(2);
+    let e = format!(
+        "{:#}",
+        WorldRuntime::new(w, 1, axiom_runtime::installed_registry())
+            .err()
+            .unwrap()
+    );
+    assert!(e.contains("never be reached"), "{e}");
 }

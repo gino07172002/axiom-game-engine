@@ -251,3 +251,28 @@
 
 - R 合併:`render.rs` 的 `Globals` 同時有 R 的天空欄位(`inv_view_proj`、`sky`、`sky_viewport`)與 E 的 Unlit 改寫(`unlit_globals`)。**已知限制**:`render.surface` 反射由每個物件自己的材質參數開啟,`unlit_globals` 關不掉,所以 Unlit 檢視下金屬 / 光滑物件仍會映出天空。要修需在 shader 加全域旗標(得在 MX150 上重驗管線),列為後續。
 - 四線合併後的 effects smoke:36 站截圖與所有 bridge 檢查通過,最後一步(900 幀限 60 秒)逾時。A/B(同一 effects DB、debug、各 2 輪、60 / 300 幀):先前通過 effects smoke 的 3f52dea、合併 R 前的 2806e5a、四線合併版,300 幀都是 45–47 秒(約 145 ms/幀,`render_present_acquire_wait` 佔絕大部分)。三版一致 → 不是程式退化,是機器目前 GPU 比 FE 那次(900 幀約 27 秒)慢約 5 倍;原因未查明(接電、平衡電源計畫、GPU 無其他程序)。沒有放寬腳本時限;待機器恢復後重跑。
+
+### W2c 編排與互動(worktree `w2c`,分支 `work-w2c`,`rigorous-change`)
+
+範圍:缺口 A1、A6、A7、C1、C2、C3。詳細規格見 `docs/choreography.zh-TW.md`;示範包 `content/duet-lab`(第一方吉祥物 glb)+ `examples/duet-lab.scenario.json` + `Play Duet Lab.cmd`。
+
+| 項目 | 做了什麼 |
+|---|---|
+| A1 指令列表 | `RuntimeCommand::Batch`(1..16,不巢狀):先驗證全部(`call` = schema + 系統乾跑 `RuntimeSystem::check_command`,`animation.*` 與 `camera.follow.set / activate` 有實作;gameplay 項目在副本上依序套用),全過才依序套用。M1 walking skeleton = duet-lab 的 Walk together 按鈕(一個 batch 兩個 `animation.play`,同一 tick,測試 `one_button_batch_starts_two_actors_on_the_same_tick`) |
+| A1 編排資源 | `animation.choreography` stages + `animation.stage {stage}`:在玩家副本上套用所有演出者,全成功才寫回(真正原子);`after {entity, cycles, next}` 用與 `on_end` 相同的 `crossings` 計算循環,同一步接下一階段;checkpoint / 熱重載 / observe `animation.stage` |
+| A6 | `GameAction::Call`:規則 / 敘事動作排入 outbox,`WorldRuntime` 在 step / command / screen_pointer 之後走同一個 call 路徑分派(最多 4 輪);失敗可恢復,`observe calls {run, failed, fault}`,計數存在 `Progress.calls`(checkpoint) |
+| A7 | `Operand::Animation {entity, field, param?}`:編譯成去重的 `animation_reads`,`animation.evaluate` 每步(與每個指令後)寫入 gameplay 的型別化槽位;建置時解析玩家 / 控制器 / 參數 |
+| C1 | `Widget::Slider` + `RuntimeCommand::Slide`:拖曳只改畫面草稿,放開(或鍵盤 / 點擊軌道)送一個;先送 call 再寫變數;ACL `ui slider add`、編輯器 `ui.slider` |
+| C2 | `camera.follow.input.drag`(螢幕指標拖曳,絕對於拖曳起點 → 可錄可重播)、滾輪 = input map 偽按鍵 `WheelUp/WheelDown`(每固定步一格)、`target_bone`(socket,無每步配置)、`follow.set bone` |
+| C3 | `animation.parts`(編寫膠囊 + `auto_radius`)、點擊(按下放開距離 ≤ 1%)射線-膠囊最近者 → 事件 `entity / part`;查詢 `animation.pick`;每實體 128 / 每世界 512 膠囊;姿勢只在點擊時讀 |
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+- 「原子:先驗證全部再套用」→ 對有乾跑 hook 的系統(`animation`、`camera`)與 gameplay 項目成立;其他 native 系統只檢查 schema,套用時被拒會回報「commands 0..I stay applied」。為什麼:native 系統狀態不可複製,沒有跨系統回滾;在有限時間內為最常用的兩個 capability 做乾跑,其餘誠實申報(review 發現 #1)。另一個已知洞:batch 中 `animation.*` 改變了後面 gameplay 項目條件讀到的動畫值時,驗證與套用看到的值不同(review #2,記錄未修)。
+- C2「透過 input map」→ 縮放走 input map(偽按鍵),拖曳走通用螢幕指標事件(`screen_pointer`)。為什麼:按鍵軸是 ±1 的速率,無法表達拖曳量;指標事件本來就被 scenario 錄製重播,且「連續 move 只留最後一個」的規則與以起點為準的絕對拖曳相容。
+- C3 沒有新的系統 / capability:部位膠囊由 `animation.evaluate` 處理(它擁有姿勢),點擊時才計算,避免每步把所有骨頭送進 socket(socket 機制每步每個請求都會配置字串鍵)。
+- Checkpoint 測試排除 gameplay `trace`:`Gameplay::restore` 本來就清空診斷 trace(既有行為),所以含事件的世界 restore 後 `state_hash` 不等;測試比較 trace 以外的全部 metrics 與 transforms。
+- 示範的「點部位」與「拖曳環繞」在 GPU 視窗上**沒有用真實滑鼠驗證**:嘗試以 Win32 合成滑鼠事件時 `SetForegroundWindow` 被系統拒絕(焦點保護),事件沒有送到遊戲視窗;改由 scenario 的 pointer 事件(與視窗相同的 `WorldRuntime::screen_pointer` 路徑)無頭驗證。
+
+**Fresh-context 審查**(子代理只看需求與 diff):4 個確認 bug —— (1) batch 對非 animation 系統不原子 → 加 camera 乾跑 + 文件申報;(2) batch 驗證與套用間動畫讀值不同 → 記錄;(3) 整數變數 slider 範圍內沒有整數時 `clamp` panic → 編譯時拒絕 + 測試;(4) 點擊觸發的規則 `call` 沒在 screen_pointer 後分派、batch 中途失敗時遺留 → `screen_pointer` 與 `command` 失敗時也分派。風險項修了:單次片段 `after.cycles > 1` 與速度 ≤ 0 的 `after` 演出者建置時拒絕(測試)。記錄未修:batch 中規則排入的 call 在整個 batch 之後才執行;每步 32 個排隊 call 上限超過時該 gameplay 交易失敗;射線-膠囊距離是近似;`auto_radius` 部位 ID 可重複;`follow.set bone` 換骨頭不會撤回舊 socket 請求;slider 先 call 後寫變數、無變數 slider 的畫面值在指令被拒時不回復;每格滾輪 = `zoom_speed/120` 公尺(預設 4 m/s 只有 3 cm,示範包用 60);`behavior.execute` 自己的 step 讀到的是上一步的動畫值(固定、確定)。
+
+**驗證(debug,MX150,其他工作線同時建置)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 777 passed / 0 failed / 5 ignored(基準 760;新增 `tests/choreography.rs` 11 個、`animation_parts::tests`、`choreography::tests` ×2、parity ×3)。`editor-smoke-test.ps1 -Port 47641` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true;`street-editor-parity.ps1` identical:true;`build-street.ps1` / `build-plaza.ps1` 後 content/street、content/plaza 無變化。`examples/duet-lab.scenario.json` 無頭重播:batch 同 tick、stage、slide、規則 call、動畫讀值、拖曳(yaw −36°)、點擊(who=axi)、滾輪(desired 2.5)全部斷言通過,兩次 state_hash 相同。GPU:`--pack content/duet-lab play --smoke-frames 240 --screenshot artifacts/captures/w2c-duet-1080.png`;loopback 指令 + `screenshot` op:`w2c-duet-live-{1080,768}.png`(gauge 滿 → 規則 call `stage greet`:Axi 揮手、Lyn 鞠躬、Greet 按鈕隱藏、slider 1.50);編輯器 `w2c-editor-ui-{1080,768}.png`(UI Editor 選取 slider、`ui.slider` / `anim.stage` 經編輯器指令各一筆 revision;第一次 768 擷取發現 slider 在流式列溢出 → 修正 `end_row`,重擷取)。全部擷取已看過。未做 release A/B(沒有效能宣稱;新功能熱路徑:讀值發佈只在文字改變時配置,部位只在點擊時計算)。

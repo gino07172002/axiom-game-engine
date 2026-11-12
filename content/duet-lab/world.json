@@ -85,9 +85,9 @@
           "when":{"kind":"not","condition":{"kind":"eq","left":{"kind":"animation","entity":"axi","field":"clip"},"right":{"kind":"literal","value":"wave"}}}},
         {"kind":"button","id":"rest","text":"rest","command":{"kind":"call","capability":"animation","action":"stage","args":{"stage":"rest"}}},
         {"kind":"button","id":"fill","text":"fill","command":{"kind":"emit","event":"fill"}},
-        {"kind":"progress","id":"gauge","variable":"gauge","max":100},
         {"kind":"slider","id":"speed","text":"speed","min":0.25,"max":2.0,"step":0.25,"variable":"rate",
-          "command":{"kind":"call","capability":"animation","action":"speed","args":{"entity":"axi"}},"arg":"speed"}
+          "command":{"kind":"call","capability":"animation","action":"speed","args":{"entity":"axi"}},"arg":"speed"},
+        {"kind":"progress","id":"gauge","variable":"gauge","max":100}
       ],
       "regions":{"title":"top_left","clicked_label":"top_right","clicked_who":"top_right","clicked_part":"top_right"}
     }

@@ -1315,6 +1315,10 @@ impl CompiledGameplay {
                                             matches!(ty, ScalarType::Int | ScalarType::Number),
                                             "slider variable {v} must be a number or integer"
                                         );
+                                        ensure!(
+                                            ty != ScalarType::Int || min.ceil() <= max.floor(),
+                                            "slider for integer variable {v} needs a whole number within min..max"
+                                        );
                                         (Some(i), ty == ScalarType::Int)
                                     }
                                     None => (None, false),
