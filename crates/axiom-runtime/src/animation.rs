@@ -538,9 +538,11 @@ pub fn register(registry: &mut RuntimeRegistry) {
                             });
                         at(&path, result)?;
                     }
+                    let model = rig::model_of(state, state.compiled.indices[&e.id]);
                     player.attach_rig(
                         &e.components,
                         &format!("/entities/@{}", axiom_core::local::escape(&e.id)),
+                        model,
                     )?;
                     if player.rig.is_some() {
                         at(&component_path(&e.id), player.evaluate(0.))?;
@@ -826,6 +828,7 @@ impl RuntimeSystem for AnimationSystem {
                 }
                 "ik" => {
                     let a: IkArgs = serde_json::from_value(args.clone())?;
+                    let mut bound = None;
                     let mut c =
                         p.ik.get(&a.id)
                             .context("IK constraint missing")?
@@ -838,6 +841,7 @@ impl RuntimeSystem for AnimationSystem {
                         }
                         (None, Some(socket)) => {
                             self.check_socket(state, &socket)?;
+                            bound = self.socket_now(state, entity, &socket);
                             c.socket = Some(socket);
                         }
                         _ => anyhow::bail!("give either target or socket"),
@@ -848,8 +852,11 @@ impl RuntimeSystem for AnimationSystem {
                     if let Some(weight) = a.weight {
                         c.weight = weight
                     }
-                    p.ik.insert(a.id, Arc::new(c.compile(&p.asset.skeleton)?));
+                    p.ik.insert(a.id.clone(), Arc::new(c.compile(&p.asset.skeleton)?));
                     p.rebind_ik();
+                    if let Some(rig) = &mut p.rig {
+                        rig.set_ik_point(&a.id, bound);
+                    }
                 }
                 "twist" => {
                     let a: TwistArgs = serde_json::from_value(args.clone())?;

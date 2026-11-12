@@ -706,12 +706,18 @@ impl CompiledLook {
             if yaw == 0.0 && pitch == 0.0 {
                 continue;
             }
-            // Each bone's model-space turn also turns its descendants: with D the turns of
-            // the earlier (ancestor) bones, the new local = P^-1 D^-1 delta D R.
+            // The whole turn (pitch about the reference's right axis, then yaw about its up
+            // axis: no roll) is shared out along the chain: after bone k the accumulated turn
+            // is slerp(I, turn, w_1 + .. + w_k), so the chain's total is exact. Each bone's
+            // model-space turn also turns its descendants: with D the turn of the earlier
+            // (ancestor) bones, the new local = P^-1 D^-1 delta D R.
+            let turn = Quat::from_axis_angle(up, yaw) * Quat::from_axis_angle(right, -pitch);
             let mut turned = Quat::IDENTITY;
+            let mut share = 0.0;
             for &(b, w) in &c.bones {
-                let delta =
-                    Quat::from_axis_angle(up, yaw * w) * Quat::from_axis_angle(right, -pitch * w);
+                share += w;
+                let target = Quat::IDENTITY.slerp(turn, share.min(1.0)).normalize();
+                let delta = (target * turned.inverse()).normalize();
                 let parent = s.source.bones[b].parent.map_or(Quat::IDENTITY, |p| {
                     globals[p].to_scale_rotation_translation().1
                 });

@@ -428,3 +428,30 @@ fn springs_and_look_at_do_not_allocate_while_stepping() {
 fn w_entity<'a>(w: &'a mut World, id: &str) -> &'a mut axiom_core::Entity {
     w.entities.iter_mut().find(|e| e.id == id).unwrap()
 }
+
+#[test]
+fn springs_start_at_rest_where_the_entity_stands() {
+    // A still puppet away from the origin, no gravity, no look-at, no
+    // colliders: the ponytail must not move
+    // (the first state is taken in world space, not at the origin).
+    let mut w = lab();
+    component(&mut w, "puppet/a", "animation.player")["clip"] = Value::Null;
+    component(&mut w, "puppet/a", "core.transform")["position"] = json!([-0.6, 0.0, 0.4]);
+    component(&mut w, "puppet/a", "core.transform")["rotation"] = json!([0.0, 1.0, 0.0, 0.0]);
+    component(&mut w, "puppet/a", "animation.spring")["chains"]["ponytail"]["gravity"] =
+        json!([0, 0, 0]);
+    component(&mut w, "puppet/a", "animation.look_at")["chains"]["gaze"]["weight"] = json!(0.0);
+    // (The head collider overlaps the authored ponytail and would push it out.)
+    component(&mut w, "puppet/a", "animation.spring")["colliders"] = json!({});
+    let mut still = w.clone();
+    component(&mut still, "puppet/a", "animation.spring")["chains"]["ponytail"]["enabled"] =
+        json!(false);
+    let (mut r, mut s) = (runtime(w), runtime(still));
+    for _ in 0..6 {
+        run(&mut r, 10);
+        run(&mut s, 10);
+        let a = bone(&mut r, "puppet/a", "hair.5").0;
+        let b = bone(&mut s, "puppet/a", "hair.5").0;
+        assert!(a.distance(b) < 1e-4, "{a} vs {b}");
+    }
+}

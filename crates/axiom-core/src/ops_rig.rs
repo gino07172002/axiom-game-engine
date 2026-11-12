@@ -308,19 +308,27 @@ pub fn rig_fields(part: RigPart, options: &[&str]) -> Result<Vec<(String, Value)
                 json!(v.split(',').filter(|x| !x.is_empty()).collect::<Vec<_>>())
             }
             (RigPart::Look, "bones") => {
+                // `B:W` only when W is a number, so bone names with ':' (mixamorig:Head)
+                // work; without any weight the turn is shared equally.
+                let parsed: Vec<(&str, Option<f64>)> = v
+                    .split(',')
+                    .map(|b| match b.rsplit_once(':') {
+                        Some((bone, w)) if w.parse::<f64>().is_ok() => (bone, w.parse().ok()),
+                        _ => (b, None),
+                    })
+                    .collect();
+                let given = parsed.iter().filter(|(_, w)| w.is_some()).count();
+                anyhow::ensure!(
+                    given == 0 || given == parsed.len(),
+                    "give a weight for every bone (B:W,..) or for none"
+                );
+                let equal = 1.0 / parsed.len() as f64;
                 let mut list = vec![];
-                for b in v.split(',') {
-                    let (bone, weight) = match b.rsplit_once(':') {
-                        Some((bone, w)) => (
-                            bone,
-                            w.parse::<f64>()
-                                .map_err(|_| anyhow::anyhow!("bone weight must be a number"))?,
-                        ),
-                        None => (b, 1.0),
-                    };
+                for (bone, weight) in parsed {
+                    anyhow::ensure!(!bone.is_empty(), "empty bone name in bones=");
                     let mut entry = Map::new();
                     entry.insert("bone".into(), json!(bone));
-                    entry.insert("weight".into(), json!(weight));
+                    entry.insert("weight".into(), json!(weight.unwrap_or(equal)));
                     list.push(Value::Object(entry));
                 }
                 Value::Array(list)
@@ -540,6 +548,17 @@ mod tests {
             w.entity("a").unwrap().components[LOOK_AT_COMPONENT]["chains"]["gaze"],
             json!({"bones":[{"bone":"neck","weight":0.4},{"bone":"head","weight":0.6}],"target":{"kind":"entity","entity":"b","bone":"head"},"max_yaw":45.0})
         );
+        // Names with ':' and equal shares without weights.
+        let m = run(
+            &w,
+            &["b"],
+            "look gaze bones=mixamorig:Neck,mixamorig:Head target=camera",
+        )
+        .unwrap();
+        assert_eq!(
+            m.entity("b").unwrap().components[LOOK_AT_COMPONENT]["chains"]["gaze"]["bones"],
+            json!([{"bone":"mixamorig:Neck","weight":0.5},{"bone":"mixamorig:Head","weight":0.5}])
+        );
         let w = run(&w, &["a"], "look gaze target=point:1,2,3").unwrap();
         assert_eq!(
             w.entity("a").unwrap().components[LOOK_AT_COMPONENT]["chains"]["gaze"]["target"],
@@ -579,7 +598,7 @@ mod tests {
         assert!(err(&["a"], "debug on").contains("no spring or look-at"));
         assert!(err(&["a"], "spring hair gravity=1,2").contains("x,y,z"));
         assert!(err(&["a"], "spring hair bogus=1").contains("unknown option 'bogus'"));
-        assert!(err(&["a"], "look gaze bones=head:x").contains("weight must be a number"));
+        assert!(err(&["a"], "look gaze bones=neck:0.4,head").contains("for every bone"));
         assert!(err(&["a"], "spring bad/../id! root=x").contains("invalid ID"));
         assert!(err(&[], "debug on").contains("select"));
     }

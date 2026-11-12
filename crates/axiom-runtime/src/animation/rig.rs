@@ -101,12 +101,13 @@ impl Rig {
                 *slot = *t;
             }
             if let Err(e) = look.apply(s, pose, *dt, &targets, look_state, look_next, scratch) {
-                return at(&format!("/components/{LOOK_AT}"), Err(e));
+                // The caller adds the entity's component path.
+                return Err(e.context(LOOK_AT));
             }
         }
         if let Some((spring, _)) = spring {
             if let Err(e) = spring.apply(s, pose, *model, *dt, spring_state, spring_next, scratch) {
-                return at(&format!("/components/{SPRING}"), Err(e));
+                return Err(e.context(SPRING));
             }
         }
         self.pending = true;
@@ -142,7 +143,7 @@ fn source(target: &LookTarget) -> Source {
 }
 
 /// World matrix of entity `slot` without allocating (same composition as `matrices()`).
-fn model_of(state: &RuntimeState, slot: usize) -> Mat4 {
+pub(super) fn model_of(state: &RuntimeState, slot: usize) -> Mat4 {
     let local = |i: usize| {
         state.transforms[i]
             .as_ref()
@@ -160,12 +161,16 @@ fn model_of(state: &RuntimeState, slot: usize) -> Mat4 {
 
 impl Controller {
     /// Builds the rig of a player from its entity's components (none = no rig).
+    /// `model` is the entity's world matrix now: the springs start from the animated pose in
+    /// world space.
     pub(super) fn attach_rig(
         &mut self,
         components: &BTreeMap<String, Value>,
         path: &str,
+        model: Mat4,
     ) -> Result<()> {
         let mut rig = Rig::empty();
+        rig.model = model;
         let skeleton = &self.asset.skeleton;
         if let Some(v) = components.get(SPRING) {
             let p = format!("{path}/components/{SPRING}");
@@ -299,6 +304,21 @@ impl AnimationSystem {
         check_socket(&self.players, state, socket)
     }
 
+    /// `socket` now, in the model space of `entity` (a binding made by a command poses the
+    /// hand at once instead of at the old fallback target until the next step).
+    pub(super) fn socket_now(
+        &self,
+        state: &RuntimeState,
+        entity: &str,
+        socket: &Socket,
+    ) -> Option<Vec3> {
+        let slot = *state.compiled.indices.get(entity)?;
+        let inverse = model_of(state, slot).inverse();
+        socket_point(&self.players, state, socket)
+            .map(|w| inverse.transform_point3(w))
+            .filter(|p| p.is_finite())
+    }
+
     /// Resolves every rig target for this step (see the module docs for the ordering) and
     /// sets each rig's world matrix. Allocation-free once the scratch list is sized.
     pub(super) fn resolve_rig_targets(&mut self, state: &RuntimeState) {
@@ -313,7 +333,11 @@ impl AnimationSystem {
             }
             let model = model_of(state, slot);
             let inverse = model.inverse();
-            let local = |w: Option<Vec3>| w.map(|w| inverse.transform_point3(w));
+            // A degenerate transform (scale 0) resolves to nothing rather than NaN.
+            let local = |w: Option<Vec3>| {
+                w.map(|w| inverse.transform_point3(w))
+                    .filter(|p| p.is_finite())
+            };
             for (source, _) in &rig.look_targets {
                 points.push(local(match source {
                     Source::Camera => camera,
@@ -491,13 +515,22 @@ impl Rig {
     /// Keeps the simulation of an unchanged spring / look-at component across a rebuild
     /// (hot reload, live edits); a changed component restarts from the animated pose.
     pub(super) fn carry(&mut self, old: &Rig) {
+        // Toggling the debug draw is not a change of the simulation.
         if let (Some((_, a)), Some((_, b))) = (&self.spring, &old.spring) {
-            if a == b {
+            if (SpringSet {
+                debug: b.debug,
+                ..a.clone()
+            }) == *b
+            {
                 self.spring_state.clone_from(&old.spring_state);
             }
         }
         if let (Some((_, a)), Some((_, b))) = (&self.look, &old.look) {
-            if a == b {
+            if (LookAtSet {
+                debug: b.debug,
+                ..a.clone()
+            }) == *b
+            {
                 self.look_state.clone_from(&old.look_state);
                 self.look_targets.clone_from(&old.look_targets);
             }
@@ -511,7 +544,14 @@ impl Rig {
                 *t = *old;
             }
         }
-        self.model = old.model;
+    }
+    /// Sets the resolved point of socket-bound IK constraint `id` (a fresh binding).
+    pub(super) fn set_ik_point(&mut self, id: &str, point: Option<Vec3>) {
+        if let Some((_, _, t)) = self.ik_sockets.iter_mut().find(|(k, _, _)| k == id) {
+            if point.is_some() {
+                *t = point;
+            }
+        }
     }
 
     /// `metrics.animation.players.ID.rig` (in `state_hash`): spring tip points, look-at

@@ -251,3 +251,22 @@
 
 - R 合併:`render.rs` 的 `Globals` 同時有 R 的天空欄位(`inv_view_proj`、`sky`、`sky_viewport`)與 E 的 Unlit 改寫(`unlit_globals`)。**已知限制**:`render.surface` 反射由每個物件自己的材質參數開啟,`unlit_globals` 關不掉,所以 Unlit 檢視下金屬 / 光滑物件仍會映出天空。要修需在 shader 加全域旗標(得在 MX150 上重驗管線),列為後續。
 - 四線合併後的 effects smoke:36 站截圖與所有 bridge 檢查通過,最後一步(900 幀限 60 秒)逾時。A/B(同一 effects DB、debug、各 2 輪、60 / 300 幀):先前通過 effects smoke 的 3f52dea、合併 R 前的 2806e5a、四線合併版,300 幀都是 45–47 秒(約 145 ms/幀,`render_present_acquire_wait` 佔絕大部分)。三版一致 → 不是程式退化,是機器目前 GPU 比 FE 那次(900 幀約 27 秒)慢約 5 倍;原因未查明(接電、平衡電源計畫、GPU 無其他程序)。沒有放寬腳本時限;待機器恢復後重跑。
+
+### W2b 角色表現 II(worktree `w2b`,分支 `work-w2b`,`rigorous-change`)
+
+範圍:缺口 B2(彈簧骨 + 碰撞膠囊)、B3(IK 目標綁另一個實體的骨骼 socket)、B7(look-at)。細節與規則見 `docs/skeletal-animation.zh-TW.md`「次級運動」。
+
+**設計**
+- 純計算 `axiom-animation/src/rig.rs`(新檔):`SpringSet` / `LookAtSet` 的型別、驗證、編譯(骨名 → 索引、鏈的走法、預算、鏈不得重疊或巢狀)與 `apply`(明確的輸入 / 輸出狀態 + 重複使用的 scratch,穩定步進 0 配置)。runtime 整合放在新子模組 `axiom-runtime/src/animation/rig.rs`(可直接用 `Controller` 私有欄位,`animation.rs` 只加幾個掛點):`Controller.rig: Option<Box<Rig>>`,沒有用到的播放器維持 `None`,行為與 metrics 不變。
+- 管線位置:IK 之後依序 look-at → 彈簧 → 蒙皮;`evaluate` 成功才 `commit` 新狀態(失敗步的回滾規則不變)。彈簧與 look-at 平滑在每個固定步都推進(暫停播放也是);命令 / 讀檔 / 熱重載的 `evaluate(0)` 只重新套用狀態。
+- 跨實體順序:固定步一開始對所有播放器解析目標(兩趟走訪、相同順序、可重用的清單),骨骼姿勢固定落後一步;測試精確比對。
+- IK socket 沿用 `TwoBoneIk`,新增選填 `socket`(序列化時沒有就省略,舊內容 / 存檔不變);`animation.ik` 的 `target` 改成選填,但必須給 `target` 或 `socket` 其中之一(舊呼叫都有 `target`,行為不變)。`CompiledIk::apply_to` 接受解析後的目標,`apply` 委派給它(殘差仍以給定的目標計算)。
+- 存檔:`SavedPlayer.rig`(選填);內容有 rig 而存檔沒有 → 明確拒絕。metrics `players.ID.rig` 只在有 rig 時出現,既有世界的 `state_hash` 不變。
+- 編寫:`ops::rig_edit`(`axiom-core/src/ops_rig.rs`,只動 JSON,寫入前跑登錄的驗證器)= ACL `rig SEL spring|collider|look|ik|debug ..` = 編輯器 `rig.edit`(同一個 `parse_rig_edit`)。Inspector 表單由登錄 schema 自動產生。
+- 示範:`content/rig-lab`(`scripts/build-rig-lab.py` 產生的程序化人偶;mascot / animator-lab 的 GLB 沒有頭髮 / 裙子骨,也沒有手骨可做雙骨 IK,所以另做)。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+- 「Inspector 表單」→ 沒有手寫表單,用登錄 schema 產生的通用元件表單(與 physics 等元件相同),parity 測試改 `reset_distance`;為什麼:專用 UI 不在必做範圍,通用表單已可編輯每個欄位。
+- 「debug 繪製」→ 只在元件 `debug:true` 時把方塊畫進渲染幀(青色關節、洋紅碰撞體中心與六個軸向端點、黃色面向射線與目標),不是編輯器 gizmo;碰撞體多半在身體裡面,畫面上只看得到部分標記。
+- look-at 的多骨分配:第一版每根骨用同一組軸各轉 yaw·w、pitch·w,審查指出 yaw 與 pitch 同時不為 0 時乘積不等於目標(產生 roll);改成整體轉動以累積權重 slerp 分配,權重合計 1 時精確。
+- 彈簧初始狀態:第一版在建置時用單位矩陣當實體矩陣,實體不在原點時第一步會甩動(審查發現);改成建置時傳入實體目前的世界矩陣,並加測試 `springs_start_at_rest_where_the_entity_stands`。
