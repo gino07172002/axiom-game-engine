@@ -142,5 +142,5 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
   - 視窗標題 = `Last Signal / 最後的訊號`(`MainWindowTitle`)。
   - 壞掉的 `game.json`(截斷 JSON)→ exit 1,`axiom-player-crash.log` 寫在 `%TMP%`(Windows 暫存目錄先看 TMP 再看 TEMP);合法 game.json 但 pack 不存在 → `%APPDATA%\Axiom\broken-game\crash.log`;不設 NO_DIALOG 時行程停在標題為 `The game could not start` 的訊息框。
   - `objdump -p`:player `Subsystem 00000002 (Windows GUI)`(CLI 仍為 3 CUI);`.rsrc` 0x186d0 bytes(三張 PNG 合計 99,056);`ExtractAssociatedIcon` 取出的圖為 Axiom 圖示,CLI 為 Windows 預設圖示。
-- Gate:`cargo fmt --all` 乾淨、`cargo clippy --workspace --all-targets -- -D warnings` 乾淨、`cargo test --workspace --no-fail-fast` 842 passed / 0 failed / 5 ignored(基準 840 + player 新增 2)、`scriptseditor-smoke-test.ps1` ok:true。
+- Gate:`cargo fmt --all` 乾淨、`cargo clippy --workspace --all-targets -- -D warnings` 乾淨、`cargo test --workspace --no-fail-fast` 842 passed / 0 failed / 5 ignored(基準 840 + player 新增 2)、`scripts/editor-smoke-test.ps1` ok:true。
 - 未做/限制:沒有 release 建置驗證(視窗屬性與圖示在 debug 已確認);ADV 敘事列左側的 `AXIOM / NARRATIVE` 字樣屬共用 UI,未在玩家模式隱藏;存讀檔按鈕的回應仍以原始 JSON 顯示在狀態列(玩家看得到);Esc 暫停提示未截圖驗證。
