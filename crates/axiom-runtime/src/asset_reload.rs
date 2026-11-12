@@ -31,10 +31,12 @@ const MAX_FILES: usize = 64;
 pub(crate) struct Built {
     rev: i64,
     session: String,
-    /// Content hash of each model file (asset ID -> FNV-1a of bytes and import options).
+    /// Content hash of each model (asset ID -> `content_hash`).
     hashes: BTreeMap<String, u64>,
     /// Files whose hash differs from the last accepted reload (all on the first one).
     files_changed: Vec<String>,
+    /// No accepted reload before this one (every file counted as changed).
+    first: bool,
     runtime: Option<WorldRuntime>,
     hash_ms: f64,
     build_ms: f64,
@@ -53,11 +55,12 @@ pub(crate) enum Decision {
 pub(crate) struct Reload {
     job: Option<(&'static str, Job<Result<Built>>)>,
     pub watch: bool,
-    /// Size and modification time of each watched file at the last poll.
-    stamps: BTreeMap<PathBuf, (u64, Option<SystemTime>)>,
-    /// Runtime session + revision the stamps belong to.
-    stamped: Option<(String, i64)>,
+    /// Per model file: its own and its folder's files (size, modification time) at the last
+    /// poll. Kept across revisions so a change made while a revision activates still counts.
+    stamps: BTreeMap<PathBuf, Vec<(PathBuf, u64, Option<SystemTime>)>>,
     last_poll: Option<Instant>,
+    /// Slowest `watch` poll on the main thread (milliseconds).
+    watch_poll_ms: f64,
     /// Content hashes of the last accepted reload.
     hashes: BTreeMap<String, u64>,
     /// The pending adoption's report (filled by `decide`, completed by `adopted`).
@@ -86,15 +89,76 @@ fn sources(runtime: &WorldRuntime) -> Result<BTreeMap<String, Source>> {
     Ok(sources)
 }
 
-/// FNV-1a of the file bytes and the import options (what the importer reads).
+/// Files under a model's folder an importer may read besides the model file itself (glTF
+/// `.bin`, textures): path, size and modification time, sorted; the same inputs as the
+/// importer cache key (`animation::asset_signature`). Bounded like it.
+const FOLDER_FILES: usize = 512;
+fn companions(source: &Source) -> Result<Vec<(PathBuf, u64, Option<SystemTime>)>> {
+    let root = source
+        .path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let mut pending = vec![root];
+    let mut files = vec![];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else if entry.path() != source.path {
+                files.push((entry.path(), meta.len(), meta.modified().ok()));
+            }
+            anyhow::ensure!(
+                files.len() + pending.len() <= FOLDER_FILES,
+                "model folder has more than {FOLDER_FILES} files"
+            );
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// FNV-1a over the model file bytes (streamed), the import options and the size and
+/// modification time of every other file in the model's folder.
 fn content_hash(source: &Source) -> Result<u64> {
+    use std::io::Read;
     let meta = std::fs::metadata(&source.path)?;
     anyhow::ensure!(meta.len() <= 134_217_728, "asset file exceeds 128 MiB");
-    let mut bytes = std::fs::read(&source.path)?;
-    bytes.extend(serde_json::to_vec(&source.options)?);
-    Ok(bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
-    }))
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut mix = |bytes: &[u8]| {
+        for b in bytes {
+            hash = (hash ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+        }
+    };
+    let mut file = std::fs::File::open(&source.path)?;
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        mix(&buffer[..n]);
+    }
+    mix(&serde_json::to_vec(&source.options)?);
+    for (path, len, modified) in companions(source)? {
+        mix(path.to_string_lossy().as_bytes());
+        mix(&len.to_le_bytes());
+        let nanos = modified
+            .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        mix(&nanos.to_le_bytes());
+    }
+    Ok(hash)
+}
+
+/// What `watch` compares between polls: the model file's and its folder's sizes and times.
+fn stamp(source: &Source) -> Option<Vec<(PathBuf, u64, Option<SystemTime>)>> {
+    let meta = std::fs::metadata(&source.path).ok()?;
+    let mut files = companions(source).ok()?;
+    files.push((source.path.clone(), meta.len(), meta.modified().ok()));
+    Some(files)
 }
 
 /// Why `next` may not replace `current`: an animated entity's skeleton changed. `Ok(changed)`
@@ -163,6 +227,7 @@ impl Reload {
         let registry = runtime.registry_clone();
         let (rev, session) = (runtime.rev, runtime.runtime_session.clone());
         let baseline = self.hashes.clone();
+        let first = baseline.is_empty();
         let clone_ms = started.elapsed().as_secs_f64() * 1000.0;
         let total = sources.len() as u64 + 1;
         let job = Job::spawn("asset_reload", trigger, RELOAD_TIMEOUT, move |p| {
@@ -199,6 +264,7 @@ impl Reload {
                 session,
                 hashes,
                 files_changed,
+                first,
                 runtime,
                 hash_ms,
                 build_ms: phase.elapsed().as_secs_f64() * 1000.0,
@@ -223,7 +289,8 @@ impl Reload {
         self.job.is_some()
     }
 
-    /// `watch`: whether a model file changed since the last poll (at most once per second).
+    /// `watch`: whether a model file (or a file in its folder) changed since the last poll, at
+    /// most once per second. A file seen for the first time does not count as a change.
     pub(crate) fn watch_due(&mut self, runtime: &WorldRuntime) -> bool {
         if !self.watch || self.job.is_some() {
             return false;
@@ -231,29 +298,36 @@ impl Reload {
         if self.last_poll.is_some_and(|t| t.elapsed() < WATCH_INTERVAL) {
             return false;
         }
-        self.last_poll = Some(Instant::now());
-        let key = (runtime.runtime_session.clone(), runtime.rev);
+        let started = Instant::now();
+        self.last_poll = Some(started);
         let Ok(sources) = sources(runtime) else {
             return false;
         };
         let mut changed = false;
-        let fresh = self.stamped.as_ref() != Some(&key);
-        if fresh {
-            self.stamps.clear();
-            self.stamped = Some(key);
-        }
         for source in sources.values() {
-            let stamp = std::fs::metadata(&source.path)
-                .map(|m| (m.len(), m.modified().ok()))
-                .unwrap_or((0, None));
+            let Some(stamp) = stamp(source) else {
+                continue;
+            };
             match self.stamps.insert(source.path.clone(), stamp) {
-                Some(old) if old != stamp => changed = true,
+                Some(old) if Some(&old) != self.stamps.get(&source.path) => changed = true,
                 _ => {}
             }
         }
-        changed && !fresh
+        self.watch_poll_ms = self
+            .watch_poll_ms
+            .max(started.elapsed().as_secs_f64() * 1000.0);
+        changed
     }
 
+    /// Turns watching on (checking that the world's models can be watched) or off.
+    pub(crate) fn set_watch(&mut self, runtime: &WorldRuntime, on: bool) -> Result<()> {
+        if on {
+            let sources = sources(runtime)?;
+            anyhow::ensure!(!sources.is_empty(), "the world has no model assets");
+        }
+        self.watch = on;
+        Ok(())
+    }
     /// Non-blocking; once per frame. A finished job's result, if any.
     pub(crate) fn poll(&mut self) -> Option<(Result<Built>, f64)> {
         let (_, job) = self.job.as_mut()?;
@@ -314,14 +388,17 @@ impl Reload {
                 self.finish(report);
                 Decision::Discard(Some(Box::new(next)))
             }
-            Ok(changed) if changed.is_empty() => {
-                // Same content keys (e.g. the bytes changed back): nothing to swap.
+            Ok(changed) if changed.is_empty() && built.first => {
+                // No baseline yet and the same content keys: nothing to swap.
                 report["state"] = json!("unchanged");
                 self.hashes = built.hashes;
                 self.finish(report);
                 Decision::Discard(Some(Box::new(next)))
             }
             Ok(changed) => {
+                // Files changed since the last accepted reload. With no live player using them
+                // (models only spawned later, a texture the keys did not change) the rebuilt
+                // runtime is still adopted, so later spawns and rebuilds see the new files.
                 report["state"] = json!("reloaded");
                 report["changed"] = json!(changed);
                 self.hashes = built.hashes;
@@ -378,6 +455,7 @@ impl Reload {
     pub(crate) fn observation(&self) -> Value {
         json!({
             "watch":self.watch,
+            "watch_poll_ms_max":self.watch_poll_ms,
             "running":self.job.as_ref().map(|(_, j)| j.observation()),
             "last":self.last,
             "reloads":self.reloads,
@@ -450,7 +528,7 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), r#"{"id":"reload.test","version":1,"world":"world.json","capabilities":{"animation":1,"core":1,"render":1}}"#).unwrap();
         std::fs::write(
             dir.join("world.json"),
-            json!({"schema_version":2,"id":"reload-test","capabilities":{"animation":1,"core":1,"render":1},
+            json!({"schema_version":2,"id":"reload-test","title":"Reload test","capabilities":{"animation":1,"core":1,"render":1},
                 "systems":["animation.evaluate"],
                 "entities":[{"id":"hero","components":{"core.transform":{},"animation.player":{"asset":"m","clip":"idle"}}}],
                 "scenes":[{"id":"s","active":true,"entities":["hero"]}],
@@ -503,6 +581,17 @@ mod tests {
         assert_ne!(after["vertices"], before["vertices"]);
         assert_eq!(after["time"], before["time"]);
         assert_eq!(after["clip"], "idle");
+        // Watch: the first poll only records; a file added next to the model is a change.
+        reload.set_watch(&runtime, true).unwrap();
+        assert!(!reload.watch_due(&runtime), "first sight is not a change");
+        reload.last_poll = None;
+        assert!(!reload.watch_due(&runtime));
+        std::fs::write(dir.join("model.bin"), b"buffer").unwrap();
+        assert!(!reload.watch_due(&runtime), "at most once per second");
+        reload.last_poll = None;
+        assert!(reload.watch_due(&runtime));
+        reload.set_watch(&runtime, false).unwrap();
+        assert!(!reload.watch_due(&runtime));
         // A different skeleton (the render-lab fighter): refused, the runtime keeps running.
         std::fs::copy(format!("{content}/render-lab/fighter.glb"), &model).unwrap();
         reload.start(&runtime, "command").unwrap();

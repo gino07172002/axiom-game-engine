@@ -829,7 +829,12 @@ mod tests {
         assert!(!outlined(0.0, None, AlphaMode::Opaque, false));
         assert!(!outlined(-2.0, None, AlphaMode::Opaque, true));
         assert!(!outlined(-2.0, None, AlphaMode::Mask(0.5), false));
-        assert!(!outlined(-2.0, Some(Alpha::Blend), AlphaMode::Opaque, false));
+        assert!(!outlined(
+            -2.0,
+            Some(Alpha::Blend),
+            AlphaMode::Opaque,
+            false
+        ));
     }
 
     #[test]

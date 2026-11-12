@@ -59,9 +59,7 @@ fn counters() -> (u64, u64) {
     (ALLOCS.load(Relaxed), BYTES.load(Relaxed))
 }
 
-/// Sorted-sample distribution. Percentiles use the nearest-rank (ceil) convention of
-/// `rts_stress`.
-/// skin::deform of every nimation.player (one frame's skinning), 240 frames: the
+/// `skin::deform` of every `animation.player` (one frame's skinning), 240 frames: the
 /// distribution of the per-frame sum, with the skinned vertex count.
 fn skinning_per_frame(world: &axiom_core::World) -> Result<Option<Value>> {
     let Some(assets) = world
@@ -113,6 +111,8 @@ fn skinning_per_frame(world: &axiom_core::World) -> Result<Option<Value>> {
         json!({"players":players.len(),"vertices":vertices,"deform_per_frame_ms":dist(samples)}),
     ))
 }
+/// Sorted-sample distribution. Percentiles use the nearest-rank (ceil) convention of
+/// `rts_stress`.
 fn dist(mut samples: Vec<f64>) -> Value {
     samples.sort_by(f64::total_cmp);
     let n = samples.len();
@@ -661,7 +661,7 @@ fn main() -> Result<()> {
         std::hint::black_box(serde_json::to_vec(&obs)?);
         obs_json_ms.push(ms(t));
     }
-    // CPU skinning alone (gap E5): what ender_frame spends in skin::deform for every
+    // CPU skinning alone (gap E5): what `render_frame` spends in `skin::deform` for every
     // animation.player of the pack, per frame (each player's asset at its rest pose; linear
     // blend cost does not depend on the pose).
     let skinning = skinning_per_frame(&world)?;

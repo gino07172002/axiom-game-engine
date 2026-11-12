@@ -2637,8 +2637,7 @@ fn sky_presets_and_surface_match_acl() {
 #[test]
 fn stylized_mesh_components_match_acl() {
     // Inspector ▸ Add component == `add SEL render.toon|render.outline` (typed defaults).
-    let blank = headless(&lab(), "");
-    let ball = headless(&blank, "create cube id=ball");
+    let ball = headless(&lab(), "create cube id=ball");
     for component in ["render.toon", "render.outline"] {
         assert_parity(
             ball.clone(),

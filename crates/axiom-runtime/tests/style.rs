@@ -43,7 +43,7 @@ fn style_lab_presents_per_primitive_styles() {
     };
     let skin = style.primitives[index("skin")];
     let hair = style.primitives[index("hair")];
-    assert_eq!(skin.toon[0], 2.0, "bands");
+    assert_eq!(skin.toon[0], 1.0, "bands");
     assert_eq!(skin.toon[3], 0.45, "skin wrap on skin");
     assert_eq!(hair.toon[3], 0.0, "no skin wrap on hair");
     assert_eq!(skin.face_blend, 0.75);

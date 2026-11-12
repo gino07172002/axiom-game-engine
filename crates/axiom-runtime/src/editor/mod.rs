@@ -649,7 +649,7 @@ pub(crate) struct Editor {
     look: look::Look,
     /// `asset.reload|watch` request for the host, and whether watching is on.
     reload_ask: Option<AssetReloadAsk>,
-    reload_watching: bool,
+    pub(crate) reload_watching: bool,
     /// The host's running asset-reload job (status bar and `observe` jobs).
     pub(crate) host_job: Option<Value>,
     /// Console, Event trace, Profiler and the scenario recording (M8).

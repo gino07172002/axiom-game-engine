@@ -65,20 +65,22 @@
 | 入口 | 行為 |
 |---|---|
 | 協定 `{"op":"reload_assets"}` | 開始一次重載,立刻回覆 `{ok, started, job}`;結果在 `observe` → `assets_reload.last` |
-| `{"op":"reload_assets","watch":true\|false}` | 開 / 關檔案監看:每秒 `stat` 一次每個模型檔(大小 + 修改時間),有變就自動開始重載 |
+| `{"op":"reload_assets","watch":true\|false}` | 開 / 關檔案監看:每秒在主執行緒 `stat` 一次每個模型檔與它資料夾裡的檔案(大小 + 修改時間;第一次看到的檔案不算變更;跨 revision 保留),有變就自動開始重載。世界沒有模型或模型超過 64 個時回錯誤。`observe` 的 `assets_reload.watch_poll_ms_max` 記錄最慢一次輪詢 |
 | `{"op":"reload_assets","cancel":true}` | 取消執行中的重載 |
 | 編輯器 Assets ▸ Reload Changed Models(`asset.reload`)、Watch Model Files(`asset.watch on\|off`) | 同上(`editor_view {command}` 也可) |
 
 - 背景 job(`asset_reload`,60 秒 watchdog、可取消、進度 = 已雜湊的檔案數 / 檔案數 + 1、出現在編輯器狀態列的 jobs 與 `observe`):
-  1. 對世界的每個模型檔算內容雜湊(檔案位元組 + 匯入選項,FNV-1a),檔案之間檢查取消。
+  1. 對世界的每個模型算內容雜湊(模型檔位元組串流 + 匯入選項 + 同資料夾其他檔案的路徑 / 大小 / 修改時間,FNV-1a;和匯入快取的鍵同一組輸入,所以 glTF 的 `.bin`、貼圖改了也算),檔案之間檢查取消。
   2. 有任何雜湊和上次接受的不同(第一次一律視為不同)→ 在 worker 上建一個新的 runtime(匯入快取只對內容變了的檔案失效)。
 - 主執行緒(下一幀)用每個動畫實體的資產**內容鍵**比較:
-  - 都一樣 → `unchanged`,什麼都不換。
+  - 第一次重載(還沒有基準)且內容鍵都一樣 → `unchanged`,什麼都不換;之後的重載只要雜湊和上次接受的不同就會建置。
+  - 檔案變了但沒有動畫實體的內容鍵改變(例如只改了同資料夾的貼花 PNG,或模型只在之後才 spawn)→ 仍然 adopt 重建的 runtime(`reloaded`、`changed: []`),之後的 spawn 與建置都用新檔。
   - 有變、骨架相同(骨骼 ID 與父子關係依序一致)→ `reloaded`,像一次 revision 熱重載一樣 adopt:片段時間、控制器狀態、物理等照常延續。
   - 骨架變了 → `refused`(訊息指出實體與第一根不同的骨骼),原本的 runtime 不動。
-  - job 期間有新的 revision 在啟用 → `superseded`(新的啟用本來就會載入新檔)。
+  - job 期間有新的 revision 在啟用、或上一個 revision 啟用失敗還沒補上(`requested_rev != rev`)→ `superseded`(那次啟用本來就會載入新檔,也不能被重載蓋掉)。
+  - 建置 runtime 這一步本身不能中途取消(和 revision 啟用相同),只受 60 秒 watchdog 限制;取消在檔案之間與建置前生效。
 - 記錄:`assets_reload.last = {state, changed, files_changed, hash_ms, build_ms, adopt_ms, elapsed_ms}`,同一行也寫到 Console(`Assets reloaded (…) in N ms`)與編輯器狀態列。
-- 限制:參考圖疊圖檢視(缺口 E4 的後半)沒有做;監看只看模型檔,不看貼花 PNG(PNG 改了要 `asset.reload` 之外的 revision 編輯或重開;貼花快取以內容雜湊判斷,下一次 runtime 建置就會讀到)。
+- 限制:參考圖疊圖檢視(缺口 E4 的後半)沒有做;不在模型資料夾裡的貼花 PNG 不會被監看(貼花快取以內容雜湊判斷,下一次 runtime 建置就會讀到);樣式欄位裡的材質 / 骨骼名稱只能對已載入的模型檢查,所以打錯字是在 runtime 建置時報錯(錯誤指出元件欄位,上一個可用的 runtime 繼續跑),不是在提交時;`render.toon` / `outline` / `decal` 掛在沒有網格的實體上不作用、也不報錯。
 
 ## 量測
 

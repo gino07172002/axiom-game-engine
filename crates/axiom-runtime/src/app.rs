@@ -2042,7 +2042,7 @@ impl App {
             return Ok(serde_json::json!({"ok":true,"cancelled":self.asset_reload.cancel()}));
         }
         if let Some(watch) = watch {
-            self.asset_reload.watch = watch;
+            self.asset_reload.set_watch(&self.runtime, watch)?;
             return Ok(serde_json::json!({"ok":true,"watch":watch}));
         }
         self.asset_reload.start(&self.runtime, "command")
@@ -2058,8 +2058,7 @@ impl App {
                         self.asset_reload.start(&self.runtime, "command").map(drop)
                     }
                     crate::editor::AssetReloadAsk::Watch(on) => {
-                        self.asset_reload.watch = on;
-                        Ok(())
+                        self.asset_reload.set_watch(&self.runtime, on)
                     }
                 };
                 if let (Err(error), Some(editor)) = (result, &mut self.editor) {
@@ -2073,12 +2072,17 @@ impl App {
             }
         }
         if let Some(editor) = &mut self.editor {
-            editor.host_job = self.asset_reload.job_observation();
+            editor.reload_watching = self.asset_reload.watch;
+            if self.asset_reload.running() || editor.host_job.is_some() {
+                editor.host_job = self.asset_reload.job_observation();
+            }
         }
         let Some((result, elapsed)) = self.asset_reload.poll() else {
             return;
         };
-        let busy = self.activation.is_some();
+        // A pending or failed revision activation owns the runtime's next swap (and its build
+        // loads the new files anyway).
+        let busy = self.activation.is_some() || self.runtime.requested_rev != self.runtime.rev;
         match self
             .asset_reload
             .decide(result, elapsed, &self.runtime, busy)

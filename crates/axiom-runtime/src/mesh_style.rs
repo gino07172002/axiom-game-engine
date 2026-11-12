@@ -137,7 +137,8 @@ pub fn prepare(
     let known = |list: &[String], field: &str| -> Result<()> {
         for name in list {
             anyhow::ensure!(
-                ids.iter().any(|(id, n)| *id == name || *n == Some(name.as_str())),
+                ids.iter()
+                    .any(|(id, n)| *id == name || *n == Some(name.as_str())),
                 "{field}: unknown material {name} (the mesh has: {})",
                 listed
             );
@@ -179,7 +180,10 @@ pub fn prepare(
             if !selects(&toon.materials, id, name) {
                 continue;
             }
-            let skin = toon.skin.as_ref().filter(|s| selects(&s.materials, id, name));
+            let skin = toon
+                .skin
+                .as_ref()
+                .filter(|s| selects(&s.materials, id, name));
             p.toon = [
                 toon.bands as f32,
                 toon.softness,
