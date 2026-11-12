@@ -458,6 +458,9 @@ impl Editor {
                 "object.camera_blocker" => self.notice(
                     "Use the Inspector render.mesh checkbox 'Blocks follow cameras', or on|off",
                 ),
+                "object.parts" => self.notice(
+                    "object.parts auto RADIUS [event=E] | add ID BONE radius=R .. on the selected characters",
+                ),
                 "event.declare" => {
                     self.show_dock(super::Dock::Problems);
                     self.notice("Undeclared events show a Declare button in Problems");
@@ -510,6 +513,7 @@ impl Editor {
                     None
                 }
             },
+            "object.parts" => self.parts_selection(arg),
             "event.declare" => self.declare_event(arg),
             "world.set_id" => self.world_request(WorldRequest::SetId(arg.into())),
             "world.set_title" => self.world_request(WorldRequest::SetTitle(arg.into())),

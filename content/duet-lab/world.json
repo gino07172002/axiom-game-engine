@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "id": "duet-lab",
+  "title": "Duet Lab / choreography and interaction",
+  "capabilities": {"animation":1,"behavior":1,"camera":1,"core":1,"render":1,"ui":1},
+  "systems": ["behavior.execute","animation.evaluate","camera.rig"],
+  "entities": [
+    {"id":"axi","label":"Axi (short bob)","components":{
+      "core.transform":{"position":[-0.42,0,0],"rotation":[0,0.104528,0,0.994522]},
+      "animation.player":{"asset":"axiom-short","clip":"idle"},
+      "animation.parts":{"auto_radius":0.07,"parts":[{"id":"head","bone":"head","length":0.22,"radius":0.13}],"event":"part_clicked"}
+    }},
+    {"id":"lyn","label":"Lyn (long hair)","components":{
+      "core.transform":{"position":[0.42,0,0],"rotation":[0,-0.104528,0,0.994522]},
+      "animation.player":{"asset":"axiom-long","clip":"idle"},
+      "animation.parts":{"auto_radius":0.07,"parts":[{"id":"head","bone":"head","length":0.22,"radius":0.13}],"event":"part_clicked"}
+    }},
+    {"id":"camera/orbit","label":"Orbit camera (drag / wheel)","components":{
+      "core.transform":{"position":[0,0.9,3.2]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":40},"near":0.04,"far":40,"viewport":[0,0,1,1],"active":true},
+      "camera.follow":{"target":"axi","target_bone":"chest","distance":3.0,"min_distance":1.2,"max_distance":6,"yaw":8,"pitch":8,"min_pitch":-10,"max_pitch":60,"look_height":0,"position_smoothing":0.15,"rotation_smoothing":0.08,
+        "input":{"zoom_axis":"zoom","zoom_speed":60,"drag":true},"collision":{"enabled":false}}
+    }},
+    {"id":"stage/floor","label":"Graphite floor","components":{
+      "core.transform":{"position":[0,-0.05,-0.6],"scale":[8,0.1,6]},
+      "render.mesh":{"parts":[{"color":[0.105,0.105,0.135],"grid":true}]}
+    }},
+    {"id":"stage/backdrop","label":"White backdrop","components":{
+      "core.transform":{"position":[0,1.6,-2.4]},
+      "render.mesh":{"parts":[{"transform":{"scale":[8,3.4,0.1]},"color":[0.86,0.86,0.9]}]}
+    }},
+    {"id":"stage/plinths","label":"Plinths","components":{
+      "core.transform":{},
+      "render.mesh":{"parts":[
+        {"transform":{"position":[-0.42,-0.02,0],"scale":[0.62,0.04,0.62]},"color":[0.17,0.17,0.21]},
+        {"transform":{"position":[0.42,-0.02,0],"scale":[0.62,0.04,0.62]},"color":[0.17,0.17,0.21]}
+      ]}
+    }}
+  ],
+  "resources": {
+    "animation.library":{"assets":{"axiom-short":{"path":"axiom-short.glb"},"axiom-long":{"path":"axiom-long.glb"}}},
+    "animation.choreography":{"stages":{
+      "together":{"actors":[{"entity":"axi","clip":"dance","fade_seconds":0.2},{"entity":"lyn","clip":"dance","fade_seconds":0.2}]},
+      "greet":{"actors":[{"entity":"axi","clip":"wave","looping":false,"fade_seconds":0.15},{"entity":"lyn","clip":"bow","looping":false,"fade_seconds":0.15}],"after":{"entity":"axi","next":"rest"}},
+      "rest":{"actors":[{"entity":"axi","clip":"idle","fade_seconds":0.25},{"entity":"lyn","clip":"idle","fade_seconds":0.25}]}
+    }},
+    "input.bindings":{"axes":{"zoom":{"positive":"WheelDown","negative":"WheelUp"}}},
+    "behavior.program":{
+      "variables":{"gauge":0.0,"rate":1.0,"part":"-","who":"-"},
+      "events":{"fill":{},"part_clicked":{"fields":{"entity":"text","part":"text"}}},
+      "rules":[
+        {"id":"fill_gauge","event":"fill","actions":[{"kind":"add","variable":"gauge","value":{"kind":"literal","value":25.0}}]},
+        {"id":"gauge_full","event":"fill","when":{"kind":"ge","left":{"kind":"variable","id":"gauge"},"right":{"kind":"literal","value":100.0}},
+          "actions":[{"kind":"set","variable":"gauge","value":{"kind":"literal","value":0.0}},{"kind":"call","capability":"animation","action":"stage","args":{"stage":"greet"}}]},
+        {"id":"clicked","event":"part_clicked","actions":[
+          {"kind":"set","variable":"part","value":{"kind":"event","field":"part"}},
+          {"kind":"set","variable":"who","value":{"kind":"event","field":"entity"}}]}
+      ]
+    },
+    "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":8},
+    "ui.document":{
+      "flow":true,
+      "session_controls":false,
+      "locale":"en",
+      "catalogs":{"en":{
+        "title":"DUET LAB  drag to orbit, wheel to zoom, click a body part",
+        "together":"Dance together",
+        "dance_batch":"Walk together (batch)",
+        "greet":"Greet (hidden while Axi waves)",
+        "rest":"Rest",
+        "fill":"Fill gauge +25",
+        "speed":"Axi speed",
+        "clicked":"Clicked:"
+      }},
+      "widgets":[
+        {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
+        {"kind":"text","id":"clicked_label","binding":{"kind":"key","id":"clicked"}},
+        {"kind":"text","id":"clicked_who","binding":{"kind":"variable","id":"who"}},
+        {"kind":"text","id":"clicked_part","binding":{"kind":"variable","id":"part"}},
+        {"kind":"button","id":"walk_both","text":"dance_batch","command":{"kind":"batch","commands":[
+          {"kind":"call","capability":"animation","action":"play","args":{"entity":"axi","clip":"walk","fade_seconds":0.2}},
+          {"kind":"call","capability":"animation","action":"play","args":{"entity":"lyn","clip":"walk","fade_seconds":0.2}}]}},
+        {"kind":"button","id":"together","text":"together","command":{"kind":"call","capability":"animation","action":"stage","args":{"stage":"together"}}},
+        {"kind":"button","id":"greet","text":"greet","command":{"kind":"call","capability":"animation","action":"stage","args":{"stage":"greet"}},
+          "when":{"kind":"not","condition":{"kind":"eq","left":{"kind":"animation","entity":"axi","field":"clip"},"right":{"kind":"literal","value":"wave"}}}},
+        {"kind":"button","id":"rest","text":"rest","command":{"kind":"call","capability":"animation","action":"stage","args":{"stage":"rest"}}},
+        {"kind":"button","id":"fill","text":"fill","command":{"kind":"emit","event":"fill"}},
+        {"kind":"slider","id":"speed","text":"speed","min":0.25,"max":2.0,"step":0.25,"variable":"rate",
+          "command":{"kind":"call","capability":"animation","action":"speed","args":{"entity":"axi"}},"arg":"speed"},
+        {"kind":"progress","id":"gauge","variable":"gauge","max":100}
+      ],
+      "regions":{"title":"top_left","clicked_label":"top_right","clicked_who":"top_right","clicked_part":"top_right"}
+    }
+  }
+}

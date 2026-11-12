@@ -7,6 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_EVENTS: usize = 128;
 pub const MAX_OPS: usize = 512;
+/// Commands in one `batch`.
+pub const MAX_BATCH: usize = 16;
+/// Capability calls queued by rules between two dispatches (`GameAction::Call`).
+pub const MAX_QUEUED_CALLS: usize = 32;
+/// Distinct animation reads (`Operand::Animation`) per program.
+pub const MAX_ANIMATION_READS: usize = 64;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Scalar {
@@ -53,9 +59,70 @@ impl Scalar {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operand {
-    Literal { value: Scalar },
-    Variable { id: String },
-    Event { field: String },
+    Literal {
+        value: Scalar,
+    },
+    Variable {
+        id: String,
+    },
+    Event {
+        field: String,
+    },
+    /// Live animation state of `entity` (an `animation.player`), published by the
+    /// `animation.evaluate` system into typed slots once per step (never parsed per frame).
+    Animation {
+        entity: String,
+        field: AnimationField,
+        /// Controller parameter name (`field: param` only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        param: Option<String>,
+    },
+}
+/// What an `Operand::Animation` reads.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationField {
+    /// Text: the playing clip (controller: the current state's main clip), "" for none.
+    Clip,
+    /// Number: seconds into the clip (controller: normalized time × clip length).
+    Time,
+    /// Number 0..1: position in the clip (controller: the current state's normalized time).
+    Normalized,
+    /// Number: playback rate.
+    Speed,
+    /// Bool: playback is running.
+    Playing,
+    /// Bool: a one-shot clip (or controller one-shot state) reached its end.
+    Finished,
+    /// Text: the controller's current state ("" without a controller).
+    State,
+    /// Number: a controller parameter (`param`); bools and triggers read 0 / 1.
+    Param,
+}
+impl AnimationField {
+    pub fn ty(self) -> ScalarType {
+        match self {
+            Self::Clip | Self::State => ScalarType::Text,
+            Self::Playing | Self::Finished => ScalarType::Bool,
+            Self::Time | Self::Normalized | Self::Speed | Self::Param => ScalarType::Number,
+        }
+    }
+}
+/// One distinct animation read of a compiled program (`Read::Animation` indexes these).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AnimationRead {
+    pub entity: String,
+    pub field: AnimationField,
+    pub param: Option<String>,
+}
+impl AnimationRead {
+    pub fn initial(&self) -> Scalar {
+        match self.field.ty() {
+            ScalarType::Text => Scalar::Text(String::new()),
+            ScalarType::Bool => Scalar::Bool(false),
+            _ => Scalar::Number(0.0),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -102,6 +169,17 @@ pub enum GameAction {
     End {
         ending: String,
     },
+    /// Runs a registered capability action (the same typed path as UI `call` commands),
+    /// after the rule finishes, in the same step. Failures are recoverable and reported.
+    Call {
+        capability: String,
+        action: String,
+        #[serde(default = "empty_args")]
+        args: Value,
+    },
+}
+fn empty_args() -> Value {
+    json!({})
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -180,6 +258,16 @@ pub enum RuntimeCommand {
     },
     Locale {
         locale: String,
+    },
+    /// 1..=16 commands (no nested batch / slide) run in order in the same tick. All are
+    /// validated before the first one applies.
+    Batch {
+        commands: Vec<RuntimeCommand>,
+    },
+    /// A slider widget's new value (one command per change).
+    Slide {
+        widget: String,
+        value: f64,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -501,6 +589,75 @@ pub enum Widget {
         variable: String,
         max: f64,
     },
+    /// A value the player drags or steps with the keyboard. Its value is a number variable
+    /// (`variable`) and / or the argument `arg` of a `call` command sent once per change.
+    Slider {
+        id: String,
+        /// Localization key of the label.
+        text: String,
+        min: f64,
+        max: f64,
+        /// Snap increment (> 0); none = continuous.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+        /// Number / integer variable the slider shows and sets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variable: Option<String>,
+        /// Starting value of a slider without a variable (default `min`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<f64>,
+        /// `call` command sent with `args[arg] = value` on each change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<RuntimeCommand>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arg: Option<String>,
+        #[serde(default)]
+        when: Condition,
+    },
+}
+
+/// A compiled slider (indices resolved, defaults applied).
+#[derive(Clone, Debug)]
+pub struct BoundSlider {
+    pub id: String,
+    pub text: String,
+    pub min: f64,
+    pub max: f64,
+    pub step: Option<f64>,
+    pub variable: Option<usize>,
+    /// The variable is an integer (values round to whole numbers).
+    pub integer: bool,
+    /// Starting value shown by a slider without a variable.
+    pub value: f64,
+    /// (capability, action, args, arg) of the command sent on change.
+    pub command: Option<(String, String, Value, String)>,
+    pub when: Test,
+}
+impl BoundSlider {
+    /// `value` clamped to min..max, snapped to `step` (from `min`) and, for integer
+    /// variables, rounded. Non-finite values are refused.
+    pub fn snap(&self, value: f64) -> Result<f64> {
+        ensure!(value.is_finite(), "slider value must be a finite number");
+        let mut v = value.clamp(self.min, self.max);
+        if let Some(step) = self.step {
+            v = (self.min + ((v - self.min) / step).round() * step).clamp(self.min, self.max);
+        }
+        if self.integer {
+            v = v.round().clamp(self.min.ceil(), self.max.floor());
+        }
+        Ok(v)
+    }
+    /// The `call` command a change to `value` sends, if the slider has one.
+    pub fn call(&self, value: f64) -> Option<RuntimeCommand> {
+        let (capability, action, args, arg) = self.command.as_ref()?;
+        let mut args = args.clone();
+        args[arg.as_str()] = json!(value);
+        Some(RuntimeCommand::Call {
+            capability: capability.clone(),
+            action: action.clone(),
+            args,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -508,6 +665,8 @@ pub enum Read {
     Literal(Scalar),
     Variable(usize),
     Event(usize),
+    /// Index into `CompiledGameplay::animation_reads`.
+    Animation(usize),
 }
 #[derive(Clone, Debug)]
 pub enum Test {
@@ -525,6 +684,8 @@ pub enum Op {
     GoTo(usize),
     Scene(usize),
     End(String),
+    /// A capability call queued for the runtime (capability, action, args).
+    Call(Box<(String, String, Value)>),
 }
 #[derive(Clone, Debug)]
 pub struct CompiledRule {
@@ -566,6 +727,7 @@ pub enum BoundWidget {
     Choices(String),
     Image(String, String),
     Progress(String, usize, f64),
+    Slider(Box<BoundSlider>),
 }
 #[derive(Clone, Debug)]
 pub struct CompiledGameplay {
@@ -582,6 +744,8 @@ pub struct CompiledGameplay {
     pub ui: Option<UiDocument>,
     pub widgets: Vec<BoundWidget>,
     pub effects: Vec<CompiledEffect>,
+    /// Distinct animation reads of conditions and actions (`Read::Animation`).
+    pub animation_reads: Vec<AnimationRead>,
 }
 struct Compiler<'a> {
     p: &'a Program,
@@ -589,6 +753,7 @@ struct Compiler<'a> {
     events: Vec<String>,
     nodes: Vec<String>,
     scenes: Vec<String>,
+    animation: std::cell::RefCell<Vec<AnimationRead>>,
 }
 fn index(ids: &[String], id: &str) -> Result<usize> {
     ids.iter()
@@ -605,6 +770,7 @@ impl Compiler<'_> {
         let suffix = match o {
             Operand::Variable { .. } => "/id",
             Operand::Event { .. } => "/field",
+            Operand::Animation { .. } => "",
             _ => "/value",
         };
         crate::local::at(&format!("{path}{suffix}"), self.read(o, fields))
@@ -680,6 +846,15 @@ impl Compiler<'_> {
                 GameAction::Scene { scene } => {
                     crate::local::at(&format!("{path}/scene"), index(&self.scenes, scene))?;
                 }
+                GameAction::Call {
+                    capability,
+                    action,
+                    args,
+                } => {
+                    crate::local::at(&format!("{path}/capability"), valid_id(capability))?;
+                    crate::local::at(&format!("{path}/action"), valid_id(action))?;
+                    crate::local::at(&format!("{path}/args"), call_args(args))?;
+                }
                 _ => {}
             }
             out.extend(crate::local::at(
@@ -705,6 +880,38 @@ impl Compiler<'_> {
                     .position(|(id, _)| id == field)
                     .context("missing event field")?;
                 (Read::Event(i), fields[i].1)
+            }
+            Operand::Animation {
+                entity,
+                field,
+                param,
+            } => {
+                valid_id(entity)?;
+                ensure!(
+                    (*field == AnimationField::Param) == param.is_some(),
+                    "animation reads take `param` with field param (and only there)"
+                );
+                if let Some(p) = param {
+                    valid_id(p)?;
+                }
+                let read = AnimationRead {
+                    entity: entity.clone(),
+                    field: *field,
+                    param: param.clone(),
+                };
+                let mut reads = self.animation.borrow_mut();
+                let i = match reads.iter().position(|r| *r == read) {
+                    Some(i) => i,
+                    None => {
+                        ensure!(
+                            reads.len() < MAX_ANIMATION_READS,
+                            "at most {MAX_ANIMATION_READS} distinct animation reads"
+                        );
+                        reads.push(read);
+                        reads.len() - 1
+                    }
+                };
+                (Read::Animation(i), field.ty())
             }
         })
     }
@@ -793,6 +1000,16 @@ impl Compiler<'_> {
                         valid_id(ending)?;
                         Op::End(ending.clone())
                     }
+                    GameAction::Call {
+                        capability,
+                        action,
+                        args,
+                    } => {
+                        valid_id(capability)?;
+                        valid_id(action)?;
+                        call_args(args)?;
+                        Op::Call(Box::new((capability.clone(), action.clone(), args.clone())))
+                    }
                 })
             })
             .collect()
@@ -832,6 +1049,7 @@ impl CompiledGameplay {
                 .map_or(vec![], |s| s.nodes.iter().map(|n| n.id.clone()).collect()),
             scenes: w.scenes.iter().map(|s| s.id.clone()).collect(),
             p: &p,
+            animation: Default::default(),
         };
         let event_fields = c
             .events
@@ -1058,6 +1276,109 @@ impl CompiledGameplay {
                         );
                         (id, BoundWidget::Progress(id.clone(), i, *max))
                     }
+                    Widget::Slider {
+                        id,
+                        text,
+                        min,
+                        max,
+                        step,
+                        variable,
+                        value,
+                        command,
+                        arg,
+                        when,
+                    } => {
+                        let path = crate::local::Target::Widget { id: id.clone() }.path();
+                        let bound = crate::local::at(
+                            &path,
+                            (|| -> Result<BoundSlider> {
+                                key(text)?;
+                                ensure!(
+                                    min.is_finite() && max.is_finite() && min < max,
+                                    "slider needs finite min < max"
+                                );
+                                if let Some(s) = step {
+                                    ensure!(
+                                        s.is_finite() && *s > 0.0 && *s <= max - min,
+                                        "slider step must be > 0 and at most max - min"
+                                    );
+                                }
+                                ensure!(
+                                    variable.is_some() || command.is_some(),
+                                    "a slider needs a variable and / or a command"
+                                );
+                                let (var, integer) = match variable {
+                                    Some(v) => {
+                                        let i = index(&c.vars, v)?;
+                                        let ty = p.variables[v].ty();
+                                        ensure!(
+                                            matches!(ty, ScalarType::Int | ScalarType::Number),
+                                            "slider variable {v} must be a number or integer"
+                                        );
+                                        ensure!(
+                                            ty != ScalarType::Int || min.ceil() <= max.floor(),
+                                            "slider for integer variable {v} needs a whole number within min..max"
+                                        );
+                                        (Some(i), ty == ScalarType::Int)
+                                    }
+                                    None => (None, false),
+                                };
+                                ensure!(
+                                    value.is_none() || variable.is_none(),
+                                    "`value` is the start of a slider without a variable (the variable's value is used otherwise)"
+                                );
+                                let start = value.unwrap_or(*min);
+                                ensure!(
+                                    start.is_finite() && (*min..=*max).contains(&start),
+                                    "slider value must lie within min..max"
+                                );
+                                let command = match (command, arg) {
+                                    (
+                                        Some(RuntimeCommand::Call {
+                                            capability,
+                                            action,
+                                            args,
+                                        }),
+                                        Some(a),
+                                    ) => {
+                                        valid_id(capability)?;
+                                        valid_id(action)?;
+                                        call_args(args)?;
+                                        valid_id(a)?;
+                                        Some((
+                                            capability.clone(),
+                                            action.clone(),
+                                            args.clone(),
+                                            a.clone(),
+                                        ))
+                                    }
+                                    (Some(RuntimeCommand::Call { .. }), None) => anyhow::bail!(
+                                        "a slider command needs `arg`: the argument that receives the value"
+                                    ),
+                                    (Some(_), _) => {
+                                        anyhow::bail!("a slider command must be a call command")
+                                    }
+                                    (None, Some(_)) => {
+                                        anyhow::bail!("`arg` goes with a slider command")
+                                    }
+                                    (None, None) => None,
+                                };
+                                Ok(BoundSlider {
+                                    id: id.clone(),
+                                    text: text.clone(),
+                                    min: *min,
+                                    max: *max,
+                                    step: *step,
+                                    variable: var,
+                                    integer,
+                                    value: start,
+                                    command,
+                                    when: c.test(when, &[], 0)?,
+                                })
+                            })(),
+                        )?;
+                        (id, BoundWidget::Slider(Box::new(bound)))
+                    }
                 };
                 valid_id(id)?;
                 ensure!(ids.insert(id), "duplicate widget id");
@@ -1086,7 +1407,13 @@ impl CompiledGameplay {
             }
             effects = compile_effects(u, &widgets, &c, &p)?;
         }
+        let animation_reads = c.animation.take();
+        ensure!(
+            animation_reads.is_empty() || w.systems.iter().any(|s| s == "animation.evaluate"),
+            "conditions that read animation state need the animation.evaluate system"
+        );
         Ok(Self {
+            animation_reads,
             initial: c.vars.iter().map(|id| p.variables[id].clone()).collect(),
             variables: c.vars.clone(),
             event_ids: c.events.clone(),
@@ -1108,8 +1435,18 @@ pub fn widget_variable(w: &BoundWidget) -> Option<usize> {
     match w {
         BoundWidget::Text(_, BoundText::Variable(i) | BoundText::LocalizedVariable(i), _)
         | BoundWidget::Progress(_, i, _) => Some(*i),
+        BoundWidget::Slider(s) => s.variable,
         _ => None,
     }
+}
+/// Capability arguments: a JSON object of bounded size.
+fn call_args(args: &Value) -> Result<()> {
+    ensure!(args.is_object(), "capability arguments must be an object");
+    ensure!(
+        serde_json::to_vec(args).is_ok_and(|b| b.len() <= 16_384),
+        "capability arguments exceed 16 KiB"
+    );
+    Ok(())
 }
 fn compile_effects(
     u: &UiDocument,
@@ -1261,7 +1598,19 @@ fn widget_id(w: &Widget) -> &str {
         | Widget::Button { id, .. }
         | Widget::Choices { id }
         | Widget::Image { id, .. }
-        | Widget::Progress { id, .. } => id,
+        | Widget::Progress { id, .. }
+        | Widget::Slider { id, .. } => id,
+    }
+}
+/// ID of a compiled widget.
+pub fn bound_widget_id(w: &BoundWidget) -> &str {
+    match w {
+        BoundWidget::Text(id, ..)
+        | BoundWidget::Button(id, ..)
+        | BoundWidget::Choices(id)
+        | BoundWidget::Image(id, _)
+        | BoundWidget::Progress(id, ..) => id,
+        BoundWidget::Slider(s) => &s.id,
     }
 }
 impl Widget {
@@ -1313,8 +1662,152 @@ pub fn validate_command(
             ui.is_some_and(|u| u.catalogs.contains_key(locale)),
             "unknown locale"
         ),
+        RuntimeCommand::Batch { commands } => {
+            ensure!(
+                (1..=MAX_BATCH).contains(&commands.len()),
+                "a batch holds 1..{MAX_BATCH} commands"
+            );
+            for (i, c) in commands.iter().enumerate() {
+                crate::local::at(
+                    &format!("/commands/{i}"),
+                    (|| -> Result<()> {
+                        ensure!(
+                            !matches!(
+                                c,
+                                RuntimeCommand::Batch { .. } | RuntimeCommand::Slide { .. }
+                            ),
+                            "a batch cannot hold batch or slide commands"
+                        );
+                        validate_command(c, p, n, ui)
+                    })(),
+                )?;
+            }
+        }
+        RuntimeCommand::Slide { widget, value } => {
+            ensure!(value.is_finite(), "slider value must be a finite number");
+            ensure!(
+                ui.is_some_and(|u| u
+                    .widgets
+                    .iter()
+                    .any(|w| matches!(w, Widget::Slider { id, .. } if id == widget))),
+                "unknown slider {widget}"
+            );
+        }
     }
     Ok(())
+}
+/// Every capability call authored in the gameplay resources, with its location: UI button
+/// commands (and their batch items), slider commands and `call` rule actions.
+pub fn authored_calls(w: &World) -> Result<Vec<AuthoredCall>> {
+    fn push(out: &mut Vec<AuthoredCall>, path: String, c: &RuntimeCommand) {
+        match c {
+            RuntimeCommand::Call {
+                capability,
+                action,
+                args,
+            } => out.push(AuthoredCall {
+                path,
+                capability: capability.clone(),
+                action: action.clone(),
+                args: args.clone(),
+            }),
+            RuntimeCommand::Batch { commands } => {
+                for (i, c) in commands.iter().enumerate() {
+                    push(out, format!("{path}/commands/{i}"), c);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    if let Some(value) = w.resources.get("ui.document") {
+        let doc: UiDocument = serde_json::from_value(value.clone())?;
+        for widget in &doc.widgets {
+            let path = format!(
+                "{}/command",
+                crate::local::Target::Widget {
+                    id: widget.id().to_owned()
+                }
+                .path()
+            );
+            match widget {
+                Widget::Button { command, .. } => push(&mut out, path, command),
+                Widget::Slider {
+                    command: Some(command),
+                    arg,
+                    min,
+                    ..
+                } => {
+                    // The value goes into `args[arg]` at runtime; validate with `min` there.
+                    let mut command = command.clone();
+                    if let (
+                        RuntimeCommand::Call {
+                            args: args @ Value::Object(_),
+                            ..
+                        },
+                        Some(arg),
+                    ) = (&mut command, arg)
+                    {
+                        args[arg.as_str()] = json!(min);
+                    }
+                    push(&mut out, path, &command)
+                }
+                _ => {}
+            }
+        }
+    }
+    let actions = |out: &mut Vec<AuthoredCall>, base: String, list: &[GameAction]| {
+        for (i, a) in list.iter().enumerate() {
+            if let GameAction::Call {
+                capability,
+                action,
+                args,
+            } = a
+            {
+                out.push(AuthoredCall {
+                    path: format!("{base}/{i}"),
+                    capability: capability.clone(),
+                    action: action.clone(),
+                    args: args.clone(),
+                });
+            }
+        }
+    };
+    if let Some(value) = w.resources.get("behavior.program") {
+        let program: Program = serde_json::from_value(value.clone())?;
+        for rule in &program.rules {
+            let base = crate::local::Target::Rule {
+                id: rule.id.clone(),
+            }
+            .path();
+            actions(&mut out, format!("{base}/actions"), &rule.actions);
+        }
+    }
+    if let Some(value) = w.resources.get("narrative.graph") {
+        let story: Narrative = serde_json::from_value(value.clone())?;
+        for n in &story.nodes {
+            let base = crate::local::Target::Node { id: n.id.clone() }.path();
+            actions(&mut out, format!("{base}/on_enter"), &n.on_enter);
+            for c in &n.choices {
+                let base = crate::local::Target::Choice {
+                    node: n.id.clone(),
+                    id: c.id.clone(),
+                }
+                .path();
+                actions(&mut out, format!("{base}/actions"), &c.actions);
+            }
+        }
+    }
+    Ok(out)
+}
+/// One authored capability call (see [`authored_calls`]).
+#[derive(Clone, Debug)]
+pub struct AuthoredCall {
+    /// JSON path of the command / action.
+    pub path: String,
+    pub capability: String,
+    pub action: String,
+    pub args: Value,
 }
 pub fn register(r: &mut Registry) {
     r.event_consumers.insert("behavior.execute".into());
@@ -1327,7 +1820,7 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command / choices / image / progress","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {
@@ -1368,5 +1861,5 @@ pub fn register(r: &mut Registry) {
         }
         Ok(())
     });
-    r.topics.insert("gameplay".into(),json!({"conditions":["always","eq","ge","all","not"],"operands":["literal","variable","event"],"actions":["set","add","emit","delay","go_to","scene","end"],"commands":["choose","emit","locale"],"limits":{"ops_per_tick":MAX_OPS,"queued_events":MAX_EVENTS,"condition_depth":16},"save":"checkpoint v1; strict content compatibility; authoring history separate","references":"variable/event/node/scene/UI binding IDs checked at compile time"}));
+    r.topics.insert("gameplay".into(),json!({"conditions":["always","eq","ge","all","not"],"operands":["literal","variable","event","animation {entity, field: clip|time|normalized|speed|playing|finished|state|param, param?}"],"actions":["set","add","emit","delay","go_to","scene","end","call {capability, action, args}"],"commands":["choose","emit","locale","call","batch {commands: 1..16, validated before any applies}","slide {widget, value}"],"limits":{"ops_per_tick":MAX_OPS,"queued_events":MAX_EVENTS,"condition_depth":16},"save":"checkpoint v1; strict content compatibility; authoring history separate","references":"variable/event/node/scene/UI binding IDs checked at compile time"}));
 }

@@ -9,6 +9,10 @@ pub struct UiState {
     pub targets: std::collections::BTreeMap<String, egui::Rect>,
     pub textures: std::collections::BTreeMap<String, egui::TextureHandle>,
     pub numeric_drafts: std::collections::BTreeMap<String, f64>,
+    /// `ui.document` sliders: the value while a drag is held (sent once on release) and the
+    /// last value sent by sliders without a variable (shown until the next change).
+    pub slider_drafts: std::collections::BTreeMap<String, f64>,
+    pub slider_values: std::collections::BTreeMap<String, f64>,
     pub playing: bool,
     pub console: bool,
     pub command: String,

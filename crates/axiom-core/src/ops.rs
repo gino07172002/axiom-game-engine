@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 
 pub use crate::ops_anim::*;
 pub use crate::ops_assets::*;
+pub use crate::ops_choreo::*;
 pub use crate::ops_graph::*;
 pub use crate::ops_merge::*;
 pub use crate::ops_prefab::*;
@@ -871,6 +872,10 @@ pub struct CameraFollowOptions {
     pub zoom_axis: Option<String>,
     pub radius: Option<f32>,
     pub collision: Option<bool>,
+    /// Primary-button drag over the game view orbits (`input.drag`).
+    pub drag: Option<bool>,
+    /// Bone of the target's skeleton to look at (`target_bone`).
+    pub bone: Option<String>,
 }
 
 /// Object ▸ Camera Follow Selected: puts a `camera.follow` of `target` (defaults plus
@@ -914,6 +919,8 @@ pub fn add_camera_follow(
     }
     follow.collision.radius = options.radius.unwrap_or(follow.collision.radius);
     follow.collision.enabled = options.collision.unwrap_or(follow.collision.enabled);
+    follow.input.drag = options.drag.unwrap_or(follow.input.drag);
+    follow.target_bone = options.bone.clone();
     follow.validate().map_err(|e| {
         Diagnostic::error(
             "invalid_value",

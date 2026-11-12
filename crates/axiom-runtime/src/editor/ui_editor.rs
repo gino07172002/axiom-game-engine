@@ -255,6 +255,7 @@ fn kind_of(w: &Widget) -> &'static str {
         Widget::Choices { .. } => "choices",
         Widget::Image { .. } => "image",
         Widget::Progress { .. } => "progress",
+        Widget::Slider { .. } => "slider",
     }
 }
 
@@ -327,6 +328,7 @@ impl Editor {
             "ui.place" => format!("place {arg}"),
             "ui.style" => format!("style {arg}"),
             "ui.button" => format!("button {arg}"),
+            "ui.slider" => format!("slider {arg}"),
             "ui.effect_add" => format!("effect add {arg}"),
             "ui.effect_set" => format!("effect set {arg}"),
             "ui.effect_remove" => format!("effect remove {arg}"),
@@ -1008,6 +1010,8 @@ impl Editor {
             RuntimeCommand::Locale { .. } => "locale",
             RuntimeCommand::Choose { .. } => "choose",
             RuntimeCommand::Call { .. } => "call",
+            RuntimeCommand::Batch { .. } => "batch",
+            RuntimeCommand::Slide { .. } => "slide",
         };
         let mut picked: Option<RuntimeCommand> = None;
         ui.horizontal_wrapped(|ui| {
@@ -1056,6 +1060,18 @@ impl Editor {
                     capability, action, ..
                 } => {
                     caption(ui, format!("{capability}.{action} (Fields to change)"));
+                }
+                RuntimeCommand::Batch { commands } => {
+                    caption(
+                        ui,
+                        format!(
+                            "{} commands in one tick (Fields to change; ACL ui button {id} batch [..])",
+                            commands.len()
+                        ),
+                    );
+                }
+                RuntimeCommand::Slide { widget, .. } => {
+                    caption(ui, format!("slide {widget} (Fields to change)"));
                 }
             }
         });

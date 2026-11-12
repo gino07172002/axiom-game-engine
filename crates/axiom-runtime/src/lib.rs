@@ -1,5 +1,5 @@
 // The editor discovery topic (editor/commands.rs) is one large serde_json::json! literal.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 pub mod action;
 pub mod animation;
 pub mod animation_demo;

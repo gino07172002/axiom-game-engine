@@ -104,6 +104,39 @@ pub struct FollowInput {
     /// Meters per second at full axis.
     #[serde(default = "default_zoom_speed")]
     pub zoom_speed: f32,
+    /// A primary-button drag over the game view orbits the camera (screen pointer events,
+    /// recorded into scenarios like any pointer drag).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub drag: bool,
+    /// Degrees of yaw per drag across the whole view width (dragging right turns the camera
+    /// so the scene rotates with the cursor). Default 360.
+    #[serde(
+        default = "default_drag_yaw",
+        skip_serializing_if = "is_default_drag_yaw"
+    )]
+    pub drag_yaw: f32,
+    /// Degrees of pitch per drag across the whole view height (dragging down raises the
+    /// camera). Default 180.
+    #[serde(
+        default = "default_drag_pitch",
+        skip_serializing_if = "is_default_drag_pitch"
+    )]
+    pub drag_pitch: f32,
+}
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+fn default_drag_yaw() -> f32 {
+    360.0
+}
+fn is_default_drag_yaw(v: &f32) -> bool {
+    *v == default_drag_yaw()
+}
+fn default_drag_pitch() -> f32 {
+    180.0
+}
+fn is_default_drag_pitch(v: &f32) -> bool {
+    *v == default_drag_pitch()
 }
 
 impl Default for FollowInput {
@@ -115,6 +148,9 @@ impl Default for FollowInput {
             yaw_speed: default_yaw_speed(),
             pitch_speed: default_pitch_speed(),
             zoom_speed: default_zoom_speed(),
+            drag: false,
+            drag_yaw: default_drag_yaw(),
+            drag_pitch: default_drag_pitch(),
         }
     }
 }
@@ -160,6 +196,10 @@ impl Default for FollowCollision {
 pub struct CameraFollow {
     /// Entity ID the camera follows (its world pivot).
     pub target: String,
+    /// Bone of the target's `animation.player` skeleton the camera looks at instead of the
+    /// pivot (its animated world position; `look_height` still adds on top).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_bone: Option<String>,
     /// Desired meters from the look point (zoom input and `camera.follow.set` change it at
     /// runtime within min..max).
     #[serde(default = "default_distance")]
@@ -201,6 +241,7 @@ impl CameraFollow {
     pub fn new(target: &str) -> Self {
         Self {
             target: target.to_owned(),
+            target_bone: None,
             distance: default_distance(),
             min_distance: default_min_distance(),
             max_distance: default_max_distance(),
@@ -220,6 +261,14 @@ impl CameraFollow {
     pub fn validate(&self) -> Result<()> {
         let within = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
         crate::valid_id(&self.target).map_err(|e| anyhow::anyhow!("target: {e:#}"))?;
+        if let Some(bone) = &self.target_bone {
+            crate::valid_id(bone).map_err(|e| anyhow::anyhow!("target_bone: {e:#}"))?;
+        }
+        ensure!(
+            within(self.input.drag_yaw, -3600.0, 3600.0)
+                && within(self.input.drag_pitch, -3600.0, 3600.0),
+            "input drag_yaw and drag_pitch must be -3600..3600 degrees per view"
+        );
         ensure!(
             within(self.min_distance, 0.1, 100.0) && within(self.max_distance, 0.1, 100.0),
             "min_distance and max_distance must be 0.1..100 meters"
@@ -282,6 +331,7 @@ impl CameraFollow {
 pub fn follow_schema() -> Value {
     json!({
         "target": "entity ID (required): the camera orbits this entity's world pivot; not the camera itself or one of its descendants, and not another follow camera",
+        "target_bone": "optional bone of the target's animation.player skeleton: the look point follows that bone's animated world position (+ look_height) instead of the pivot",
         "distance": "meters, default 5, within min_distance..max_distance: desired distance from the look point",
         "min_distance": "meters 0.1..100, default 1: the camera never comes closer, even when a blocker is nearer",
         "max_distance": "meters 0.1..100, default 12 (zoom limit)",
@@ -292,7 +342,7 @@ pub fn follow_schema() -> Value {
         "look_height": "meters -10..10, default 1.5: look point above the target pivot (the orbit center)",
         "position_smoothing": "half-life seconds 0..5, default 0.1: how the look point trails the target (0 = rigid). The look point never trails through a blocker",
         "rotation_smoothing": "half-life seconds 0..5, default 0.1: yaw, pitch and distance approach their goals (input, camera.follow.set)",
-        "input": "{yaw_axis, pitch_axis, zoom_axis: input.bindings axis names (\"\" = none; keys are never hard-coded), yaw_speed deg/s 0..720 default 120, pitch_speed default 60, zoom_speed m/s 0..100 default 4}",
+        "input": "{yaw_axis, pitch_axis, zoom_axis: input.bindings axis names (\"\" = none; keys are never hard-coded; the mouse wheel is the pseudo keys WheelUp / WheelDown, one fixed step per notch), yaw_speed deg/s 0..720 default 120, pitch_speed default 60, zoom_speed m/s 0..100 default 4, drag: bool (primary-button drag over the game view orbits), drag_yaw deg per view width default 360, drag_pitch deg per view height default 180}",
         "collision": format!("{{enabled default true, radius meters 0..{MAX_COLLISION_RADIUS} default 0.2 (sphere cast), recover half-life seconds 0..5 default 0.25}}: the camera stops in front of blockers at once and moves back out smoothly; never closer than min_distance"),
         "blockers": format!("static, at the authored pose: physics.collider box/capsule/sphere, nav.blocker (height = the entity's own render.mesh bounds, else unbounded), render.mesh parts of entities with the {BLOCKER_COMPONENT} component (or the deprecated tag {BLOCKER_TAG}). Moving entities (any mover, path.follow, or under one), the target's hierarchy and entities in inactive scenes never block"),
         "enabled": "bool, default true: a disabled follow leaves the camera where it is",
@@ -617,6 +667,18 @@ pub fn validate_world(
                 &e.id,
                 "/target",
                 format!("target {} has no core.transform", follow.target),
+            ));
+        }
+        if follow.target_bone.is_some()
+            && !entities[target].components.contains_key("animation.player")
+        {
+            return Err(invalid(
+                &e.id,
+                "/target_bone",
+                format!(
+                    "target_bone needs an animation.player on target {}",
+                    follow.target
+                ),
             ));
         }
         for (field, axis) in follow.input.axes() {

@@ -73,9 +73,13 @@ EDIT (any number, atomic):
   scene member SCENE SEL on|off
   camera main ID                  active=true on ID, false on every other camera
   camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS]
-        [zoom=AXIS] [radius=M] [collide=on|off]   camera.follow on each camera: orbits TARGET, stops in
+        [zoom=AXIS] [radius=M] [collide=on|off] [drag=on|off] [bone=BONE]   camera.follow on each camera:
+                                  orbits TARGET (drag=on: mouse drag orbits; bone=B: look at that bone), stops in
                                   front of static blockers (runtime: call camera.follow.set / camera.activate)
   camera SEL blocker on|off       camera.blocker on each mesh: its parts block follow cameras
+  parts SEL auto RADIUS [event=E] | parts SEL add ID BONE radius=R [to=BONE] [length=M] | parts SEL remove ID
+        | parts SEL event E|none | parts SEL clear   animation.parts bone capsules on animated characters: a
+                                  click (pointer ray) reports entity + part (event E with entity/part fields)
   migrate camera_blocker          deprecated tag camera_blocker -> camera.blocker component (verify lists it)
   rename ID LABEL                 display label (\"quoted\" for spaces/CJK); \"\" clears it
   move ID before OTHER|after OTHER|end   reorder (authored order = sibling order)
@@ -102,6 +106,9 @@ EDIT (any number, atomic):
   ui place WIDGET REGION|none     top_left|top|top_right|left|center|right|bottom_left|bottom|bottom_right
   ui style WIDGET STYLE|none      title|heading|banner|value|label|muted (text and progress widgets)
   ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}]
+        | batch [COMMANDS]        1..16 commands run in order in one tick, all validated first
+  ui slider add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME]
+        [when={COND}]             slider widget: sets number variable V and / or sends the call with args[NAME]=value
   ui effect add ID WIDGET KIND [on=show|hide|change|event|when] [event=E] [when={COND}] [ticks=N]
         [ease=E] [direction=left|right|up|down] [amount=X] [from=X]   KIND: fade_in|fade_out|slide_in|
         slide_out|scale_in|scale_out|pulse|shake|number_roll (+ system ui.effects when missing)
@@ -112,6 +119,9 @@ EDIT (any number, atomic):
   loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY   (new key: TEXT in the
                                   default locale, empty elsewhere) | loc locale add L [from=L2] | loc locale remove L
   ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
+  stage ID set {\"actors\":[{\"entity\":E,\"clip\"?:C,\"speed\"?:X,\"params\"?:{..}}..],\"after\"?:{\"entity\":E,\"cycles\"?:N,\"next\":S}}
+        | stage ID remove           animation.choreography stage: call animation.stage {stage} starts every
+                                  actor on one step (all checked first); after: next stage once E completed N clip cycles
   marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS
                                   animation.library clip markers: behavior.program event and / or audio cue,
                                   fired once per loop iteration (also under an animation controller)
@@ -410,6 +420,7 @@ enum Statement {
     CameraMain(String),
     CameraFollow(Box<Selection>, String, Box<crate::ops::CameraFollowOptions>),
     CameraBlocker(Box<Selection>, bool),
+    Parts(Box<Selection>, Box<crate::ops::PartsEdit>),
     MigrateCameraBlockers,
     Rename(String, String),
     Move(String, crate::ops::Order),
@@ -484,6 +495,7 @@ enum TuningStatement {
     Vfx(String, crate::ops::VfxEdit),
     Shader(String, String),
     Marker(String, crate::ops::MarkerEdit),
+    Stage(String, crate::ops::StageEdit),
 }
 
 fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
@@ -621,6 +633,16 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
             text(clip),
             crate::ops::MarkerEdit::Move(index(i)?, seconds(at)?),
         ),
+        ["stage", id, "set", json] => TuningStatement::Stage(
+            text(id),
+            crate::ops::StageEdit::Set(
+                json_value(json).context("stage set takes the stage as JSON")?,
+            ),
+        ),
+        ["stage", id, "remove"] => TuningStatement::Stage(text(id), crate::ops::StageEdit::Remove),
+        ["stage", ..] => bail!(
+            "use: stage ID set {{\"actors\":[{{\"entity\":E,\"clip\":C}}..],\"after\":{{\"entity\":E,\"next\":S}}}} | stage ID remove"
+        ),
         ["marker", ..] => bail!(
             "use: marker CLIP add SECONDS [event=E] [cue=C] | marker CLIP remove I | marker CLIP move I SECONDS"
         ),
@@ -698,6 +720,7 @@ fn tuning_edits(w: &World, stmt: &TuningStatement) -> Result<Vec<Edit>> {
         TuningStatement::Vfx(id, edit) => crate::ops::edit_vfx(w, id, edit),
         TuningStatement::Shader(id, wgsl) => crate::ops::set_shader_source(w, id, wgsl),
         TuningStatement::Marker(clip, edit) => crate::ops::anim_marker(w, clip, edit),
+        TuningStatement::Stage(id, edit) => crate::ops::edit_stage(w, id, edit),
     }
 }
 
@@ -712,6 +735,7 @@ enum UiStatement {
     Place(String, Option<crate::gameplay::Region>),
     Style(String, Option<crate::gameplay::TextStyle>),
     Button(String, crate::gameplay::RuntimeCommand),
+    SliderAdd(Box<crate::gameplay::Widget>),
     EffectAdd(Box<crate::gameplay::UiEffect>),
     EffectSet(String, Vec<(String, String)>),
     EffectRemove(String),
@@ -750,7 +774,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             UiStatement::Style(arg(2)?.clone(), crate::ops::parse_style(arg(3)?)?)
         }
         "button" => {
-            let usage = "use: ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}]";
+            let usage = "use: ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}] | batch [COMMANDS JSON]";
             let widget = arg(2)?.clone();
             let n = tokens.len();
             let command = match (tokens.get(3).map(String::as_str), n) {
@@ -777,9 +801,29 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                         None => json!({}),
                     },
                 },
+                (Some("batch"), 5) => RuntimeCommand::Batch {
+                    commands: serde_json::from_value(json_value(&tokens[4])?).context(
+                        "batch takes a JSON list of commands ({\"kind\":\"call\",..} / emit / choose / locale)",
+                    )?,
+                },
                 _ => bail!("{usage}"),
             };
             UiStatement::Button(widget, command)
+        }
+        "slider" => {
+            let usage = "use: ui slider add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME] [when=JSON]";
+            ensure!(tokens.len() >= 7 && tokens[2] == "add", "{usage}");
+            let number = |t: &str| -> Result<f64> {
+                t.parse()
+                    .with_context(|| format!("'{t}' is not a number ({usage})"))
+            };
+            UiStatement::SliderAdd(Box::new(crate::ops::slider_widget(
+                &tokens[3],
+                &tokens[4],
+                number(&tokens[5])?,
+                number(&tokens[6])?,
+                &key_values(&tokens[7..])?,
+            )?))
         }
         "effect" => match arg(2)?.as_str() {
             "add" => {
@@ -814,7 +858,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             }
             other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
         },
-        other => bail!("unknown ui verb '{other}' (place, style, button, effect)"),
+        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect)"),
     })
 }
 
@@ -825,6 +869,7 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
         UiStatement::Button(widget, command) => {
             crate::ops::set_ui_button_command(w, widget, command)
         }
+        UiStatement::SliderAdd(slider) => crate::ops::add_ui_slider(w, slider),
         UiStatement::EffectAdd(effect) => crate::ops::add_ui_effect(w, r, effect),
         UiStatement::EffectSet(id, options) => crate::ops::edit_ui_effect(w, id, options),
         UiStatement::EffectRemove(id) => crate::ops::remove_ui_effect(w, id),
@@ -1121,7 +1166,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::EventDeclare(arg(2)?.clone(), fields)
         }
         "ui" => Statement::Ui(ui_statement(tokens)?),
-        "input" | "loc" | "ability" | "vfx" | "shader" | "marker" => {
+        "input" | "loc" | "ability" | "vfx" | "shader" | "marker" | "stage" => {
             Statement::Tuning(tuning_statement(tokens)?)
         }
         "rotate" => {
@@ -1204,6 +1249,7 @@ fn parse(tokens: &[String]) -> Result<Statement> {
             Statement::CameraBlocker(Box::new(selector(&tokens[1])?), on_off(&tokens[3])?)
         }
         "camera" => camera_follow(tokens)?,
+        "parts" => parts(tokens)?,
         "migrate" => {
             ensure!(
                 tokens.len() == 2 && tokens[1] == "camera_blocker",
@@ -1532,9 +1578,77 @@ fn asset(tokens: &[String]) -> Result<Statement> {
     }
 }
 
+/// `parts SEL auto RADIUS [event=E] | add ID BONE radius=R [to=BONE] [length=M] | remove ID |
+/// event E|none | clear`.
+fn parts(tokens: &[String]) -> Result<Statement> {
+    let select = tokens.get(1).with_context(|| PARTS_USE)?;
+    Ok(Statement::Parts(
+        Box::new(selector(select)?),
+        Box::new(parts_edit(&tokens[2..])?),
+    ))
+}
+
+const PARTS_USE: &str = "use: parts SEL auto RADIUS [event=E] | parts SEL add ID BONE radius=R [to=BONE] [length=M] | parts SEL remove ID | parts SEL event E|none | parts SEL clear";
+
+/// The arguments after `parts SEL` (the editor's `object.parts` passes the same text).
+pub fn parts_edit_text(text: &str) -> Result<crate::ops::PartsEdit> {
+    parts_edit(&tokenize(text)?)
+}
+
+fn parts_edit(tokens: &[String]) -> Result<crate::ops::PartsEdit> {
+    use crate::ops::PartsEdit;
+    const USE: &str = PARTS_USE;
+    let words: Vec<&str> = tokens.iter().map(String::as_str).collect();
+    let number = |v: &str, k: &str| -> Result<f32> {
+        v.parse::<f32>()
+            .with_context(|| format!("{k} must be a number ({USE})"))
+    };
+    let edit = match words.as_slice() {
+        ["auto", radius, rest @ ..] => {
+            let mut event = None;
+            for t in rest {
+                match t.split_once('=') {
+                    Some(("event", v)) => event = Some(v.to_owned()),
+                    _ => bail!("unexpected '{t}' ({USE})"),
+                }
+            }
+            PartsEdit::Auto {
+                radius: number(radius, "radius")?,
+                event,
+            }
+        }
+        ["add", id, bone, rest @ ..] => {
+            let (mut radius, mut to, mut length) = (None, None, None);
+            for t in rest {
+                match t.split_once('=') {
+                    Some(("radius", v)) => radius = Some(number(v, "radius")?),
+                    Some(("to", v)) => to = Some(v.to_owned()),
+                    Some(("length", v)) => length = Some(number(v, "length")?),
+                    _ => bail!("unexpected '{t}' ({USE})"),
+                }
+            }
+            PartsEdit::Add {
+                id: (*id).to_owned(),
+                bone: (*bone).to_owned(),
+                radius: radius.with_context(|| format!("add needs radius=R ({USE})"))?,
+                to,
+                length,
+            }
+        }
+        ["remove", id] => PartsEdit::Remove {
+            id: (*id).to_owned(),
+        },
+        ["event", "none"] => PartsEdit::Event(None),
+        ["event", e] => PartsEdit::Event(Some((*e).to_owned())),
+        ["clear"] => PartsEdit::Clear,
+        _ => bail!("{USE}"),
+    };
+    Ok(edit)
+}
+
 /// `camera SEL follow TARGET [k=v..]` (`camera main ID` is matched before this).
 fn camera_follow(tokens: &[String]) -> Result<Statement> {
-    const USE: &str = "use: camera main ID | camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS] [zoom=AXIS] [radius=M] [collide=on|off]";
+    const USE: &str = "use: camera main ID | camera SEL follow TARGET [distance=M] [min=M] [max=M] [yaw=DEG] [pitch=DEG] [height=M] [orbit=AXIS] [zoom=AXIS] [radius=M] [collide=on|off] [drag=on|off] [bone=BONE]";
     let (Some(select), Some("follow"), Some(target)) = (
         tokens.get(1),
         tokens.get(2).map(String::as_str),
@@ -1562,8 +1676,10 @@ fn camera_follow(tokens: &[String]) -> Result<Statement> {
             "zoom" => o.zoom_axis = Some(v.to_owned()),
             "radius" => o.radius = Some(number()?),
             "collide" => o.collision = Some(on_off(v)?),
+            "drag" => o.drag = Some(on_off(v)?),
+            "bone" => o.bone = Some(v.to_owned()),
             other => bail!(
-                "unknown option '{other}' (use distance, min, max, yaw, pitch, height, orbit, zoom, radius, collide)"
+                "unknown option '{other}' (use distance, min, max, yaw, pitch, height, orbit, zoom, radius, collide, drag, bone)"
             ),
         }
     }
@@ -2241,6 +2357,8 @@ pub fn run(
             Statement::CameraBlocker(select, on) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::set_camera_blocker(w, &ids, on)),
             Statement::MigrateCameraBlockers => crate::ops::migrate_camera_blocker_tags(w),
+            Statement::Parts(select, edit) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::edit_parts(w, &ids, &edit)),
             Statement::Rename(id, label) => crate::ops::rename(w, &id, &label),
             Statement::Move(id, to) => crate::ops::move_entity(w, &id, &to),
             Statement::PrefabCreate(id, entity) => {

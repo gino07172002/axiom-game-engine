@@ -1,5 +1,6 @@
 //! Bounded skeletal assets, poses and constraints. No renderer, window or genre dependencies.
 pub mod authoring;
+pub mod choreography;
 pub mod clip;
 pub mod controller;
 pub mod coordinates;

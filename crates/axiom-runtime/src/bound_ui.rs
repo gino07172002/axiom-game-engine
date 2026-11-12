@@ -427,13 +427,7 @@ fn anchor(region: Region) -> (egui::Align2, [f32; 2], f32, bool) {
 }
 
 fn widget_id(w: &BoundWidget) -> &str {
-    match w {
-        BoundWidget::Text(id, ..)
-        | BoundWidget::Button(id, ..)
-        | BoundWidget::Choices(id)
-        | BoundWidget::Image(id, _)
-        | BoundWidget::Progress(id, ..) => id,
-    }
+    axiom_core::gameplay::bound_widget_id(w)
 }
 
 /// Whether a widget would draw anything now (empty regions are not drawn at all). The same
@@ -569,6 +563,30 @@ fn draw_widgets(
                     .inner,
                 );
             }
+            BoundWidget::Slider(s) if visual.forced || g.test(&s.when) => {
+                if flow {
+                    // Label + track + value box; wrap first like buttons do.
+                    let label = ui
+                        .painter()
+                        .layout_no_wrap(
+                            g.text(&s.text),
+                            egui::TextStyle::Body.resolve(ui.style()),
+                            ui.visuals().text_color(),
+                        )
+                        .size()
+                        .x;
+                    let width = label + ui.spacing().slider_width + 80.0;
+                    if width > ui.available_size_before_wrap().x {
+                        ui.end_row();
+                    }
+                }
+                drawn = Some(
+                    ui.push_id(&s.id, |ui| {
+                        with_effects(ui, visual, |ui| slider(ui, g, s, state, actions))
+                    })
+                    .inner,
+                );
+            }
             BoundWidget::Choices(id) => {
                 if flow {
                     ui.end_row();
@@ -642,6 +660,54 @@ fn draw_widgets(
             rects.push((index, rect));
         }
     }
+}
+
+/// A slider: dragging only moves a local draft; the release (or a keyboard / click change)
+/// sends one `slide` command, so a drag never floods the simulation with commands.
+fn slider(
+    ui: &mut egui::Ui,
+    g: &Gameplay,
+    s: &axiom_core::gameplay::BoundSlider,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+) {
+    let committed = g.slider_value(s, state.slider_values.get(&s.id).copied());
+    let mut value = state.slider_drafts.get(&s.id).copied().unwrap_or(committed);
+    let label = g.text(&s.text);
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let mut widget = egui::Slider::new(&mut value, s.min..=s.max);
+        if let Some(step) = s.step {
+            widget = widget.step_by(step);
+        }
+        if s.integer {
+            widget = widget.integer();
+        }
+        let response = ui.add_enabled(state.playing && !state.console, widget);
+        // Kept on screen only by an exit effect: shown, not usable.
+        if !g.test(&s.when) {
+            return;
+        }
+        state
+            .targets
+            .insert(format!("slider/{}", s.id), response.rect);
+        let release = response.drag_stopped();
+        if response.dragged() && !release {
+            state.slider_drafts.insert(s.id.clone(), value);
+            return;
+        }
+        let draft = state.slider_drafts.remove(&s.id);
+        if (release || response.changed()) && draft.unwrap_or(value) != committed {
+            let value = draft.unwrap_or(value);
+            if s.variable.is_none() {
+                state.slider_values.insert(s.id.clone(), value);
+            }
+            actions.push(Action::Gameplay(RuntimeCommand::Slide {
+                widget: s.id.clone(),
+                value,
+            }));
+        }
+    });
 }
 
 /// (size, color, strong) of a text style; unstyled speaker lines are larger.

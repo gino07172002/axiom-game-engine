@@ -1376,6 +1376,7 @@ fn camera_follow_verb_matches_the_op_and_reports_structured_errors() {
         zoom_axis: None,
         radius: Some(0.3),
         collision: Some(false),
+        ..Default::default()
     };
     let expected = ops::add_camera_follow(&start, &["rig".to_owned()], "hero", &options).unwrap();
     let full = after(

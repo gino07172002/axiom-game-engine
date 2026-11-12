@@ -2725,6 +2725,15 @@ fn rig_lab() -> World {
     .world
 }
 
+fn duet_lab() -> World {
+    axiom_core::ContentPackage::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/duet-lab"),
+        &crate::installed_registry().authoring,
+    )
+    .unwrap()
+    .world
+}
+
 #[test]
 fn rig_edits_match_the_rig_verb() {
     let lab = rig_lab();
@@ -2852,5 +2861,147 @@ fn rig_edits_match_the_rig_verb() {
             vec![vec![e.write(edits, None)]]
         },
         "set puppet/a animation.spring/reset_distance 2.5",
+    );
+}
+
+#[test]
+fn choreography_stage_commands_match_the_stage_verb() {
+    let lab = duet_lab();
+    let stage = r#"{"actors":[{"entity":"axi","clip":"hop"},{"entity":"lyn","clip":"hop","speed":1.5}],"after":{"entity":"lyn","cycles":2,"next":"rest"}}"#;
+    assert_parity(
+        lab.clone(),
+        |e| {
+            vec![e
+                .run_command_with("anim.stage", Some(&format!("hop set {stage}")))
+                .unwrap()]
+        },
+        &format!("stage hop set {stage}"),
+    );
+    assert_parity(
+        lab.clone(),
+        |e| {
+            vec![e
+                .run_command_with("anim.stage", Some("together remove"))
+                .unwrap()]
+        },
+        "stage together remove",
+    );
+    // A stage another stage continues with is refused (in_use), and nothing is written.
+    let mut e = Editor::new(lab.clone(), 1, None);
+    assert!(e
+        .run_command_with("anim.stage", Some("rest remove"))
+        .unwrap()
+        .is_empty());
+    assert!(e.problem_codes().contains(&"in_use".to_owned()));
+    // A world without the resource gets it created.
+    let mut bare = lab;
+    bare.resources.remove("animation.choreography");
+    assert_parity(
+        bare,
+        |e| {
+            vec![e
+                .run_command_with(
+                    "anim.stage",
+                    Some(r#"duo set {"actors":[{"entity":"axi","clip":"wave"},{"entity":"lyn","clip":"wave"}]}"#),
+                )
+                .unwrap()]
+        },
+        r#"stage duo set {"actors":[{"entity":"axi","clip":"wave"},{"entity":"lyn","clip":"wave"}]}"#,
+    );
+}
+
+#[test]
+fn body_part_commands_match_the_parts_verb() {
+    let mut lab = duet_lab();
+    for e in &mut lab.entities {
+        e.components.remove("animation.parts");
+    }
+    assert_parity(
+        lab.clone(),
+        |e| {
+            e.select(Some("axi".into()));
+            e.extra = std::collections::BTreeSet::from(["lyn".to_owned()]);
+            vec![e
+                .run_command_with("object.parts", Some("auto 0.06 event=part_clicked"))
+                .unwrap()]
+        },
+        "parts entities[id=axi,id=lyn] auto 0.06 event=part_clicked",
+    );
+    let parted = headless(&lab, "parts axi auto 0.06");
+    assert_parity(
+        parted.clone(),
+        |e| {
+            e.select(Some("axi".into()));
+            vec![e
+                .run_command_with("object.parts", Some("add head head radius=0.12 length=0.2"))
+                .unwrap()]
+        },
+        "parts axi add head head radius=0.12 length=0.2",
+    );
+    assert_parity(
+        parted,
+        |e| {
+            e.select(Some("axi".into()));
+            vec![e.run_command_with("object.parts", Some("clear")).unwrap()]
+        },
+        "parts axi clear",
+    );
+    // Not an animated character: refused with the reason.
+    let mut e = Editor::new(lab, 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    e.select(Some("stage/floor".into()));
+    assert!(e
+        .run_command_with("object.parts", Some("auto 0.05"))
+        .unwrap()
+        .is_empty());
+    assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
+}
+
+#[test]
+fn slider_batch_button_and_orbit_options_match_acl() {
+    let lab = duet_lab();
+    assert_parity(
+        lab.clone(),
+        |e| {
+            vec![e
+                .run_command_with(
+                    "ui.slider",
+                    Some("add lyn_speed speed 0 2 step=0.5 call=animation.speed args={\"entity\":\"lyn\"} arg=speed"),
+                )
+                .unwrap()]
+        },
+        "ui slider add lyn_speed speed 0 2 step=0.5 call=animation.speed args={\"entity\":\"lyn\"} arg=speed",
+    );
+    let batch = r#"[{"kind":"call","capability":"animation","action":"stage","args":{"stage":"rest"}},{"kind":"emit","event":"fill"}]"#;
+    assert_parity(
+        lab.clone(),
+        |e| {
+            vec![e
+                .run_command_with("ui.button", Some(&format!("fill batch {batch}")))
+                .unwrap()]
+        },
+        &format!("ui button fill batch {batch}"),
+    );
+    // A slider whose label key is missing is refused before anything is written.
+    let mut e = Editor::new(lab.clone(), 1, None);
+    assert!(e
+        .run_command_with("ui.slider", Some("add s2 nokey 0 1 variable=rate"))
+        .unwrap()
+        .is_empty());
+    assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
+    // camera.follow drag / bone via Object ▸ Camera Follow Selected (dialog options).
+    assert_parity(
+        lab,
+        |e| {
+            e.select(Some("camera/orbit".into()));
+            e.extra = std::collections::BTreeSet::from(["lyn".to_owned()]);
+            let options = axiom_core::ops::CameraFollowOptions {
+                drag: Some(true),
+                bone: Some("head".into()),
+                ..Default::default()
+            };
+            vec![e.camera_follow_selection(&options).into_iter().collect()]
+        },
+        "camera camera/orbit follow lyn drag=on bone=head",
     );
 }
