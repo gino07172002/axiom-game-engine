@@ -33,8 +33,17 @@ pub(crate) struct AnimationCues {
 #[derive(Clone)]
 struct Fade {
     from: Pose,
+    /// Morph weights faded out of (empty without morph targets).
+    from_morph: Vec<f32>,
     elapsed: f32,
     duration: f32,
+}
+/// An `animation.morph` override of one target: its weight and a ramp in progress
+/// (from, to, elapsed, duration seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ManualMorph {
+    value: Option<f32>,
+    ramp: Option<(f32, f32, f32, f32)>,
 }
 #[derive(Clone)]
 struct Controller {
@@ -76,6 +85,22 @@ struct Controller {
     accum: Pose,
     scratch: Pose,
     globals: Vec<Mat4>,
+    /// Morph weights the skinning applies (one per target of `asset`; all morph buffers are
+    /// empty without targets and sized once otherwise).
+    morph_weights: Vec<f32>,
+    /// Clip / controller weights before `animation.morph` overrides (a fade starts from it).
+    morph_sampled: Vec<f32>,
+    /// Weights being built and one sample's weights (blend scratch).
+    morph_accum: Vec<f32>,
+    morph_scratch: Vec<f32>,
+    morph_manual: Vec<ManualMorph>,
+    /// Hidden primitives (`animation.player.hidden`, `animation.visibility`).
+    hidden: PartMask,
+    /// Controller layers: a layer's sampled pose and its first frame (reused buffers).
+    layer_pose: Pose,
+    layer_ref: Pose,
+    /// Morph tracks of retarget-source clips naming targets the drawn asset lacks.
+    unbound_morphs: usize,
 }
 /// Per-entity state of an `animation.controller` (cheap to clone: `Arc`s and `Copy` state).
 #[derive(Clone)]
@@ -88,6 +113,8 @@ pub(crate) struct Animator {
     /// `animation.play` cues (FSM entry clips, actions) dropped because the controller owns
     /// playback; reported in metrics instead of being silently lost.
     ignored_cues: u32,
+    /// Per layer: the source-skeleton bones its mask covers (empty = all).
+    masks: Arc<Vec<Vec<u16>>>,
 }
 impl Animator {
     pub(crate) fn describe(&self) -> Value {
@@ -121,12 +148,24 @@ impl Controller {
         } else {
             (asset.clone(), None)
         };
+        // Bone tracks bind to the clip's (source) skeleton, morph tracks to the drawn asset.
+        // A retarget source's morph tracks animate the source mesh: they bind to the drawn
+        // asset by target name, and the ones it lacks are counted (`inspect`), not applied.
         let mut clips = BTreeMap::new();
+        let mut unbound_morphs = 0;
         for c in &source.clips {
+            let compiled = if retarget.is_some() && !c.morphs.is_empty() {
+                let mut bound = c.clone();
+                bound
+                    .morphs
+                    .retain(|t| asset.morphs.index(&t.target).is_some());
+                unbound_morphs += c.morphs.len() - bound.morphs.len();
+                bound.compile_for(&source.skeleton, &asset.morphs)?
+            } else {
+                c.compile_for(&source.skeleton, &asset.morphs)?
+            };
             ensure!(
-                clips
-                    .insert(c.id.clone(), c.compile(&source.skeleton)?)
-                    .is_none(),
+                clips.insert(c.id.clone(), compiled).is_none(),
                 "duplicate asset clip ID"
             );
         }
@@ -134,15 +173,32 @@ impl Controller {
             if c.tracks
                 .iter()
                 .all(|t| source.skeleton.indices.contains_key(&t.bone))
+                && c.morphs
+                    .iter()
+                    .all(|t| asset.morphs.index(&t.target).is_some())
             {
                 ensure!(
                     clips
-                        .insert(id.clone(), c.compile(&source.skeleton)?)
+                        .insert(id.clone(), c.compile_for(&source.skeleton, &asset.morphs)?)
                         .is_none(),
                     "library clip shadows imported clip: {id}"
                 );
             }
         }
+        let mut hidden = [0; 4];
+        for (i, group) in config.hidden.iter().enumerate() {
+            let parts = asset.parts(group);
+            ensure!(
+                parts != [0; 4],
+                "hidden/{i}: no primitive named {group} (parts: {})",
+                part_names(&asset)
+            );
+            for (h, p) in hidden.iter_mut().zip(parts) {
+                *h |= p;
+            }
+        }
+        let mut defaults = vec![];
+        asset.morphs.defaults_into(&mut defaults);
         let twists = config
             .twists
             .iter()
@@ -180,67 +236,204 @@ impl Controller {
             accum: Pose { local: vec![] },
             scratch: Pose { local: vec![] },
             globals: vec![],
+            morph_manual: vec![ManualMorph::default(); defaults.len()],
+            morph_sampled: defaults.clone(),
+            morph_accum: defaults.clone(),
+            morph_scratch: defaults.clone(),
+            morph_weights: defaults,
+            hidden,
+            layer_pose: Pose { local: vec![] },
+            layer_ref: Pose { local: vec![] },
+            unbound_morphs,
             config,
         };
         out.evaluate(0.)?;
         Ok(out)
+    }
+    /// One `animation.morph` override.
+    fn morph(&mut self, a: &MorphArgs) -> Result<()> {
+        let targets = &self.asset.morphs.targets;
+        let i = match (&a.target, a.index) {
+            (Some(name), _) => self.asset.morphs.index(name).with_context(|| {
+                format!(
+                    "no morph target {name} (targets: {})",
+                    targets
+                        .iter()
+                        .map(|t| t.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?,
+            (None, Some(i)) => {
+                ensure!(
+                    i < targets.len(),
+                    "morph target index {i} out of range ({} targets)",
+                    targets.len()
+                );
+                i
+            }
+            (None, None) => anyhow::bail!("pass target or index"),
+        };
+        let m = &mut self.morph_manual[i];
+        match a.weight {
+            None => *m = ManualMorph::default(),
+            Some(w) if a.ramp_seconds > 0.0 => {
+                let from = self.morph_weights[i];
+                *m = ManualMorph {
+                    value: Some(from),
+                    ramp: Some((from, w, 0.0, a.ramp_seconds)),
+                };
+            }
+            Some(w) => {
+                *m = ManualMorph {
+                    value: Some(w),
+                    ramp: None,
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Advances `animation.morph` ramps by `dt` seconds; whether any ran.
+    fn ramp_morphs(&mut self, dt: f32) -> bool {
+        let mut any = false;
+        for m in &mut self.morph_manual {
+            if let Some((from, to, elapsed, duration)) = &mut m.ramp {
+                *elapsed += dt;
+                let k = (*elapsed / *duration).min(1.0);
+                m.value = Some(*from + (*to - *from) * k);
+                if k >= 1.0 {
+                    m.ramp = None;
+                }
+                any = true;
+            }
+        }
+        any
+    }
+    /// The applied weights: overrides, else the sampled weights.
+    fn compose_morphs(&mut self) {
+        for ((w, m), s) in self
+            .morph_weights
+            .iter_mut()
+            .zip(&self.morph_manual)
+            .zip(&self.morph_sampled)
+        {
+            *w = m.value.unwrap_or(*s);
+        }
     }
     /// Attaches controller `id` (clip lengths come from this player's clips).
     fn attach(&mut self, id: &str, def: &controller::ControllerDef) -> Result<()> {
         let clips = self.clips.clone();
         let compiled =
             controller::Compiled::compile(def, &|c| clips.get(c).map(|m| m.source.duration))?;
+        let masks = (0..compiled.layer_count())
+            .map(|i| compiled.layer_mask(i, &self.source.skeleton))
+            .collect::<Result<Vec<_>>>()?;
         self.animator = Some(Animator {
             id: id.into(),
             state: compiled.start(),
             compiled: Arc::new(compiled),
             last_position: None,
             ignored_cues: 0,
+            masks: Arc::new(masks),
         });
         self.evaluate(0.)
     }
-    /// The source-skeleton pose of the controller's weighted samples, into `self.accum`.
+    /// The source-skeleton pose of the controller's weighted samples, into `self.accum`, then
+    /// its layers (morph weights likewise into `self.morph_accum`).
     fn blend_samples(&mut self) -> Result<()> {
         let a = self.animator.as_ref().expect("animator");
         let samples = a.compiled.samples(&a.state);
+        let morphing = !self.morph_accum.is_empty();
         let mut total = 0.0;
         for (n, s) in samples.as_slice().iter().enumerate() {
-            let target = if n == 0 {
-                &mut self.accum
+            let (target, weights) = if n == 0 {
+                (&mut self.accum, &mut self.morph_accum)
             } else {
-                &mut self.scratch
+                (&mut self.scratch, &mut self.morph_scratch)
             };
-            match a.compiled.clip(s) {
-                Some(id) => self
-                    .clips
-                    .get(id)
-                    .with_context(|| format!("clip not found: {id}"))?
-                    .sample_into(&self.source.skeleton, s.time, false, target)?,
+            let clip = match a.compiled.clip(s) {
+                Some(id) => Some(
+                    self.clips
+                        .get(id)
+                        .with_context(|| format!("clip not found: {id}"))?,
+                ),
+                None => None,
+            };
+            match clip {
+                Some(c) => c.sample_into(&self.source.skeleton, s.time, false, target)?,
                 None => self.source.skeleton.rest_into(target),
+            }
+            if morphing {
+                self.asset.morphs.defaults_into(weights);
+                if let Some(c) = clip {
+                    c.morph_weights_into(s.time, false, weights);
+                }
             }
             total += s.weight;
             if n > 0 {
-                self.accum.blend_toward(&self.scratch, s.weight / total)?;
+                let k = s.weight / total;
+                self.accum.blend_toward(&self.scratch, k)?;
+                for (w, x) in self.morph_accum.iter_mut().zip(&self.morph_scratch) {
+                    *w += (x - *w) * k;
+                }
             }
         }
         if samples.len == 0 {
             self.source.skeleton.rest_into(&mut self.accum);
+            self.asset.morphs.defaults_into(&mut self.morph_accum);
+        }
+        for i in 0..a.compiled.layer_count() {
+            let l = a.compiled.layer_sample(&a.state, i);
+            if l.weight <= 0.0 {
+                continue;
+            }
+            let clip = self
+                .clips
+                .get(l.clip)
+                .with_context(|| format!("clip not found: {}", l.clip))?;
+            let skeleton = &self.source.skeleton;
+            clip.sample_into(skeleton, l.time, false, &mut self.layer_pose)?;
+            if l.additive {
+                clip.sample_into(skeleton, 0.0, false, &mut self.layer_ref)?;
+            }
+            controller::apply_layer(
+                &mut self.accum,
+                &self.layer_pose,
+                &self.layer_ref,
+                &a.masks[i],
+                l.weight,
+                l.additive,
+            );
+            if morphing {
+                for (track, &t) in clip.source.morphs.iter().zip(&clip.morphs) {
+                    let w = &mut self.morph_accum[t];
+                    let v = track.sample(l.time);
+                    if l.additive {
+                        *w += (v - track.sample(0.0)) * l.weight;
+                    } else {
+                        *w += (v - *w) * l.weight;
+                    }
+                }
+            }
         }
         Ok(())
     }
     fn evaluate(&mut self, dt: f32) -> Result<()> {
+        self.asset.morphs.defaults_into(&mut self.morph_accum);
         if self.animator.is_some() {
             self.blend_samples()?;
         } else if let Some(id) = &self.active {
-            self.clips
+            let clip = self
+                .clips
                 .get(id)
-                .with_context(|| format!("clip not found: {id}"))?
-                .sample_into(
-                    &self.source.skeleton,
-                    self.time,
-                    self.looping,
-                    &mut self.accum,
-                )?;
+                .with_context(|| format!("clip not found: {id}"))?;
+            clip.sample_into(
+                &self.source.skeleton,
+                self.time,
+                self.looping,
+                &mut self.accum,
+            )?;
+            clip.morph_weights_into(self.time, self.looping, &mut self.morph_accum);
         } else {
             self.source.skeleton.rest_into(&mut self.accum);
         }
@@ -254,6 +447,9 @@ impl Controller {
             fade.elapsed += dt;
             let weight = (fade.elapsed / fade.duration).clamp(0., 1.);
             self.accum.blend_from(&fade.from, weight)?;
+            for (w, from) in self.morph_accum.iter_mut().zip(&fade.from_morph) {
+                *w = from + (*w - from) * weight;
+            }
             if weight >= 1. {
                 self.fade = None;
             }
@@ -290,10 +486,12 @@ impl Controller {
         }
         std::mem::swap(&mut self.pose, &mut self.accum);
         std::mem::swap(&mut self.sampled, &mut self.scratch);
+        std::mem::swap(&mut self.morph_sampled, &mut self.morph_accum);
+        self.compose_morphs();
         self.fault = None;
         Ok(())
     }
-    fn inspect(&self, bones: &[String]) -> Result<Value> {
+    fn inspect(&self, bones: &[String], parts: bool) -> Result<Value> {
         let globals = self.asset.skeleton.globals(&self.pose)?;
         let mut values = BTreeMap::new();
         for id in bones {
@@ -304,7 +502,48 @@ impl Controller {
         if let (Some(a), Some(map)) = (&self.animator, out.as_object_mut()) {
             map.insert("controller".into(), a.describe());
         }
+        self.describe_extras(&mut out);
+        if self.unbound_morphs > 0 {
+            out["unbound_morph_tracks"] = json!(self.unbound_morphs);
+        }
+        if parts {
+            out["parts"] = Value::Array(
+                self.asset
+                    .materials
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| json!({"id":m.id,"groups":m.groups,"visible":!part_set(&self.hidden, i)}))
+                    .collect(),
+            );
+        }
         Ok(out)
+    }
+    /// Morph weights and hidden parts, only when the asset has targets / something is hidden
+    /// (observations of other players, and so `state_hash`, are unchanged).
+    fn describe_extras(&self, out: &mut Value) {
+        if !self.morph_weights.is_empty() {
+            out["morphs"] = Value::Object(
+                self.asset
+                    .morphs
+                    .targets
+                    .iter()
+                    .zip(&self.morph_weights)
+                    .map(|(t, w)| (t.id.clone(), json!((w * 1000.0).round() / 1000.0)))
+                    .collect(),
+            );
+        }
+        if self.hidden != [0; 4] {
+            out["hidden"] = json!(self.hidden_ids());
+        }
+    }
+    fn hidden_ids(&self) -> Vec<&str> {
+        self.asset
+            .materials
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| part_set(&self.hidden, *i))
+            .map(|(_, m)| m.id.as_str())
+            .collect()
     }
     fn play(&mut self, a: PlayArgs) -> Result<()> {
         if let Some(c) = &self.animator {
@@ -320,6 +559,7 @@ impl Controller {
         );
         self.fade = (a.fade_seconds > 0.).then(|| Fade {
             from: self.sampled.clone(),
+            from_morph: self.morph_sampled.clone(),
             elapsed: 0.,
             duration: a.fade_seconds,
         });
@@ -683,6 +923,8 @@ impl RuntimeSystem for AnimationSystem {
                     a.state = s;
                 }
                 p.fault = Some(format!("{e:#}"));
+            } else if p.ramp_morphs(FIXED_DT) {
+                p.compose_morphs();
             }
         }
         self.fire_markers(state);
@@ -772,7 +1014,7 @@ impl RuntimeSystem for AnimationSystem {
                 .with_context(|| format!("animation entity missing: {entity}"))?;
             if action == "inspect" {
                 let args: InspectArgs = serde_json::from_value(args.clone())?;
-                return old.inspect(&args.bones);
+                return old.inspect(&args.bones, true);
             }
             let mut p = old.clone();
             match action {
@@ -830,6 +1072,28 @@ impl RuntimeSystem for AnimationSystem {
                         p.ramp = None;
                     }
                 }
+                "morph" => {
+                    let a: MorphArgs = serde_json::from_value(args.clone())?;
+                    a.validate()?;
+                    p.morph(&a)?;
+                }
+                "visibility" => {
+                    let a: VisibilityArgs = serde_json::from_value(args.clone())?;
+                    let parts = p.asset.parts(&a.group);
+                    ensure!(
+                        parts != [0; 4],
+                        "no primitive named {} (parts: {})",
+                        a.group,
+                        part_names(&p.asset)
+                    );
+                    for (h, x) in p.hidden.iter_mut().zip(parts) {
+                        if a.visible {
+                            *h &= !x;
+                        } else {
+                            *h |= x;
+                        }
+                    }
+                }
                 "param" => {
                     let a: ParamArgs = serde_json::from_value(args.clone())?;
                     let c = p.animator.as_mut().with_context(|| {
@@ -840,7 +1104,7 @@ impl RuntimeSystem for AnimationSystem {
                 _ => anyhow::bail!("unknown animation action {action}"),
             }
             p.evaluate(0.)?;
-            let response = p.inspect(&[])?;
+            let response = p.inspect(&[], false)?;
             self.players.insert(entity.to_owned(), p);
             Ok(response)
         })())
@@ -879,6 +1143,14 @@ impl RuntimeSystem for AnimationSystem {
                             p.looping = previous.looping;
                         }
                     }
+                    // Runtime part visibility and morph overrides survive edits of the same
+                    // asset; an edited `hidden` list is applied.
+                    if p.asset.key == previous.asset.key {
+                        p.morph_manual.clone_from(&previous.morph_manual);
+                        if p.config.hidden == previous.config.hidden {
+                            p.hidden = previous.hidden;
+                        }
+                    }
                     p.evaluate(0.)?;
                 }
                 // A controller keeps its state and parameters by name across edits (live
@@ -904,7 +1176,9 @@ impl RuntimeSystem for AnimationSystem {
                 continue;
             }
             let model = models[slot];
-            if let Ok(vertices) = skin::deform(&p.asset, &p.pose, p.config.skinning) {
+            if let Ok(vertices) =
+                skin::deform_with(&p.asset, &p.pose, p.config.skinning, &p.morph_weights)
+            {
                 frame.meshes.push(MeshFrame {
                     id: id.clone(),
                     asset: p.asset.clone(),
@@ -915,6 +1189,7 @@ impl RuntimeSystem for AnimationSystem {
                         .as_ref()
                         .map(|m| m.id.clone()),
                     surface: state.compiled.entities[slot].surface,
+                    hidden: p.hidden,
                 });
             }
             if p.config.debug_skeleton {
@@ -941,7 +1216,7 @@ impl RuntimeSystem for AnimationSystem {
         }
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
+        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}p.describe_extras(&mut v);(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
         // Only when used, so worlds without markers keep their observation (and state_hash).
         if self.fired > 0 {
             out["markers_fired"] = json!(self.fired);
@@ -1288,12 +1563,36 @@ struct SavedPlayer {
     marker_fresh: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     controller: Option<SavedController>,
+    /// `animation.morph` overrides by target name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    morphs: BTreeMap<String, SavedMorph>,
+    /// Hidden primitives (material IDs) when they differ from the authored `hidden`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hidden: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedMorph {
+    weight: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ramp: Option<(f32, f32, f32, f32)>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedPhase {
+    name: String,
+    loops: u32,
+    frac: f32,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedFade {
     from: Vec<Trs>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    from_morph: Vec<f32>,
     elapsed: f32,
     duration: f32,
 }
@@ -1322,6 +1621,8 @@ struct SavedController {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_position: Option<[f32; 3]>,
     ignored_cues: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    layers: Vec<SavedPhase>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1374,6 +1675,7 @@ impl Controller {
             ramp: self.ramp,
             fade: self.fade.as_ref().map(|f| SavedFade {
                 from: f.from.local.clone(),
+                from_morph: f.from_morph.clone(),
                 elapsed: f.elapsed,
                 duration: f.duration,
             }),
@@ -1411,8 +1713,31 @@ impl Controller {
                     fired: a.state.fired,
                     last_position: a.last_position,
                     ignored_cues: a.ignored_cues,
+                    layers: (0..c.layer_count())
+                        .map(|i| SavedPhase {
+                            name: c.layer_name(i).to_owned(),
+                            loops: a.state.layers[i].loops,
+                            frac: a.state.layers[i].frac,
+                        })
+                        .collect(),
                 }
             }),
+            morphs: self
+                .morph_manual
+                .iter()
+                .zip(&self.asset.morphs.targets)
+                .filter_map(|(m, t)| {
+                    Some((
+                        t.id.clone(),
+                        SavedMorph {
+                            weight: m.value?,
+                            ramp: m.ramp,
+                        },
+                    ))
+                })
+                .collect(),
+            hidden: (self.hidden != self.authored_hidden())
+                .then(|| self.hidden_ids().into_iter().map(str::to_owned).collect()),
         }
     }
 
@@ -1448,9 +1773,22 @@ impl Controller {
                 for t in &f.from {
                     t.validate()?;
                 }
+                ensure!(
+                    f.from_morph.is_empty() || f.from_morph.len() == self.morph_sampled.len(),
+                    "checkpoint fade morph weights do not match the content"
+                );
+                ensure!(
+                    f.from_morph.iter().all(|w| w.is_finite()),
+                    "invalid checkpoint fade morph weight"
+                );
                 Some(Fade {
                     from: Pose {
                         local: f.from.clone(),
+                    },
+                    from_morph: if f.from_morph.is_empty() {
+                        self.morph_sampled.clone()
+                    } else {
+                        f.from_morph.clone()
                     },
                     elapsed: f.elapsed,
                     duration: f.duration,
@@ -1516,12 +1854,92 @@ impl Controller {
                 }
                 state.last_transition = saved.last_transition;
                 state.fired = saved.fired;
+                ensure!(
+                    saved.layers.len() == c.layer_count()
+                        && saved
+                            .layers
+                            .iter()
+                            .enumerate()
+                            .all(|(i, l)| l.name == c.layer_name(i)),
+                    "checkpoint controller layers do not match the content"
+                );
+                for (i, l) in saved.layers.iter().enumerate() {
+                    ensure!(
+                        l.frac.is_finite() && (0.0..=1.0).contains(&l.frac),
+                        "invalid checkpoint layer time"
+                    );
+                    state.layers[i] = controller::Phase {
+                        loops: l.loops,
+                        frac: l.frac,
+                    };
+                }
                 a.state = state;
                 a.last_position = saved.last_position;
                 a.ignored_cues = saved.ignored_cues;
             }
             _ => anyhow::bail!("checkpoint controller layout does not match the content"),
         }
+        self.morph_manual.fill(ManualMorph::default());
+        for (name, m) in &s.morphs {
+            let i = self
+                .asset
+                .morphs
+                .index(name)
+                .with_context(|| format!("checkpoint names unknown morph target {name}"))?;
+            ensure!(
+                m.weight.is_finite()
+                    && m.ramp.is_none_or(|(a, b, e, d)| {
+                        [a, b, e, d].iter().all(|x| x.is_finite()) && d > 0.0
+                    }),
+                "invalid checkpoint morph weight {name}"
+            );
+            self.morph_manual[i] = ManualMorph {
+                value: Some(m.weight),
+                ramp: m.ramp,
+            };
+        }
+        self.hidden = match &s.hidden {
+            None => self.authored_hidden(),
+            Some(ids) => {
+                let mut mask = [0; 4];
+                for id in ids {
+                    let i = self
+                        .asset
+                        .materials
+                        .iter()
+                        .position(|m| m.id == *id)
+                        .with_context(|| format!("checkpoint names unknown primitive {id}"))?;
+                    mask[i / 64] |= 1 << (i % 64);
+                }
+                mask
+            }
+        };
         self.evaluate(0.0)
     }
+    /// The parts `animation.player.hidden` hides (validated when the player was built).
+    fn authored_hidden(&self) -> PartMask {
+        let mut mask = [0; 4];
+        for g in &self.config.hidden {
+            for (h, p) in mask.iter_mut().zip(self.asset.parts(g)) {
+                *h |= p;
+            }
+        }
+        mask
+    }
+}
+
+/// The primitives of `asset` for error messages: material IDs with their group names.
+fn part_names(asset: &Asset) -> String {
+    asset
+        .materials
+        .iter()
+        .map(|m| {
+            if m.groups.is_empty() {
+                m.id.clone()
+            } else {
+                format!("{} ({})", m.id, m.groups.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }

@@ -59,6 +59,8 @@ struct ActiveMesh {
     key: String,
     first: usize,
     material: Option<String>,
+    /// Primitives not drawn (`MeshFrame::hidden`).
+    hidden: axiom_animation::PartMask,
 }
 impl MeshRenderer {
     pub fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
@@ -418,6 +420,7 @@ impl MeshRenderer {
                 key,
                 first,
                 material: frame.material.clone(),
+                hidden: frame.hidden,
             });
         }
         if !uniforms.is_empty() {
@@ -454,7 +457,10 @@ impl MeshRenderer {
                     Alpha::Blend | Alpha::Additive | Alpha::Multiply => true,
                     _ => false,
                 };
-                if is_blended != blend || m.range.is_empty() {
+                if is_blended != blend
+                    || m.range.is_empty()
+                    || axiom_animation::part_set(&active.hidden, i)
+                {
                     continue;
                 }
                 if let Some(surface) = surface {
@@ -499,7 +505,10 @@ impl MeshRenderer {
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             for (i, m) in mesh.materials.iter().enumerate() {
-                if !casts_shadow(surface, m.alpha) || m.range.is_empty() {
+                if !casts_shadow(surface, m.alpha)
+                    || m.range.is_empty()
+                    || axiom_animation::part_set(&active.hidden, i)
+                {
                     continue;
                 }
                 pass.set_bind_group(1, &m.bind, &[((active.first + i) * 256) as u32]);

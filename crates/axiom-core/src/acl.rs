@@ -131,6 +131,9 @@ EDIT (any number, atomic):
                                    \"duration\":S,\"exit_time\"?:N}; new transitions: exit_time 1, duration 0.2
   animctl C param set NAME JSON | animctl C param remove NAME   {\"kind\":\"float|bool|trigger\",\"default\"?,\"source\"?:\"speed\"}
   animctl C node STATE x,y | animctl SEL attach C   animation.controller on each object (needs animation.player)
+  animctl C layer set NAME JSON | animctl C layer remove NAME   layer over the states {\"clip\":ID,\"mode\"?:\"override|additive\",
+                                  \"weight\"?:0..1,\"weight_parameter\"?:P,\"mask\"?:{\"bones\"?:[B],\"subtrees\"?:[B]},\"speed\"?,\"looping\"?}
+  meshpart SEL hide|show PART     animation.player.hidden: a primitive's material ID or glTF mesh / material / node name
   behavior SEL patrol|guard|dialogue [machine=ID] [tag=T] [range=M] [speed=M/S] [event=E]
                                   new machine from the template + fsm.agent (dialogue declares E)
   rules: append|remove|reorder resources[id=behavior.program] rules ..; set rules[id=ID] when|actions|event V
@@ -453,6 +456,8 @@ enum Statement {
     AnimNode(String, String, [f32; 2]),
     AnimParam(String, String, Option<Value>),
     AnimAttach(Box<Selection>, String),
+    AnimLayer(String, String, Option<Value>),
+    MeshPart(Box<Selection>, String, bool),
     Behavior(
         Box<Selection>,
         crate::ops::BehaviorTemplate,
@@ -1370,6 +1375,20 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "audio" => audio(tokens)?,
         "fsm" => fsm(tokens)?,
         "animctl" => animctl(tokens)?,
+        "meshpart" => {
+            const USE: &str = "use: meshpart SEL hide|show PART (material ID or glTF mesh / material / node name)";
+            ensure!(tokens.len() == 4, "{USE}");
+            let visible = match arg(2)?.as_str() {
+                "hide" => false,
+                "show" => true,
+                other => bail!("unknown meshpart verb '{other}' ({USE})"),
+            };
+            let part = match value(arg(3)?) {
+                Value::String(s) => s,
+                _ => arg(3)?.clone(),
+            };
+            Statement::MeshPart(Box::new(selector(arg(1)?)?), part, visible)
+        }
         "behavior" => behavior(tokens)?,
         "prefab" => {
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
@@ -1840,7 +1859,7 @@ fn fsm(tokens: &[String]) -> Result<Statement> {
 /// `animctl` statements (see GRAMMAR): the `fsm` graph grammar on `animation.controllers`,
 /// plus `param set|remove` and `SEL attach C`.
 fn animctl(tokens: &[String]) -> Result<Statement> {
-    const USE: &str = "use: animctl C create|remove | animctl C state add|remove|rename|set .. | animctl C initial S | animctl C transition add|remove|move|set .. | animctl C param set NAME JSON | animctl C param remove NAME | animctl C node S x,y | animctl SEL attach C";
+    const USE: &str = "use: animctl C create|remove | animctl C state add|remove|rename|set .. | animctl C initial S | animctl C transition add|remove|move|set .. | animctl C param set NAME JSON | animctl C param remove NAME | animctl C layer set NAME JSON | animctl C layer remove NAME | animctl C node S x,y | animctl SEL attach C";
     let arg = |n: usize| tokens.get(n).map(String::as_str).context(USE);
     let name = |n: usize| -> Result<String> {
         Ok(match value(arg(n)?) {
@@ -1859,6 +1878,19 @@ fn animctl(tokens: &[String]) -> Result<Statement> {
                 Box::new(selector(arg(1)?)?),
                 name(3)?,
             ));
+        }
+        Some("layer") => {
+            return Ok(match arg(3)? {
+                "set" => {
+                    count(6)?;
+                    Statement::AnimLayer(name(1)?, name(4)?, Some(json_value(arg(5)?)?))
+                }
+                "remove" => {
+                    count(5)?;
+                    Statement::AnimLayer(name(1)?, name(4)?, None)
+                }
+                other => bail!("unknown animctl layer verb '{other}' (set, remove)"),
+            });
         }
         Some("param") => {
             return Ok(match arg(3)? {
@@ -2288,6 +2320,11 @@ pub fn run(
             }
             Statement::AnimAttach(select, id) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::anim_attach(w, r, &ids, &id)),
+            Statement::AnimLayer(id, name, def) => {
+                crate::ops::anim_layer(w, &id, &name, def.as_ref())
+            }
+            Statement::MeshPart(select, part, visible) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::mesh_part(w, &ids, &part, visible)),
             Statement::Behavior(select, template, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_behavior(w, r, &ids, template, &options)),
             Statement::AssetPlace(kind, id, place) => {

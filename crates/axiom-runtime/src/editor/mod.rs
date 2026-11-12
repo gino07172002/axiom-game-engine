@@ -1393,6 +1393,21 @@ impl Editor {
 
     /// Inspector render.mesh "Blocks follow cameras" / Object ▸ Blocks Follow Cameras… on|off
     /// (`ACL: camera SEL blocker on|off`) on the selection.
+    /// `object.mesh_part hide|show PART` (ACL `meshpart SEL hide|show PART`): edits
+    /// `animation.player.hidden` on the selection.
+    pub(super) fn mesh_part_selection(&mut self, part: &str, visible: bool) -> Option<Action> {
+        let ids = self.selection();
+        let result = ops::mesh_part(&self.world, &ids, part, visible);
+        if result.as_ref().is_ok_and(Vec::is_empty) {
+            self.notice(format!(
+                "{part} is already {}",
+                if visible { "shown" } else { "hidden" }
+            ));
+            return None;
+        }
+        self.op_write(result, None)
+    }
+
     pub(super) fn camera_blocker_selection(&mut self, on: bool) -> Option<Action> {
         let ids = self.selection();
         self.camera_blocker(&ids, on)

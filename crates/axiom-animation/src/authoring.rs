@@ -96,6 +96,10 @@ pub struct Player {
     /// its end, a loop at every wrap; a controller: its current state's clip).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_end: Option<String>,
+    /// Primitives hidden at start: material IDs or glTF mesh / material / node names
+    /// (`animation.visibility` changes them at runtime).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
 }
 impl Default for Player {
     fn default() -> Self {
@@ -111,6 +115,7 @@ impl Default for Player {
             ik: BTreeMap::new(),
             debug_skeleton: false,
             on_end: None,
+            hidden: vec![],
         }
     }
 }
@@ -127,6 +132,10 @@ impl Player {
         for id in self.twists.keys().chain(self.ik.keys()) {
             axiom_core::valid_id(id)?;
         }
+        ensure!(
+            self.hidden.len() <= 64 && self.hidden.iter().all(|g| !g.is_empty() && g.len() <= 256),
+            "hidden: at most 64 part names of 1..256 characters"
+        );
         Ok(())
     }
 }
@@ -193,6 +202,57 @@ pub struct ParamArgs {
     pub name: String,
     pub value: controller::ParamValue,
 }
+/// `animation.morph`: overrides one morph target's weight (by `target` name or `index`), at
+/// once or ramped over `ramp_seconds`, without touching playback; `clear` hands the target back
+/// to the clips (or its default weight).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MorphArgs {
+    pub entity: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub index: Option<usize>,
+    #[serde(default)]
+    pub weight: Option<f32>,
+    #[serde(default)]
+    pub ramp_seconds: f32,
+    #[serde(default)]
+    pub clear: bool,
+}
+impl MorphArgs {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.target.is_some() != self.index.is_some(),
+            "pass exactly one of target (name) or index"
+        );
+        ensure!(
+            self.clear != self.weight.is_some(),
+            "pass weight (-2..2) or clear:true"
+        );
+        ensure!(
+            !self.clear || self.ramp_seconds == 0.0,
+            "clear hands the target back at once (ramp to a weight first, then clear)"
+        );
+        ensure!(
+            self.weight
+                .is_none_or(|w| w.is_finite() && (-2.0..=2.0).contains(&w))
+                && self.ramp_seconds.is_finite()
+                && (0.0..=60.0).contains(&self.ramp_seconds),
+            "invalid morph weight / ramp"
+        );
+        Ok(())
+    }
+}
+/// `animation.visibility`: shows or hides the primitives `group` names (a material ID or a glTF
+/// mesh / material / node name).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisibilityArgs {
+    pub entity: String,
+    pub group: String,
+    pub visible: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectArgs {
@@ -212,7 +272,7 @@ pub fn register(r: &mut Registry) {
         });
     r.capabilities.insert("animation".into(), 1);
     r.resource("animation.library","animation",json!({"assets":"stable ID -> {path, external:false, options:{coordinates?, strict:false}}","clips":"stable ID -> {id,duration,tracks}","profiles":"stable ID -> {mapping:HumanBodyBones->bone ID,reference:bone ID->local TRS}","markers":"clip ID -> [{at:seconds, event?:behavior.program event, cue?:audio cue}] (fired once per loop iteration)"}),|v|{let lib:Library=serde_json::from_value(v.clone())?;ensure!(lib.assets.len()<=32&&lib.clips.len()<=128&&lib.profiles.len()<=64,"animation library budget exceeded");lib.validate_markers()?;for id in lib.assets.keys().chain(lib.clips.keys()).chain(lib.profiles.keys()){axiom_core::valid_id(id)?;}for source in lib.assets.values(){ensure!(!source.path.as_os_str().is_empty(),"asset path missing");if let Some(c)=source.options.coordinates{c.matrix()?;}}Ok(())});
-    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?}","debug_skeleton":"bool","on_end":"optional behavior.program event emitted when the clip completes (each loop)"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
+    r.component("animation.player","animation",json!({"asset":"library asset ID","clip":"optional clip ID","retarget":"optional {source_asset,source_profile,target_profile,root_motion,require_complete}","speed":"-8..8","looping":"bool","playing":"bool","skinning":"auto|linear|dual_quaternion","twists":"stable constraint ID -> {enabled,driver,axis,bones:[{bone,fraction}],driver_fraction,min_angle,max_angle,preserve}","ik":"stable constraint ID -> {root,middle,end,target,pole,weight,end_rotation?}","debug_skeleton":"bool","on_end":"optional behavior.program event emitted when the clip completes (each loop)","hidden":"optional primitives hidden at start: material IDs or glTF mesh / material / node names"}),|v|serde_json::from_value::<Player>(v.clone())?.validate());
     r.resource_mergers
         .insert("animation.controllers".into(), |a, b| {
             axiom_core::package::merge_resource(a, b, &["controllers"], &[])
@@ -220,7 +280,7 @@ pub fn register(r: &mut Registry) {
     r.resource(
         "animation.controllers",
         "animation",
-        json!({"controllers":"stable ID -> {parameters:{NAME:{kind:float|bool|trigger,default?,source?:speed}},initial,states:{NAME:{motion?:{kind:clip,clip,speed?,looping?}|{kind:blend1d,parameter,points:[{at,clip}],speed?,looping?}}},transitions:[{from:STATE|*,to,conditions:[{param,op:gt|lt|eq|ne|true|false|trigger,value?}],duration:seconds,exit_time?:normalized}]}"}),
+        json!({"controllers":"stable ID -> {parameters:{NAME:{kind:float|bool|trigger,default?,source?:speed}},initial,states:{NAME:{motion?:{kind:clip,clip,speed?,looping?}|{kind:blend1d,parameter,points:[{at,clip}],speed?,looping?}}},transitions:[{from:STATE|*,to,conditions:[{param,op:gt|lt|eq|ne|true|false|trigger,value?}],duration:seconds,exit_time?:normalized}],layers?:[{name,clip,mode?:override|additive,weight?:0..1,weight_parameter?,mask?:{bones?:[BONE],subtrees?:[BONE]},speed?,looping?}]}"}),
         |v| serde_json::from_value::<controller::Controllers>(v.clone())?.validate(),
     );
     r.component(
@@ -244,6 +304,25 @@ pub fn register(r: &mut Registry) {
                     && a.ramp_seconds.is_finite()
                     && (0.0..=60.).contains(&a.ramp_seconds),
                 "invalid speed / ramp"
+            );
+            Ok(())
+        },
+    );
+    r.action(
+        "animation.morph",
+        "animation",
+        json!({"entity":"stable ID","target":"morph target name (or index)","index":"morph target index (or target)","weight":"-2..2 (usually 0..1); overrides clips until cleared","ramp_seconds":"0..60, default 0 = at once","clear":"true hands the target back to clips / its default"}),
+        |v| serde_json::from_value::<MorphArgs>(v.clone())?.validate(),
+    );
+    r.action(
+        "animation.visibility",
+        "animation",
+        json!({"entity":"stable ID","group":"primitive material ID or glTF mesh / material / node name","visible":"bool"}),
+        |v| {
+            let a: VisibilityArgs = serde_json::from_value(v.clone())?;
+            ensure!(
+                !a.group.is_empty() && a.group.len() <= 256,
+                "group must be 1..256 characters"
             );
             Ok(())
         },
@@ -390,7 +469,7 @@ pub fn register(r: &mut Registry) {
     );
     r.action("animation.bone","animation",json!({"entity":"stable ID","bone":"bone ID","rotation":"normalized xyzw local quaternion override"}),|v|{let a:BoneArgs=serde_json::from_value(v.clone())?;ensure!(a.rotation.is_finite()&&(a.rotation.length_squared()-1.).abs()<0.001,"invalid bone rotation");Ok(())});
     r.action("animation.inspect","animation",json!({"entity":"stable ID","bones":"optional up to 64 stable IDs; omitted returns summary only"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.bones.len()<=64,"bone inspection budget exceeded");Ok(())});
-    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed"],"controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","skinning"],"skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
+    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed","morph","visibility"],"morphs":"glTF morph targets (names from extras.targetNames), weight channels become clip morph tracks; animation.morph overrides a weight (ramped, playback kept); at most 64 targets per mesh, 128 per asset, 1,000,000 deltas","parts":"animation.player.hidden + animation.visibility show / hide primitives by material ID or glTF mesh / material / node name","layers":"controller layers: one clip each, override or additive (relative to frame 0), weight (x weight_parameter), bone mask (bones / subtrees), applied in order after the states blend","controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","skinning"],"skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
 }
 pub fn component_path(entity: &str) -> String {
     format!(

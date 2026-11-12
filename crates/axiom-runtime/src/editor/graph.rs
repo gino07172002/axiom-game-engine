@@ -77,6 +77,8 @@ pub(crate) struct GraphUi {
     anim_live: Option<anim::Live>,
     /// Animator view: the parameter table being edited.
     anim_params: Option<anim::ParamsDraft>,
+    /// Animator view: the layer table being edited.
+    anim_layers: Option<anim::ParamsDraft>,
     pub view: View,
     model: Option<Model>,
     pub selected: Option<Sel>,
@@ -1601,7 +1603,9 @@ impl Editor {
         let animator = self.graph.doc == GraphDoc::Animator && open;
         Some(match id {
             "graph.open" | "graph.open_controller" => None,
-            "graph.param" if !animator => Some("open an animation controller in the Graphs tab"),
+            "graph.param" | "graph.layer" if !animator => {
+                Some("open an animation controller in the Graphs tab")
+            }
             "graph.attach_controller" if self.selected.is_none() => Some("nothing selected"),
             // View only: allowed while a draft is open.
             "graph.frame" | "graph.zoom" if !open => Some(closed),
@@ -1640,6 +1644,7 @@ impl Editor {
                 | "graph.new_controller"
                 | "graph.attach_controller"
                 | "graph.param"
+                | "graph.layer"
         );
         anyhow::ensure!(takes_arg || arg.is_none(), "{id} takes no argument");
         let arg = arg.map(str::trim).filter(|a| !a.is_empty());
@@ -1658,8 +1663,12 @@ impl Editor {
             ("graph.new_controller", Some(c)) => self.anim_new_controller(c),
             ("graph.attach_controller", Some(c)) => self.anim_attach(c),
             ("graph.param", Some(spec)) => self.anim_param_command(spec)?,
+            ("graph.layer", Some(spec)) => self.anim_layer_command(spec)?,
             // Without an argument: show where a person picks it (like graph.open).
-            ("graph.new_controller" | "graph.attach_controller" | "graph.param", None) => {
+            (
+                "graph.new_controller" | "graph.attach_controller" | "graph.param" | "graph.layer",
+                None,
+            ) => {
                 self.show_dock(Dock::Graphs);
                 self.graph_set_doc(GraphDoc::Animator);
                 self.graph.view = View::Animator;
@@ -1668,6 +1677,7 @@ impl Editor {
                     "graph.attach_controller" => {
                         "Pass a controller ID (graph.attach_controller ID; ACL animctl SEL attach ID)"
                     }
+                    "graph.layer" => "Add or edit layers in the Animator layer table",
                     _ => "Add or edit parameters in the Animator parameter table",
                 });
                 None

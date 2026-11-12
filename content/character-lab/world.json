@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "id": "character-lab",
+  "title": "Character Lab / morphs, parts, layers",
+  "capabilities": {"animation":1,"behavior":1,"core":1,"render":1,"ui":1},
+  "systems": ["animation.evaluate","behavior.execute"],
+  "entities": [
+    {"id":"axi","label":"Axi (additive wave layer)","components":{
+      "core.transform":{"position":[0,0,0]},
+      "animation.player":{"asset":"axiom-short","clip":"idle"},
+      "animation.controller":{"controller":"lab"}
+    }},
+    {"id":"face","label":"Morph head (clip weights)","components":{
+      "core.transform":{"position":[-2.2,0,0]},
+      "animation.player":{"asset":"morph-head","clip":"pulse"}
+    }},
+    {"id":"face2","label":"Morph head (command, hat hidden)","components":{
+      "core.transform":{"position":[2.2,0,0]},
+      "animation.player":{"asset":"morph-head","hidden":["hat"]}
+    }},
+    {"id":"camera/main","label":"Camera","components":{
+      "core.transform":{"position":[0,1.6,6.4],"rotation":[-0.06,0,0,0.998]},
+      "render.camera":{"projection":{"kind":"perspective","fov_degrees":45},"near":0.05,"far":60,"viewport":[0,0,1,1],"active":true}
+    }},
+    {"id":"floor","label":"Floor","components":{
+      "core.transform":{"position":[0,-0.05,0],"scale":[10,0.1,8]},
+      "render.mesh":{"parts":[{"color":[0.11,0.13,0.16],"grid":true}]}
+    }}
+  ],
+  "resources": {
+    "animation.library":{"assets":{"axiom-short":{"path":"axiom-short.glb"},"morph-head":{"path":"morph-head.glb"}}},
+    "animation.controllers":{"controllers":{
+      "lab":{
+        "parameters":{"wave_weight":{"kind":"float","default":1}},
+        "initial":"idle",
+        "states":{"idle":{"motion":{"kind":"clip","clip":"idle"}}},
+        "transitions":[],
+        "layers":[
+          {"name":"wave_arm","clip":"wave","mode":"additive","weight_parameter":"wave_weight","mask":{"subtrees":["upper.R"]}}
+        ]
+      }
+    }},
+    "editor.layout":{"graphs":{"anim/lab":{"idle":[60,80]}}},
+    "behavior.program":{"variables":{}},
+    "render.settings":{"accent":[1,0.23,0.28],"shadow_extent":10},
+    "ui.document":{
+      "flow":true,
+      "session_controls":false,
+      "locale":"en",
+      "catalogs":{"en":{"title":"CHARACTER LAB  morph targets / part visibility / additive layer","puff":"Puff (0.5 s ramp)","relax":"Relax","hat":"Hat on","hair":"Hide hair","calm":"Wave layer off","wave":"Wave layer on"}},
+      "widgets":[
+        {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
+        {"kind":"button","id":"puff","text":"puff","command":{"kind":"call","capability":"animation","action":"morph","args":{"entity":"face2","target":"puff","weight":1,"ramp_seconds":0.5}}},
+        {"kind":"button","id":"relax","text":"relax","command":{"kind":"call","capability":"animation","action":"morph","args":{"entity":"face2","target":"puff","clear":true}}},
+        {"kind":"button","id":"hat","text":"hat","command":{"kind":"call","capability":"animation","action":"visibility","args":{"entity":"face2","group":"hat","visible":true}}},
+        {"kind":"button","id":"hair","text":"hair","command":{"kind":"call","capability":"animation","action":"visibility","args":{"entity":"axi","group":"hair","visible":false}}},
+        {"kind":"button","id":"calm","text":"calm","command":{"kind":"call","capability":"animation","action":"param","args":{"entity":"axi","name":"wave_weight","value":0}}},
+        {"kind":"button","id":"wave","text":"wave","command":{"kind":"call","capability":"animation","action":"param","args":{"entity":"axi","name":"wave_weight","value":1}}}
+      ]
+    }
+  }
+}

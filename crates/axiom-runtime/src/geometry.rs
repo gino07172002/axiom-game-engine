@@ -174,11 +174,13 @@ impl Geometry {
                 texture: self.texture.as_ref().map(|_| 0),
                 double_sided: false,
                 alpha: AlphaMode::Opaque,
+                groups: vec![],
             }],
             textures,
             clips: vec![],
             diagnostics: vec![],
             humanoid: None,
+            morphs: Default::default(),
         };
         asset.validate()?;
         Ok(asset)
@@ -212,6 +214,7 @@ impl RuntimeSystem for GeometrySystem {
                     .as_ref()
                     .map(|m| m.id.clone()),
                 surface: state.compiled.entities[*slot].surface,
+                hidden: [0; 4],
             });
         }
     }

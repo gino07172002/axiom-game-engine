@@ -58,7 +58,7 @@ IK 使用 `root`／`middle`／`end`、模型空間 `target`、控制彎曲平面
 
 指定 PMX 有 459 根骨、19,857 個頂點、29,711 個三角形、18 個材質與 8 張 base color 貼圖。以 Blender 4.5.3 LTS 生成並烘焙的 Rigify 波動作測試。21 個關節位置樣本的最大誤差約 0.00053 mm。重定向後頂點最大位移 0.290 m，前臂 twist 開關的頂點最大差異 0.0385 m。左手 IK 在測試姿勢的殘差低於 0.001 mm。原始 PMX 與貼圖由本機路徑引用，測試內容包不內含該模型。
 
-目前 PMX 支援加權骨架與基本材質。表情 morph、布料／頭髮物理、toon／sphere shader、PMX 控制器以及 append constraints 由原工具處理或烘焙。glTF morph、超過四個權重、需要額外擴充的壓縮幾何、以及含 shear 的局部骨變換會拒絕匯入或需要事先烘焙。原生動畫播放狀態(片段、時間、速度與漸變、淡入、骨骼覆寫、IK 目標、twist 開關、控制器狀態)存進 checkpoint 的 `systems`。此項目完成 M3 的骨架動畫底座，能力時序與 Action 原型另屬後續工作。
+目前 PMX 支援加權骨架與基本材質。PMX 表情 morph、布料／頭髮物理、toon／sphere shader、PMX 控制器以及 append constraints 由原工具處理或烘焙。超過四個權重、需要額外擴充的壓縮幾何、以及含 shear 的局部骨變換會拒絕匯入或需要事先烘焙。原生動畫播放狀態(片段、時間、速度與漸變、淡入、骨骼覆寫、IK 目標、twist 開關、控制器狀態)存進 checkpoint 的 `systems`。此項目完成 M3 的骨架動畫底座，能力時序與 Action 原型另屬後續工作。
 
 ```powershell
 . .\scripts\env.ps1
@@ -97,3 +97,31 @@ ACL:`animctl C create|remove`、`animctl C state add|remove|rename|set ..`、`an
 - **片段結束**:`animation.player.on_end` 事件在片段完成時送出(一次性片段到尾、循環片段每圈)。FSM 新增條件 `{"kind":"clip_finished"}`:agent 的一次性片段(或控制器的一次性狀態)播完才成立,所以 `clip_loop:false` 的狀態可以自動接下一段;控制器內則用 `exit_time` 轉移。
 - **播放速度**:`animation.speed {entity, speed, ramp_seconds?}` 改變播放速率但不重置時間,`ramp_seconds` 內線性漸變;控制器狀態可設 `speed_parameter`(float 參數乘上播放速率,0 = 暫停但保留時間)。
 - 標記與結束事件只在觸發時配置記憶體;穩定步進仍是 0 次配置。`observe` 的 `metrics.animation.markers_fired`(有觸發才出現)與 `emit_fault` 回報送出狀況。
+
+## 表情(morph target)、部位顯示與動畫圖層
+
+**glTF morph target。** 匯入時讀取每個 mesh 的 morph target(位置與法線位移;名稱取 `extras.targetNames`,沒有就用索引;預設權重取 node / mesh 的 `weights`)。同名 target 在第二個使用它的節點加上節點 ID 前綴。位移以稀疏、以頂點為主的表格儲存(`offsets` + `deltas`),CPU 蒙皮在變形每個頂點前加上權重 × 位移:不需要另一份緩衝,權重全為 0 時完全不做。上限:每個 mesh 64 個、每個資產 128 個 target、1,000,000 個非零位移;超過時匯入失敗並回傳型別化錯誤 `axiom_animation::morph::MorphBudget {what, limit, requested, at}`。PMX 的表情 morph 仍不支援。
+
+- **權重動畫軌**:glTF `weights` 通道變成片段的 `morphs`(每個 target 一條軌,linear / step / cubic spline 都保留);`animation.library.clips` 的片段也可以寫 `"morphs":[{"target":T,"times":[..],"values":[..]}]`。片段播放、控制器的混合與淡入、圖層都會混合權重。片段動到資產沒有的 target 時明確報錯(不默默丟掉);函式庫片段只套用到 bone 與 target 都存在的播放器。retarget 時來源片段的 morph 軌以 target 名稱綁到畫出的資產,對方沒有的軌不套用並在 `inspect` 的 `unbound_morph_tracks` 回報數量;`animation-retarget` 只烘焙骨骼軌。
+- **執行期命令** `animation.morph {entity, target | index, weight, ramp_seconds?}` 覆寫一個 target 的權重(-2..2,通常 0..1),可線性漸變,不改變播放時間;`{"clear":true}` 立即交回片段或預設值(不能與漸變同用)。`inspect` 與 `observe` 的 `players.ID.morphs` 回報目前權重(只有有 target 的播放器才有這個欄位,其他世界的 `state_hash` 不變)。
+- **存檔**:覆寫值與漸變(以 target 名稱)、淡入起點的權重都存在 checkpoint;讀檔後逐步相同。
+
+**部位顯示(換裝)。** 每個 primitive 可以用材質 ID(`node/mesh/primitive`)或 glTF 的 mesh、材質、節點名稱選取(一個名稱可選多個 primitive)。`animation.player.hidden: [PART..]` 是編寫的預設(最多 64 個),`animation.visibility {entity, group, visible}` 在執行期切換;不存在的名稱在建置 / 命令時報錯並列出可用的部位。隱藏的 primitive 不畫也不投影(`MeshFrame.hidden` 位元遮罩,材質上限 256)。`animation.inspect` 回傳 `parts:[{id,groups,visible}]`。執行期狀態與編寫值不同時存進 checkpoint。放在動畫系統(不是 render 命令)的原因:primitive 屬於播放器的資產、狀態要進 checkpoint 與 `state_hash`,render 端沒有模擬狀態。編輯:ACL `meshpart SEL hide|show PART`、編輯器 `object.mesh_part hide|show PART`(同一個 `ops::mesh_part`)。
+
+**動畫圖層(A5)。** 控制器可以有最多 4 個 `layers`,依序套在狀態機的姿勢之上:
+
+```json
+{"name":"wave_arm","clip":"wave","mode":"additive","weight":1,"weight_parameter":"wave_weight","mask":{"subtrees":["upper.R"]},"speed":1,"looping":true}
+```
+
+- `override`:遮罩內的骨骼依權重混向圖層片段;`additive`:加上片段相對於第 0 秒的差(旋轉 `ref⁻¹·sample` 乘在原旋轉之後、位移差、縮放比),乘以權重。
+- 權重 = `weight` ×(`weight_parameter` 的 float 參數,夾在 0..1),所以 `animation.param` 就能淡入淡出圖層。
+- `mask.bones` 只選列出的骨骼、`mask.subtrees` 選整個子樹,兩者都空 = 全身;骨骼名稱在 runtime 對片段取樣的骨架解析(retarget 時是來源骨架),不存在時建置失敗。
+- 每層有自己的時間(固定步、確定性,`State.layers`);熱重載以名稱保留,checkpoint 以名稱存讀,名稱或數量不符時拒絕讀檔。只有片段,沒有圖層內的混合樹或狀態機。
+- 編輯:ACL `animctl C layer set NAME JSON | layer remove NAME`、編輯器 `graph.layer NAME JSON|remove` 與 Graphs ▸ Animator 的 LAYERS 表(片段、模式、權重、遮罩摘要、新增 / 移除)。
+
+示範內容包 `content/character-lab`:引擎產生的 `morph-head.glb`(`crates/axiom-animation/tests/morph.rs` 的產生器輸出,測試確認檔案與產生器一致)兩顆頭(一顆播放權重片段 `pulse`、一顆預設隱藏帽子並由按鈕漸變 `puff`)以及 mascot 的 idle 加上右臂的 additive wave 圖層(按鈕調 `wave_weight`、隱藏頭髮)。
+
+```powershell
+.\target\debug\axiom.exe --db data/character-lab.sqlite --pack content/character-lab play --start
+```

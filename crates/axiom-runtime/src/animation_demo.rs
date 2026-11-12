@@ -80,6 +80,7 @@ pub fn create(model: &Path, source: Option<&Path>, output: &Path) -> Result<serd
                         ],
                     },
                 ],
+                morphs: vec![],
             },
         );
     }
@@ -381,7 +382,8 @@ pub fn retarget(
         .iter()
         .find(|c| c.id == clip_id)
         .context("source clip not found")?
-        .compile(&source.skeleton)?;
+        // Bone tracks only: morph weights are not retargeted (the output has none).
+        .compile_for(&source.skeleton, &source.morphs)?;
     let retarget = humanoid::Retargeter::new(&source.skeleton, &sp, &target.skeleton, &tp, true)?;
     ensure!(
         clip.source.duration <= 600.,
@@ -434,6 +436,7 @@ pub fn retarget(
         id: format!("retarget/{clip_id}"),
         duration: clip.source.duration,
         tracks,
+        morphs: vec![],
     };
     out.compile(&target.skeleton)?;
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
