@@ -98,18 +98,18 @@ pub fn package(
         ensure!(
             options.force,
             "output {} exists; pass --force to replace it",
-            out.display()
+            shown(&out)
         );
         ensure!(
             out.join(GAME_FILE).is_file(),
             "refusing to replace {}: it is not a packaged game folder",
-            out.display()
+            shown(&out)
         );
     }
     let staging = sibling(&out, "partial")?;
     if staging.exists() {
         std::fs::remove_dir_all(&staging)
-            .with_context(|| format!("remove stale {}", staging.display()))?;
+            .with_context(|| format!("remove stale {}", shown(&staging)))?;
     }
     let result = build(
         registry, options, progress, &pack, &staging, &id, &title, &exe_name,
@@ -125,9 +125,9 @@ pub fn package(
         }
     };
     if out.exists() {
-        std::fs::remove_dir_all(&out).with_context(|| format!("replace {}", out.display()))?;
+        std::fs::remove_dir_all(&out).with_context(|| format!("replace {}", shown(&out)))?;
     }
-    std::fs::rename(&staging, &out).with_context(|| format!("finalize {}", out.display()))?;
+    std::fs::rename(&staging, &out).with_context(|| format!("finalize {}", shown(&out)))?;
     report["out"] = json!(out.to_string_lossy().trim_start_matches(r"\\?\"));
     report["ms"] = json!(started.elapsed().as_millis() as u64);
     Ok(report)
@@ -521,6 +521,13 @@ pub fn sanitize(name: &str) -> String {
     let words = kept.split_whitespace().collect::<Vec<_>>().join(" ");
     let short: String = words.chars().take(64).collect();
     short.trim().trim_end_matches('.').trim().to_string()
+}
+
+/// A path as people read it: canonical Windows paths lose their `\\?\` verbatim prefix.
+fn shown(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string()
 }
 
 fn slash(path: &Path) -> String {

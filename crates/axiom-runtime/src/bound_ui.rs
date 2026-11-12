@@ -451,11 +451,14 @@ fn session_controls(
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("AXIOM / NARRATIVE")
-                .small()
-                .color(Color32::from_rgb(102, 245, 205)),
-        );
+        // Engine label is developer chrome; the shipped player keeps only the game's controls.
+        if !state.player {
+            ui.label(
+                RichText::new("AXIOM / NARRATIVE")
+                    .small()
+                    .color(Color32::from_rgb(102, 245, 205)),
+            );
+        }
         for locale in doc.catalogs.keys() {
             if ui
                 .selectable_label(g.locale.as_ref() == Some(locale), locale)

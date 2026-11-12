@@ -51,6 +51,14 @@ cargo build -p axiom -p axiom-player
 
 啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
 
+### 打包報告、外部素材與編輯器
+
+- `package` 的 JSON 報告列出每個檔案(相對路徑、大小、SHA-256)、`skipped`(預設排除 `build/`、`.git/`、`*.acl`、`*.blend`、`*.blend1`、`*.py`、`*.ps1`,可用 `--exclude dir/|*.ext|相對路徑` 追加)、`unreferenced`(有複製但看不出被引用的檔,只是警告)與 `warnings`。相同輸入兩次打包,檔案清單與雜湊相同。
+- pack 引用了 pack 以外的檔案(例如動畫素材 `external: true`)時,打包在寫入任何東西之前失敗並列出這些檔案;請把素材搬進 pack、用相對路徑。輸出先寫到 `<輸出>.partial`,驗證通過才改名,失敗或取消不留半成品。已存在的輸出要加 `--force`,而且只會取代先前打包出來(帶 `game.json`)的資料夾。
+- 編輯器以 `--pack` 開啟時,`File > Build Game…` 在背景做同一件事(進度、取消、完成後 Open folder);打包的是磁碟上的 pack,只存在編輯器資料庫的修改不會包含。
+- 輸出不要放在 repo 裡提交(`/dist/` 已忽略);含第三方素材的作品不要公開上傳。
+- 驗證:`scripts\package-smoke-test.ps1 [-Release]` 打包 plaza、adv、fps、action,複製到別處後用隔離的 APPDATA 執行玩家程式並截圖,另含外部素材與 `--force` 的拒絕案例。
+
 ## 五個內容包
 
 ```powershell

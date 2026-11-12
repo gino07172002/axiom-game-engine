@@ -138,9 +138,13 @@ pub fn draw(ctx: &egui::Context, sim: &Simulation, state: &mut UiState) -> Vec<A
                         .color(MUTED),
                 );
                 ui.label(
-                    RichText::new("SHIFT   SPRINT     TAB   WORLD CONSOLE")
-                        .size(11.0)
-                        .color(MUTED),
+                    RichText::new(if state.player {
+                        "SHIFT   SPRINT"
+                    } else {
+                        "SHIFT   SPRINT     TAB   WORLD CONSOLE"
+                    })
+                    .size(11.0)
+                    .color(MUTED),
                 );
             });
         let p = Pos2::new(w - 290.0, h - 200.0);
@@ -233,20 +237,31 @@ pub fn draw(ctx: &egui::Context, sim: &Simulation, state: &mut UiState) -> Vec<A
             0.0,
             MINT,
         );
-        text(
-            Pos2::new(w - 30.0, 28.0),
-            Align2::RIGHT_TOP,
-            &format!("LIVE   REV {:03}   /   {:.0} FPS", sim.rev, state.fps),
-            11.0,
-            MINT,
-        );
-        text(
-            Pos2::new(w - 30.0, 50.0),
-            Align2::RIGHT_TOP,
-            "TAB  WORLD CONSOLE    ESC  PAUSE",
-            10.0,
-            MUTED,
-        );
+        // Revision / FPS and the console hint are developer chrome; a shipped game has no console.
+        if state.player {
+            text(
+                Pos2::new(w - 30.0, 28.0),
+                Align2::RIGHT_TOP,
+                "ESC  PAUSE",
+                10.0,
+                MUTED,
+            );
+        } else {
+            text(
+                Pos2::new(w - 30.0, 28.0),
+                Align2::RIGHT_TOP,
+                &format!("LIVE   REV {:03}   /   {:.0} FPS", sim.rev, state.fps),
+                11.0,
+                MINT,
+            );
+            text(
+                Pos2::new(w - 30.0, 50.0),
+                Align2::RIGHT_TOP,
+                "TAB  WORLD CONSOLE    ESC  PAUSE",
+                10.0,
+                MUTED,
+            );
+        }
         let c = rect.center();
         let hit = sim.hit_flash > 0.0;
         let color = if hit {

@@ -189,3 +189,10 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
 - 依 P4 建議在 `build()` 複製執行檔之後再檢查一次取消(原本取消落在 95 MB 執行檔複製期間會照樣完成)。
 - Gate(debug):fmt 乾淨、clippy -D warnings 乾淨、workspace **848 passed / 0 failed / 5 ignored**(840 + P2 2 + P3 2 + P4 4);`editor-smoke-test.ps1` ok:true;`editor-world-parity.ps1`、`street-editor-parity.ps1` identical:true(smoke DB 已刪)。
 - **P4 的主執行緒卡頓(0.3–1.9 s)在閒置機器上無法重現**:原量測時另外兩個工作線同時 cargo 建置、CPU 100%。重量(機器上沒有 cargo/rustc,debug 編輯器開 plaza,隔離 DB):每 0.7 s 取 `observe` 的 `frame.last_slow` 中 render_present 以外最慢的階段;閒置與 `view` 對照指令 7 筆最大 11.5 ms(extract),兩次 `file.build_game` 期間 26 筆最大 10.4 ms,`frames` 每筆都前進(背景視窗約 5–7 fps,受 present 節流)。第一次嘗試曾見單筆 `writes_bridge=72 ms`,落在送出建置指令後第一筆,後續未重現。**限制**:`last_slow` 只保留最近一個慢幀,取樣漏看中間幀;要確定性證據需要區間最大值計量(未做)。結論:打包本身未見讓主執行緒超過 16 ms;CPU 滿載時的卡頓屬環境競爭,但未以受控實驗證明。
+
+### P5 執行補記(2026-11-12,整合者)
+- `scripts/package-smoke-test.ps1 [-Release] [-Packs ...] [-Frames N] [-Keep]`:每個 pack `axiom package` → 複製到 `moved\<pack> copy` → 以隔離 `APPDATA` 與 `AXIOM_PLAYER_NO_DIALOG=1` 執行玩家程式 `--smoke-frames --screenshot` → 檢查結束碼 0、截圖存在、`APPDATA\Axiom\<id>\world.sqlite` 建立、遊戲資料夾檔案清單不變、玩家資料庫(含 WAL)不含 repo `content` 路徑;負面案例:外部動畫素材被拒且不留輸出、`--force` 不取代非遊戲資料夾。報告寫到 `artifacts\package-smoke-<時間>\report.json`,預設只留截圖與報告。
+- 截圖檢查後的修正:玩家模式下 FPS HUD 不顯示 `LIVE REV / FPS` 與 `TAB WORLD CONSOLE`(只留 `ESC PAUSE`),ADV 敘事列不顯示 `AXIOM / NARRATIVE`;錯誤訊息中的路徑去掉 `\?\` 前綴(`shown()`);腳本最後一個刻意失敗的 native 指令不再讓腳本結束碼為 1。
+- 證據:debug 與 **release** 兩次都 PASS(plaza、adv、fps、action;外部素材與 `--force` 拒絕)。release:`axiom-player.exe` 34,234,862 B、`axiom.exe` 37,022,257 B;plaza 輸出 35.7 MB(5 檔);打包 378–513 ms(debug 2.3–4.6 s,含 95 MB 執行檔)。8 張截圖都看過:無開發工具列、無開發字樣,遊戲 UI 完整。`player_ms`(約 29 s / 120 幀)**不是啟動時間**:玩家視窗在背景,present 節流約 4 fps;未量測啟動時間,不做宣稱。
+- Gate(debug):fmt 乾淨、clippy -D warnings 乾淨、workspace 848 passed / 0 failed / 5 ignored、`editor-smoke-test.ps1` ok:true(smoke DB 已刪)。
+- 計畫回顧:P1–P5 驗收全部有證據;demo 腳本第 3 步的「在檔案總管雙擊」以 Start-Process 代替(同一個執行檔、同一個 GUI subsystem),沒有人工雙擊。剩餘限制:編輯器打包期間的主執行緒量測只有取樣證據;未做安裝程式/簽章(non-goal);`include_str!` 嵌入的檔案會出現在 `unreferenced`。
