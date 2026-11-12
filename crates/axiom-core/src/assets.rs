@@ -40,7 +40,7 @@ pub enum AssetKind {
 pub const BUILTIN_SHADERS: [&str; 3] = ["lit", "unlit", "toon"];
 
 /// `(component, field pointer, kind)`: component fields that name an asset.
-const COMPONENT_REFS: [(&str, &str, AssetKind); 5] = [
+const COMPONENT_REFS: [(&str, &str, AssetKind); 6] = [
     ("animation.player", "/asset", AssetKind::Model),
     (
         "animation.player",
@@ -50,6 +50,7 @@ const COMPONENT_REFS: [(&str, &str, AssetKind); 5] = [
     ("render.material", "/id", AssetKind::Material),
     ("fsm.agent", "/machine", AssetKind::Machine),
     ("audio.source", "/clip", AssetKind::Audio),
+    ("render.decal", "/image", AssetKind::Image),
 ];
 
 impl AssetKind {

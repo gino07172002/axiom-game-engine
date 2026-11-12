@@ -1168,6 +1168,8 @@ fn unlit_globals(global: &mut Globals) {
         [FLAT, FLAT, FLAT, 0.0],
     ];
     global.fog = [0.0; 4];
+    // Mesh and cube shaders skip render.surface reflections and the toon look.
+    global.view_params[3] = 1.0;
     // Material surface hooks read sun 0 directly (direction and shadow flag), not the count.
     for sun in &mut global.suns {
         *sun = bytemuck::Zeroable::zeroed();
@@ -1195,6 +1197,7 @@ mod unlit_tests {
         super::unlit_globals(&mut g);
         assert_eq!(g.suns[0].direction_shadow, [0.0; 4]);
         assert_eq!(g.fog[3], 0.0);
+        assert_eq!(g.view_params[3], 1.0);
         assert!(g
             .ambient
             .iter()

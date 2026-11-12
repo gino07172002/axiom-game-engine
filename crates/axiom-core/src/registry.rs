@@ -143,6 +143,22 @@ impl Registry {
             crate::light::surface_schema(),
             |v| typed(v, crate::light::RenderSurface::validate),
         );
+        r.component("render.toon", "render", crate::style::toon_schema(), |v| {
+            typed(v, crate::style::RenderToon::validate)
+        });
+        r.component(
+            "render.outline",
+            "render",
+            crate::style::outline_schema(),
+            |v| typed(v, crate::style::RenderOutline::validate),
+        );
+        r.component(
+            "render.decal",
+            "render",
+            crate::style::decal_schema(),
+            |v| typed(v, crate::style::RenderDecal::validate),
+        );
+        r.world_validators.push(crate::style::validate_world);
         r.resource(
             "render.environment",
             "render",

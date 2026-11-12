@@ -37,6 +37,8 @@ mod diff_view;
 mod prefab_overrides;
 // Workstream E (editor look): Scene view display mode and screenshot.
 mod look;
+mod reload;
+pub(crate) use reload::AssetReloadAsk;
 
 use crate::world::WorldRuntime;
 #[cfg(test)]
@@ -646,6 +648,11 @@ pub(crate) struct Editor {
     assets: asset_browser::AssetBrowser,
     /// Scene view display mode and the screenshot job.
     look: look::Look,
+    /// `asset.reload|watch` request for the host, and whether watching is on.
+    reload_ask: Option<AssetReloadAsk>,
+    pub(crate) reload_watching: bool,
+    /// The host's running asset-reload job (status bar and `observe` jobs).
+    pub(crate) host_job: Option<Value>,
     /// Console, Event trace, Profiler and the scenario recording (M8).
     pub(crate) debug: debug::Debug,
     /// Input Map, Localization, Animation, VFX tabs and the shader source (editor state).
@@ -776,6 +783,9 @@ impl Editor {
             graph: Default::default(),
             assets: Default::default(),
             look: Default::default(),
+            reload_ask: None,
+            reload_watching: false,
+            host_job: None,
             debug: Default::default(),
             ghost: Default::default(),
             merge: Default::default(),
@@ -2108,6 +2118,7 @@ impl Editor {
             .chain(self.tuning.shader.job.as_ref().map(|j| j.observation()))
             .chain(self.merge_jobs_observation())
             .chain(self.screenshot_job_observation())
+            .chain(self.host_job.clone())
             .collect::<Vec<_>>())
     }
 

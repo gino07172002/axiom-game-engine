@@ -19,38 +19,11 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
     };
     for (id, path) in &ui.images {
         ensure!(
-            std::fs::metadata(path)?.len() <= 4_194_304,
+            std::fs::metadata(path)?.len() <= IMAGE_BYTES,
             "UI image asset exceeds budget"
         );
         let raw = std::fs::read(path)?;
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(&raw));
-        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = decoder.read_info()?;
-        let (w, h) = (reader.info().width, reader.info().height);
-        ensure!(
-            w > 0 && h > 0 && w <= 2048 && h <= 2048,
-            "UI image dimensions exceed budget"
-        );
-        let mut bytes = vec![0; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut bytes)?;
-        let bytes = &bytes[..info.buffer_size()];
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => bytes.to_vec(),
-            png::ColorType::Rgb => bytes
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .flat_map(|c| [c[0], c[1], c[2], 255])
-                .collect(),
-            png::ColorType::Grayscale => bytes.iter().flat_map(|c| [*c, *c, *c, 255]).collect(),
-            png::ColorType::GrayscaleAlpha => bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .flat_map(|c| [c[0], c[0], c[0], c[1]])
-                .collect(),
-            _ => anyhow::bail!("unsupported PNG color format"),
-        };
+        let (w, h, rgba) = decode_png(&raw)?;
         let fingerprint = raw.iter().fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ *b as u64).wrapping_mul(0x100000001b3)
         });
@@ -63,6 +36,40 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
         );
     }
     Ok(())
+}
+/// Byte budget of one image asset file (UI images, mesh decals).
+pub(crate) const IMAGE_BYTES: u64 = 4_194_304;
+/// Decodes a PNG image asset to RGBA8 (at most 2048 x 2048).
+pub(crate) fn decode_png(raw: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(raw));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let (w, h) = (reader.info().width, reader.info().height);
+    ensure!(
+        w > 0 && h > 0 && w <= 2048 && h <= 2048,
+        "UI image dimensions exceed budget"
+    );
+    let mut bytes = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut bytes)?;
+    let bytes = &bytes[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => bytes
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        png::ColorType::Grayscale => bytes.iter().flat_map(|c| [*c, *c, *c, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| [c[0], c[0], c[0], c[1]])
+            .collect(),
+        _ => anyhow::bail!("unsupported PNG color format"),
+    };
+    Ok((w, h, rgba))
 }
 /// Where the HUD regions are laid out: the whole window (`draw`), or the editor's canvas.
 struct Surface<'a> {

@@ -316,6 +316,9 @@ pub struct Texture {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Material {
     pub id: String,
+    /// Authored material name (glTF `material.name`), when the file has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub first_index: u32,
     pub index_count: u32,
     pub color: [f32; 4],

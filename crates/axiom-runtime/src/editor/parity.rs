@@ -1059,6 +1059,8 @@ fn view_commands_never_write() {
         "view.display_mode",
         "view.screenshot",
         "asset.folder",
+        "asset.reload",
+        "asset.watch",
         "view.bookmark.save.1",
         "view.bookmark.recall.1",
     ] {
@@ -3004,4 +3006,67 @@ fn slider_batch_button_and_orbit_options_match_acl() {
         },
         "camera camera/orbit follow lyn drag=on bone=head",
     );
+}
+
+#[test]
+fn stylized_mesh_components_match_acl() {
+    // Inspector ▸ Add component == `add SEL render.toon|render.outline` (typed defaults).
+    let ball = headless(&lab(), "create cube id=ball");
+    for component in ["render.toon", "render.outline"] {
+        assert_parity(
+            ball.clone(),
+            |e| {
+                e.select(Some("ball".into()));
+                vec![e
+                    .run_command_with("object.add_component", Some(component))
+                    .unwrap()]
+            },
+            &format!("add ball {component}"),
+        );
+    }
+    let styled = headless(&ball, "add ball render.toon\nadd ball render.outline");
+    let components = &styled.entity("ball").unwrap().components;
+    assert_eq!(components["render.toon"]["bands"], 2);
+    assert_eq!(components["render.outline"]["units"], "pixels");
+    // Inspector form edit == `set SEL render.toon/FIELD`.
+    assert_parity(
+        styled.clone(),
+        |e| {
+            e.select(Some("ball".into()));
+            let entity = e.world.entity("ball").unwrap().clone();
+            let world = e.world.clone();
+            let draft = e.draft.as_mut().unwrap();
+            draft.open_component(&world, &entity, "render.toon");
+            let form = draft.form.as_mut().unwrap();
+            form["bands"] = serde_json::json!(4);
+            draft.form_dirty = true;
+            let edits = draft.edits().unwrap();
+            vec![vec![e.write(edits, None)]]
+        },
+        "set ball render.toon/bands 4",
+    );
+    // A decal needs an image of ui.document; an unknown one is refused with its field path.
+    let mut s = store(&styled);
+    let error = s
+        .execute(Request::Acl {
+            text: "add ball render.decal {\"image\":\"missing\"}".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("render.decal/image"),
+        "{error:#}"
+    );
+    // Out-of-range values are refused by the component validator.
+    let error = s
+        .execute(Request::Acl {
+            text: "set ball render.toon/bands 12".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("bands"), "{error:#}");
 }

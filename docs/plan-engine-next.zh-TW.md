@@ -327,3 +327,44 @@
 **Fresh-context 審查**(子代理只看需求與 diff):4 個確認 bug —— (1) batch 對非 animation 系統不原子 → 加 camera 乾跑 + 文件申報;(2) batch 驗證與套用間動畫讀值不同 → 記錄;(3) 整數變數 slider 範圍內沒有整數時 `clamp` panic → 編譯時拒絕 + 測試;(4) 點擊觸發的規則 `call` 沒在 screen_pointer 後分派、batch 中途失敗時遺留 → `screen_pointer` 與 `command` 失敗時也分派。風險項修了:單次片段 `after.cycles > 1` 與速度 ≤ 0 的 `after` 演出者建置時拒絕(測試)。記錄未修:batch 中規則排入的 call 在整個 batch 之後才執行;每步 32 個排隊 call 上限超過時該 gameplay 交易失敗;射線-膠囊距離是近似;`auto_radius` 部位 ID 可重複;`follow.set bone` 換骨頭不會撤回舊 socket 請求;slider 先 call 後寫變數、無變數 slider 的畫面值在指令被拒時不回復;每格滾輪 = `zoom_speed/120` 公尺(預設 4 m/s 只有 3 cm,示範包用 60);`behavior.execute` 自己的 step 讀到的是上一步的動畫值(固定、確定)。
 
 **驗證(debug,MX150,其他工作線同時建置)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 777 passed / 0 failed / 5 ignored(基準 760;新增 `tests/choreography.rs` 11 個、`animation_parts::tests`、`choreography::tests` ×2、parity ×3)。`editor-smoke-test.ps1 -Port 47641` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true;`street-editor-parity.ps1` identical:true;`build-street.ps1` / `build-plaza.ps1` 後 content/street、content/plaza 無變化。`examples/duet-lab.scenario.json` 無頭重播:batch 同 tick、stage、slide、規則 call、動畫讀值、拖曳(yaw −36°)、點擊(who=axi)、滾輪(desired 2.5)全部斷言通過,兩次 state_hash 相同。GPU:`--pack content/duet-lab play --smoke-frames 240 --screenshot artifacts/captures/w2c-duet-1080.png`;loopback 指令 + `screenshot` op:`w2c-duet-live-{1080,768}.png`(gauge 滿 → 規則 call `stage greet`:Axi 揮手、Lyn 鞠躬、Greet 按鈕隱藏、slider 1.50);編輯器 `w2c-editor-ui-{1080,768}.png`(UI Editor 選取 slider、`ui.slider` / `anim.stage` 經編輯器指令各一筆 revision;第一次 768 擷取發現 slider 在流式列溢出 → 修正 `end_row`,重擷取)。全部擷取已看過。未做 release A/B(沒有效能宣稱;新功能熱路徑:讀值發佈只在文字改變時配置,部位只在點擊時計算)。
+
+### W2d 材質與美術管線(worktree `w2d`,分支 `work-w2d`,`rigorous-change`;E5 依 `rigorous-perf`)
+
+詳細規格與量測:`docs/materials.zh-TW.md`。
+
+**做了什麼**
+- B5:元件 `render.toon`(分階 ramp + 陰影色、邊緣光、`face` 以頭骨方向彎曲著色法線(近似,沒有 SDF 臉部貼圖)、`skin` 為 wrap lighting + 染色明暗交界帶的**皮膚透光近似,不是 SSS**);`materials` 清單逐 primitive / 材質群組(glTF `material.name` 或 `node/mesh/primitive` ID)。內建網格 shader 的 `toon_fragment`;Unlit 顯示模式不作用。
+- E2:`render.outline` 反向外殼(像素或公尺、顏色),新 pipeline `mesh outline pipeline`(只輸出 position,沒有 varying),在不透明網格之後畫。glTF `doubleSided` 已支援(查證 `import/gltf.rs` `mat.double_sided()` → `mesh_render.rs` 剔除選擇,未改)。
+- E1:`render.decal` 一層疊加貼圖(`ui.document` 圖片):UV 矩形或綁骨骼的投影盒,alpha / multiply / add;內建與自訂材質 shader 都套用。
+- E4:模型熱重載:協定 `reload_assets {watch?, cancel?}`、編輯器 `asset.reload` / `asset.watch`;背景 job(依內容雜湊、可取消、進度、60 s watchdog、記錄耗時),骨架相同時 adopt(保留時間 / 狀態),骨架不同拒絕。
+- E5:量測完成,證據不支持做 GPU 蒙皮(見下)。
+- wave-1 已知限制修正:Unlit 顯示模式關掉 `render.surface` 反射(`Globals.view_params.w` 旗標,原本未使用的欄位;方塊與網格 shader 都檢查)。
+- 示範包 `content/style-lab`(第一方吉祥物 glb + 程序球 + 兩張自繪 PNG)。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+- Draw uniform 由 160 B 變 272 B,每個 draw 的 slot 由 256 B 改成 512 B(8192 個 draw 的緩衝 2 → 4 MiB VRAM):風格參數需要 7 個 vec4;塞進法線矩陣沒用到的欄位可以省下來,但太脆弱。
+- 「描邊寬度以螢幕像素」原本在 clip 空間沿投影法線方向平移:第一次截圖時面向鏡頭的頂點被正規化成隨機方向,小三角形繞向翻轉後外殼蓋住表面(角色身上一片紫)。改成把像素換算成該頂點深度下的公尺數,再沿世界法線推(和公尺模式同一條路徑)。
+- 雙面 primitive 不畫外殼:薄片沒有內側,背對鏡頭的薄片會被自己的外殼蓋住。
+- 匯入器的 `Material` 多了 `name`(glTF / PMX 材質名稱,`serde(default)`,舊資料可讀):原本 ID 是 `node/mesh/primitive`,作者無法用 Blender 裡的材質名指定臉 / 皮膚。
+- 貼花圖片沿用 `ui.document` 的圖片資產(Find Usages / Rename / 縮圖都已支援),代價是需要 `ui` + `behavior`(`ui.document` 屬於 gameplay 資源),示範包因此多了空的 `behavior.program` 與底部的 narrative 面板。
+- E4 的「參考圖疊圖檢視」沒有做。
+
+**驗證**:見本節最後「驗證(最後一輪)」。
+
+**驗證(最後一輪,debug 除非註明;MX150 / Vulkan;其他代理同時在編譯)**
+- `cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` **778 passed / 0 failed / 5 ignored**(基準 760;新增 18:core `style::tests` ×3、`mesh_style::tests` ×4、`mesh_render` 的 Draw/WGSL 大小 + 模組驗證與 `outlined` 規則、`asset_reload::tests` ×4(含真實 glb 的 unchanged / 同骨架 adopt 保留時間 / 不同骨架拒絕 / 缺檔失敗 / watch)、`editor::reload::tests`、`parity::stylized_mesh_components_match_acl`、`tests/style.rs` ×3)。
+- 舊內容包逐像素:base(15f501c 重編的 debug exe)vs 本分支,1440×900 smoke 60 幀:mascot、render-lab、shader-lab、animator-lab、light-lab、axiom-town **全部 0 像素差**。
+- GPU:`content/style-lab` smoke 截圖 `artifacts/w2d/style-m1..m4.png`(m1/m2 揭露像素描邊蓋住表面,m4 修正後;已看過);loopback 熱重載 `artifacts/w2d/reload-after.png`(play :47611,watch 觸發,`reloaded` adopt 0.34 ms、job 753 ms;換成 fighter.glb 時因 `render.toon` 引用不存在的材質 `blush` 而 `failed`,runtime 不變);編輯器 `artifacts/w2d/editor-toon-1080.png`(2880×1620,Inspector 的 render.toon 表單)、`editor-decal-768.png`(2049×1152,render.decal 表單與圖片參照)、`editor-{lit,unlit}-view2.png`(金屬方塊:Lit 反射天空,Unlit 平塗,反射已關)。
+- `editor-smoke-test.ps1 -Port 47621` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true(1→13);`street-editor-parity.ps1` identical:true(8→16);`build-street.ps1` / `build-plaza.ps1` 後 `content/street`、`content/plaza` 無差異;`m0-smoke-test.ps1` PASS。
+- `effects-smoke-test.ps1 -Port 47632`:36 站全部擷取(`artifacts/effects-20261112-092305-211/`,看過 M24 卡通渲染站:自訂材質正常),bridge 檢查通過,最後一步(900 幀限 60 秒)逾時 —— 與整合補記相同的 MX150 變慢現象,沒有放寬時限。
+- E5 release 量測見 `docs/materials.zh-TW.md`:蒙皮佔 runtime 抽出渲染資料的 66–100%,但約 0.2–0.45 ms / 幀(16 ms 預算的 2–4%),幀時間由 GPU / present 主導 → 不做 GPU 蒙皮。
+- Fresh-context 審查(只給需求與 diff):1 bug + 7 risk + 4 nit。已修:重載只雜湊模型檔(改成和匯入快取同一組輸入:模型位元組 + 同資料夾檔案的大小 / 時間,串流讀取);沒有動畫實體使用的模型改了被當成 unchanged 後永遠略過(改為 adopt);啟用失敗(`requested_rev != rev`)時重載會蓋掉標記(視為 superseded);watch 在 revision 變更時清掉基準而漏掉變更(基準跨 revision 保留);編輯器 `asset.watch` 的鏡像狀態(改由 host 每幀同步);watch 在無法監看的世界默默無效(`set_watch` 回錯誤);perf_bench 文件註解被 PowerShell 跳脫字元弄壞。記錄未修:runtime 建置本身不能中途取消(與 revision 啟用相同,watchdog 60 s);材質 / 骨骼名稱的打字錯誤在 runtime 建置時才報錯(上一個 runtime 繼續跑);風格元件掛在沒有網格的實體上不報錯;沒有太陽時 toon 全部是陰影色;重載 job 執行中每幀產生一個 job 觀測 JSON。
+
+### 第二批整合補記(2026-11-12,整合者)
+
+- 合併順序 W2a → W2b → W2c → W2d,每條合併後在合併樹上重跑完整閘門(fmt、clippy `-D warnings`、`cargo test --workspace`、editor-smoke、兩個 parity、build-street / build-plaza、m0 GPU smoke)。測試數:779 → 802 → 819 → 837 passed,0 failed,5 ignored。
+- W2b × W2a:`animation.rs` 的 player 欄位、存檔結構、metrics,`authoring.rs` 的 schema 與 topic(actions 合併 morph / visibility,pipeline 加入 look-at / spring)兩邊都保留。
+- W2c × W2a/W2b:W2c 把動畫指令抽成 `AnimationSystem::prepare`(批次 dry-run 用)。W2a 的 `morph` / `visibility` 與 W2b 的 IK socket 綁定移入 `prepare`;因 socket 檢查需要 runtime state,`prepare` 改為接收 `&RuntimeState`,`check_command` 傳入。合併後編輯器 discovery 的 `json!` 超過 `recursion_limit = 256`,調成 512。
+- W2d × W2a:W2d 新增的 `render.outline` 描邊 pass 沒有跳過 W2a 隱藏的部件,隱藏的不透明單面部件會留下描邊色的外殼殘影。`draw_outlines` 已加上 `part_set(&active.hidden, i)` 檢查。GPU A/B(character-lab 複本,兩顆頭加 6 px 紅描邊,右邊帽子隱藏):未修正時右邊出現紅色帽子形狀,修正後消失。頭髮材質(雙面 / alpha)本來就不畫外殼,用它做的 A/B 兩張圖逐位元組相同,不能當證據。沒有自動化測試(GPU 路徑)。
+- 已知限制:模型在隱藏部件底下沒有幾何時(例如吉祥物頭髮下沒有頭頂),描邊會從開口露出頭部外殼內側;這是反向外殼法的固有現象,不是本次整合的 bug。
+- `effects-smoke-test.ps1`(W2d 合併樹):36 站全部擷取,最後一步(900 幀限 60 秒)逾時,與第一批整合補記記錄的 MX150 環境變慢相同;沒有放寬時限,也不算通過。

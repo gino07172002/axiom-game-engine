@@ -114,4 +114,9 @@ pub struct MeshFrame {
     pub surface: Option<axiom_core::RenderSurface>,
     /// Primitives (asset materials) not drawn: one bit per material.
     pub hidden: axiom_animation::PartMask,
+    /// `render.toon` / `render.outline` / `render.decal`, resolved at runtime build.
+    pub style: Option<std::sync::Arc<crate::mesh_style::MeshStyle>>,
+    /// This frame's face and decal-projector spaces (bone world matrices, else `model`);
+    /// identity without a style.
+    pub style_space: [Mat4; 2],
 }

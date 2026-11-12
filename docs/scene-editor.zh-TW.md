@@ -32,6 +32,8 @@ Assets 的縮圖:模型(靜止姿勢、材質顏色)與材質(以材質 tint 著
 
 World 視窗最下方的 **SKY** 列有 Gradient / Procedural / None 三個按鈕(目前的模式反白),等於 World ▸ Sky…(`world.sky`)與 ACL `sky gradient|procedural|none`;天空的細部數值在 Inspector 開 `render.environment` 調整,`render.surface`(金屬度 / 平滑度,反射天空)從 Inspector ▸ Add component 加入。見 [lighting.zh-TW.md](lighting.zh-TW.md)。
 
+匯入 / 程序網格的風格化外觀從 Inspector ▸ Add component 加入:`render.toon`(卡通分階、邊緣光、臉部朝向、皮膚透光**近似**)、`render.outline`(反向外殼描邊,像素或公尺)、`render.decal`(第二層貼圖:UV 矩形或綁骨骼的投影盒,圖片是 `ui.document` 的圖片資產);每個都可用 `materials` 限定 glTF 材質群組。Assets ▸ **Reload Changed Models**(`asset.reload`)在背景依內容雜湊重載改過的 glb(骨架相同時保留動畫時間與狀態,骨架改變時拒絕並說明),**Watch Model Files**(`asset.watch on|off`)每秒檢查檔案;進度在狀態列的 jobs。AI:`add SEL render.toon`、`{"op":"reload_assets"}`、`observe` 的 `assets_reload`。見 [materials.zh-TW.md](materials.zh-TW.md)。
+
 World 視窗的資源列會在 Inspector 載入資源草稿。可指定 JSON pointer 僅載入所需欄位，例如 `action.abilities` 的 `/abilities/slash2`。Preview、Apply、Reload 和 Copy JSON 沿用交易及修訂衝突規則。每次載入限制為 64 KiB，較大的資源可用更窄的 JSON pointer 檢查。
 
 新增的物件有穩定 ID。名稱可更換，指向 ID 的引用會繼續有效。複製會複製單一物件與它的父層、場景成員關係。刪除物件時，子物件保留本地變換並成為根物件。交易會驗證仍指向已刪物件的型別化引用。重新掛父層時可保留世界姿態，若所需的本地變換含剪切，會回報診斷。

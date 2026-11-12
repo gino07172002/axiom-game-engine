@@ -109,6 +109,8 @@ struct Controller {
     unbound_morphs: usize,
     /// `animation.spring` / `animation.look_at` / IK sockets of this entity, if any.
     rig: Option<Box<rig::Rig>>,
+    /// The entity's stylized mesh look (`render.toon` / `outline` / `decal`).
+    style: Option<Arc<crate::mesh_style::MeshStyle>>,
 }
 /// Per-entity state of an `animation.controller` (cheap to clone: `Arc`s and `Copy` state).
 #[derive(Clone)]
@@ -254,6 +256,7 @@ impl Controller {
             layer_ref: Pose { local: vec![] },
             unbound_morphs,
             rig: None,
+            style: None,
             config,
         };
         out.evaluate(0.)?;
@@ -666,6 +669,13 @@ impl AnimationSystem {
         })
     }
 
+    /// (entity, asset ID, rendered asset, clip source asset) of every player (asset reload).
+    pub(crate) fn assets(&self) -> impl Iterator<Item = (&str, &str, &Arc<Asset>, &Arc<Asset>)> {
+        self.players
+            .iter()
+            .map(|(id, p)| (id.as_str(), p.config.asset.as_str(), &p.asset, &p.source))
+    }
+
     pub(crate) fn end_scrub(&mut self, scrub: Scrub) {
         if let Some(p) = self.players.get_mut(&scrub.entity) {
             let posed = std::mem::replace(&mut p.pose, scrub.pose);
@@ -771,7 +781,7 @@ pub fn register(registry: &mut RuntimeRegistry) {
                 .transpose()?
                 .unwrap_or_default();
             let mut players = BTreeMap::new();
-            for e in &state.compiled.entities {
+            for (slot, e) in state.compiled.entities.iter().enumerate() {
                 if let Some(value) = e.components.get("animation.player") {
                     let config: Player = serde_json::from_value(value.clone())?;
                     let mut player = at(
@@ -799,6 +809,7 @@ pub fn register(registry: &mut RuntimeRegistry) {
                     if player.rig.is_some() {
                         at(&component_path(&e.id), player.evaluate(0.))?;
                     }
+                    player.style = crate::mesh_style::prepare(state, slot, &player.asset)?;
                     players.insert(e.id.clone(), player);
                 }
             }
@@ -1218,6 +1229,12 @@ impl RuntimeSystem for AnimationSystem {
                         .map(|m| m.id.clone()),
                     surface: state.compiled.entities[slot].surface,
                     hidden: p.hidden,
+                    style: p.style.clone(),
+                    style_space: p.style.as_ref().map_or([Mat4::IDENTITY; 2], |s| {
+                        crate::mesh_style::spaces(s, model, |b| {
+                            crate::mesh_style::bone_global(&p.asset.skeleton, &p.pose, b)
+                        })
+                    }),
                 });
             }
             if p.config.debug_skeleton {

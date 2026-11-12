@@ -34,6 +34,7 @@ pub mod registry;
 pub mod retry;
 pub mod scene_edit;
 pub mod store;
+pub mod style;
 pub mod tags;
 pub mod trigger;
 pub mod tween;

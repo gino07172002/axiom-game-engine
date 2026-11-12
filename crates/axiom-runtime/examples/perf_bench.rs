@@ -59,6 +59,58 @@ fn counters() -> (u64, u64) {
     (ALLOCS.load(Relaxed), BYTES.load(Relaxed))
 }
 
+/// `skin::deform` of every `animation.player` (one frame's skinning), 240 frames: the
+/// distribution of the per-frame sum, with the skinned vertex count.
+fn skinning_per_frame(world: &axiom_core::World) -> Result<Option<Value>> {
+    let Some(assets) = world
+        .resources
+        .get("animation.library")
+        .and_then(|l| l.get("assets"))
+    else {
+        return Ok(None);
+    };
+    let sources: std::collections::BTreeMap<String, axiom_animation::authoring::Source> =
+        serde_json::from_value(assets.clone())?;
+    let mut loaded = std::collections::BTreeMap::new();
+    let mut players = vec![];
+    for e in &world.entities {
+        let Some(id) = world
+            .resolved_components(e)
+            .get("animation.player")
+            .and_then(|p| p["asset"].as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !loaded.contains_key(&id) {
+            let source = sources.get(&id).context("player asset missing")?;
+            let asset = axiom_animation::import::load(&source.path, &source.options)?;
+            let pose = asset.skeleton.rest_pose();
+            loaded.insert(id.clone(), (asset, pose));
+        }
+        players.push(id);
+    }
+    if players.is_empty() {
+        return Ok(None);
+    }
+    let vertices: usize = players.iter().map(|p| loaded[p].0.vertices.len()).sum();
+    let mut samples = Vec::with_capacity(240);
+    for _ in 0..240 {
+        let t = Instant::now();
+        for p in &players {
+            let (asset, pose) = &loaded[p];
+            std::hint::black_box(axiom_animation::skin::deform(
+                asset,
+                pose,
+                axiom_animation::skin::Skinning::Auto,
+            )?);
+        }
+        samples.push(ms(t));
+    }
+    Ok(Some(
+        json!({"players":players.len(),"vertices":vertices,"deform_per_frame_ms":dist(samples)}),
+    ))
+}
 /// Sorted-sample distribution. Percentiles use the nearest-rank (ceil) convention of
 /// `rts_stress`.
 fn dist(mut samples: Vec<f64>) -> Value {
@@ -609,6 +661,10 @@ fn main() -> Result<()> {
         std::hint::black_box(serde_json::to_vec(&obs)?);
         obs_json_ms.push(ms(t));
     }
+    // CPU skinning alone (gap E5): what `render_frame` spends in `skin::deform` for every
+    // animation.player of the pack, per frame (each player's asset at its rest pose; linear
+    // blend cost does not depend on the pose).
+    let skinning = skinning_per_frame(&world)?;
     let (mut clone_ms, mut clone_allocs) = (vec![], vec![]);
     for _ in 0..20 {
         let (a, _) = counters();
@@ -705,6 +761,7 @@ fn main() -> Result<()> {
         "audio":audio,
         "camera":camera,
         "physics":physics,
+        "skinning":skinning,
         "process_memory_after_runtime":memory_runtime,
         "process_memory_end":axiom_runtime::measure::process_memory(),
     });
