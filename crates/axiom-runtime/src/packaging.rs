@@ -187,6 +187,11 @@ fn build(
     bytes += size;
     files.push(json!({"path":exe,"bytes":size,"sha256":hash}));
     progress.done.fetch_add(1, Ordering::Relaxed);
+    // A cancel that arrives during the (large) executable copy still wins: nothing is renamed.
+    ensure!(
+        !progress.cancel.load(Ordering::Relaxed),
+        "packaging cancelled"
+    );
 
     let game = json!({"format":FORMAT,"id":id,"title":title,"pack":CONTENT_DIR,"exe":exe,"engine":env!("CARGO_PKG_VERSION")});
     std::fs::write(staging.join(GAME_FILE), serde_json::to_vec_pretty(&game)?)?;
