@@ -144,3 +144,29 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
   - `objdump -p`:player `Subsystem 00000002 (Windows GUI)`(CLI 仍為 3 CUI);`.rsrc` 0x186d0 bytes(三張 PNG 合計 99,056);`ExtractAssociatedIcon` 取出的圖為 Axiom 圖示,CLI 為 Windows 預設圖示。
 - Gate:`cargo fmt --all` 乾淨、`cargo clippy --workspace --all-targets -- -D warnings` 乾淨、`cargo test --workspace --no-fail-fast` 842 passed / 0 failed / 5 ignored(基準 840 + player 新增 2)、`scripts/editor-smoke-test.ps1` ok:true。
 - 未做/限制:沒有 release 建置驗證(視窗屬性與圖示在 debug 已確認);ADV 敘事列左側的 `AXIOM / NARRATIVE` 字樣屬共用 UI,未在玩家模式隱藏;存讀檔按鈕的回應仍以原始 JSON 顯示在狀態列(玩家看得到);Esc 暫停提示未截圖驗證。
+
+### P3 執行補記(2026-11-12)
+- **外部素材防護**:`package()` 在 `ContentPackage::load` 來源 pack 之後、建立 `*.partial` 之前,掃描解析後的來源世界(`reject_outside`):所有 `animation.library` 中 `external: true` 的素材(一律拒絕——external 路徑以工作目錄解析,就算剛好在 pack 內也不可搬家),加上所有不落在 pack 內的絕對路徑(不存在的也算越界)。錯誤列出前 8 個(排序、去重、附原因)與總數,沒有任何輸出或 partial 目錄。P1 打包後的越界掃描保留為第二道防線。
+- **引用集合報告**(`referenced_files`,只報告不刪檔,決策 #3):
+  - 涵蓋:根 pack 與遞迴的相依 package(manifest `dependencies[*].path`)各自的 `manifest.json`、world 檔、manifest `assets` 鍵、原始 world JSON 中 `render.shaders.shaders.*.file`(`.wgsl` 在匯入時被內嵌,解析後世界看不到);以及解析後世界中所有指向 pack 內檔案的絕對路徑(動畫 GLB、UI 圖片等,由 `animation` resolver 與 `ui.document` 改寫)。
+  - **未涵蓋**:編譯期 `include_str!` 讀的檔(例:`content/fps/models.json` 由 `axiom-fps/src/content.rs` 內嵌,執行期不讀 → 正確列為 unreferenced);執行期以相對路徑自行開檔、且匯入時沒改寫成絕對路徑的任何系統(目前 grep 只有 animation 與 shader 兩個 package resolver 加上 core 的 UI 影像);GLB 內部引用的外部 `.bin`/貼圖 URI(GLB 未解析);legacy v1 `assets/worlds/` 不在打包路徑上。
+  - 報告新增 `referenced`(數量)、`unreferenced`(排序的 pack 相對路徑)與 `warnings`(排序;有未引用檔時一則摘要,建議 `--exclude`)。`skipped` 也改為排序。
+- **決定性**:`files` 依路徑排序(執行檔排最後)、其餘清單排序;只有 `out` 與 `ms` 隨執行變動。plaza 連續打包兩次:`files/unreferenced/skipped/warnings/referenced` 完全相同。
+- **介面**:`package(registry, &PackageOptions, &Progress)` 與所有 public 項目不變;新邏輯全在私有函式(`reject_outside`、`referenced_files`、`manifest_closure`、`annotate`),`build()` 未改,方便與 P2/P4 合併。
+- 測試(`packaging::tests`,5 個全過):
+  - `external_animation_asset_is_refused_before_anything_is_written`:`content/animation` 複製到暫存,`rigify.glb` 移到 pack 外並設 `external: true`(來源 pack 本身仍可載入)→ 錯誤含該路徑與 `external animation asset character`,`out/` 根本不存在。
+  - `report_lists_unreferenced_files_and_follows_dependencies`:`content/m4` + `extra.txt` → `unreferenced == ["extra.txt"]`(仍被複製),兩層相依(`packs/quest` → `../hero`、`../squad`)的 manifest/world 與 `packs/hero/fighter.glb` 都已複製且視為引用。
+- CLI 實測(debug,輸出在 `artifacts/pkg-p3/`,完成後刪除;檔數含執行檔,bytes 含 95.3 MB debug exe):
+
+  | pack | ok | files | bytes | referenced | unreferenced | skipped | ms |
+  |---|---|---|---|---|---|---|---|
+  | plaza | true | 5 | 96,748,464 | 4 | — | `build/` | 4282 |
+  | adv | true | 4 | 95,335,085 | 3 | — | — | 5782 |
+  | fps | true | 4 | 95,599,113 | 2 | `models.json`(warning) | — | 3409 |
+  | action | true | 5 | 95,773,037 | 4 | — | — | 5784 |
+  | love-no-war | true | 5 | 95,746,827 | 4 | — | — | 7238 |
+  | effects-tour(shader 檔) | true | 15 | 95,745,366 | 14 | — | — | 5635 |
+  | m4(相依) | true | 11 | 95,803,373 | 10 | — | — | 2762 |
+
+  - love-no-war 的 GLB 都在 pack 內、沒有 `external`,所以**不是**負面案例(其素材可能是第三方,輸出只在隔離目錄且已刪除)。負面案例改用 `content/animation` 的暫存副本(GLB 移到 pack 外 + `external: true`):`{"ok":false,"error":"pack references 1 file(s) outside …\ext-pack; move them into the pack with relative paths (external: false): …\outside\rigify.glb (external animation asset character)"}`,exit 1,`ext-out` 與 `ext-out.partial` 都不存在。
+- 偏離:無。`--exclude`、暫存目錄改名、`--force` 已在 P1 完成。
