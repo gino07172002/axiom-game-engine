@@ -31,6 +31,7 @@ pub mod mesh_style;
 pub mod nameplate;
 pub mod narrative;
 pub mod nav_agent;
+pub mod packaging;
 pub mod path_follow;
 pub mod physics;
 pub mod postfx;

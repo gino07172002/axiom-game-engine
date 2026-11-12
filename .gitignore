@@ -2,6 +2,8 @@
 /.tools/
 /data/
 /artifacts/
+# Packaged game folders (axiom package --out dist/...)
+/dist/
 *.sqlite*
 *.log
 

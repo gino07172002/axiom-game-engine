@@ -310,6 +310,7 @@ dependencies = [
  "rapier3d",
  "serde",
  "serde_json",
+ "sha2",
  "wgpu",
  "windows",
  "winit",

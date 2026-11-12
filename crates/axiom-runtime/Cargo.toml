@@ -26,6 +26,7 @@ egui_dock = "=0.16.0"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.17"
+sha2 = "0.10"
 
 
 # Per-process video memory for the editor status bar (vram.rs). Already built for wgpu-hal's

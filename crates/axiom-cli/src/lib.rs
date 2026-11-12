@@ -117,6 +117,21 @@ enum Command {
         #[arg(long)]
         preview: bool,
     },
+    /// Build a portable game folder from --pack: pack files, player executable, game.json.
+    Package {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        exe_name: Option<String>,
+        /// Extra exclusions: `dir/`, `*.ext` or a pack-relative path (repeatable).
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Replace an existing packaged game folder.
+        #[arg(long)]
+        force: bool,
+    },
     /// Drive a running editor (--connect): select/frame objects, switch dock, capture a PNG.
     View {
         #[arg(long)]
@@ -478,6 +493,34 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             registry,
             world,
         );
+    }
+    if let Command::Package {
+        out,
+        title,
+        exe_name,
+        exclude,
+        force,
+    } = command
+    {
+        ensure!(cli.connect.is_none(), "package cannot use --connect");
+        let pack = cli.pack.context("package requires --pack DIR")?;
+        if axiom_runtime::packaging::inside_repo(&out) {
+            eprintln!("warning: output is inside a git work tree; do not commit packaged games");
+        }
+        let report = axiom_runtime::packaging::package(
+            &registry.authoring,
+            &axiom_runtime::packaging::PackageOptions {
+                pack,
+                out,
+                title,
+                exe_name,
+                excludes: exclude,
+                force,
+                player_exe: std::env::current_exe()?,
+            },
+            &Default::default(),
+        )?;
+        return print(&report, cli.pretty);
     }
     if let Command::Editor {
         port,
@@ -864,6 +907,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         }
         Command::Play { .. }
         | Command::Editor { .. }
+        | Command::Package { .. }
         | Command::AnimationInspect { .. }
         | Command::AnimationDemo { .. }
         | Command::AnimationRetarget { .. } => unreachable!(),
