@@ -124,7 +124,7 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
 
 ### P1 完成(2026-11-12)
 - `axiom package --pack DIR --out DIR [--title] [--exe-name] [--exclude]... [--force]`;實作 `crates/axiom-runtime/src/packaging.rs`(CLI 與之後的編輯器 job 共用,`Progress` 提供計數與取消)。輸出先寫到同層 `*.partial`,複製後的 pack 以 `ContentPackage::load` 重新載入,並掃描解析後世界中所有絕對路徑都在輸出內,才改名成正式目錄。`--force` 只取代帶 `game.json` 的目錄;輸出與 pack 重疊直接拒絕。
-- 偏離:原計畫用 `absolute()` 比較路徑;`canonicalize` 在 Windows 回傳 `\?` verbatim 形式,`starts_with` 永遠不成立 → 測試抓到「輸出在 pack 內」沒被拒絕。改為 `normalized()`(最深的既有祖先 canonicalize 後接上其餘)。
+- 偏離:原計畫用 `absolute()` 比較路徑;`canonicalize` 在 Windows 回傳 `\\?\` verbatim 形式,`starts_with` 永遠不成立 → 測試抓到「輸出在 pack 內」沒被拒絕。改為 `normalized()`(最深的既有祖先 canonicalize 後接上其餘)。
 - 作品名清理:去除保留字元並合併空白(`Last Signal / 最後的訊號` → `Last Signal 最後的訊號`);啟動器加 `chcp 65001`,否則 cmd 以 OEM 碼頁讀不到中文檔名。
 - 證據(debug):plaza 打包 1.5 s、5 檔 96.6 MB(執行檔 95 MB)、`build/` 被排除;複製到 `artifacts/pkg/elsewhere/Sakura Plaza` 執行 smoke 截圖正常(S1)。ADV 打包後搬家:執行中 `save live`(tick 1983)→ 關閉 → 重開(重新匯入 pack)`--load-slot live` 成功,tick 2103,`assets/station.png` 從搬家後路徑載入,截圖已看過(**S2 成立**)。存檔在 `--db` 的父目錄 `saves/`,遊戲資料夾內沒有新檔案。
 - 單元/整合測試 `packaging::tests` 3 個:排除規則、名稱清理、決定性(兩次打包清單雜湊相同)/未加 --force 拒絕/--force 不刪非遊戲目錄/取消後不留輸出與 partial/輸出在 pack 內拒絕。Gate:fmt 乾淨、clippy -D warnings 乾淨、workspace 840 passed / 0 failed / 5 ignored。
