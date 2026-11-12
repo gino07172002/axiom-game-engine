@@ -1,0 +1,18 @@
+[package]
+name = "axiom-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windowed player for packaged Axiom games (reads game.json beside the executable)"
+build = "build.rs"
+
+[dependencies]
+axiom-core.workspace = true
+axiom-runtime.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+# Error dialog. Same version as axiom-runtime's (already built for wgpu-hal), one extra
+# feature module; no new crate.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

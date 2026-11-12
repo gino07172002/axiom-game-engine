@@ -38,6 +38,19 @@ cd D:\rust_learn
 .\target\debug\axiom.exe --db data/rts-edit.sqlite --pack content/rts editor
 ```
 
+### 玩家執行檔
+
+`axiom package` 把內容包做成可交給別人的資料夾(計畫見 [打包發佈計畫](plan-packaging.zh-TW.md))。輸出裡的 `<作品名>.exe` 是 `crates/axiom-player`,所以打包前要先用相同 profile 建置它:
+
+```powershell
+cargo build -p axiom -p axiom-player
+.\target\debug\axiom.exe package --pack content\adv --out D:\dist\adv
+```
+
+資料夾內容:`<作品名>.exe`、`game.json`(format 1:`id`、`title`、`pack`、`exe`)、`content\`。玩家雙擊執行檔即可:沒有主控台視窗、沒有開發工具列與控制台(Tab 無效)、不開 loopback 連接埠,視窗標題是作品名,執行檔內嵌 Axiom 圖示。每次啟動都重新匯入 `content\`,資料庫、`saves\` 與 `crash.log` 位於 `%APPDATA%\Axiom\<id>\`,遊戲資料夾本身不會被寫入。Esc 暫停(畫面上方顯示 `PAUSED · ESC`),內容 UI(`ui.document`、存讀檔按鈕)照常顯示。
+
+啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
+
 ## 五個內容包
 
 ```powershell

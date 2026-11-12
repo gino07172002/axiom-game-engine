@@ -15,6 +15,8 @@ pub struct UiState {
     pub slider_values: std::collections::BTreeMap<String, f64>,
     pub playing: bool,
     pub console: bool,
+    /// Shipped-game chrome (`RunMode::Play { player: Some(_) }`): no developer bar or console.
+    pub player: bool,
     pub command: String,
     pub output: Vec<String>,
     pub fps: f32,
@@ -81,6 +83,9 @@ pub fn draw_generic(
         .as_ref()
         .and_then(|g| g.compiled.ui.as_ref())
         .is_some_and(|d| d.chrome == axiom_core::gameplay::Chrome::Compact);
+    if ui.player {
+        return draw_player(ctx, state, ui);
+    }
     if compact {
         return draw_compact(ctx, state, ui);
     }
@@ -120,6 +125,37 @@ pub fn draw_generic(
             }
         });
     });
+    draw_world_overlays(ctx, state, ui, &mut actions);
+    actions
+}
+
+/// Shipped-game chrome: content UI only. Esc still pauses, so a paused game says how to resume;
+/// there is no console, restart or exit button (the window closes the game).
+fn draw_player(
+    ctx: &egui::Context,
+    state: &crate::world::RuntimeState,
+    ui: &mut UiState,
+) -> Vec<Action> {
+    let mut actions = vec![];
+    ui.console = false;
+    if !ui.playing {
+        egui::Area::new(egui::Id::new("player_paused"))
+            .anchor(Align2::CENTER_TOP, [0.0, 12.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |p| {
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(10, 14, 20, 215))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(12, 6))
+                    .show(p, |p| {
+                        if p.button(RichText::new("PAUSED  ·  ESC").size(14.0))
+                            .clicked()
+                        {
+                            actions.push(Action::Start);
+                        }
+                    });
+            });
+    }
     draw_world_overlays(ctx, state, ui, &mut actions);
     actions
 }

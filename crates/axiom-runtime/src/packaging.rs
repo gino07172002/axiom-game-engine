@@ -42,6 +42,23 @@ pub struct Progress {
     pub cancel: AtomicBool,
 }
 
+/// The windowed player (`crates/axiom-player`) built beside the running executable; it reads
+/// `game.json` next to itself and keeps its database and saves in `%APPDATA%\Axiom\<id>`.
+pub fn default_player_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let player = exe
+        .with_file_name("axiom-player")
+        .with_extension(std::env::consts::EXE_EXTENSION);
+    ensure!(
+        player.is_file(),
+        "player executable {} not found; build it first with `cargo build -p axiom-player` \
+         (same profile as {})",
+        player.display(),
+        exe.display()
+    );
+    Ok(player)
+}
+
 /// Builds the game folder and returns the compact report (file list with SHA-256).
 pub fn package(
     registry: &axiom_core::Registry,
@@ -164,11 +181,6 @@ fn build(
 
     let game = json!({"format":FORMAT,"id":id,"title":title,"pack":CONTENT_DIR,"exe":exe,"engine":env!("CARGO_PKG_VERSION")});
     std::fs::write(staging.join(GAME_FILE), serde_json::to_vec_pretty(&game)?)?;
-    // Until the windowed player exists (P2), a launcher keeps saves out of the game folder.
-    let launcher = format!(
-        "@echo off\r\nchcp 65001 >nul\r\ncd /d \"%~dp0\"\r\n\"{exe}\" --db \"%APPDATA%\\Axiom\\{id}\\world.sqlite\" --pack {CONTENT_DIR} play --start --port 0\r\nif errorlevel 1 pause\r\n"
-    );
-    std::fs::write(staging.join("Play.cmd"), launcher)?;
 
     // The copy must load on its own: every resolved path stays inside the output folder.
     let world = axiom_core::ContentPackage::load(&content, registry)
@@ -393,6 +405,14 @@ mod tests {
         let first = package(&registry, &options, &Progress::default()).unwrap();
         assert_eq!(first["exe"], "Two Cameras.exe");
         assert!(out.join("Two Cameras.exe").is_file() && out.join(GAME_FILE).is_file());
+        // The windowed player reads game.json itself; no console launcher ships.
+        assert!(!out.join("Play.cmd").exists());
+        let game: Value =
+            serde_json::from_slice(&std::fs::read(out.join(GAME_FILE)).unwrap()).unwrap();
+        assert_eq!(game["format"], FORMAT);
+        assert_eq!(game["pack"], CONTENT_DIR);
+        assert_eq!(game["exe"], "Two Cameras.exe");
+        assert_eq!(game["title"], "Two: Cameras");
         assert!(!out.join("content/build").exists() && !out.join("content/notes.txt").exists());
         let skipped = first["skipped"].to_string();
         assert!(
