@@ -1,5 +1,17 @@
 # WORKLOG
 
+## 2026-11-12 — Claude (Opus 5.5) — packaging (program item 4): P1–P5 done, pushed
+
+**Done:** plan `docs/plan-packaging.zh-TW.md` (spikes S1/S2, ADRs, P1–P5, execution notes for each). `axiom package --pack DIR --out DIR` (`crates/axiom-runtime/src/packaging.rs`) builds a relocatable folder: `<title>.exe` (windowed `crates/axiom-player`: GUI subsystem, embedded icon via windres, no dev bar/console/port, saves + crash.log in `%APPDATA%\Axiom\<id>`), `game.json`, `content/`. Staged `*.partial` + re-load check, external/out-of-pack assets refused before writing, referenced/unreferenced report, `--force` only replaces game folders. Editor `File > Build Game…` background job (P4). Commits 8357e58, 40342b7 (P2), 97fbeb9 (P3), a6b49b1 (P4), ed9e116, 3d1326f (P5).
+
+**Verification:** gate 848 passed / 0 failed / 5 ignored, fmt + clippy clean, editor smoke ok, both parity identical. `scripts/package-smoke-test.ps1` PASS debug and `-Release` (plaza/adv/fps/action relocated + played with isolated APPDATA; 8 screenshots inspected). Release player 34.2 MB. S2: save → relaunch (re-import) → load works.
+
+**Not verified / open:** editor-build main-thread stall reported by P4 (0.3–1.9 s under 100% CPU) not reproduced idle, but evidence is sampled `last_slow` only. Player startup time not measured (smoke `player_ms` is background-throttled). No installer/signing (non-goal). Next program items: cross-platform and big scenes (user deferred).
+
+**Gotchas:** canonicalize gives `\?\` paths on Windows — compare canonical to canonical (`normalized()`), display via `shown()`. Agent `isolation: worktree` refused (d:/D: case) — create worktrees manually and junction `.tools`; unlink the junction (`(Get-Item).Delete()`) before `git worktree remove`. Never `git add docs` / `crates` wholesale: the other session's untracked files live there. PowerShell 5.1 strips `"` in native args — use `\"`.
+
+**Environment:** `D:\axiom-pkg-spike` (spike copy, ~96 MB) could not be deleted by the agent (safety check) — delete by hand.
+
 ## 2026-11-12 — Claude (Opus 5.5) — integrator: wave 2 (W2a–W2d, Paladin gap list) merged into main
 
 **Done:** merged W2a (743ce41), W2b (af90366), W2c (479221f), W2d (a0c9bfe), each followed by the full gate on the merged tree. Tests 760 → 779 → 802 → 819 → 837 passed / 0 failed / 5 ignored. Integration fixes: W2a morph / visibility and W2b IK socket ported into W2c's `AnimationSystem::prepare` (now takes `&RuntimeState`); `axiom-runtime` `recursion_limit` 256 → 512 (editor discovery `json!`); W2d outline pass skips W2a-hidden parts (GPU A/B evidence in the plan's 第二批整合補記).
