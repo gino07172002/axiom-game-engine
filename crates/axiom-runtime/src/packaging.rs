@@ -5,9 +5,10 @@
 //! folder can move. Output is staged in a sibling `*.partial` directory and renamed only after
 //! the copied pack loads cleanly with no path outside the output, so failure or cancellation
 //! never leaves a half-written game.
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -54,6 +55,11 @@ pub fn package(
         .canonicalize()
         .with_context(|| format!("pack {} not found", options.pack.display()))?;
     let loaded = axiom_core::ContentPackage::load(&pack, registry).context("pack validation")?;
+    // Refuse files outside the pack before anything is written, then compute the closure the
+    // runtime reads so the report can flag copied-but-unreferenced files (report only).
+    let source_world = serde_json::to_value(&loaded.world)?;
+    reject_outside(&source_world, &pack)?;
+    let referenced = referenced_files(&pack, &source_world)?;
     let id = loaded.manifest.id.clone();
     let title = options
         .title
@@ -92,7 +98,10 @@ pub fn package(
         registry, options, progress, &pack, &staging, &id, &title, &exe_name,
     );
     let mut report = match result {
-        Ok(report) => report,
+        Ok(mut report) => {
+            annotate(&mut report, &referenced);
+            report
+        }
         Err(error) => {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(error);
@@ -264,6 +273,191 @@ fn escapes(value: &Value, root: &Path, out: &mut Vec<String>) {
     }
 }
 
+const LISTED: usize = 8;
+
+/// Fails, listing the first [`LISTED`] and the total, when the resolved source world reads a
+/// file outside `pack`: every `external: true` animation asset (resolved against the working
+/// directory, so never relocatable, even when it happens to sit inside the pack) and every
+/// absolute path that does not resolve inside the pack (missing files count as outside).
+fn reject_outside(world: &Value, pack: &Path) -> Result<()> {
+    let mut found = BTreeMap::<String, String>::new();
+    if let Some(assets) = world
+        .pointer("/resources/animation.library/assets")
+        .and_then(Value::as_object)
+    {
+        for (id, asset) in assets {
+            if asset["external"].as_bool() == Some(true) {
+                let path = asset["path"].as_str().unwrap_or_default();
+                found.insert(plain(path), format!("external animation asset {id}"));
+            }
+        }
+    }
+    let mut paths = BTreeSet::new();
+    absolute_strings(world, &mut paths);
+    for path in paths {
+        let inside = Path::new(&path)
+            .canonicalize()
+            .is_ok_and(|p| p.starts_with(pack));
+        if !inside {
+            found
+                .entry(plain(&path))
+                .or_insert_with(|| "absolute path outside the pack".into());
+        }
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    let listed: Vec<String> = found
+        .iter()
+        .take(LISTED)
+        .map(|(path, why)| format!("{path} ({why})"))
+        .collect();
+    let more = found.len().saturating_sub(LISTED);
+    bail!(
+        "pack references {} file(s) outside {}; move them into the pack with relative paths (external: false): {}{}",
+        found.len(),
+        plain(&pack.to_string_lossy()),
+        listed.join(", "),
+        if more > 0 { format!(", and {more} more") } else { String::new() }
+    )
+}
+
+/// Pack-relative files the runtime reads: for the root package and every dependency
+/// (recursively, through manifest `dependencies[*].path`) its manifest, world file, declared
+/// `assets` and `render.shaders` `.wgsl` files (inlined at import, so only the raw world names
+/// them); plus every absolute path in the resolved world that lands on a file inside the pack
+/// (animation GLBs, UI images, ...). Anything read by other means is not covered.
+fn referenced_files(pack: &Path, world: &Value) -> Result<BTreeSet<String>> {
+    let mut referenced = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    manifest_closure(pack, pack, &mut visited, &mut referenced)?;
+    let mut paths = BTreeSet::new();
+    absolute_strings(world, &mut paths);
+    for path in paths {
+        add_file(pack, Path::new(&path), &mut referenced);
+    }
+    Ok(referenced)
+}
+
+fn manifest_closure(
+    pack: &Path,
+    dir: &Path,
+    visited: &mut BTreeSet<PathBuf>,
+    referenced: &mut BTreeSet<String>,
+) -> Result<()> {
+    let dir = dir
+        .canonicalize()
+        .with_context(|| format!("package {}", dir.display()))?;
+    if !dir.starts_with(pack) || !visited.insert(dir.clone()) {
+        return Ok(());
+    }
+    ensure!(visited.len() <= 32, "package count exceeds 32");
+    let manifest_path = dir.join("manifest.json");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    add_file(pack, &manifest_path, referenced);
+    if let Some(world) = manifest["world"].as_str() {
+        let world_path = dir.join(world);
+        add_file(pack, &world_path, referenced);
+        let raw: Value = serde_json::from_slice(&std::fs::read(&world_path)?)?;
+        if let Some(shaders) = raw
+            .pointer("/resources/render.shaders/shaders")
+            .and_then(Value::as_object)
+        {
+            for file in shaders.values().filter_map(|s| s["file"].as_str()) {
+                add_file(pack, &dir.join(file), referenced);
+            }
+        }
+    }
+    if let Some(assets) = manifest["assets"].as_object() {
+        for relative in assets.keys() {
+            add_file(pack, &dir.join(relative), referenced);
+        }
+    }
+    if let Some(dependencies) = manifest["dependencies"].as_object() {
+        for path in dependencies.values().filter_map(|d| d["path"].as_str()) {
+            manifest_closure(pack, &dir.join(path), visited, referenced)?;
+        }
+    }
+    Ok(())
+}
+
+fn add_file(pack: &Path, path: &Path, referenced: &mut BTreeSet<String>) {
+    if let Ok(path) = path.canonicalize() {
+        if path.is_file() {
+            if let Ok(relative) = path.strip_prefix(pack) {
+                referenced.insert(slash(relative));
+            }
+        }
+    }
+}
+
+/// Every string in `value` that is an absolute filesystem path (`C:\...`, `\\?\C:\...`).
+fn absolute_strings(value: &Value, out: &mut BTreeSet<String>) {
+    match value {
+        Value::String(s) => {
+            let path = Path::new(s.trim_start_matches(r"\\?\"));
+            if path.is_absolute() && path.components().count() > 1 {
+                out.insert(s.clone());
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|v| absolute_strings(v, out)),
+        Value::Object(map) => map.values().for_each(|v| absolute_strings(v, out)),
+        _ => {}
+    }
+}
+
+/// Adds `unreferenced` (copied pack files outside [`referenced_files`]; a warning, never a
+/// deletion) and `warnings`, and sorts the report's name lists so equal inputs give equal
+/// reports apart from `out` and `ms`.
+fn annotate(report: &mut Value, referenced: &BTreeSet<String>) {
+    let prefix = format!("{CONTENT_DIR}/");
+    let unreferenced: Vec<String> = report["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["path"].as_str()?.strip_prefix(&prefix))
+        .filter(|path| !referenced.contains(*path))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut warnings: Vec<String> = report["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| w.as_str().map(str::to_string))
+        .collect();
+    if !unreferenced.is_empty() {
+        let listed: Vec<&str> = unreferenced
+            .iter()
+            .take(LISTED)
+            .map(String::as_str)
+            .collect();
+        warnings.push(format!(
+            "{} copied file(s) look unreferenced (kept; add --exclude to drop them): {}{}",
+            unreferenced.len(),
+            listed.join(", "),
+            if unreferenced.len() > LISTED {
+                ", ..."
+            } else {
+                ""
+            }
+        ));
+    }
+    warnings.sort();
+    if let Some(skipped) = report["skipped"].as_array_mut() {
+        skipped.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+    }
+    report["referenced"] = json!(referenced.len());
+    report["unreferenced"] = json!(unreferenced);
+    report["warnings"] = json!(warnings);
+}
+
+/// Display form without the Windows verbatim `\\?\` prefix.
+fn plain(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").to_string()
+}
+
 fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(if path.is_absolute() {
         path.to_path_buf()
@@ -433,6 +627,130 @@ mod tests {
         options.out = pack.join("dist");
         assert!(package(&registry, &options, &Progress::default()).is_err());
         assert!(!pack.join("dist").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn content(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content")
+            .join(name)
+    }
+
+    fn options(pack: &Path, out: &Path, player: &Path) -> PackageOptions {
+        PackageOptions {
+            pack: pack.into(),
+            out: out.into(),
+            title: None,
+            exe_name: Some("Game".into()),
+            excludes: vec![],
+            force: false,
+            player_exe: player.into(),
+        }
+    }
+
+    fn scratch(tag: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("axiom-pkg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let player = base.join("player.exe");
+        std::fs::write(&player, b"stub").unwrap();
+        (base, player)
+    }
+
+    fn strings(report: &Value, key: &str) -> Vec<String> {
+        report[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn external_animation_asset_is_refused_before_anything_is_written() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("external");
+        let pack = base.join("pack");
+        copy_dir(&content("animation"), &pack);
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::rename(pack.join("rigify.glb"), outside.join("rigify.glb")).unwrap();
+        let glb = outside.join("rigify.glb").canonicalize().unwrap();
+        let world_path = pack.join("world.json");
+        let mut world: Value =
+            serde_json::from_slice(&std::fs::read(&world_path).unwrap()).unwrap();
+        let asset = &mut world["resources"]["animation.library"]["assets"]["character"];
+        asset["external"] = json!(true);
+        asset["path"] = json!(glb.to_string_lossy());
+        std::fs::write(&world_path, serde_json::to_vec(&world).unwrap()).unwrap();
+        // The source pack itself is valid: the engine accepts external assets in authoring.
+        axiom_core::ContentPackage::load(&pack, &registry).unwrap();
+
+        let out = base.join("out/Game");
+        let error = package(
+            &registry,
+            &options(&pack, &out, &player),
+            &Progress::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        let shown = glb
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
+        assert!(
+            error.contains("outside")
+                && error.contains(&shown)
+                && error.contains("external animation asset character"),
+            "{error}"
+        );
+        assert!(!out.exists() && !base.join("out/Game.partial").exists());
+        assert!(!base.join("out").exists(), "nothing may be written");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn report_lists_unreferenced_files_and_follows_dependencies() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("closure");
+        let pack = base.join("pack");
+        copy_dir(&content("m4"), &pack);
+        std::fs::write(pack.join("extra.txt"), "not read by the runtime").unwrap();
+        let out = base.join("out/Game");
+        let report = package(
+            &registry,
+            &options(&pack, &out, &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        let unreferenced = strings(&report, "unreferenced");
+        assert!(unreferenced.contains(&"extra.txt".to_string()), "{report}");
+        // Copied anyway (plan decision #3): unreferenced is a warning, not an exclusion.
+        assert!(out.join("content/extra.txt").is_file());
+        for needed in [
+            "manifest.json",
+            "world.json",
+            "packs/quest/manifest.json",
+            "packs/quest/world.json",
+            // Second level: quest depends on ../hero and ../squad.
+            "packs/hero/manifest.json",
+            "packs/hero/world.json",
+            "packs/squad/world.json",
+            "packs/hero/fighter.glb",
+        ] {
+            assert!(out.join("content").join(needed).is_file(), "{needed}");
+            assert!(
+                !unreferenced.contains(&needed.to_string()),
+                "{needed}: {report}"
+            );
+        }
+        assert_eq!(unreferenced, ["extra.txt"], "{report}");
+        assert!(
+            strings(&report, "warnings")
+                .iter()
+                .any(|w| w.contains("extra.txt")),
+            "{report}"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 
