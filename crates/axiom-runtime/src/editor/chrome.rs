@@ -284,6 +284,7 @@ impl Editor {
                     item(ui, "screenshot…".into(), WARNING)
                         .on_hover_text("Writing the Scene view screenshot in the background");
                 }
+                self.build_status(ui);
                 if let Some(job) = &self.scenario_job {
                     let (done, total) = job.progress();
                     item(

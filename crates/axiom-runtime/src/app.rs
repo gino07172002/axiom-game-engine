@@ -52,7 +52,12 @@ pub struct RunOptions {
 }
 pub enum RunMode {
     Play,
-    Editor { selected: Option<String> },
+    /// `pack`: the content package directory the editor was opened with (`--pack`); File >
+    /// Build Game ships that directory, never the authoring database.
+    Editor {
+        selected: Option<String>,
+        pack: Option<PathBuf>,
+    },
 }
 struct App {
     cursor: [f32; 2],
@@ -545,7 +550,10 @@ pub fn measure_edit_live(
     let mut app = App::new(
         RunOptions {
             mode: if editor {
-                RunMode::Editor { selected: None }
+                RunMode::Editor {
+                    selected: None,
+                    pack: None,
+                }
             } else {
                 RunMode::Play
             },
@@ -671,7 +679,7 @@ impl App {
         let (rev, world) = store.current()?;
         let editor = match &options.mode {
             RunMode::Play => None,
-            RunMode::Editor { selected } => {
+            RunMode::Editor { selected, pack } => {
                 let mut editor = Editor::new(world.clone(), rev, selected.clone());
                 editor.set_component_hints(&registry.authoring);
                 // Offer the repository's scenario files (bounded) in the Scenarios tab.
@@ -689,6 +697,7 @@ impl App {
                 // Per-user editor preferences live beside the database, outside revisions.
                 editor.set_prefs_path(options.db.with_extension("editor-prefs.json"));
                 editor.bridge = (options.port > 0).then_some(options.port);
+                editor.set_build_pack(pack.clone());
                 Some(editor)
             }
         };
@@ -3416,6 +3425,7 @@ mod tests {
             RunOptions {
                 mode: RunMode::Editor {
                     selected: Some("box".into()),
+                    pack: None,
                 },
                 load_slot: None,
                 replace_world: false,
@@ -3623,6 +3633,7 @@ mod tests {
             RunOptions {
                 mode: RunMode::Editor {
                     selected: Some("box".into()),
+                    pack: None,
                 },
                 load_slot: None,
                 replace_world: false,
@@ -3700,7 +3711,10 @@ mod tests {
         let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
         App::new(
             RunOptions {
-                mode: RunMode::Editor { selected: None },
+                mode: RunMode::Editor {
+                    selected: None,
+                    pack: None,
+                },
                 load_slot: None,
                 replace_world: false,
                 db: PathBuf::new(),
@@ -3967,6 +3981,7 @@ mod tests {
             RunOptions {
                 mode: RunMode::Editor {
                     selected: Some("box".into()),
+                    pack: None,
                 },
                 load_slot: None,
                 replace_world: false,
@@ -4483,6 +4498,7 @@ mod tests {
             RunOptions {
                 mode: RunMode::Editor {
                     selected: Some("npc/lumi".into()),
+                    pack: None,
                 },
                 load_slot: None,
                 replace_world: false,
@@ -4591,7 +4607,10 @@ mod tests {
         let store = Store::memory_with(registry.authoring.clone(), world).unwrap();
         let mut app = App::new(
             RunOptions {
-                mode: RunMode::Editor { selected: None },
+                mode: RunMode::Editor {
+                    selected: None,
+                    pack: None,
+                },
                 load_slot: None,
                 replace_world: false,
                 db: PathBuf::new(),

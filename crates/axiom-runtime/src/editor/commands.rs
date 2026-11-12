@@ -51,6 +51,12 @@ pub(crate) const MENUS: [&str; 9] = [
 ];
 pub(crate) const COMMANDS: &[Command] = &[
     c("file.verify", "Verify World", "File", ""),
+    a(
+        "file.build_game",
+        "Build Game…",
+        "File",
+        "[open|start|cancel|{\"out\":DIR,\"title\":T,\"force\":BOOL}] (none = the dialog)",
+    ),
     c(
         "file.copy_context",
         "Copy Selection Context for AI",
@@ -921,6 +927,7 @@ impl Editor {
             }
             "play.maximize" if self.previewing => Some("stop Play first"),
             "view.screenshot" if self.screenshot_running() => Some("a screenshot is being written"),
+            "file.build_game" => self.build_blocked(),
             "game.main_camera" if busy => Some("apply or reload the inspector draft first"),
             "edit.undo" if self.undo.is_empty() && self.saving == 0 => Some("nothing to undo"),
             "edit.redo" if self.redo.is_empty() && self.saving == 0 => Some("nothing to redo"),
@@ -1167,6 +1174,10 @@ impl Editor {
         }
         if matches!(id, "view.display_mode" | "view.screenshot") {
             self.look_command(id, arg)?;
+            return Ok(vec![]);
+        }
+        if id == "file.build_game" {
+            self.build_command(arg)?;
             return Ok(vec![]);
         }
         if cmd.arg.is_empty() {
@@ -1551,6 +1562,7 @@ impl Editor {
 
     pub(crate) fn command_windows(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         self.options_window(ctx, actions);
+        self.build_window(ctx);
         if let Some(mut palette) = self.palette.take() {
             let mut keep = true;
             let mut run = None;
@@ -1970,6 +1982,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "view_only": "edit.toggle_hidden, edit.toggle_locked, edit.select_children, view.top|front|right|bottom|back|left|perspective, view.gizmos, view.nav_grid, view.display_mode, view.screenshot, asset.folder, asset.reveal, asset.reload, asset.watch, view.bookmark.save|recall.N, RMB+WASD fly, box select, game.aspect, game.camera, view.camera_preview, play.* (editor view state, never content)",
                 "edit.undo": "undo REV",
                 "file.verify": "axiom verify",
+                "file.build_game": "axiom --pack DIR package --out DIR [--title T] [--force] (same packaging::package; ships the pack on disk, not the DB)",
                 "hierarchy": "reparent ID PARENT|root; scene create|activate|delete ID; scene member SCENE SEL on|off",
                 "assets.prefab": "instantiate PREFAB",
                 "asset.place": "asset place KIND:ID at=x,y,z (Assets: drag onto the Scene; model -> animation.player, prefab -> instance, material -> cube)",

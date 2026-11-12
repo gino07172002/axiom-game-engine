@@ -37,6 +37,8 @@ mod diff_view;
 mod prefab_overrides;
 // Workstream E (editor look): Scene view display mode and screenshot.
 mod look;
+// Packaging P4: File > Build Game… (background job over packaging::package).
+mod build;
 mod reload;
 pub(crate) use reload::AssetReloadAsk;
 
@@ -648,6 +650,8 @@ pub(crate) struct Editor {
     assets: asset_browser::AssetBrowser,
     /// Scene view display mode and the screenshot job.
     look: look::Look,
+    /// File > Build Game…: the `--pack` directory, dialog, running job, last result.
+    pub(crate) build: build::BuildGame,
     /// `asset.reload|watch` request for the host, and whether watching is on.
     reload_ask: Option<AssetReloadAsk>,
     pub(crate) reload_watching: bool,
@@ -783,6 +787,7 @@ impl Editor {
             graph: Default::default(),
             assets: Default::default(),
             look: Default::default(),
+            build: Default::default(),
             reload_ask: None,
             reload_watching: false,
             host_job: None,
@@ -2066,6 +2071,7 @@ impl Editor {
         self.poll_shader_check();
         self.poll_ghosts();
         self.poll_merge();
+        self.poll_build();
         let Some(job) = &mut self.scenario_job else {
             return;
         };
@@ -2118,6 +2124,7 @@ impl Editor {
             .chain(self.tuning.shader.job.as_ref().map(|j| j.observation()))
             .chain(self.merge_jobs_observation())
             .chain(self.screenshot_job_observation())
+            .chain(self.build_job_observation())
             .chain(self.host_job.clone())
             .collect::<Vec<_>>())
     }
@@ -2446,6 +2453,7 @@ impl Editor {
             "ghosts":self.ghost_observation(),
             "merge":self.merge_observation(),
             "look":self.look_observation(),
+            "build":self.build_observation(),
             "vram":match &self.vram {
                 Some(crate::vram::VramReading::Bytes { local, shared, budget }) => json!({"source":"dxgi","local_bytes":local,"shared_bytes":shared,"budget_bytes":budget}),
                 Some(crate::vram::VramReading::Unavailable(why)) => json!({"available":false,"reason":why}),

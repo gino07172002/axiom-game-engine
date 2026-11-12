@@ -516,7 +516,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 exe_name,
                 excludes: exclude,
                 force,
-                player_exe: std::env::current_exe()?,
+                player_exe: axiom_runtime::packaging::default_player_exe()?,
             },
             &Default::default(),
         )?;
@@ -546,7 +546,10 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         };
         return axiom_runtime::run(
             axiom_runtime::RunOptions {
-                mode: axiom_runtime::RunMode::Editor { selected: select },
+                mode: axiom_runtime::RunMode::Editor {
+                    selected: select,
+                    pack: cli.pack.clone(),
+                },
                 load_slot: None,
                 db: cli.db.unwrap_or_else(|| "data/editor.sqlite".into()),
                 replace_world: cli.pack.is_some(),

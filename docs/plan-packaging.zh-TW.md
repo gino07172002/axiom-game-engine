@@ -129,3 +129,16 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
 - 證據(debug):plaza 打包 1.5 s、5 檔 96.6 MB(執行檔 95 MB)、`build/` 被排除;複製到 `artifacts/pkg/elsewhere/Sakura Plaza` 執行 smoke 截圖正常(S1)。ADV 打包後搬家:執行中 `save live`(tick 1983)→ 關閉 → 重開(重新匯入 pack)`--load-slot live` 成功,tick 2103,`assets/station.png` 從搬家後路徑載入,截圖已看過(**S2 成立**)。存檔在 `--db` 的父目錄 `saves/`,遊戲資料夾內沒有新檔案。
 - 單元/整合測試 `packaging::tests` 3 個:排除規則、名稱清理、決定性(兩次打包清單雜湊相同)/未加 --force 拒絕/--force 不刪非遊戲目錄/取消後不留輸出與 partial/輸出在 pack 內拒絕。Gate:fmt 乾淨、clippy -D warnings 乾淨、workspace 840 passed / 0 failed / 5 ignored。
 - 仍未做(屬 P2/P3):主控台視窗與開發工具列仍在;external 素材沒有專門偵測(只靠路徑越界掃描,尚無負面測試)。
+
+### P4 執行補記
+- 完成:`File > Build Game…`(`file.build_game`,同一份指令表 = 選單、指令面板、`editor_view {command, arg}`)。對話框:輸出資料夾(預設 `dist/<清理後作品名>`,相對於編輯器工作目錄)、作品名(預設世界標題)、Replace an existing build(= `--force`)、Build / Close;明寫「打包的是磁碟上的 pack,只存在編輯器 DB 的編輯不包含在內」。沒有 `--pack` 開啟的編輯器:選單項停用,滑過顯示原因(決策 #1)。
+- pack 來源:`RunMode::Editor` 新增 `pack: Option<PathBuf>`(CLI 傳 `--pack`),`Editor::set_build_pack`。執行檔:`packaging::default_player_exe()`(= `current_exe()`,CLI 也改用它;P2 會換成 axiom-player)。packaging.rs 只加了這個函式。
+- 背景 job:重用 `jobs::Job`(kind `build_game`,watchdog 10 分鐘),在 worker 上呼叫與 CLI 相同的 `packaging::package`。進度/取消用 packager 自己的 `packaging::Progress`(job 的 cancel 與 watchdog 同步設定它);狀態列 `build N/M · s`(點擊開對話框)、`observe` 的 `editor.jobs`(done/total 來自 packager)與 `editor.build {available, pack, dialog, running, last}`、`editor.last_job`。stderr 記錄開始(含主執行緒耗時)、結束耗時、慢 poll(> 4 ms)。關閉時 `BuildGame::drop` 設取消並以 5 s 上限 join。成功:狀態列 + 對話框顯示路徑、Open folder(`explorer.exe`);失敗:可恢復錯誤文字;取消:notice。
+- AI / smoke 觸發:`editor_view {command:"file.build_game", arg:"{\"out\":…,\"title\":…,\"force\":…}"}`、`arg:"cancel"`、`arg:"start"`。
+- 偏離 / 發現:
+  - packager 的取消檢查點只在每個檔案之前與複製執行檔之前;取消若落在 95 MB 執行檔複製或驗證期間,建置仍會完成(實際發生過一次)。編輯器如實回報(`last.cancel_too_late:true`、狀態列註明),不刪已完成的輸出。建議 P3/整合時在執行檔複製後、改名前再檢查一次取消。
+  - 預先設定取消旗標(不經 `Job::cancel`)時原本被標為 failed;測試抓到,改為也看 packager 旗標。
+  - `AXIOM_WINDOW_SIZE=1366x768` 在 150% 縮放下被最小視窗 960×600(邏輯)夾成 1440×900 實體像素;該尺寸的邏輯版面比 1366×768@1x 更小,作為小尺寸驗證。
+- 證據(debug,截圖已看過後刪除):預設尺寸與小尺寸各四張(對話框、進行中 `4/5 files` 進度條 + Cancel + 狀態列 `build 4/5`、完成綠字路徑 + Open folder + 狀態列 Open built game、取消後橘字 `Build cancelled: packaging cancelled`)。編輯器打包 plaza 到隔離輸出 vs CLI `axiom --pack content\plaza package`:7 個檔案(含 game.json、Play.cmd、`Sakura Plaza.exe`)SHA-256 全部相同。即時取消(loopback 啟動後立即 cancel):244 ms 停止,輸出與 `*.partial` 都不存在。
+- 主執行緒預算:編輯器端新增工作量測 — 啟動 job 0.22 ms;poll 每幀都 < 4 ms(慢 poll 記錄從未出現);對話框所在的 `jobs_overlay_ui` 階段建置中最大 5.4 ms(閒置 5.3 ms)。**未解決**:編輯器內建置期間,`writes_bridge` / `simulate` 階段出現 0.3–1.9 s 的單幀停頓(閒置時 < 0.1 ms);同樣的打包以另一個行程(CLI)執行時編輯器沒有停頓;把 `copy_hashed` 改成 1 MiB 串流複製的臨時 A/B 沒有消除停頓(已還原)。量測期間 CPU 100%(其他工作階段平行編譯),對照不受控,根因未確定 → 列為後續項目(用 rigorous-debug 在空閒機器上重現)。
+- 測試:`editor::build::tests` 4 個(job 與直接呼叫檔案雜湊清單相同、預設取消不留輸出/partial 且為 notice、既有輸出無 force = 可恢復錯誤、沒有 pack 停用並說明、egui 實際點擊 Build → 完成 → Open folder 與狀態列項出現)。

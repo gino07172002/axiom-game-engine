@@ -42,6 +42,11 @@ pub struct Progress {
     pub cancel: AtomicBool,
 }
 
+/// The executable copied into a packaged game (CLI `axiom package` and editor Build Game).
+pub fn default_player_exe() -> Result<PathBuf> {
+    std::env::current_exe().context("locate the running executable")
+}
+
 /// Builds the game folder and returns the compact report (file list with SHA-256).
 pub fn package(
     registry: &axiom_core::Registry,
