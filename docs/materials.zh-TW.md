@@ -82,6 +82,21 @@
 - 記錄:`assets_reload.last = {state, changed, files_changed, hash_ms, build_ms, adopt_ms, elapsed_ms}`,同一行也寫到 Console(`Assets reloaded (…) in N ms`)與編輯器狀態列。
 - 限制:參考圖疊圖檢視(缺口 E4 的後半)沒有做;不在模型資料夾裡的貼花 PNG 不會被監看(貼花快取以內容雜湊判斷,下一次 runtime 建置就會讀到);樣式欄位裡的材質 / 骨骼名稱只能對已載入的模型檢查,所以打錯字是在 runtime 建置時報錯(錯誤指出元件欄位,上一個可用的 runtime 繼續跑),不是在提交時;`render.toon` / `outline` / `decal` 掛在沒有網格的實體上不作用、也不報錯。
 
-## 量測
+## 量測:CPU 蒙皮佔比(缺口 E5,`rigorous-perf`)
 
-(由下方「量測紀錄」填入)
+方法:`cargo build --release -p axiom-runtime --example perf_bench`,`perf_bench --pack content/X`;3 輪,每輪三個內容包交錯執行;`step` = 一個 120 Hz 固定步(含動畫姿勢求值),`render_frame` = 每個畫出的幀從 runtime 抽出渲染資料(CPU 蒙皮 `skin::deform` 在這裡,每個 `animation.player` 每幀一次),`deform` = 只量 `skin::deform`(新增的 `skinning` 段:同一批 player 的資產、靜止姿勢,240 幀)。**release build、CPU 時間**;同一台機器同時有其他代理在編譯,數字偏高且抖動。GPU 時間不在此量測(MX150 目前每幀約 145 ms 卡在 present acquire,見計畫整合補記),截圖驗證是另一回事。
+
+| 內容包 | player / 蒙皮頂點 | step p50(3 輪) | render_frame p50(3 輪) | deform p50(3 輪) | 中位數:deform / render_frame |
+|---|---|---|---|---|---|
+| style-lab | 3 / 29,040 | 0.011 / 0.006 / 0.005 ms | 0.82 / 0.68 / 0.58 ms | 0.57 / 0.44 / 0.45 ms | 0.45 / 0.68 = 66% |
+| mascot | 2 / 19,920 | 0.004 / 0.003 / 0.003 ms | 0.79 / 0.51 / 0.50 ms | 0.57 / 0.31 / 0.40 ms | 0.40 / 0.51 = 79% |
+| animator-lab | 1 / 9,120 | 0.004 / 0.004 / 0.004 ms | 0.23 / 0.24 / 0.22 ms | 0.23 / 0.24 / 0.26 ms | ≈ 100%(兩次量測同量級) |
+
+結論:
+- 在 runtime 的 CPU 工作裡,蒙皮確實是大宗(抽出渲染資料的 2/3 以上;固定步本身 < 0.02 ms)。約 15–25 ns / 頂點;缺口清單裡 18,550 頂點的角色估計 0.3–0.5 ms / 幀(**估計**,由每頂點成本外推,未用該資產量測)。
+- 但它佔 16 ms 主執行緒預算約 2–4%,而實際幀時間由 GPU / present 等待主導(數百倍於此)。證據**不支持**「蒙皮主導幀時間」,所以**沒有做 GPU 蒙皮原型**。
+- 沒量到的:渲染器端把蒙皮結果轉成頂點緩衝並上傳(`MeshRenderer::prepare` 每幀一個 Vec + `write_buffer`),以及 `skin::deform` 本身每幀的配置(render_frame 每幀 13–31 次配置,大多來自蒙皮的輸出 Vec 與矩陣表)。若之後角色數量增加,先做的應是重用蒙皮輸出緩衝(不配置),再考慮 GPU 蒙皮。
+
+## 驗證紀錄
+
+(見 `docs/plan-engine-next.zh-TW.md` 執行紀錄 W2d)
