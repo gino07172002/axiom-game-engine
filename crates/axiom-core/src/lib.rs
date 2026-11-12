@@ -20,6 +20,7 @@ mod ops_assets;
 mod ops_graph;
 mod ops_merge;
 mod ops_prefab;
+mod ops_rig;
 mod ops_tuning;
 mod ops_ui;
 mod ops_world;

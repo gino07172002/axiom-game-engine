@@ -249,6 +249,7 @@ fn two_bone_ik_uses_pole_preserves_lengths_and_reports_unreachable() {
         pole: Vec3::Y,
         weight: 1.,
         end_rotation: None,
+        socket: None,
     };
     let result = config.compile(&s).unwrap().apply(&s, &mut p).unwrap();
     assert!(result.reachable && result.residual < 1e-4);

@@ -272,3 +272,33 @@
 **驗證(debug,MX150,其他工作線同時建置)**:`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 778 通過 / 1 失敗 / 5 略過 —— 失敗的是新測試 `hot_reload_keeps_morph_overrides…` 用 `assert_eq` 比 f32(0.800000011 ≠ 0.8),改成容差後重跑 `character` 7 / 7 → 779 通過(基準 760,+19)。`editor-smoke-test` ok:true;`editor-world-parity` identical:true(13 = 13);`street-editor-parity` identical:true(16 = 16);`build-street`、`build-plaza` 後 content 無變化;`m0-smoke-test` PASS。GPU 擷取(1600×900,已看過):`artifacts/captures/w2a-character-gpu.png`(tick 120:左頭 stretch 1 / puff 0.5 明顯變形、右頭帽子預設隱藏、Axi 右臂被 additive wave 抬起)、loopback `screenshot` op 的 `w2a-live-commands.png`(`animation.morph` 漸變 puff、`animation.visibility` 顯示帽子 / 隱藏頭髮 / 隱藏另一頂帽子)與 `w2a-live-wave-off.png`(`wave_weight` 0);編輯器 Play 中的 Animator + LAYERS `w2a-animator-{1080,768}.png`。配置:`tests/character.rs::steady_steps_with_morphs_ramps_and_layers_do_not_allocate`(morph 漸變 + additive 圖層 240 步的配置數 = 沒有播放器的世界)。沒有 release A/B,不宣稱效能。
 
 **Fresh-context 審查**:9 項。已修:熱重載以 `Arc::ptr_eq` 判斷同資產(快取外的資產會默默丟掉覆寫與顯示狀態 → 改比 `asset.key`,內容雜湊)、retarget 來源片段的 morph 軌被當成目標資產的(改為依名稱綁定、缺的計數在 `inspect.unbound_morph_tracks`;`animation-retarget` 只烘焙骨骼)、LAYERS 的 Add 會覆蓋同名圖層(改為拒絕)、`clear` + `ramp_seconds` 被接受但忽略(改為拒絕)、編輯器與 ACL 對含空白 / 引號的部位名稱解析不同(編輯器也解 JSON 字串)、additive 縮放除以 0(該軸保留原縮放,加測試)、文件寫遮罩對播放器骨架解析(改為「取樣的骨架,retarget 時是來源骨架」)。記錄未修:隱藏的 primitive 仍計入編輯器點選 / 框選的邊界(`viewport::mesh_bounds`);第 256 個以後的材質(資產驗證本來就限制 256 個,不會發生)。
+
+### W2b 角色表現 II(worktree `w2b`,分支 `work-w2b`,`rigorous-change`)
+
+範圍:缺口 B2(彈簧骨 + 碰撞膠囊)、B3(IK 目標綁另一個實體的骨骼 socket)、B7(look-at)。細節與規則見 `docs/skeletal-animation.zh-TW.md`「次級運動」。
+
+**設計**
+- 純計算 `axiom-animation/src/rig.rs`(新檔):`SpringSet` / `LookAtSet` 的型別、驗證、編譯(骨名 → 索引、鏈的走法、預算、鏈不得重疊或巢狀)與 `apply`(明確的輸入 / 輸出狀態 + 重複使用的 scratch,穩定步進 0 配置)。runtime 整合放在新子模組 `axiom-runtime/src/animation/rig.rs`(可直接用 `Controller` 私有欄位,`animation.rs` 只加幾個掛點):`Controller.rig: Option<Box<Rig>>`,沒有用到的播放器維持 `None`,行為與 metrics 不變。
+- 管線位置:IK 之後依序 look-at → 彈簧 → 蒙皮;`evaluate` 成功才 `commit` 新狀態(失敗步的回滾規則不變)。彈簧與 look-at 平滑在每個固定步都推進(暫停播放也是);命令 / 讀檔 / 熱重載的 `evaluate(0)` 只重新套用狀態。
+- 跨實體順序:固定步一開始對所有播放器解析目標(兩趟走訪、相同順序、可重用的清單),骨骼姿勢固定落後一步;測試精確比對。
+- IK socket 沿用 `TwoBoneIk`,新增選填 `socket`(序列化時沒有就省略,舊內容 / 存檔不變);`animation.ik` 的 `target` 改成選填,但必須給 `target` 或 `socket` 其中之一(舊呼叫都有 `target`,行為不變)。`CompiledIk::apply_to` 接受解析後的目標,`apply` 委派給它(殘差仍以給定的目標計算)。
+- 存檔:`SavedPlayer.rig`(選填);內容有 rig 而存檔沒有 → 明確拒絕。metrics `players.ID.rig` 只在有 rig 時出現,既有世界的 `state_hash` 不變。
+- 編寫:`ops::rig_edit`(`axiom-core/src/ops_rig.rs`,只動 JSON,寫入前跑登錄的驗證器)= ACL `rig SEL spring|collider|look|ik|debug ..` = 編輯器 `rig.edit`(同一個 `parse_rig_edit`)。Inspector 表單由登錄 schema 自動產生。
+- 示範:`content/rig-lab`(`scripts/build-rig-lab.py` 產生的程序化人偶;mascot / animator-lab 的 GLB 沒有頭髮 / 裙子骨,也沒有手骨可做雙骨 IK,所以另做)。
+
+**補記(原計畫 → 變成什麼 → 為什麼)**
+- 「Inspector 表單」→ 沒有手寫表單,用登錄 schema 產生的通用元件表單(與 physics 等元件相同),parity 測試改 `reset_distance`;為什麼:專用 UI 不在必做範圍,通用表單已可編輯每個欄位。
+- 「debug 繪製」→ 只在元件 `debug:true` 時把方塊畫進渲染幀(青色關節、洋紅碰撞體中心與六個軸向端點、黃色面向射線與目標),不是編輯器 gizmo;碰撞體多半在身體裡面,畫面上只看得到部分標記。
+- look-at 的多骨分配:第一版每根骨用同一組軸各轉 yaw·w、pitch·w,審查指出 yaw 與 pitch 同時不為 0 時乘積不等於目標(產生 roll);改成整體轉動以累積權重 slerp 分配,權重合計 1 時精確。
+- 彈簧初始狀態:第一版在建置時用單位矩陣當實體矩陣,實體不在原點時第一步會甩動(審查發現);改成建置時傳入實體目前的世界矩陣,並加測試 `springs_start_at_rest_where_the_entity_stands`。
+
+**驗證(debug,MX150,其他工作線同時建置;4895ec7 之上)**
+- `cargo fmt --all`;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 783 passed / 0 failed / 5 ignored(基準 760,新增 23:`axiom-animation` rig 單元 10、`axiom-core` `ops_rig` 3、`tests/rig.rs` 10、`parity::rig_edits_match_the_rig_verb` 1;另調整既有 IK 字面值兩處)。
+- `editor-smoke-test.ps1 -Port 47931` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true(13 = 13);`street-editor-parity.ps1` identical:true(16 = 16);`build-street.ps1` / `build-plaza.ps1` 後 `git status` 乾淨(內容不變)。
+- 確定性:`axiom --pack content/rig-lab scenario examples/rig-lab.scenario.json` 兩個獨立程序 `state_hash` 都是 `7d6f0e543df82e0f`(含 B 的 IK reachable 與無 fault 斷言);測試內:同一 scenario 重播雜湊一致、改 stiffness 雜湊不同、checkpoint 讀檔後 200 步雜湊一致。
+- 配置:`springs_and_look_at_do_not_allocate_while_stepping` 240 步,有彈簧 + look-at 的播放器與只有片段的播放器配置次數相同(steady state 0 次)。沒有做 release A/B,不宣稱效能。
+- 審查後新增的測試先確認會失敗:把建置時的實體矩陣拿掉,`springs_start_at_rest_where_the_entity_stands` 失敗,恢復後通過。
+- 截圖(實際看過,`artifacts/captures/` 在 w2b worktree):`w2b-swing-{a,b}-{1080,768}.png`(A 擺動、頭看相機,B 牽 A 的手、頭轉向 A)、`w2b-debug-*`(debug 標記與面向射線)、`w2b-camera-left-*`(相機移到左邊後 A 的頭跟著轉)、`w2b-back-{a,b,c}-*` 與 `w2b-back-nospring-{a,b}-*`(背面:有彈簧時馬尾在身體擺動中垂向下方並分段彎曲,關掉後馬尾跟著頭剛性轉動)、編輯器 `w2b-editor{,-rigedit}-{1080,768}.png`(`editor_view {command:"rig.edit"}` 兩個指令各一筆 revision,REV 3)。GPU 渲染程式沒改(debug 標記走既有 instance 路徑),未跑 GPU smoke。
+- Fresh-context 審查(1 輪):bug 1(彈簧初始狀態用單位矩陣)已修並加測試;風險 2(多骨 look-at 的 roll)、3(縮放 0 → NaN 目標)、4(錯誤路徑少了實體)、5(`bones=` 解析)、7(命令綁定 socket 的一幀跳動)已修;nit:debug 切換重啟模擬已修。未修並記錄:6(只旋轉的瞬間轉身不重置)、鏈的 `radius` 不隨實體縮放、debug 繪製的碰撞體半徑未縮放、yaw 跨過正後方時換邊、同 ID 但重新匯入不同骨架的資產在熱重載時沿用狀態、debug 繪製在 extract 每幀配置。
+
+**未做**:布料 / 頭髮束模擬、眼睛兄弟骨在同一條 look-at 鏈、編輯器內碰撞體 gizmo / 專用表單、超過兩骨的 IK、用相機或骨骼以外的「場景點」動態目標(只有固定 `point`)。

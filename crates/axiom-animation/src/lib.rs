@@ -7,6 +7,7 @@ pub mod humanoid;
 pub mod ik;
 pub mod import;
 pub mod morph;
+pub mod rig;
 pub mod skin;
 pub mod twist;
 use anyhow::{ensure, Context, Result};

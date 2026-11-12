@@ -1,0 +1,7 @@
+{"ticks":720,"commands":[
+ {"tick":240,"operation":{"op":"command","command":{"kind":"call","capability":"animation","action":"speed","args":{"entity":"puppet/a","speed":1.6}}}}
+],"assertions":[
+ {"kind":"finite"},
+ {"kind":"equals","pointer":"/animation/players/puppet~1b/ik/hand/reachable","value":true},
+ {"kind":"call","action":"animation.inspect","args":{"entity":"puppet/a","bones":["hair.5"]},"pointer":"/fault","op":"eq","value":null}
+]}

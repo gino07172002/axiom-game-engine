@@ -160,6 +160,7 @@ pub fn create(model: &Path, source: Option<&Path>, output: &Path) -> Result<serd
         pole: end_position + Vec3::new(0., -0.3, 0.5),
         weight: 0.,
         end_rotation: None,
+        socket: None,
     };
     let initial = source_asset
         .as_ref()
