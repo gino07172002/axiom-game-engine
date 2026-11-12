@@ -481,7 +481,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         let world = initial(cli.pack.as_deref(), &registry.authoring)?;
         return axiom_runtime::run(
             axiom_runtime::RunOptions {
-                mode: axiom_runtime::RunMode::Play,
+                mode: axiom_runtime::RunMode::Play { player: None },
                 load_slot,
                 db: cli.db.unwrap_or_else(|| "data/world.sqlite".into()),
                 replace_world: cli.pack.is_some(),
@@ -516,7 +516,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 exe_name,
                 excludes: exclude,
                 force,
-                player_exe: std::env::current_exe()?,
+                player_exe: axiom_runtime::packaging::default_player_exe()?,
             },
             &Default::default(),
         )?;

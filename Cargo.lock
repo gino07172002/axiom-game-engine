@@ -276,6 +276,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-player"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "axiom-core",
+ "axiom-runtime",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "axiom-rts"
 version = "0.4.0"
 dependencies = [

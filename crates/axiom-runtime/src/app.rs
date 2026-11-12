@@ -51,8 +51,14 @@ pub struct RunOptions {
     pub start_play: bool,
 }
 pub enum RunMode {
-    Play,
-    Editor { selected: Option<String> },
+    /// `player: Some(title)` is the shipped-game chrome (`axiom-player`): no developer bar,
+    /// no console, the window titled `title`. `None` keeps the developer `axiom play` chrome.
+    Play {
+        player: Option<String>,
+    },
+    Editor {
+        selected: Option<String>,
+    },
 }
 struct App {
     cursor: [f32; 2],
@@ -547,7 +553,7 @@ pub fn measure_edit_live(
             mode: if editor {
                 RunMode::Editor { selected: None }
             } else {
-                RunMode::Play
+                RunMode::Play { player: None }
             },
             load_slot: None,
             replace_world: false,
@@ -670,7 +676,7 @@ impl App {
         store.set_author(Some(Author::Human));
         let (rev, world) = store.current()?;
         let editor = match &options.mode {
-            RunMode::Play => None,
+            RunMode::Play { .. } => None,
             RunMode::Editor { selected } => {
                 let mut editor = Editor::new(world.clone(), rev, selected.clone());
                 editor.set_component_hints(&registry.authoring);
@@ -729,9 +735,15 @@ impl App {
         let game_style = ctx.style();
         let ui = UiState {
             playing: editor.is_none() && options.start_play,
+            player: matches!(options.mode, RunMode::Play { player: Some(_) }),
             port: options.port,
             command: r#"{"op":"query"}"#.into(),
-            output: vec![format!("OK  world compiled  rev={rev}")],
+            // A shipped game does not greet the player with a revision number.
+            output: if matches!(options.mode, RunMode::Play { player: Some(_) }) {
+                vec![]
+            } else {
+                vec![format!("OK  world compiled  rev={rev}")]
+            },
             ..Default::default()
         };
         Ok(Self {
@@ -2949,6 +2961,8 @@ impl App {
                     break;
                 }
                 Action::Quit => event_loop.exit(),
+                // A shipped game has no console; nothing may author through it.
+                Action::Apply(_) if self.ui.player => {}
                 Action::Apply(command) => {
                     let response =
                         parse_request(&command).and_then(|request| if matches!(request,Request::Observe{}) {Ok(serde_json::json!({"ok":true,"runtime":true,"observation":self.observation()}))}else if let Request::ObserveDelta{cursor,fields,trace_limit,max_bytes}=request {let snapshot=serde_json::json!(self.observation());self.history.observe(&snapshot,cursor.as_deref(),&fields,trace_limit,max_bytes)}else if request.is_runtime(){self.runtime_request(request)}else{self.store.execute(request)});
@@ -3185,11 +3199,16 @@ impl ApplicationHandler for App {
             let window = Arc::new(
                 event_loop.create_window(
                     Window::default_attributes()
-                        .with_title(format!(
-                            "AXIOM{} / {}",
-                            if self.editor.is_some() { " Editor" } else { "" },
-                            self.runtime.state.compiled.source.title
-                        ))
+                        .with_title(match &self.options.mode {
+                            RunMode::Play {
+                                player: Some(title),
+                            } => title.clone(),
+                            _ => format!(
+                                "AXIOM{} / {}",
+                                if self.editor.is_some() { " Editor" } else { "" },
+                                self.runtime.state.compiled.source.title
+                            ),
+                        })
                         .with_window_icon(crate::branding::window_icon())
                         .with_inner_size(size)
                         .with_min_inner_size(winit::dpi::LogicalSize::new(960.0, 600.0))
@@ -3321,7 +3340,7 @@ impl ApplicationHandler for App {
                             }
                             self.capture();
                         }
-                        if key == KeyCode::Tab {
+                        if key == KeyCode::Tab && !self.ui.player {
                             self.ui.console = !self.ui.console;
                             self.capture();
                         }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/axiom-combat", "crates/axiom-core", "crates/axiom-fps", "crates/axiom-rts", "crates/axiom-action", "crates/axiom-animation", "crates/axiom-runtime", "crates/axiom-cli"]
+members = ["crates/axiom-combat", "crates/axiom-core", "crates/axiom-fps", "crates/axiom-rts", "crates/axiom-action", "crates/axiom-animation", "crates/axiom-runtime", "crates/axiom-cli", "crates/axiom-player"]
 resolver = "2"
 
 [workspace.package]

@@ -129,3 +129,18 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
 - 證據(debug):plaza 打包 1.5 s、5 檔 96.6 MB(執行檔 95 MB)、`build/` 被排除;複製到 `artifacts/pkg/elsewhere/Sakura Plaza` 執行 smoke 截圖正常(S1)。ADV 打包後搬家:執行中 `save live`(tick 1983)→ 關閉 → 重開(重新匯入 pack)`--load-slot live` 成功,tick 2103,`assets/station.png` 從搬家後路徑載入,截圖已看過(**S2 成立**)。存檔在 `--db` 的父目錄 `saves/`,遊戲資料夾內沒有新檔案。
 - 單元/整合測試 `packaging::tests` 3 個:排除規則、名稱清理、決定性(兩次打包清單雜湊相同)/未加 --force 拒絕/--force 不刪非遊戲目錄/取消後不留輸出與 partial/輸出在 pack 內拒絕。Gate:fmt 乾淨、clippy -D warnings 乾淨、workspace 840 passed / 0 failed / 5 ignored。
 - 仍未做(屬 P2/P3):主控台視窗與開發工具列仍在;external 素材沒有專門偵測(只靠路徑越界掃描,尚無負面測試)。
+
+### P2 執行補記(2026-11-12)
+- 完成:新 workspace bin `crates/axiom-player`(`#![windows_subsystem = "windows"]`,debug/release 皆無主控台)。讀執行檔旁 `game.json`(format 1;`id` 限英數與 `-_.`、`pack` 必須是遊戲資料夾內相對路徑、檔案上限 64 KiB),DB 為 `%APPDATA%\Axiom\<id>\world.sqlite`(saves 落在同層 `saves\`),`ContentPackage::load` 後以 `RunMode::Play { player: Some(title) }`、`replace_world:true`、`start_play:true`、預設 `port:0` 呼叫 `axiom_runtime::run`。自動化參數 `--smoke-frames --screenshot --db --port`。任何錯誤(含 panic)寫 `crash.log`(`%APPDATA%\Axiom\<id>\`,id 未知時為系統暫存目錄的 `axiom-player-crash.log`)並跳 `MessageBoxW`,結束碼 1;`AXIOM_PLAYER_NO_DIALOG=1` 略過訊息框。
+- 圖示:`build.rs` 讀三張 branding PNG(驗證 IHDR 尺寸),手寫 ICO 標頭(PNG 直接當 entry),`windres -O coff` 編成物件檔以 `cargo:rustc-link-arg-bins` 連結;找不到 windres 只發 cargo warning。沒有新 crate:`windows` 0.58 只多 `Win32_UI_WindowsAndMessaging` feature,Cargo.lock 只新增 `axiom-player` 本身。
+- 玩家外觀:`RunMode::Play` 改為 `Play { player: Option<String> }`(計畫寫 `player: bool`;改成帶作品名,因為視窗標題要用 `game.json` 的 title,而 `--title` 可與世界標題不同)。`UiState.player` 讓 `ui::draw_generic` 不畫開發工具列/compact pill,Tab 不開控制台、`Action::Apply` 被忽略;暫停時上方顯示 `PAUSED · ESC`;初始狀態列不顯示 `OK world compiled rev=N`。`axiom play` 仍是 `player: None`,外觀不變。
+- `packaging.rs`:新增 `default_player_exe()`(`current_exe()` 旁的 `axiom-player.exe`,缺少時提示 `cargo build -p axiom-player`),CLI 改用它;不再產生 `Play.cmd`;P1 測試補上「沒有 Play.cmd」與 `game.json` 欄位斷言。
+- 證據(debug,`artifacts/pkg-p2/`,驗完已刪):
+  - `axiom package --pack content\adv` → 4 檔(3 個 content + `Last Signal 最後的訊號.exe`,大小等於 `axiom-player.exe`),複製到 `elsewhere\Last Signal Copy` 後以 `--smoke-frames 300 --screenshot --db <隔離>` 執行:exit 0,截圖無開發工具列,ADV 介面(語言切換、SAVE/LOAD、對話、選項、進度條)完整;同 pack 的 `axiom play` 截圖仍有 `AXIOM / WORLD IR v2 … CONSOLE [TAB] EXIT`。
+  - 監聽埠:執行中(已確認行程存活)`Get-NetTCPConnection -State Listen -OwningProcess` 為 0 筆;對照組 `--port 4299` 列出 4299,證明查詢有效。
+  - `APPDATA` 指向 artifacts 下隔離目錄、不帶 `--db`:`Axiom\last-signal\world.sqlite` 建立;經 `--port` 執行 `save quick`(`tick 860`)後出現 `saves\…\slot-quick.json`;遊戲資料夾前後檔案清單相同(0 個新檔)。
+  - 視窗標題 = `Last Signal / 最後的訊號`(`MainWindowTitle`)。
+  - 壞掉的 `game.json`(截斷 JSON)→ exit 1,`axiom-player-crash.log` 寫在 `%TMP%`(Windows 暫存目錄先看 TMP 再看 TEMP);合法 game.json 但 pack 不存在 → `%APPDATA%\Axiom\broken-game\crash.log`;不設 NO_DIALOG 時行程停在標題為 `The game could not start` 的訊息框。
+  - `objdump -p`:player `Subsystem 00000002 (Windows GUI)`(CLI 仍為 3 CUI);`.rsrc` 0x186d0 bytes(三張 PNG 合計 99,056);`ExtractAssociatedIcon` 取出的圖為 Axiom 圖示,CLI 為 Windows 預設圖示。
+- Gate:`cargo fmt --all` 乾淨、`cargo clippy --workspace --all-targets -- -D warnings` 乾淨、`cargo test --workspace --no-fail-fast` 842 passed / 0 failed / 5 ignored(基準 840 + player 新增 2)、`scriptseditor-smoke-test.ps1` ok:true。
+- 未做/限制:沒有 release 建置驗證(視窗屬性與圖示在 debug 已確認);ADV 敘事列左側的 `AXIOM / NARRATIVE` 字樣屬共用 UI,未在玩家模式隱藏;存讀檔按鈕的回應仍以原始 JSON 顯示在狀態列(玩家看得到);Esc 暫停提示未截圖驗證。
