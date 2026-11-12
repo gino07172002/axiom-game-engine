@@ -270,3 +270,14 @@
 - 「debug 繪製」→ 只在元件 `debug:true` 時把方塊畫進渲染幀(青色關節、洋紅碰撞體中心與六個軸向端點、黃色面向射線與目標),不是編輯器 gizmo;碰撞體多半在身體裡面,畫面上只看得到部分標記。
 - look-at 的多骨分配:第一版每根骨用同一組軸各轉 yaw·w、pitch·w,審查指出 yaw 與 pitch 同時不為 0 時乘積不等於目標(產生 roll);改成整體轉動以累積權重 slerp 分配,權重合計 1 時精確。
 - 彈簧初始狀態:第一版在建置時用單位矩陣當實體矩陣,實體不在原點時第一步會甩動(審查發現);改成建置時傳入實體目前的世界矩陣,並加測試 `springs_start_at_rest_where_the_entity_stands`。
+
+**驗證(debug,MX150,其他工作線同時建置;4895ec7 之上)**
+- `cargo fmt --all`;`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 783 passed / 0 failed / 5 ignored(基準 760,新增 23:`axiom-animation` rig 單元 10、`axiom-core` `ops_rig` 3、`tests/rig.rs` 10、`parity::rig_edits_match_the_rig_verb` 1;另調整既有 IK 字面值兩處)。
+- `editor-smoke-test.ps1 -Port 47931` ok:true(DB 已刪);`editor-world-parity.ps1` identical:true(13 = 13);`street-editor-parity.ps1` identical:true(16 = 16);`build-street.ps1` / `build-plaza.ps1` 後 `git status` 乾淨(內容不變)。
+- 確定性:`axiom --pack content/rig-lab scenario examples/rig-lab.scenario.json` 兩個獨立程序 `state_hash` 都是 `7d6f0e543df82e0f`(含 B 的 IK reachable 與無 fault 斷言);測試內:同一 scenario 重播雜湊一致、改 stiffness 雜湊不同、checkpoint 讀檔後 200 步雜湊一致。
+- 配置:`springs_and_look_at_do_not_allocate_while_stepping` 240 步,有彈簧 + look-at 的播放器與只有片段的播放器配置次數相同(steady state 0 次)。沒有做 release A/B,不宣稱效能。
+- 審查後新增的測試先確認會失敗:把建置時的實體矩陣拿掉,`springs_start_at_rest_where_the_entity_stands` 失敗,恢復後通過。
+- 截圖(實際看過,`artifacts/captures/` 在 w2b worktree):`w2b-swing-{a,b}-{1080,768}.png`(A 擺動、頭看相機,B 牽 A 的手、頭轉向 A)、`w2b-debug-*`(debug 標記與面向射線)、`w2b-camera-left-*`(相機移到左邊後 A 的頭跟著轉)、`w2b-back-{a,b,c}-*` 與 `w2b-back-nospring-{a,b}-*`(背面:有彈簧時馬尾在身體擺動中垂向下方並分段彎曲,關掉後馬尾跟著頭剛性轉動)、編輯器 `w2b-editor{,-rigedit}-{1080,768}.png`(`editor_view {command:"rig.edit"}` 兩個指令各一筆 revision,REV 3)。GPU 渲染程式沒改(debug 標記走既有 instance 路徑),未跑 GPU smoke。
+- Fresh-context 審查(1 輪):bug 1(彈簧初始狀態用單位矩陣)已修並加測試;風險 2(多骨 look-at 的 roll)、3(縮放 0 → NaN 目標)、4(錯誤路徑少了實體)、5(`bones=` 解析)、7(命令綁定 socket 的一幀跳動)已修;nit:debug 切換重啟模擬已修。未修並記錄:6(只旋轉的瞬間轉身不重置)、鏈的 `radius` 不隨實體縮放、debug 繪製的碰撞體半徑未縮放、yaw 跨過正後方時換邊、同 ID 但重新匯入不同骨架的資產在熱重載時沿用狀態、debug 繪製在 extract 每幀配置。
+
+**未做**:布料 / 頭髮束模擬、眼睛兄弟骨在同一條 look-at 鏈、編輯器內碰撞體 gizmo / 專用表單、超過兩骨的 IK、用相機或骨骼以外的「場景點」動態目標(只有固定 `point`)。
