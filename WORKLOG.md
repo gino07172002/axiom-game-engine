@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-12 — Claude (Opus 5.5) — integrator: wave 2 (W2a–W2d, Paladin gap list) merged into main
+
+**Done:** merged W2a (743ce41), W2b (af90366), W2c (479221f), W2d (a0c9bfe), each followed by the full gate on the merged tree. Tests 760 → 779 → 802 → 819 → 837 passed / 0 failed / 5 ignored. Integration fixes: W2a morph / visibility and W2b IK socket ported into W2c's `AnimationSystem::prepare` (now takes `&RuntimeState`); `axiom-runtime` `recursion_limit` 256 → 512 (editor discovery `json!`); W2d outline pass skips W2a-hidden parts (GPU A/B evidence in the plan's 第二批整合補記).
+
+**Not passed:** `effects-smoke-test.ps1` final 900-frame / 60 s step still times out (MX150 environment slowdown, same as wave 1; timeout not loosened).
+
+**Next:** (4) packaging / build; cross-platform and big scenes later. Open review items of each workstream are listed in its 執行紀錄 section.
+
+**Gotchas:** after `cd` into a worktree in Bash, the PowerShell tool's working directory follows it — always `Set-Location D:\rust_learn` before gate scripts. `Copy-Item` keeps the old mtime, so cargo does not rebuild a restored file; touch it. The untracked paladin files and the top WORKLOG Paladin block belong to another session: never commit them.
+
 ## 2026-11-12 — Claude (Opus 5.5) — workstream W2a: morph targets, part visibility, additive layers; committed on worktree branch `work-w2a` (not merged)
 
 **Done:** B1 glTF morph targets (`axiom-animation/src/morph.rs`: sparse vertex-major deltas applied inside CPU skinning, `skin::deform_with`; budgets 64/mesh, 128/asset, 1M deltas → typed `MorphBudget`; names from `extras.targetNames`; weight channels → `Clip.morphs` tracks; runtime `animation.morph {entity,target|index,weight|clear,ramp_seconds}`; weights in observe only for assets with targets; checkpoints). B6 parts: `Material.groups` (mesh / material / node names), `animation.player.hidden`, runtime `animation.visibility`, `MeshFrame.hidden` skipped in draw + shadow, `ops::mesh_part` = ACL `meshpart SEL hide|show PART` = editor `object.mesh_part`. A5 controller `layers` (override|additive vs frame 0, weight × weight_parameter, bone mask bones/subtrees, own clock in `State.layers`), `ops::anim_layer` = ACL `animctl C layer set|remove` = `graph.layer` + Animator LAYERS table. Demo `content/character-lab` (engine-generated `morph-head.glb` from `crates/axiom-animation/tests/morph.rs`, mascot with an additive wave layer).
