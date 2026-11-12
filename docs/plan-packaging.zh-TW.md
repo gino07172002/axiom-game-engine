@@ -183,3 +183,9 @@ demo 第 1 步 → package;第 2–4 步 → player 讀 `game.json` → `%APPDAT
 - 證據(debug,截圖已看過後刪除):預設尺寸與小尺寸各四張(對話框、進行中 `4/5 files` 進度條 + Cancel + 狀態列 `build 4/5`、完成綠字路徑 + Open folder + 狀態列 Open built game、取消後橘字 `Build cancelled: packaging cancelled`)。編輯器打包 plaza 到隔離輸出 vs CLI `axiom --pack content\plaza package`:7 個檔案(含 game.json、Play.cmd、`Sakura Plaza.exe`)SHA-256 全部相同。即時取消(loopback 啟動後立即 cancel):244 ms 停止,輸出與 `*.partial` 都不存在。
 - 主執行緒預算:編輯器端新增工作量測 — 啟動 job 0.22 ms;poll 每幀都 < 4 ms(慢 poll 記錄從未出現);對話框所在的 `jobs_overlay_ui` 階段建置中最大 5.4 ms(閒置 5.3 ms)。**未解決**:編輯器內建置期間,`writes_bridge` / `simulate` 階段出現 0.3–1.9 s 的單幀停頓(閒置時 < 0.1 ms);同樣的打包以另一個行程(CLI)執行時編輯器沒有停頓;把 `copy_hashed` 改成 1 MiB 串流複製的臨時 A/B 沒有消除停頓(已還原)。量測期間 CPU 100%(其他工作階段平行編譯),對照不受控,根因未確定 → 列為後續項目(用 rigorous-debug 在空閒機器上重現)。
 - 測試:`editor::build::tests` 4 個(job 與直接呼叫檔案雜湊清單相同、預設取消不留輸出/partial 且為 notice、既有輸出無 force = 可恢復錯誤、沒有 pack 停用並說明、egui 實際點擊 Build → 完成 → Open folder 與狀態列項出現)。
+
+### P2–P4 整合補記(2026-11-12,整合者)
+- 合併順序 P2 → P3 → P4(`40342b7`、`97fbeb9`、`a6b49b1`)。衝突:`default_player_exe` 兩版 → 保留 P2(找 `axiom-player.exe`);`RunMode` → `Play { player }` + `Editor { selected, pack }`;計畫補記取聯集。
+- 依 P4 建議在 `build()` 複製執行檔之後再檢查一次取消(原本取消落在 95 MB 執行檔複製期間會照樣完成)。
+- Gate(debug):fmt 乾淨、clippy -D warnings 乾淨、workspace **848 passed / 0 failed / 5 ignored**(840 + P2 2 + P3 2 + P4 4);`editor-smoke-test.ps1` ok:true;`editor-world-parity.ps1`、`street-editor-parity.ps1` identical:true(smoke DB 已刪)。
+- **P4 的主執行緒卡頓(0.3–1.9 s)在閒置機器上無法重現**:原量測時另外兩個工作線同時 cargo 建置、CPU 100%。重量(機器上沒有 cargo/rustc,debug 編輯器開 plaza,隔離 DB):每 0.7 s 取 `observe` 的 `frame.last_slow` 中 render_present 以外最慢的階段;閒置與 `view` 對照指令 7 筆最大 11.5 ms(extract),兩次 `file.build_game` 期間 26 筆最大 10.4 ms,`frames` 每筆都前進(背景視窗約 5–7 fps,受 present 節流)。第一次嘗試曾見單筆 `writes_bridge=72 ms`,落在送出建置指令後第一筆,後續未重現。**限制**:`last_slow` 只保留最近一個慢幀,取樣漏看中間幀;要確定性證據需要區間最大值計量(未做)。結論:打包本身未見讓主執行緒超過 16 ms;CPU 滿載時的卡頓屬環境競爭,但未以受控實驗證明。
