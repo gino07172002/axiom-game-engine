@@ -34,8 +34,11 @@
 
 ## 預算與資源
 
-- 本模組 5 條 pipeline(prefilter、downsample、upsample、tone map、FXAA),第一次用到時建立一次。
-- HDR 開啟時內建世界 pipeline 需要 `Rgba16Float` 版本:方塊 + 兩種天空 3 條、網格 4 + 描邊 1、VFX 6 條,共 14 條,第一次開 HDR 時在主執行緒建立一次(時間見 `observe` 的 `render_post.hdr_world_pipeline_ms`)。自訂材質的程式以(HDR 與否, WGSL)為快取鍵,每個程式仍是 16 條,總數仍受 `shader_gpu` 的 512 條上限(LRU)限制。
+- 本模組 5 條 pipeline(prefilter、downsample、upsample、tone map、FXAA)。
+- HDR 開啟時內建世界 pipeline 需要 `Rgba16Float` 版本:方塊 + 兩種天空 3 條、網格 4 + 描邊 1、VFX 6 條,共 14 條;自訂材質的程式以(HDR 與否, WGSL)為快取鍵,每個程式仍是 16 條,總數仍受 `shader_gpu` 的 512 條上限(LRU)限制。
+- **這些 pipeline 都在背景執行緒建立(`hdr_build.rs`),不在主執行緒**:設定第一次需要它們時開一個 job(`jobs::Job`:一次只有一個;每建好一組 pipeline 檢查取消;進度 done/total;30 秒 watchdog;關閉程式時限時 join)。建好之前畫面照舊走沒有後處理的輸出(不會出現黑畫面或只做一半的畫面),全部建好的那一幀一次切換。建置中設定又改變 → 目前的 job 在下一組 pipeline 後停止(已建好的保留),再用最新的設定開下一個 job(只取最新,不排隊);把後處理關掉也會取消。逾時或失敗 → `render_post.build.state = failed` 與 `error`、編輯器狀態列紅字,畫面維持舊輸出,直到設定改變才重試。
+- 沒有改的部分:HDR 已經開著時新增或修改材質,啟用 revision 的流程本來就在主執行緒同步編譯材質 pipeline(為了在啟用前抓 WGSL / pipeline 錯誤),這時編的是 HDR 版本,成本與原本編 surface 版本相同。若有材質在 HDR 版本還沒建好時被用到,畫面暫時走沒有後處理的輸出,背景 job 補建。
+- 無頭 `--smoke-frames N --screenshot` 只有在**截圖那一幀**會等建置完成(最多 watchdog 時間),所以截圖一定是要求的輸出;互動視窗的幀從不等待。
 - 目標在第一次需要時建立,只有在畫面大小或需要的組合改變時才重建(`target_builds` 計數),全部關閉時釋放。1920×1080:HDR 目標 15.8 MiB、bloom 6 層約 5.3 MiB、FXAA 輸入 7.9 MiB。
 - 每幀不配置記憶體:每個 view 的 uniform 寫進預先配置的緩衝。
 
@@ -47,7 +50,7 @@
 
 兩邊都是 `ops::set_post`(沒有 `render.environment` 時建立並補 `render` capability;全部關掉時移除 `post`)。
 
-`observe` 在有設定開啟時多一個 `render_post`:`antialiasing`、`hdr`(含 bloom 數值)、`target`、`target_bytes`、`bloom_mips`、`target_builds`、`pipeline_ms`、`hdr_world_pipeline_ms`、`gpu_frames`、`gpu_ms {bloom, tonemap, fxaa}`(量到的幀的平均 GPU 毫秒)。沒有編輯器 Profiler 時,只有在後處理設定開啟時才寫 GPU timestamp;編輯器 Profiler 多了 bloom / tonemap / fxaa 三欄。
+`observe` 在有設定開啟時多一個 `render_post`:`antialiasing`、`hdr`(含 bloom 數值)、`target`、`target_bytes`、`bloom_mips`、`target_builds`、`pipeline_ms`(背景建置花的毫秒)、`gpu_frames`、`gpu_ms {bloom, tonemap, fxaa}`(量到的幀的平均 GPU 毫秒),以及 `build {state: ready|building|failed, error, job, builds, worker_ms, request_frame_ms, install_frame_ms, before_frame_ms, fallback_frames}`(`*_frame_ms` = `Renderer::render` 在主執行緒的毫秒,不含等 swapchain 的時間)。建置中或失敗時,即使還沒有生效的設定也會回報 `render_post.build`。沒有編輯器 Profiler 時,只有在後處理設定開啟時才寫 GPU timestamp;編輯器 Profiler 多了 bloom / tonemap / fxaa 三欄。
 
 ## 量測
 

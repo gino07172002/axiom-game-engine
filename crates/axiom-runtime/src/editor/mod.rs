@@ -657,6 +657,8 @@ pub(crate) struct Editor {
     pub(crate) reload_watching: bool,
     /// The host's running asset-reload job (status bar and `observe` jobs).
     pub(crate) host_job: Option<Value>,
+    /// Background post / HDR pipeline build (renderer `hdr_build`): (text, is_error).
+    pub(crate) post_status: Option<(String, bool)>,
     /// Console, Event trace, Profiler and the scenario recording (M8).
     pub(crate) debug: debug::Debug,
     /// Input Map, Localization, Animation, VFX tabs and the shader source (editor state).
@@ -791,6 +793,7 @@ impl Editor {
             reload_ask: None,
             reload_watching: false,
             host_job: None,
+            post_status: None,
             debug: Default::default(),
             ghost: Default::default(),
             merge: Default::default(),

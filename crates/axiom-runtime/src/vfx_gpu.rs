@@ -50,7 +50,7 @@ fn pack_curves(e: &vfx::Emitter, u: &mut EmitterUniform) {
 
 /// Sprite / model / ribbon pipelines (alpha and additive each) for colour `format` (the
 /// surface format, or `hdr::HDR_FORMAT` while HDR is on).
-fn draw_pipelines(
+pub(crate) fn draw_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
@@ -438,21 +438,20 @@ impl VfxGpu {
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
     }
-    /// Draws into the HDR target from now on (`on`), building its pipeline variants on first
-    /// use. Returns the milliseconds spent building them (0 when they existed).
-    pub fn set_hdr(&mut self, device: &wgpu::Device, on: bool) -> f64 {
+    /// Draws into the HDR target (`on`) once its pipeline variants are installed
+    /// (`install_hdr`); until then, and with `on` false, the surface-format pipelines.
+    pub fn set_hdr(&mut self, on: bool) {
         self.use_hdr = on;
-        if !on || self.hdr.is_some() {
-            return 0.0;
-        }
-        let started = std::time::Instant::now();
-        self.hdr = Some(draw_pipelines(
-            device,
-            &self.pipeline_layout,
-            &self.module,
-            crate::hdr::HDR_FORMAT,
-        ));
-        started.elapsed().as_secs_f64() * 1000.0
+    }
+    /// Layout and module the HDR variants are built from (`hdr_build`, worker thread).
+    pub(crate) fn hdr_inputs(&self) -> (wgpu::PipelineLayout, wgpu::ShaderModule) {
+        (self.pipeline_layout.clone(), self.module.clone())
+    }
+    pub(crate) fn install_hdr(&mut self, pipelines: Vec<wgpu::RenderPipeline>) {
+        self.hdr = Some(pipelines);
+    }
+    pub(crate) fn has_hdr(&self) -> bool {
+        self.hdr.is_some()
     }
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: u32) -> (u32, u64) {
         let (mut calls, mut triangles) = (0, 0);

@@ -9,7 +9,7 @@
 //!
 //! Targets are created on first use and recreated only when the frame size or the needed set
 //! changes (never per frame); turning every setting off frees them. The five pipelines here are
-//! built once, on first use.
+//! built once, on a worker thread (`hdr_build`), never on the main thread.
 use crate::gpu_timing::{GpuFrame, GpuTimer, Section};
 use axiom_core::post::{Hdr, PostProcess};
 
@@ -89,7 +89,7 @@ fn uniform(settings: &Settings, rect: [f32; 4], mips: u32) -> Uniform {
     }
 }
 
-struct Pipelines {
+pub(crate) struct Pipelines {
     prefilter: wgpu::RenderPipeline,
     downsample: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
@@ -120,10 +120,9 @@ struct Targets {
 pub struct Stats {
     /// Times the targets were (re)created (first use, resize, settings change).
     pub target_builds: u64,
-    /// Milliseconds building this module's pipelines (once) and the HDR variants of the world
-    /// pipelines (once, `Renderer::render` adds it).
+    /// Milliseconds the background build took (`hdr_build`, worker thread): this module's
+    /// pipelines and the HDR variants of the world pipelines.
     pub pipeline_ms: f64,
-    pub hdr_world_ms: f64,
     /// Mean GPU milliseconds per measured frame (bloom, tone map, FXAA) and the frame count.
     pub gpu_ms: [f64; 3],
     pub gpu_frames: u64,
@@ -262,7 +261,35 @@ impl Finish {
         }
     }
 
-    fn build_pipelines(&self, device: &wgpu::Device) -> Pipelines {
+    /// What a worker thread needs to build this module's pipelines (`build_pipelines`).
+    pub(crate) fn post_inputs(&self) -> PostInputs {
+        PostInputs {
+            format: self.format,
+            layout: self.layout.clone(),
+            fxaa_layout: self.fxaa_layout.clone(),
+        }
+    }
+
+    /// Pipelines built by `hdr_build` (off the main thread); `prepare` runs nothing until then.
+    pub(crate) fn install(&mut self, pipelines: Pipelines) {
+        self.pipelines = Some(pipelines);
+    }
+
+    pub(crate) fn has_pipelines(&self) -> bool {
+        self.pipelines.is_some()
+    }
+}
+
+/// Layouts and output format of the post pipelines (cheap clones of wgpu handles).
+#[derive(Clone)]
+pub(crate) struct PostInputs {
+    format: wgpu::TextureFormat,
+    layout: wgpu::BindGroupLayout,
+    fxaa_layout: wgpu::BindGroupLayout,
+}
+
+impl PostInputs {
+    pub(crate) fn build_pipelines(&self, device: &wgpu::Device) -> Pipelines {
         let hdr = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bloom / tone map"),
             source: wgpu::ShaderSource::Wgsl(include_str!("hdr.wgsl").into()),
@@ -350,7 +377,9 @@ impl Finish {
             fxaa: pipeline("fxaa", &fxaa, &fxaa_layout, "fragment", self.format, None),
         }
     }
+}
 
+impl Finish {
     fn bind(
         &self,
         device: &wgpu::Device,
@@ -385,7 +414,7 @@ impl Finish {
         })
     }
 
-    /// Makes the pipelines and targets match `settings` at `width` x `height` (no-op when they
+    /// Makes the targets match `settings` at `width` x `height` (no-op when they
     /// already do) and uploads one uniform per view. Never allocates when nothing changed.
     pub fn prepare(
         &mut self,
@@ -403,9 +432,10 @@ impl Finish {
             return;
         }
         if self.pipelines.is_none() {
-            let started = std::time::Instant::now();
-            self.pipelines = Some(self.build_pipelines(device));
-            self.stats.pipeline_ms = started.elapsed().as_secs_f64() * 1000.0;
+            // Not built yet (`hdr_build`): the renderer keeps the legacy path meanwhile.
+            self.settings = Settings::default();
+            self.targets = None;
+            return;
         }
         if self
             .targets
@@ -680,7 +710,6 @@ impl Finish {
             "bloom_mips": self.targets.as_ref().and_then(|t| t.bloom.as_ref()).map_or(0, |b| b.levels.len()),
             "target_builds": t.target_builds,
             "pipeline_ms": round(t.pipeline_ms),
-            "hdr_world_pipeline_ms": round(t.hdr_world_ms),
             "gpu_frames": t.gpu_frames,
             "gpu_ms": if t.gpu_frames > 0 {
                 serde_json::json!({"bloom": round(t.gpu_ms[0]), "tonemap": round(t.gpu_ms[1]), "fxaa": round(t.gpu_ms[2])})
@@ -776,6 +805,8 @@ mod tests {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let (w, h) = (1920, 1080);
         let mut finish = Finish::new(&device, format);
+        let pipelines = finish.post_inputs().build_pipelines(&device);
+        finish.install(pipelines);
         let settings = Settings {
             hdr: Some(Hdr {
                 bloom: Some(Bloom::default()),
