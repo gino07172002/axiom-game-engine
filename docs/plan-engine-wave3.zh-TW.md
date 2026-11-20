@@ -145,3 +145,20 @@
   - 改動前(05cba45):開啟那一幀在 `render()` 裡同步建立 pipeline:HDR 世界 24.3 / 25.9 / 25.0 ms + 後處理 6.1 / 5.8 / 5.6 ms(3 次;這幾次驅動的 pipeline 快取是熱的,冷快取時之前量到最多 546 ms),再加上平常的那一幀。
   - 改動後:要求的那一幀 1.47 / 2.92 / 1.40 ms(前一幀 1.53 / 2.08 / 1.35 ms);切換的那一幀 7.9 / 4.9 / 4.5 ms(含建立 25 MB 目標與第一次 HDR 繪製);worker 花 67 / 83 / 69 ms;期間 2–4 幀照舊輸出。沒有做 release 量測。
 - **證據**:預設關閉時 plaza、street、light-lab、render-lab、shadow-lab 與 05cba45 的 PNG **檔案位元組完全相同**;shadow-lab / plaza 只跑 3 個 smoke 幀就截圖、post 開啟,截圖仍是 HDR + bloom + FXAA 的畫面(截圖幀等到建置完成)。Gate:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 903 passed / 0 failed / 6 ignored(新增 `hdr_build` 3 個測試:取代 / 取消 / 失敗不重試);editor-smoke ok:true;editor-world-parity、street-editor-parity identical:true;m0 smoke PASS。
+
+## 整合補記(2026-11-20,整合者)
+
+**合併順序與結果**(每次合併後在合併樹上跑完整 gate:fmt、clippy `-D warnings`、`cargo test --workspace --no-fail-fast`、editor-smoke、兩個 parity、m0 smoke):
+
+| 合併 | commit | 測試 | 其他 |
+|---|---|---|---|
+| W3a 音效檔 + 手把 | 06e1c72 | 868 / 0 / 5 | 自跑 `content/audio-lab`:`voiced 2`(hum.wav 1 ch 22,050 Hz 1.0 s、chime.ogg 2 ch 44,100 Hz 2.0 s)、`underruns 0`,截圖正常(聲音本身無法聽) |
+| W3b 關節 / 事件 + blend2d | 4b98aed | 885 / 0 / 5 | 自跑 `content/joint-lab` 480 幀截圖:鏈條各節相連擺動、角色推開門、球停在感應區;observe `joints 6`、`emitted 3`、`touching {zone:[ball]}` |
+| W3d 聚光 / 點光陰影 | bdd9cb7 | 892 / 0 / 5 | 合併前後 exe 的 plaza、street、light-lab、render-lab PNG **位元組相同**;shadow-lab 開 / 關陰影截圖親自比對(柱子、角色、箱子投影,牆後轉暗) |
+| W3c FXAA / HDR / bloom | 05cba45 | 900 / 0 / 6 | 合併前後 exe 的 plaza、street、light-lab、render-lab、shadow-lab、audio-lab PNG **位元組相同**;shadow-lab + plaza 開 HDR + bloom + FXAA 截圖親自看(局部陰影保留、對比提高、無破圖);observe 同時有 `local_shadows` 與 `render_post` |
+| W3c 追補(背景建 pipeline) | ce7032f | 903 / 0 / 6 | 預設關閉時五個 pack 的 PNG 與 05cba45 位元組相同;只跑 3 幀的 shadow-lab post 截圖已是完整 HDR 畫面 |
+
+- **W3d × W3c 衝突解法**:`gpu_timing.rs` 區段合成 11 個(local_shadows + bloom / tonemap / fxaa),timestamp 每幀最多 47 個(上限 48);`app.rs` 的 observe 同時寫 `local_shadows` 與 `render_post`;沒有編輯器的 Play 計時器在 `AXIOM_GPU_TIMING=1` 或任一後處理開啟時啟用,同一個 frame 同時累計 `gpu_timing` 與 `render_post.gpu_ms`;`render.rs` 先畫局部陰影面,再依 W3c 的規則選世界顏色目標。HDR 世界 pipeline 用與一般版本相同的 `pipeline_layout`,所以含 W3d 的 bindings 3–5。
+- **16 ms 規則**:W3c 原本第一次開 HDR 在主執行緒同步建 pipeline(28–546 ms),整合者退回請 W3c 追補改背景建立後才合併。整合者自己量(debug、MX150、shadow-lab、post 從啟動就開、120 幀,2 次):要求幀 12.0 / 12.0 ms、切換幀 10.1 / 9.1 ms、worker 32 ms、期間 7 幀走舊輸出。只跑 3 幀就截圖時切換幀 233.8 ms——那是 headless 截圖幀刻意等建置(只有 `--screenshot` 會等),不是互動路徑。沒有 release 量測。
+- **effects-smoke**:四條合併後(05cba45)跑一次:36 站截圖、live edit、粒子預算診斷、vertex pipeline 失敗保留 + 復原都過,最後 900 幀 / 60 s 步驟照已知情況在 MX150 逾時(第 112 行),未放寬;抽看 P03 粒子光源、M06 自發光截圖正常。追補合併後(ce7032f)再跑一次:**全部 PASS**(含最後 900 幀步驟,`effects-20261120-191330-488/report.json`)——這一步的逾時一向隨機器負載而定,不代表變快。
+- **未驗證**:實機手把(沒有手把)、聲音實際聽感、release 下的音檔解碼與後處理時間、N 個關節的步進成本、主執行緒其他 `eprintln!` 在 stderr 導向檔案時的延遲(W3c 追補發現,未處理)。

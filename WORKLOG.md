@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-20 — Claude (Opus 5.5) — integrator: engine wave 3 (W3a–W3d, Unity-gap features) merged into main
+
+**Done:** plan `docs/plan-engine-wave3.zh-TW.md` (36a9705). Merged in order: W3a WAV / Ogg Vorbis file clips + XInput gamepad bindings (06e1c72), W3b physics joints + sensor enter/exit events + `blend2d` (4b98aed), W3d spot / point light shadows with a 2 spot + 1 point budget (bdd9cb7), W3c FXAA + HDR (`Rgba16Float`) + ACES + bloom (05cba45), W3c follow-up: post/HDR pipelines built on a `jobs::Job` worker instead of the main thread (ce7032f). New demo packs `content/audio-lab`, `content/joint-lab`, `content/shadow-lab`; new docs `docs/input.zh-TW.md`, `docs/post-processing.zh-TW.md`. New crates: `lewton`, `ogg`, `tinyvec` (MIT / BSD / Zlib).
+
+**Verification:** full gate on each merged tree: 868 → 885 → 892 → 900 → 903 passed / 0 failed / 5–6 ignored, fmt + clippy clean, editor smoke ok, both parity identical, m0 smoke PASS. Default-off PNGs byte-identical before/after W3d and W3c (plaza, street, light-lab, render-lab, shadow-lab, audio-lab). Inspected by eye: audio-lab, joint-lab, shadow-lab shadows on/off, shadow-lab + plaza with HDR/bloom/FXAA, a 3-frame post capture. Async build measured by me (debug, MX150, post on from launch): request frame 12 ms, install frame 9–10 ms, worker 32 ms. Integration note: 「整合補記」 in the plan.
+
+**Not verified / open:** real gamepad hardware; audible output; release timings for decode / post / shadows; joint step cost; `effects-smoke-test`: final 900-frame / 60 s step timed out on 05cba45 (known MX150 load issue) but the rerun on ce7032f passed fully. FXAA only (MSAA later); file clips are downmixed to mono; shadow faces re-render every frame. Main-thread `eprintln!` measured 150–290 ms with redirected stderr in hidden headless runs — not addressed.
+
+**Gotchas:** W3d and W3c both add GPU timer sections — the merged enum has 11 sections, 47 of 48 timestamp queries per frame; adding a pass needs `QUERIES` raised. A `--screenshot` frame waits for a pending post build, so `render_post.build.install_frame_ms` from a 3-frame smoke (≈234 ms) is not the interactive cost. Observe puts `local_shadows` / `render_post` at the top level of `observation`, not under `metrics`.
+
 ## 2026-11-12 — Claude (Opus 5.5) — packaging (program item 4): P1–P5 done, pushed
 
 **Done:** plan `docs/plan-packaging.zh-TW.md` (spikes S1/S2, ADRs, P1–P5, execution notes for each). `axiom package --pack DIR --out DIR` (`crates/axiom-runtime/src/packaging.rs`) builds a relocatable folder: `<title>.exe` (windowed `crates/axiom-player`: GUI subsystem, embedded icon via windres, no dev bar/console/port, saves + crash.log in `%APPDATA%\Axiom\<id>`), `game.json`, `content/`. Staged `*.partial` + re-load check, external/out-of-pack assets refused before writing, referenced/unreferenced report, `--force` only replaces game folders. Editor `File > Build Game…` background job (P4). Commits 8357e58, 40342b7 (P2), 97fbeb9 (P3), a6b49b1 (P4), ed9e116, 3d1326f (P5).
