@@ -12,6 +12,7 @@
 use crate::trigger::world_matrix;
 use crate::world::*;
 use anyhow::{ensure, Context, Result};
+use axiom_core::gameplay::{RuntimeCommand, Scalar};
 use axiom_core::physics::*;
 use axiom_core::{Collider, ColliderShape, Diagnostic};
 use glam::{Quat, Vec3};
@@ -86,6 +87,58 @@ struct SavedBody {
 struct SavedPhysics {
     steps: u64,
     bodies: BTreeMap<String, SavedBody>,
+    /// Motor targets of the motorized joints by joint entity ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    motors: BTreeMap<String, SavedMotor>,
+    /// Per contact-event collider: the colliders it touches, by entity ID (so loading does not
+    /// re-fire `on_enter` for contacts that already existed).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    touching: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    events: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct SavedMotor {
+    target_velocity: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_position: Option<f32>,
+}
+
+/// A behavior event a collider emits and which of the payload fields it declares.
+struct EventInfo {
+    name: String,
+    self_field: bool,
+    other_field: bool,
+}
+
+/// A collider with `on_enter` / `on_exit`.
+struct Watch {
+    entry: u32,
+    on_enter: Option<u16>,
+    on_exit: Option<u16>,
+    /// Entries touching it (contact or sensor overlap), sorted by entity ID rank.
+    touching: Vec<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct Change {
+    watch: u32,
+    other: u32,
+    enter: bool,
+}
+
+struct Joint {
+    slot: usize,
+    handle: ImpulseJointHandle,
+    def: PhysicsJoint,
+    /// Current motor targets in authored units (degrees / meters); `physics.set_motor` changes them.
+    motor: Option<SavedMotor>,
 }
 
 pub struct PhysicsSystem {
@@ -110,6 +163,20 @@ pub struct PhysicsSystem {
     /// Runtime-spawned entities with a collider (not simulated; reported).
     ignored_spawns: u32,
     halted: Option<String>,
+    /// Fixed body the world-attached joints connect to (created only when one exists).
+    world_body: Option<RigidBodyHandle>,
+    joints: Vec<Joint>,
+    events: Vec<EventInfo>,
+    /// Contact-event colliders in entity ID order.
+    watches: Vec<Watch>,
+    /// Entry index -> rank of its entity ID among all entries (deterministic event order).
+    rank: Vec<u32>,
+    scratch: Vec<u32>,
+    changes: Vec<Change>,
+    emitted: u64,
+    /// Contact events stopped (budget) or the first emit failure.
+    events_halted: Option<String>,
+    event_fault: Option<String>,
 }
 
 fn isometry(rotation: Quat, translation: Vec3) -> Isometry<Real> {
@@ -140,6 +207,16 @@ fn shape(collider: &Collider, scale: Vec3) -> ColliderBuilder {
     if let Some(restitution) = collider.restitution {
         builder = builder.restitution(restitution);
     }
+    if collider.sensor {
+        // Kinematic movers count too (rapier's default only pairs colliders when one side is
+        // dynamic); static-static pairs never change, so they are left out (a sensor zone
+        // resting on the floor does not report the floor). Sensors produce no contact forces.
+        builder = builder.sensor(true).active_collision_types(
+            ActiveCollisionTypes::default()
+                | ActiveCollisionTypes::KINEMATIC_FIXED
+                | ActiveCollisionTypes::KINEMATIC_KINEMATIC,
+        );
+    }
     // The bouncier surface wins (a lively ball bounces on a default floor); friction keeps
     // the average of the two.
     builder.restitution_combine_rule(CoefficientCombineRule::Max)
@@ -147,6 +224,23 @@ fn shape(collider: &Collider, scale: Vec3) -> ColliderBuilder {
 
 fn vec3(v: &Vector<Real>) -> [f32; 3] {
     [v.x, v.y, v.z]
+}
+
+/// Authored joint units (degrees / meters) to rapier's (radians / meters).
+fn joint_unit(kind: JointKind) -> f32 {
+    if kind == JointKind::Revolute {
+        std::f32::consts::PI / 180.0
+    } else {
+        1.0
+    }
+}
+
+fn free_axis(kind: JointKind) -> Option<JointAxis> {
+    match kind {
+        JointKind::Revolute => Some(JointAxis::AngX),
+        JointKind::Prismatic => Some(JointAxis::LinX),
+        JointKind::Fixed | JointKind::Spherical => None,
+    }
 }
 
 /// Display rounding for observe (f64 so the JSON shows the short decimal).
@@ -188,6 +282,16 @@ impl PhysicsSystem {
             scanned: compiled.len(),
             ignored_spawns: 0,
             halted: None,
+            world_body: None,
+            joints: vec![],
+            events: vec![],
+            watches: vec![],
+            rank: vec![],
+            scratch: vec![],
+            changes: Vec::with_capacity(MAX_CONTACT_EVENTS_PER_STEP),
+            emitted: 0,
+            events_halted: None,
+            event_fault: None,
         };
         let matrices = state.matrices();
         let mut moving = 0;
@@ -251,6 +355,8 @@ impl PhysicsSystem {
             } else {
                 (Role::Static, None)
             };
+            // Collider -> entry index (contact events map rapier pairs back to entities).
+            let index = u128::from(system.entries.len() as u32);
             let (body, collider) = match body {
                 Some((body, scale, mass)) => {
                     moving += 1;
@@ -261,7 +367,7 @@ impl PhysicsSystem {
                     let handle = system.bodies.insert(body);
                     // The body's enabled flag switches its collider (rapier never re-enables a
                     // collider that was itself built disabled when its body is enabled).
-                    let mut builder = shape(collider, scale);
+                    let mut builder = shape(collider, scale).user_data(index);
                     if role == Role::Dynamic {
                         builder = builder.mass(mass);
                     }
@@ -275,6 +381,7 @@ impl PhysicsSystem {
                     let (scale, rotation, translation) =
                         matrices[slot].to_scale_rotation_translation();
                     let builder = shape(collider, scale)
+                        .user_data(index)
                         .position(isometry(rotation, translation))
                         .enabled(enabled);
                     (None, system.colliders.insert(builder))
@@ -291,7 +398,353 @@ impl PhysicsSystem {
                 out: false,
             });
         }
+        system.build_events(state)?;
+        system.build_joints(state)?;
         Ok(system)
+    }
+
+    /// Ranks entries by entity ID and lists the colliders with contact events in that order.
+    fn build_events(&mut self, state: &RuntimeState) -> Result<()> {
+        let program = state.compiled.source.resources.get("behavior.program");
+        let mut order: Vec<u32> = (0..self.entries.len() as u32).collect();
+        order.sort_by(|&a, &b| {
+            self.entries[a as usize]
+                .id
+                .cmp(&self.entries[b as usize].id)
+        });
+        self.rank = vec![0; self.entries.len()];
+        for (rank, &i) in order.iter().enumerate() {
+            self.rank[i as usize] = rank as u32;
+        }
+        for &i in &order {
+            let entry = &self.entries[i as usize];
+            let collider = state.compiled.entities[entry.slot]
+                .collider
+                .as_ref()
+                .expect("entries have a collider");
+            if !collider.has_events() {
+                continue;
+            }
+            let mut event = |name: &str| -> Result<Option<u16>> {
+                if name.is_empty() {
+                    return Ok(None);
+                }
+                if let Some(i) = self.events.iter().position(|e| e.name == name) {
+                    return Ok(Some(i as u16));
+                }
+                let fields = program
+                    .and_then(|p| {
+                        p.pointer(&format!(
+                            "/events/{}/fields",
+                            axiom_core::local::escape(name)
+                        ))
+                    })
+                    .and_then(Value::as_object)
+                    .with_context(|| {
+                        format!("collider emits {name}, which behavior.program does not declare")
+                    })?;
+                self.events.push(EventInfo {
+                    name: name.to_owned(),
+                    self_field: fields.contains_key("self"),
+                    other_field: fields.contains_key("other"),
+                });
+                Ok(Some(self.events.len() as u16 - 1))
+            };
+            let on_enter = event(&collider.on_enter)?;
+            let on_exit = event(&collider.on_exit)?;
+            self.watches.push(Watch {
+                entry: i,
+                on_enter,
+                on_exit,
+                touching: vec![],
+            });
+        }
+        ensure!(
+            self.watches.len() <= MAX_EVENT_COLLIDERS,
+            "contact event collider budget exceeded ({} > {MAX_EVENT_COLLIDERS})",
+            self.watches.len()
+        );
+        if !self.watches.is_empty() {
+            ensure!(
+                state.gameplay.is_some()
+                    || state
+                        .compiled
+                        .source
+                        .systems
+                        .iter()
+                        .any(|s| s == "behavior.execute"),
+                "contact events need the behavior.execute system"
+            );
+        }
+        Ok(())
+    }
+
+    /// One rapier impulse joint per `physics.joint`, in entity-slot order. Frames come from the
+    /// authored poses, so the joint holds the authored relative placement (angle / offset 0).
+    fn build_joints(&mut self, state: &RuntimeState) -> Result<()> {
+        let compiled = &state.compiled;
+        for (slot, e) in compiled.entities.iter().enumerate() {
+            let Some(def) = joint_of(e) else { continue };
+            def.validate()
+                .with_context(|| format!("{JOINT} on {}", e.id))?;
+            let pose = |slot: usize| -> Result<(Isometry<Real>, Vec3, RigidBodyHandle)> {
+                let entry = self
+                    .by_slot
+                    .get(slot)
+                    .filter(|&&i| i != NONE)
+                    .map(|&i| &self.entries[i as usize])
+                    .filter(|entry| entry.role.simulated())
+                    .with_context(|| {
+                        format!(
+                            "{JOINT} on {}: {} is not a simulated rigid body",
+                            e.id, compiled.entities[slot].id
+                        )
+                    })?;
+                let t = compiled.entities[slot]
+                    .transform
+                    .as_ref()
+                    .context("rigid bodies have core.transform")?;
+                Ok((
+                    isometry(Quat::from_array(t.rotation), Vec3::from_array(t.position)),
+                    Vec3::from_array(t.scale),
+                    entry.body.expect("simulated entries have a body"),
+                ))
+            };
+            let (pose1, scale1, body1) = pose(slot)?;
+            let (pose2, body2) = match &def.to {
+                Some(to) => {
+                    let &other = compiled
+                        .indices
+                        .get(to)
+                        .with_context(|| format!("{JOINT} on {}: missing body {to}", e.id))?;
+                    let (pose2, _, body2) = pose(other)?;
+                    (pose2, body2)
+                }
+                None => {
+                    let world = *self
+                        .world_body
+                        .get_or_insert_with(|| self.bodies.insert(RigidBodyBuilder::fixed()));
+                    (Isometry::identity(), world)
+                }
+            };
+            let anchor = Vec3::from_array(def.anchor) * scale1;
+            let axis = Vec3::from_array(def.unit_axis());
+            // rapier measures body 2 relative to body 1: the jointed entity is body 2, so angles,
+            // offsets, limits and motor targets describe its own motion along `axis`.
+            let own = isometry(Quat::from_rotation_arc(Vec3::X, axis), anchor);
+            let other = pose2.inverse() * pose1 * own;
+            let locked = match def.kind {
+                JointKind::Fixed => JointAxesMask::LOCKED_FIXED_AXES,
+                JointKind::Revolute => JointAxesMask::LOCKED_REVOLUTE_AXES,
+                JointKind::Prismatic => JointAxesMask::LOCKED_PRISMATIC_AXES,
+                JointKind::Spherical => JointAxesMask::LOCKED_SPHERICAL_AXES,
+            };
+            let (free, unit) = (free_axis(def.kind), joint_unit(def.kind));
+            let mut builder = GenericJointBuilder::new(locked)
+                .local_frame1(other)
+                .local_frame2(own)
+                .contacts_enabled(def.collide_connected);
+            if let Some(axis) = free {
+                if let Some([min, max]) = def.limits {
+                    builder = builder.limits(axis, [min * unit, max * unit]);
+                }
+                if let Some(m) = &def.motor {
+                    builder = builder
+                        .set_motor(
+                            axis,
+                            m.target_position.unwrap_or(0.0) * unit,
+                            m.target_velocity * unit,
+                            m.stiffness,
+                            m.damping,
+                        )
+                        .motor_max_force(axis, m.max_force);
+                }
+            }
+            let handle = self
+                .impulse_joints
+                .insert(body2, body1, builder.build(), true);
+            let motor = def.motor.as_ref().map(|m| SavedMotor {
+                target_velocity: m.target_velocity,
+                target_position: m.target_position,
+            });
+            self.joints.push(Joint {
+                slot,
+                handle,
+                def,
+                motor,
+            });
+        }
+        ensure!(
+            self.joints.len() <= MAX_JOINTS,
+            "joint budget exceeded ({} > {MAX_JOINTS})",
+            self.joints.len()
+        );
+        Ok(())
+    }
+
+    /// Applies `target` to the motor of joint `j` (authored units) and wakes its bodies.
+    fn set_motor(&mut self, j: usize, target: SavedMotor) {
+        let joint = &mut self.joints[j];
+        let (Some(m), Some(axis)) = (&joint.def.motor, free_axis(joint.def.kind)) else {
+            return;
+        };
+        let unit = joint_unit(joint.def.kind);
+        if let Some(data) = self.impulse_joints.get_mut(joint.handle, true) {
+            data.data.set_motor(
+                axis,
+                target.target_position.unwrap_or(0.0) * unit,
+                target.target_velocity * unit,
+                m.stiffness,
+                m.damping,
+            );
+        }
+        joint.motor = Some(target);
+    }
+
+    /// Angle (degrees, revolute) or offset along the axis (meters, prismatic) of joint `j`.
+    fn joint_position(&self, j: usize) -> Option<f32> {
+        let joint = &self.joints[j];
+        let data = self.impulse_joints.get(joint.handle)?;
+        let (b1, b2) = (&self.bodies[data.body1], &self.bodies[data.body2]);
+        let f1 = b1.position() * data.data.local_frame1;
+        let f2 = b2.position() * data.data.local_frame2;
+        match joint.def.kind {
+            JointKind::Revolute => {
+                let rel = f1.rotation.inverse() * f2.rotation;
+                // Signed angle about the frame's X axis (the hinge axis).
+                let angle = 2.0 * rel.i.atan2(rel.w);
+                let angle = if angle > std::f32::consts::PI {
+                    angle - std::f32::consts::TAU
+                } else if angle < -std::f32::consts::PI {
+                    angle + std::f32::consts::TAU
+                } else {
+                    angle
+                };
+                Some(angle.to_degrees())
+            }
+            JointKind::Prismatic => Some((f1.inverse() * f2).translation.vector.x),
+            _ => None,
+        }
+    }
+
+    /// Recomputes which colliders touch each contact-event collider and emits the enter / exit
+    /// events: watches in entity ID order, per watch exits then enters, others in ID order.
+    fn detect(&mut self, state: &mut RuntimeState) {
+        if self.watches.is_empty() || self.events_halted.is_some() {
+            return;
+        }
+        self.changes.clear();
+        let mut events = 0;
+        for (w, watch) in self.watches.iter_mut().enumerate() {
+            let me = self.entries[watch.entry as usize].collider;
+            let scratch = &mut self.scratch;
+            scratch.clear();
+            let colliders = &self.colliders;
+            let mut other = |a: ColliderHandle, b: ColliderHandle| {
+                let o = if a == me { b } else { a };
+                if let Some(c) = colliders.get(o) {
+                    scratch.push(c.user_data as u32);
+                }
+            };
+            for pair in self.narrow_phase.contact_pairs_with(me) {
+                if pair.has_any_active_contact {
+                    other(pair.collider1, pair.collider2);
+                }
+            }
+            for (a, b, hit) in self.narrow_phase.intersection_pairs_with(me) {
+                if hit {
+                    other(a, b);
+                }
+            }
+            let rank = &self.rank;
+            scratch.sort_unstable_by_key(|&i| rank[i as usize]);
+            scratch.dedup();
+            for enter in [false, true] {
+                let (from, to) = if enter {
+                    (&*scratch, &watch.touching)
+                } else {
+                    (&watch.touching, &*scratch)
+                };
+                for &o in from {
+                    if to
+                        .binary_search_by_key(&rank[o as usize], |&i| rank[i as usize])
+                        .is_err()
+                        && (if enter { watch.on_enter } else { watch.on_exit }).is_some()
+                    {
+                        events += 1;
+                        // Bounded (no growth past the preallocated capacity); an overflow
+                        // stops the contact events below.
+                        if self.changes.len() < MAX_CONTACT_EVENTS_PER_STEP {
+                            self.changes.push(Change {
+                                watch: w as u32,
+                                other: o,
+                                enter,
+                            });
+                        }
+                    }
+                }
+            }
+            std::mem::swap(&mut watch.touching, scratch);
+        }
+        if events > MAX_CONTACT_EVENTS_PER_STEP {
+            self.events_halted = Some(format!(
+                "contact event budget exceeded ({events} > {MAX_CONTACT_EVENTS_PER_STEP} events in one step at tick {}); contact events stopped",
+                state.tick
+            ));
+            return;
+        }
+        let mut emitted_any = false;
+        for i in 0..self.changes.len() {
+            let c = self.changes[i];
+            let watch = &self.watches[c.watch as usize];
+            let Some(event) = (if c.enter {
+                watch.on_enter
+            } else {
+                watch.on_exit
+            }) else {
+                continue;
+            };
+            let info = &self.events[event as usize];
+            let mut fields = BTreeMap::new();
+            if info.self_field {
+                fields.insert(
+                    "self".to_owned(),
+                    Scalar::Text(self.entries[watch.entry as usize].id.clone()),
+                );
+            }
+            if info.other_field {
+                fields.insert(
+                    "other".to_owned(),
+                    Scalar::Text(self.entries[c.other as usize].id.clone()),
+                );
+            }
+            let tick = state.tick;
+            let result = match state.gameplay.as_mut() {
+                Some(g) => g.command(
+                    &RuntimeCommand::Emit {
+                        event: info.name.clone(),
+                        fields,
+                    },
+                    tick,
+                ),
+                None => Err(anyhow::anyhow!("behavior.execute is not running")),
+            };
+            match result {
+                Ok(()) => {
+                    self.emitted += 1;
+                    emitted_any = true;
+                }
+                // Keep detecting; surface the first failure through observe.
+                Err(e) => {
+                    let name = &self.events[event as usize].name;
+                    self.event_fault
+                        .get_or_insert_with(|| format!("emit {name}: {e:#}"));
+                }
+            }
+        }
+        if emitted_any {
+            state.sync_scenes();
+        }
     }
 
     fn entry_of(&self, state: &RuntimeState, id: &str) -> Result<usize> {
@@ -404,7 +857,7 @@ impl PhysicsSystem {
             .take(LISTED)
             .map(|e| e.id.as_str())
             .collect();
-        json!({
+        let mut summary = json!({
             "dynamic": count(Role::Dynamic),
             "kinematic": count(Role::Kinematic),
             "followers": count(Role::Follower),
@@ -417,7 +870,36 @@ impl PhysicsSystem {
             "out_of_bounds": out,
             "ignored_spawns": self.ignored_spawns,
             "halted": self.halted,
-        })
+        });
+        // Only when present, so worlds without joints / events keep their observation.
+        if !self.joints.is_empty() {
+            summary["joints"] = json!(self.joints.len());
+        }
+        if !self.watches.is_empty() {
+            let touching: serde_json::Map<String, Value> = self
+                .watches
+                .iter()
+                .filter(|w| !w.touching.is_empty())
+                .take(LISTED)
+                .map(|w| {
+                    let ids: Vec<&str> = w
+                        .touching
+                        .iter()
+                        .take(LISTED)
+                        .map(|&o| self.entries[o as usize].id.as_str())
+                        .collect();
+                    (self.entries[w.entry as usize].id.clone(), json!(ids))
+                })
+                .collect();
+            summary["contact_events"] = json!({
+                "colliders": self.watches.len(),
+                "emitted": self.emitted,
+                "touching": touching,
+                "halted": self.events_halted,
+                "fault": self.event_fault,
+            });
+        }
+        summary
     }
 
     fn inspect(&self, state: &RuntimeState, id: &str) -> Result<Value> {
@@ -439,6 +921,33 @@ impl PhysicsSystem {
                 out["sleeping"] = json!(body.is_sleeping());
                 out["out_of_bounds"] = json!(entry.out);
             }
+        }
+        if let Some(j) = self.joints.iter().position(|j| j.slot == entry.slot) {
+            let joint = &self.joints[j];
+            let mut info = json!({"kind": joint.def.kind, "to": joint.def.to});
+            if let Some(p) = self.joint_position(j) {
+                let key = if joint.def.kind == JointKind::Revolute {
+                    "angle"
+                } else {
+                    "offset"
+                };
+                info[key] = json!(round(p));
+            }
+            if let Some(m) = &joint.motor {
+                info["motor"] = json!(m);
+            }
+            out["joint"] = info;
+        }
+        if let Some(w) = self
+            .watches
+            .iter()
+            .find(|w| self.entries[w.entry as usize].slot == entry.slot)
+        {
+            out["touching"] = json!(w
+                .touching
+                .iter()
+                .map(|&o| self.entries[o as usize].id.as_str())
+                .collect::<Vec<_>>());
         }
         Ok(out)
     }
@@ -537,6 +1046,7 @@ impl RuntimeSystem for PhysicsSystem {
                 t.rotation = [q.i, q.j, q.k, q.w];
             }
         }
+        self.detect(state);
     }
     fn transfer(
         &mut self,
@@ -589,6 +1099,41 @@ impl RuntimeSystem for PhysicsSystem {
                 to.sleep();
             }
         }
+        // Motor targets set at runtime carry while the authored joint is unchanged.
+        for j in 0..self.joints.len() {
+            let id = &next.compiled.entities[self.joints[j].slot].id;
+            let carried = old.joints.iter().find(|o| {
+                previous.compiled.entities[o.slot].id == *id && o.def == self.joints[j].def
+            });
+            if let Some(motor) = carried.and_then(|o| o.motor) {
+                if Some(motor) != self.joints[j].motor {
+                    self.set_motor(j, motor);
+                }
+            }
+        }
+        // Contacts carry by entity ID (a deleted collider drops out without an exit event),
+        // so a reload does not re-fire on_enter for contacts that already existed.
+        for w in 0..self.watches.len() {
+            let id = &self.entries[self.watches[w].entry as usize].id;
+            let Some(o) = old
+                .watches
+                .iter()
+                .find(|o| old.entries[o.entry as usize].id == *id)
+            else {
+                continue;
+            };
+            let mut touching: Vec<u32> = o
+                .touching
+                .iter()
+                .filter_map(|&i| self.entry_of(next, &old.entries[i as usize].id).ok())
+                .map(|i| i as u32)
+                .collect();
+            touching.sort_unstable_by_key(|&i| self.rank[i as usize]);
+            self.watches[w].touching = touching;
+        }
+        self.emitted = old.emitted;
+        self.events_halted = old.events_halted.clone();
+        self.event_fault = old.event_fault.clone();
         self.steps = old.steps;
         Ok(())
     }
@@ -611,10 +1156,31 @@ impl RuntimeSystem for PhysicsSystem {
                 )
             })
             .collect();
+        let motors = self
+            .joints
+            .iter()
+            .filter_map(|j| Some((state.compiled.entities[j.slot].id.clone(), j.motor?)))
+            .collect();
+        let touching = self
+            .watches
+            .iter()
+            .map(|w| {
+                (
+                    self.entries[w.entry as usize].id.clone(),
+                    w.touching
+                        .iter()
+                        .map(|&o| self.entries[o as usize].id.clone())
+                        .collect(),
+                )
+            })
+            .collect();
         Some(
             serde_json::to_value(SavedPhysics {
                 steps: self.steps,
                 bodies,
+                motors,
+                touching,
+                events: self.emitted,
             })
             .map_err(Into::into),
         )
@@ -629,6 +1195,60 @@ impl RuntimeSystem for PhysicsSystem {
             "checkpoint physics layout mismatch ({} saved bodies, {simulated} in this world)",
             saved.bodies.len()
         );
+        let motorized = self.joints.iter().filter(|j| j.motor.is_some()).count();
+        ensure!(
+            saved.motors.len() == motorized && saved.touching.len() == self.watches.len(),
+            "checkpoint physics layout mismatch ({} saved joint motors and {} contact-event colliders, {motorized} and {} in this world)",
+            saved.motors.len(),
+            saved.touching.len(),
+            self.watches.len()
+        );
+        // Joint and contact state are checked completely before any of it is applied.
+        let mut motors = Vec::with_capacity(motorized);
+        for (j, joint) in self.joints.iter().enumerate() {
+            if joint.motor.is_none() {
+                continue;
+            }
+            let id = &state.compiled.entities[joint.slot].id;
+            let m = *saved
+                .motors
+                .get(id)
+                .with_context(|| format!("checkpoint physics state lacks joint motor {id}"))?;
+            let mut def = joint.def.clone();
+            if let Some(motor) = &mut def.motor {
+                motor.target_velocity = m.target_velocity;
+                motor.target_position = m.target_position;
+            }
+            def.validate()
+                .with_context(|| format!("invalid checkpoint joint motor for {id}"))?;
+            motors.push((j, m));
+        }
+        let mut touching = Vec::with_capacity(self.watches.len());
+        for watch in &self.watches {
+            let id = &self.entries[watch.entry as usize].id;
+            let ids = saved
+                .touching
+                .get(id)
+                .with_context(|| format!("checkpoint physics state lacks contacts of {id}"))?;
+            let mut list = ids
+                .iter()
+                .map(|o| {
+                    self.entry_of(state, o)
+                        .map(|i| i as u32)
+                        .with_context(|| format!("checkpoint contact of {id}: {o}"))
+                })
+                .collect::<Result<Vec<u32>>>()?;
+            list.sort_unstable_by_key(|&i| self.rank[i as usize]);
+            list.dedup();
+            touching.push(list);
+        }
+        for (j, m) in motors {
+            self.set_motor(j, m);
+        }
+        for (watch, list) in self.watches.iter_mut().zip(touching) {
+            watch.touching = list;
+        }
+        self.emitted = saved.events;
         self.sync_poses(state);
         for entry in &mut self.entries {
             if !entry.role.simulated() {
@@ -721,6 +1341,48 @@ impl RuntimeSystem for PhysicsSystem {
                 }
                 self.inspect(state, args["id"].as_str().unwrap_or_default())
             })(),
+            "set_motor" => (|| {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("physics.set_motor needs {\"id\":\"joint entity\"}")?;
+                let slot = self.entries[self.entry_of(state, id)?].slot;
+                let j = self
+                    .joints
+                    .iter()
+                    .position(|j| j.slot == slot)
+                    .with_context(|| format!("{id} has no {JOINT}"))?;
+                let current = self.joints[j]
+                    .motor
+                    .with_context(|| format!("{id}'s joint has no motor (author one first)"))?;
+                let number = |key: &str| -> Result<Option<f32>> {
+                    args.get(key)
+                        .map(|v| {
+                            v.as_f64()
+                                .map(|n| n as f32)
+                                .with_context(|| format!("{key} must be a number"))
+                        })
+                        .transpose()
+                };
+                let (velocity, position) = (number("target_velocity")?, number("target_position")?);
+                ensure!(
+                    velocity.is_some() || position.is_some(),
+                    "physics.set_motor needs target_velocity and/or target_position"
+                );
+                let target = SavedMotor {
+                    target_velocity: velocity.unwrap_or(current.target_velocity),
+                    target_position: position.or(current.target_position),
+                };
+                // Same ranges (and the stiffness rule for target_position) as the authored motor.
+                let mut def = self.joints[j].def.clone();
+                if let Some(m) = &mut def.motor {
+                    m.target_velocity = target.target_velocity;
+                    m.target_position = target.target_position;
+                }
+                def.validate()?;
+                self.set_motor(j, target);
+                self.inspect(state, id)
+            })(),
             other => Err(anyhow::anyhow!("unknown physics action {other}")),
         })
     }
@@ -768,7 +1430,13 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.action(
         "physics.inspect",
         "physics",
-        json!({"id":"entity with physics.collider; kind, position, velocity, angular_velocity, speed, mass, sleeping"}),
+        json!({"id":"entity with physics.collider; kind, position, velocity, angular_velocity, speed, mass, sleeping; joint {kind,to,angle|offset,motor}; touching (contact-event colliders)"}),
+        id_arg,
+    );
+    r.authoring.action(
+        "physics.set_motor",
+        "physics",
+        json!({"id":"entity with a motorized physics.joint","target_velocity":"optional number: degrees/second (revolute) or m/s (prismatic)","target_position":"optional number: degrees or meters from the authored pose (the motor needs stiffness > 0)"}),
         id_arg,
     );
     r.authoring

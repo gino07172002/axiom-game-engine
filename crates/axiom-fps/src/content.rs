@@ -266,6 +266,10 @@ pub fn from_world(w: &World) -> Result<LegacyWorld> {
         }
         if let Some(v) = e.components.get("physics.collider") {
             let collider: Collider = serde_json::from_value(v.clone())?;
+            // physics.step sensors are trigger volumes, not cover.
+            if collider.sensor {
+                continue;
+            }
             let t: Transform = serde_json::from_value(
                 e.components
                     .get("core.transform")

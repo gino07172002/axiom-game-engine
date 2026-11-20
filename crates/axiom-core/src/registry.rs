@@ -232,7 +232,7 @@ impl Registry {
         r.component(
             "physics.collider",
             "physics",
-            json!({"shape":"box + half_extents[3] | capsule + half_height, radius (along local Y) | sphere + radius","friction":format!("optional number 0..{}, default 0.5 (physics.step; two touching colliders use the average)", crate::physics::MAX_FRICTION),"restitution":"optional number 0..1, default 0 (physics.step bounciness; the larger of two touching colliders applies)"}),
+            json!({"shape":"box + half_extents[3] | capsule + half_height, radius (along local Y) | sphere + radius","friction":format!("optional number 0..{}, default 0.5 (physics.step; two touching colliders use the average)", crate::physics::MAX_FRICTION),"restitution":"optional number 0..1, default 0 (physics.step bounciness; the larger of two touching colliders applies)","sensor":"bool, default false: physics.step trigger volume (reports overlaps, never pushes; not a camera blocker, nav obstacle or FPS cover; not on a dynamic body)","on_enter":"behavior.program event when another physics collider starts touching (solid) or overlapping (sensor) this one (\"\" = none); may declare text fields self, other","on_exit":"behavior.program event when that contact or overlap ends (\"\" = none); same payload rule"}),
             |v| typed(v, Collider::validate),
         );
         r.component(
@@ -240,6 +240,12 @@ impl Registry {
             "physics",
             crate::physics::body_schema(),
             |v| typed(v, crate::physics::RigidBody::validate),
+        );
+        r.component(
+            crate::physics::JOINT,
+            "physics",
+            crate::physics::joint_schema(),
+            |v| typed(v, crate::physics::PhysicsJoint::validate),
         );
         r.resource(
             crate::physics::SETTINGS,
@@ -308,7 +314,11 @@ impl Registry {
                 // Static colliders and followers are read too, but only physics.body
                 // schedules the system.
                 phase: 22,
-                reads: vec![crate::physics::BODY.into(), crate::physics::SETTINGS.into()],
+                reads: vec![
+                    crate::physics::BODY.into(),
+                    crate::physics::JOINT.into(),
+                    crate::physics::SETTINGS.into(),
+                ],
                 writes: vec!["core.transform".into()],
                 after: vec![],
             },

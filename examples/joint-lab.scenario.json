@@ -1,0 +1,9 @@
+{"ticks":1440,"assertions":[
+ {"kind":"finite"},
+ {"kind":"call","action":"physics.summary","pointer":"/joints","op":"eq","value":6},
+ {"kind":"call","action":"physics.summary","pointer":"/contact_events/emitted","op":"ge","value":3},
+ {"kind":"field","entity":"chain/bob","field":"/position/1","op":"ge","value":1.5},
+ {"kind":"field","entity":"chain/bob","field":"/position/1","op":"le","value":3.2},
+ {"kind":"field","entity":"ball","field":"/position/1","op":"lt","value":0.3},
+ {"kind":"field","entity":"door","field":"/position/1","op":"ge","value":1.0}
+]}

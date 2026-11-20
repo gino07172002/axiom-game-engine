@@ -461,6 +461,9 @@ impl Editor {
                 "object.parts" => self.notice(
                     "object.parts auto RADIUS [event=E] | add ID BONE radius=R .. on the selected characters",
                 ),
+                "object.joint" => self.notice(
+                    "object.joint fixed|revolute|prismatic|spherical [to=ENTITY|world] [anchor=x,y,z] [axis=x,y,z] [limits=MIN,MAX] .. on the selected rigid bodies",
+                ),
                 "event.declare" => {
                     self.show_dock(super::Dock::Problems);
                     self.notice("Undeclared events show a Declare button in Problems");
@@ -514,6 +517,7 @@ impl Editor {
                 }
             },
             "object.parts" => self.parts_selection(arg),
+            "object.joint" => self.joint_selection(arg),
             "event.declare" => self.declare_event(arg),
             "world.set_id" => self.world_request(WorldRequest::SetId(arg.into())),
             "world.set_title" => self.world_request(WorldRequest::SetTitle(arg.into())),

@@ -700,3 +700,135 @@ fn a_transition_finishes_the_left_state_and_edits_or_seeks_do_not_refire_markers
         .unwrap();
     assert!(e.contains("past the end of walk"), "{e}");
 }
+
+/// The lab's walker standing still under an 8-direction 2D blend of the mascot's own clips
+/// (directions: N walk, NE run, E sway, SE turn, S reach, SW finale, W dance, NW think; center
+/// idle), driven by float parameters `mx` / `my`.
+fn directional() -> World {
+    let mut w = lab();
+    let walker = w.entities.iter_mut().find(|e| e.id == "walker").unwrap();
+    walker.components.remove("path.follow");
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let points: Vec<Value> = [
+        ([0.0, 1.0], "walk"),
+        ([s, s], "run"),
+        ([1.0, 0.0], "sway"),
+        ([s, -s], "turn"),
+        ([0.0, -1.0], "reach"),
+        ([-s, -s], "finale"),
+        ([-1.0, 0.0], "dance"),
+        ([-s, s], "think"),
+        ([0.0, 0.0], "idle"),
+    ]
+    .iter()
+    .map(|(at, clip)| json!({"at":at,"clip":clip}))
+    .collect();
+    w.resources.get_mut("animation.controllers").unwrap()["controllers"]["locomotion"] = json!({
+        "parameters": {"mx": {"kind":"float"}, "my": {"kind":"float"}},
+        "initial": "move",
+        "states": {"move": {"motion": {"kind":"blend2d","parameters":["mx","my"],"points":points}}}
+    });
+    w
+}
+
+fn steer(r: &mut WorldRuntime, x: f32, y: f32) {
+    for (name, value) in [("mx", x), ("my", y)] {
+        call(
+            r,
+            "animation",
+            "param",
+            json!({"entity":"walker","name":name,"value":value}),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn an_eight_direction_2d_blend_weighs_the_mascot_clips() {
+    let mut r = WorldRuntime::new(directional(), 1, axiom_runtime::installed_registry()).unwrap();
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    for (x, y, clip) in [
+        (0.0, 1.0, "walk"),
+        (s, s, "run"),
+        (1.0, 0.0, "sway"),
+        (s, -s, "turn"),
+        (0.0, -1.0, "reach"),
+        (-s, -s, "finale"),
+        (-1.0, 0.0, "dance"),
+        (-s, s, "think"),
+        (0.0, 0.0, "idle"),
+        // Outside the hull: clamped onto the direction.
+        (0.0, 5.0, "walk"),
+    ] {
+        steer(&mut r, x, y);
+        run(&mut r, 1);
+        assert_eq!(controller(&r)["blend"], json!([[clip, 1.0]]), "{x},{y}");
+    }
+    // Between N and NE, half way to the center.
+    let (mx, my) = (s * 0.25, 0.25 + s * 0.25);
+    steer(&mut r, mx, my);
+    run(&mut r, 1);
+    assert_eq!(
+        controller(&r)["blend"],
+        json!([["run", 0.25], ["walk", 0.25], ["idle", 0.5]])
+    );
+}
+
+#[test]
+fn an_eight_direction_blend_replays_identically_and_steps_without_allocating() {
+    let scenario = || -> axiom_runtime::scenario::Scenario {
+        let call = |tick: u32, name: &str, value: f32| json!({"tick":tick,"operation":{"op":"command","command":{"kind":"call","capability":"animation","action":"param","args":{"entity":"walker","name":name,"value":value}}}});
+        serde_json::from_value(json!({
+            "ticks": 600,
+            "commands": [
+                call(10, "my", 1.0), call(120, "mx", 0.7), call(240, "my", -0.7),
+                call(360, "mx", -1.0), call(480, "my", 0.0)
+            ],
+            "assertions": [
+                {"kind":"equals","pointer":"/animation/players/walker/controller/blend","value":[["dance",1.0]]}
+            ]
+        }))
+        .unwrap()
+    };
+    let a = axiom_runtime::scenario::run(
+        directional(),
+        1,
+        axiom_runtime::installed_registry(),
+        scenario(),
+    )
+    .unwrap();
+    let b = axiom_runtime::scenario::run(
+        directional(),
+        1,
+        axiom_runtime::installed_registry(),
+        scenario(),
+    )
+    .unwrap();
+    assert_eq!(a["ok"], true, "{a}");
+    assert_eq!(a["state_hash"], b["state_hash"]);
+    // Steady 2D-blend steps allocate no more than the world without a player.
+    let mut none = directional();
+    let walker = none.entities.iter_mut().find(|e| e.id == "walker").unwrap();
+    walker.components.remove("animation.controller");
+    walker.components.remove("animation.player");
+    let count = |w: World| {
+        let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+        if r.state
+            .compiled
+            .entities
+            .iter()
+            .any(|e| e.components.contains_key("animation.controller"))
+        {
+            steer(&mut r, 0.3, 0.2);
+        }
+        run(&mut r, 30);
+        ALLOCATIONS.with(|a| a.set(0));
+        COUNTING.with(|c| c.set(true));
+        run(&mut r, 240);
+        COUNTING.with(|c| c.set(false));
+        ALLOCATIONS.with(Cell::get)
+    };
+    let baseline = count(none);
+    let blended = count(directional());
+    assert_eq!(blended, baseline, "the 2D blend allocated while stepping");
+}

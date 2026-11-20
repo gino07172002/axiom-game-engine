@@ -1491,6 +1491,118 @@ pub fn add_rigid_body(world: &World, ids: &[String], options: &BodyOptions) -> R
     Ok(edits)
 }
 
+/// Parses the joint arguments shared by ACL `physics SEL joint ...` and the editor command
+/// `object.joint ...`: `KIND [to=ENTITY|world] [anchor=x,y,z] [axis=x,y,z] [limits=MIN,MAX]
+/// [collide=on|off] [velocity=V] [position=P] [stiffness=K] [damping=D] [max_force=F]` (any
+/// motor key adds a motor with the remaining motor defaults).
+pub fn parse_joint(tokens: &[&str]) -> Result<crate::physics::PhysicsJoint> {
+    use crate::physics::{JointKind, JointMotor, PhysicsJoint};
+    const USE: &str = "use: joint fixed|revolute|prismatic|spherical [to=ENTITY|world] [anchor=x,y,z] [axis=x,y,z] [limits=MIN,MAX] [collide=on|off] [velocity=V] [position=P] [stiffness=K] [damping=D] [max_force=F]";
+    let invalid = |m: String| Diagnostic::error("invalid_value", "/physics.joint", m);
+    let (kind, options) = tokens.split_first().ok_or_else(|| invalid(USE.into()))?;
+    let kind = match *kind {
+        "fixed" => JointKind::Fixed,
+        "revolute" => JointKind::Revolute,
+        "prismatic" => JointKind::Prismatic,
+        "spherical" => JointKind::Spherical,
+        other => return Err(invalid(format!("unknown joint kind '{other}' ({USE})"))),
+    };
+    let mut joint = PhysicsJoint {
+        kind,
+        axis: kind.has_axis().then_some([0.0, 1.0, 0.0]),
+        ..PhysicsJoint::default()
+    };
+    let numbers = |key: &str, v: &str, n: usize| -> Result<Vec<f32>> {
+        let parts = v
+            .split(',')
+            .map(|p| p.trim().parse::<f32>())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .ok()
+            .filter(|p| p.len() == n);
+        parts.ok_or_else(|| invalid(format!("{key} needs {n} comma-separated numbers")))
+    };
+    let mut motor: Option<JointMotor> = None;
+    fn motor_of(m: &mut Option<JointMotor>) -> &mut JointMotor {
+        m.get_or_insert_with(|| {
+            serde_json::from_value(json!({})).expect("motor fields have defaults")
+        })
+    }
+    for t in options {
+        let (k, v) = t
+            .split_once('=')
+            .ok_or_else(|| invalid(format!("option '{t}' must be key=value ({USE})")))?;
+        match k {
+            "to" => joint.to = (v != "world").then(|| v.to_owned()),
+            "anchor" => {
+                let n = numbers(k, v, 3)?;
+                joint.anchor = [n[0], n[1], n[2]];
+            }
+            "axis" => {
+                let n = numbers(k, v, 3)?;
+                joint.axis = Some([n[0], n[1], n[2]]);
+            }
+            "limits" => {
+                let n = numbers(k, v, 2)?;
+                joint.limits = Some([n[0], n[1]]);
+            }
+            "collide" => {
+                joint.collide_connected = match v {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(invalid("collide takes on|off".into())),
+                }
+            }
+            "velocity" => motor_of(&mut motor).target_velocity = numbers(k, v, 1)?[0],
+            "position" => motor_of(&mut motor).target_position = Some(numbers(k, v, 1)?[0]),
+            "stiffness" => motor_of(&mut motor).stiffness = numbers(k, v, 1)?[0],
+            "damping" => motor_of(&mut motor).damping = numbers(k, v, 1)?[0],
+            "max_force" => motor_of(&mut motor).max_force = numbers(k, v, 1)?[0],
+            other => return Err(invalid(format!("unknown option '{other}' ({USE})"))),
+        }
+    }
+    joint.motor = motor;
+    joint.validate().map_err(|e| invalid(format!("{e:#}")))?;
+    Ok(joint)
+}
+
+/// Object ▸ Add Joint (editor `object.joint ARGS`, ACL `physics SEL joint ARGS`): puts
+/// `joint` on each entity, replacing an existing one; adds the `physics` capability and the
+/// `physics.step` system when missing. A missing `physics.body` (here or on `to`), a
+/// self-joint or no dynamic side fail when the batch commits (`invalid_physics`).
+pub fn add_joint(
+    world: &World,
+    ids: &[String],
+    joint: &crate::physics::PhysicsJoint,
+) -> Result<Vec<Edit>> {
+    if ids.is_empty() {
+        return Err(Diagnostic::error(
+            "empty_selection",
+            "/ids",
+            "select the rigid bodies to joint",
+        ));
+    }
+    joint.validate().map_err(|e| {
+        Diagnostic::error(
+            "invalid_value",
+            format!("/components/{}", crate::physics::JOINT),
+            format!("{e:#}"),
+        )
+    })?;
+    let mut edits = enable_system(world, Some("physics"), Some(crate::physics::SYSTEM));
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        require_entity(world, id)?;
+        if seen.insert(id) {
+            edits.push(Edit::Core(CoreEdit::SetComponent {
+                entity: id.clone(),
+                component: crate::physics::JOINT.into(),
+                value: json!(joint),
+            }));
+        }
+    }
+    Ok(edits)
+}
+
 /// Nav ▸ Set Target (editor: selected object, or a click on the ground; ACL `nav SEL target`):
 /// writes `nav.agent/target` on each agent; `None` clears it. The target entity must exist
 /// and must not be the agent itself; the resulting agent must stay valid (a point target

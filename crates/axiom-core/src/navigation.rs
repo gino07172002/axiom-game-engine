@@ -293,7 +293,7 @@ pub fn settings_schema() -> Value {
         "cell_size": "m 0.05..4, default 0.25",
         "bounds": format!("optional {{min:[x,z],max:[x,z]}}; default = obstacles + every placed entity + point targets, plus {AUTO_MARGIN} m"),
         "floor_y": format!("default 0: static colliders are obstacles when their box overlaps floor_y+{}..+{} m", OBSTACLE_BAND.0, OBSTACLE_BAND.1),
-        "colliders": "bool, default true: static physics.collider shapes (entities no system moves) are obstacles; nav.blocker always is",
+        "colliders": "bool, default true: static physics.collider shapes (entities no system moves; not sensors) are obstacles; nav.blocker always is",
         "expansions_per_step": "64..262144, default 4096 (about 0.7 ms in release): A* nodes + line-of-sight cells per fixed step; further requests wait",
         "pointer_agent": "agent ID sent by a primary click on the ground, \"\" = none",
         "budget": format!("{MAX_NAV_CELLS} cells (sides <= {MAX_GRID_SIDE}), {MAX_NAV_OBSTACLES} obstacles"),
@@ -487,7 +487,7 @@ pub fn plan(
     let blockers = rects.len();
     if settings.colliders {
         for (i, e) in entities.iter().enumerate() {
-            let Some(collider) = &e.collider else {
+            let Some(collider) = e.collider.as_ref().filter(|c| !c.sensor) else {
                 continue;
             };
             if moved_by_system(entities, parents, movers, i) {

@@ -1,4 +1,4 @@
-//! Animation controller: typed parameters, states that play one clip or a 1D blend tree, and
+//! Animation controller: typed parameters, states that play one clip or a 1D / 2D blend tree, and
 //! ordered transitions with conditions, exit time and cross-fade duration.
 //!
 //! Content declares controllers once in the `animation.controllers` resource and attaches one
@@ -15,11 +15,16 @@ pub const MAX_STATES: usize = 32;
 pub const MAX_TRANSITIONS: usize = 64;
 pub const MAX_CONDITIONS: usize = 8;
 pub const MAX_POINTS: usize = 8;
+/// Points of a 2D blend tree: eight directions and the center.
+pub const MAX_POINTS_2D: usize = 9;
 pub const MAX_LAYERS: usize = 4;
 /// Most bones / subtrees one layer mask lists (each).
 pub const MAX_MASK_ENTRIES: usize = 64;
-/// Upper bound of [`Samples`]: two layers (cross-fade) of at most two blend points each.
-pub const MAX_SAMPLES: usize = 4;
+/// Upper bound of [`Samples`]: two layers (cross-fade) of at most three blend points each (a 2D
+/// blend weighs a center and two directions).
+pub const MAX_SAMPLES: usize = 6;
+/// A 2D blend point closer than this to the origin is the center point.
+const CENTER: f32 = 1e-4;
 /// Marks a sample of the skeleton's rest pose (a state without motion).
 pub const REST: u8 = u8::MAX;
 
@@ -80,6 +85,14 @@ pub struct BlendPoint {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlendPoint2d {
+    /// Values of the two parameters at which this clip has full weight.
+    pub at: [f32; 2],
+    pub clip: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Motion {
     Clip {
@@ -94,6 +107,19 @@ pub enum Motion {
     Blend1d {
         parameter: String,
         points: Vec<BlendPoint>,
+        #[serde(default = "one", skip_serializing_if = "is_one")]
+        speed: f32,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        looping: bool,
+    },
+    /// 2D blend tree, simple directional (the Unity "2D Simple Directional" scheme): points
+    /// around the origin are directions (at most one per direction), an optional point at the
+    /// origin is the center. The input `[x,y]` of the two float `parameters` weighs the two
+    /// directions around its angle and the center (barycentric in that triangle; outside it,
+    /// clamped radially onto the outer edge). Clips stay in step by normalized time.
+    Blend2d {
+        parameters: [String; 2],
+        points: Vec<BlendPoint2d>,
         #[serde(default = "one", skip_serializing_if = "is_one")]
         speed: f32,
         #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -349,6 +375,40 @@ impl ControllerDef {
                     );
                     ensure!(finite(*speed, 0.0, 8.0), "state {name}: speed 0..8");
                 }
+                Some(Motion::Blend2d {
+                    parameters,
+                    points,
+                    speed,
+                    ..
+                }) => {
+                    for parameter in parameters {
+                        let p = self.parameters.get(parameter).with_context(|| {
+                            format!("state {name}: unknown blend parameter {parameter}")
+                        })?;
+                        ensure!(
+                            p.kind == ParamKind::Float,
+                            "state {name}: blend parameter {parameter} must be a float"
+                        );
+                    }
+                    ensure!(
+                        parameters[0] != parameters[1],
+                        "state {name}: a 2D blend needs two different parameters"
+                    );
+                    ensure!(
+                        (1..=MAX_POINTS_2D).contains(&points.len()),
+                        "state {name}: 1..{MAX_POINTS_2D} blend points"
+                    );
+                    for point in points {
+                        axiom_core::valid_id(&point.clip)
+                            .with_context(|| format!("state {name}: blend clip"))?;
+                        ensure!(
+                            point.at.iter().all(|v| finite(*v, -1000.0, 1000.0)),
+                            "state {name}: blend point coordinates must be -1000..1000"
+                        );
+                    }
+                    directions(points).with_context(|| format!("state {name}"))?;
+                    ensure!(finite(*speed, 0.0, 8.0), "state {name}: speed 0..8");
+                }
             }
         }
         for (i, t) in self.transitions.iter().enumerate() {
@@ -382,7 +442,8 @@ impl ControllerDef {
                 let (looping, speed) = match &s.motion {
                     None => (true, 1.0),
                     Some(Motion::Clip { looping, speed, .. })
-                    | Some(Motion::Blend1d { looping, speed, .. }) => (*looping, *speed),
+                    | Some(Motion::Blend1d { looping, speed, .. })
+                    | Some(Motion::Blend2d { looping, speed, .. }) => (*looping, *speed),
                 };
                 ensure!(
                     (looping || e <= 1.0) && (speed > 0.0 || e == 0.0),
@@ -461,9 +522,62 @@ impl ControllerDef {
     }
 }
 
+/// Direction points of a 2D blend as `(angle, point index)`, ascending angle.
+type Ring = Vec<(f32, usize)>;
+
+/// A 2D blend's center point (if any) and its direction points as `(angle, point index)`,
+/// sorted by angle (radians, `atan2(y, x)`). Refuses layouts the simple-directional weighting
+/// cannot cover: two points in one direction, a second center, exactly two directions, or
+/// (with three or more) an angular gap of 180° or more between neighbouring directions.
+fn directions(points: &[BlendPoint2d]) -> Result<(Option<usize>, Ring)> {
+    let mut center = None;
+    let mut ring = vec![];
+    for (i, p) in points.iter().enumerate() {
+        let [x, y] = p.at;
+        if x.hypot(y) <= CENTER {
+            ensure!(center.is_none(), "a 2D blend has at most one center point");
+            center = Some(i);
+        } else {
+            ring.push((y.atan2(x), i));
+        }
+    }
+    ring.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let gap = |a: f32, b: f32| b - a;
+    for w in ring.windows(2) {
+        ensure!(
+            gap(w[0].0, w[1].0) > 1e-3,
+            "two 2D blend points share a direction (one point per direction)"
+        );
+    }
+    ensure!(
+        ring.len() != 2,
+        "a 2D blend needs one direction or three and more (two leave half the plane uncovered)"
+    );
+    if ring.len() >= 3 {
+        let wrap = ring[0].0 + std::f32::consts::TAU - ring[ring.len() - 1].0;
+        ensure!(
+            wrap > 1e-3,
+            "two 2D blend points share a direction (one point per direction)"
+        );
+        let widest = ring
+            .windows(2)
+            .map(|w| gap(w[0].0, w[1].0))
+            .fold(wrap, f32::max);
+        ensure!(
+            widest < std::f32::consts::PI - 1e-3,
+            "neighbouring 2D blend directions must be less than 180° apart"
+        );
+    }
+    Ok((center, ring))
+}
+
+/// Blend weights: up to three `(point, weight)` pairs (the rest unused) and how many are set.
+type Weights = ([(usize, f32); 3], usize);
+
 #[derive(Clone, Debug)]
 struct Point {
-    at: f32,
+    /// Parameter value (1D: `at[0]`) or `[x,y]` (2D) at full weight.
+    at: [f32; 2],
     clip: String,
     duration: f32,
 }
@@ -480,6 +594,15 @@ enum CMotion {
     Blend {
         param: usize,
         points: Vec<Point>,
+        speed: f32,
+        looping: bool,
+    },
+    Blend2d {
+        params: [usize; 2],
+        points: Vec<Point>,
+        center: Option<usize>,
+        /// Direction points `(angle, index)`, ascending angle.
+        ring: Vec<(f32, usize)>,
         speed: f32,
         looping: bool,
     },
@@ -656,7 +779,7 @@ impl Compiled {
                         .iter()
                         .map(|p| {
                             Ok(Point {
-                                at: p.at,
+                                at: [p.at, 0.0],
                                 duration: clip_len(name, &p.clip)?,
                                 clip: p.clip.clone(),
                             })
@@ -665,6 +788,31 @@ impl Compiled {
                     speed: *speed,
                     looping: *looping,
                 },
+                Some(Motion::Blend2d {
+                    parameters,
+                    points,
+                    speed,
+                    looping,
+                }) => {
+                    let (center, ring) = directions(points)?;
+                    CMotion::Blend2d {
+                        params: parameters.clone().map(|p| param(&p).expect("validated")),
+                        points: points
+                            .iter()
+                            .map(|p| {
+                                Ok(Point {
+                                    at: p.at,
+                                    duration: clip_len(name, &p.clip)?,
+                                    clip: p.clip.clone(),
+                                })
+                            })
+                            .collect::<Result<_>>()?,
+                        center,
+                        ring,
+                        speed: *speed,
+                        looping: *looping,
+                    }
+                }
             });
         }
         let transitions = def
@@ -785,18 +933,98 @@ impl Compiled {
     }
 
     /// Weights of a blend tree's points: one point, or the two around `value` (clamped).
-    fn blend(points: &[Point], value: f32) -> ([(usize, f32); 2], usize) {
+    fn blend(points: &[Point], value: f32) -> Weights {
         let last = points.len() - 1;
-        if points.len() == 1 || value <= points[0].at {
-            return ([(0, 1.0), (0, 0.0)], 1);
+        if points.len() == 1 || value <= points[0].at[0] {
+            return ([(0, 1.0), (0, 0.0), (0, 0.0)], 1);
         }
-        if value >= points[last].at {
-            return ([(last, 1.0), (0, 0.0)], 1);
+        if value >= points[last].at[0] {
+            return ([(last, 1.0), (0, 0.0), (0, 0.0)], 1);
         }
-        let b = points.partition_point(|p| p.at <= value);
+        let b = points.partition_point(|p| p.at[0] <= value);
         let a = b - 1;
-        let t = (value - points[a].at) / (points[b].at - points[a].at);
-        ([(a, 1.0 - t), (b, t)], 2)
+        let t = (value - points[a].at[0]) / (points[b].at[0] - points[a].at[0]);
+        ([(a, 1.0 - t), (b, t), (0, 0.0)], 2)
+    }
+
+    /// Simple-directional 2D weights of input `p`: with one direction, its projection blends it
+    /// with the center; otherwise the two directions around the angle of `p` and the center
+    /// take barycentric weights in their triangle, and beyond the outer edge (or without a
+    /// center) the two directions are renormalized, i.e. `p` is clamped radially onto the edge.
+    /// Without a center the magnitude does not matter (the zero input counts as angle 0).
+    /// Weights are non-negative and sum to 1.
+    fn blend2d(points: &[Point], center: Option<usize>, ring: &[(f32, usize)], p: Vec2) -> Weights {
+        let mut out: Weights = ([(0, 0.0); 3], 0);
+        let mut push = |i: usize, w: f32| {
+            if w > 0.0 {
+                out.0[out.1] = (i, w);
+                out.1 += 1;
+            }
+        };
+        let at = |i: usize| Vec2::from_array(points[i].at);
+        match (ring, center) {
+            ([], Some(c)) => push(c, 1.0),
+            ([(_, a)], None) => push(*a, 1.0),
+            ([(_, a)], Some(c)) => {
+                let d = at(*a);
+                let t = (p.dot(d) / d.length_squared()).clamp(0.0, 1.0);
+                push(*a, t);
+                push(c, 1.0 - t);
+            }
+            _ => {
+                let angle = if p == Vec2::ZERO { 0.0 } else { p.y.atan2(p.x) };
+                let k = ring.partition_point(|r| r.0 <= angle);
+                let (ia, ib) = if k == 0 || k == ring.len() {
+                    (ring[ring.len() - 1].1, ring[0].1)
+                } else {
+                    (ring[k - 1].1, ring[k].1)
+                };
+                let (a, b) = (at(ia), at(ib));
+                // Without a center only the direction counts.
+                let p = if center.is_none() {
+                    Vec2::from_angle(angle)
+                } else {
+                    p
+                };
+                // b lies counter-clockwise of a by less than 180°, so det > 0.
+                let det = a.perp_dot(b);
+                let u = (p.perp_dot(b) / det).max(0.0);
+                let v = (a.perp_dot(p) / det).max(0.0);
+                match center {
+                    Some(c) if u + v <= 1.0 => {
+                        push(ia, u);
+                        push(ib, v);
+                        push(c, 1.0 - u - v);
+                    }
+                    _ if u + v > 0.0 => {
+                        push(ia, u / (u + v));
+                        push(ib, v / (u + v));
+                    }
+                    _ => push(ia, 1.0),
+                }
+            }
+        }
+        out
+    }
+
+    /// The weighted points of a blend motion under `s` (`None` for a clip or the rest pose).
+    fn weights<'a>(&self, motion: &'a CMotion, s: &State) -> Option<(Weights, &'a [Point])> {
+        match motion {
+            CMotion::Blend { param, points, .. } => {
+                Some((Self::blend(points, s.params[*param]), points))
+            }
+            CMotion::Blend2d {
+                params,
+                points,
+                center,
+                ring,
+                ..
+            } => {
+                let p = Vec2::new(s.params[params[0]], s.params[params[1]]);
+                Some((Self::blend2d(points, *center, ring, p), points))
+            }
+            CMotion::Rest | CMotion::Clip { .. } => None,
+        }
     }
 
     /// Seconds one normalized cycle of `state` lasts now (0 = does not advance).
@@ -827,13 +1055,9 @@ impl Compiled {
                 },
                 *looping,
             ),
-            CMotion::Blend {
-                param,
-                points,
-                speed,
-                looping,
-            } => {
-                let (w, n) = Self::blend(points, s.params[*param]);
+            motion @ (CMotion::Blend { speed, looping, .. }
+            | CMotion::Blend2d { speed, looping, .. }) => {
+                let ((w, n), points) = self.weights(motion, s).expect("blend motion");
                 let d: f32 = w[..n]
                     .iter()
                     .map(|(i, w)| points[*i].duration.max(FRAME) * w)
@@ -946,8 +1170,8 @@ impl Compiled {
                 time: phase * duration,
                 weight,
             }),
-            CMotion::Blend { param, points, .. } => {
-                let (w, n) = Self::blend(points, s.params[*param]);
+            motion @ (CMotion::Blend { .. } | CMotion::Blend2d { .. }) => {
+                let ((w, n), points) = self.weights(motion, s).expect("blend motion");
                 for (i, pw) in &w[..n] {
                     out.push(Sample {
                         state: layer.state,
@@ -991,13 +1215,8 @@ impl Compiled {
                 looping,
                 ..
             } => Some((clip, *duration, *looping)),
-            CMotion::Blend {
-                param,
-                points,
-                looping,
-                ..
-            } => {
-                let (w, n) = Self::blend(points, s.params[*param]);
+            motion @ (CMotion::Blend { looping, .. } | CMotion::Blend2d { looping, .. }) => {
+                let ((w, n), points) = self.weights(motion, s).expect("blend motion");
                 let (i, _) =
                     w[..n].iter().copied().fold(
                         (0, -1.0),
@@ -1025,7 +1244,9 @@ impl Compiled {
         match &self.motions[sample.state as usize] {
             CMotion::Rest => None,
             CMotion::Clip { clip, .. } => Some(clip),
-            CMotion::Blend { points, .. } => points.get(sample.point as usize).map(|p| &*p.clip),
+            CMotion::Blend { points, .. } | CMotion::Blend2d { points, .. } => {
+                points.get(sample.point as usize).map(|p| &*p.clip)
+            }
         }
     }
 
@@ -1132,6 +1353,19 @@ impl Compiled {
             "last_transition": s.last_transition,
             "transitions": s.fired,
         });
+        // Only in a 2D blend state, so other controllers keep their observation (state_hash).
+        let motion = &self.motions[s.current.state as usize];
+        if let (CMotion::Blend2d { .. }, Some(((w, n), points))) = (motion, self.weights(motion, s))
+        {
+            out["blend"] = serde_json::Value::Array(
+                w[..n]
+                    .iter()
+                    .map(|(i, w)| {
+                        serde_json::json!([points[*i].clip, (w * 1000.0).round() / 1000.0])
+                    })
+                    .collect(),
+            );
+        }
         // Only with layers, so controllers without them keep their observation (state_hash).
         if !self.layers.is_empty() {
             out["layers"] = serde_json::Value::Array(
@@ -1470,6 +1704,254 @@ mod tests {
             d.layers.push(l);
         }
         assert!(d.validate().is_err());
+    }
+
+    /// Eight directions on the unit circle (N = +y) and an idle center.
+    fn directional(center: bool) -> ControllerDef {
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let mut points = vec![
+            json!({"at":[0.0,1.0],"clip":"n"}),
+            json!({"at":[s,s],"clip":"ne"}),
+            json!({"at":[1.0,0.0],"clip":"e"}),
+            json!({"at":[s,-s],"clip":"se"}),
+            json!({"at":[0.0,-1.0],"clip":"s"}),
+            json!({"at":[-s,-s],"clip":"sw"}),
+            json!({"at":[-1.0,0.0],"clip":"w"}),
+            json!({"at":[-s,s],"clip":"nw"}),
+        ];
+        if center {
+            points.push(json!({"at":[0.0,0.0],"clip":"idle"}));
+        }
+        def(json!({
+            "parameters": {"x": {"kind":"float"}, "y": {"kind":"float"}},
+            "initial": "move",
+            "states": {"move": {"motion": {"kind":"blend2d","parameters":["x","y"],"points":points}}}
+        }))
+    }
+    /// Clip lengths 0.5..1.4 s (distinct, so time sync is visible).
+    fn any_length(clip: &str) -> Option<f32> {
+        let order = [
+            "n", "ne", "e", "se", "s", "sw", "w", "nw", "idle", "walk", "run",
+        ];
+        order
+            .iter()
+            .position(|c| *c == clip)
+            .map(|i| 0.5 + 0.1 * i as f32)
+    }
+    fn weights_at(c: &Compiled, s: &mut State, x: f32, y: f32) -> BTreeMap<String, f32> {
+        c.set_param(s, "x", ParamValue::Number(x)).unwrap();
+        c.set_param(s, "y", ParamValue::Number(y)).unwrap();
+        let mut out = BTreeMap::new();
+        for sample in c.samples(s).as_slice() {
+            assert!(sample.weight >= 0.0);
+            *out.entry(c.clip(sample).unwrap().to_owned()).or_insert(0.0) += sample.weight;
+        }
+        let sum: f32 = out.values().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "{x},{y}: {out:?}");
+        out
+    }
+    fn close(w: &BTreeMap<String, f32>, expected: &[(&str, f32)]) {
+        for (clip, v) in expected {
+            let got = w.get(*clip).copied().unwrap_or(0.0);
+            assert!((got - v).abs() < 1e-4, "{clip}: {got} != {v} in {w:?}");
+        }
+        let listed: f32 = expected.iter().map(|e| e.1).sum();
+        assert!(
+            (listed - 1.0).abs() < 1e-4,
+            "expected weights must cover everything"
+        );
+    }
+
+    #[test]
+    fn blend2d_simple_directional_weights() {
+        let s2 = std::f32::consts::FRAC_1_SQRT_2;
+        let c = Compiled::compile(&directional(true), &any_length).unwrap();
+        let mut s = c.start();
+        // On a point: that clip alone (every direction and the center).
+        for (x, y, clip) in [
+            (0.0, 1.0, "n"),
+            (s2, s2, "ne"),
+            (1.0, 0.0, "e"),
+            (s2, -s2, "se"),
+            (0.0, -1.0, "s"),
+            (-s2, -s2, "sw"),
+            (-1.0, 0.0, "w"),
+            (-s2, s2, "nw"),
+            (0.0, 0.0, "idle"),
+        ] {
+            close(&weights_at(&c, &mut s, x, y), &[(clip, 1.0)]);
+        }
+        // Halfway between N and NE on their edge, then halfway towards the center.
+        let (mx, my) = (s2 * 0.5, 0.5 + s2 * 0.5);
+        close(&weights_at(&c, &mut s, mx, my), &[("n", 0.5), ("ne", 0.5)]);
+        close(
+            &weights_at(&c, &mut s, mx * 0.5, my * 0.5),
+            &[("n", 0.25), ("ne", 0.25), ("idle", 0.5)],
+        );
+        // Half way out to W: the center and W share the weight.
+        close(
+            &weights_at(&c, &mut s, -0.5, 0.0),
+            &[("w", 0.5), ("idle", 0.5)],
+        );
+        // Outside the hull: clamped radially onto the outer edge.
+        close(
+            &weights_at(&c, &mut s, mx * 3.0, my * 3.0),
+            &[("n", 0.5), ("ne", 0.5)],
+        );
+        close(&weights_at(&c, &mut s, 0.0, 40.0), &[("n", 1.0)]);
+        close(&weights_at(&c, &mut s, -9.0, -9.0), &[("sw", 1.0)]);
+        // Every input weighs at most three points, non-negative, summing to 1.
+        for i in -12..=12 {
+            for j in -12..=12 {
+                weights_at(&c, &mut s, i as f32 * 0.17, j as f32 * 0.13);
+                assert!(c.samples(&s).len <= 3);
+            }
+        }
+        // Without a center only the direction counts (the zero input is angle 0 = east).
+        let c = Compiled::compile(&directional(false), &any_length).unwrap();
+        let mut s = c.start();
+        close(&weights_at(&c, &mut s, 0.0, 0.1), &[("n", 1.0)]);
+        close(
+            &weights_at(&c, &mut s, mx * 0.1, my * 0.1),
+            &[("n", 0.5), ("ne", 0.5)],
+        );
+        close(&weights_at(&c, &mut s, 0.0, 0.0), &[("e", 1.0)]);
+        // One direction and a center: the projection onto that direction.
+        let one = def(json!({
+            "parameters": {"x": {"kind":"float"}, "y": {"kind":"float"}},
+            "initial": "move",
+            "states": {"move": {"motion": {"kind":"blend2d","parameters":["x","y"],
+                "points":[{"at":[0.0,0.0],"clip":"idle"},{"at":[0.0,2.0],"clip":"run"}]}}}
+        }));
+        let c = Compiled::compile(&one, &any_length).unwrap();
+        let mut s = c.start();
+        close(
+            &weights_at(&c, &mut s, 5.0, 0.5),
+            &[("run", 0.25), ("idle", 0.75)],
+        );
+        close(&weights_at(&c, &mut s, 0.0, -3.0), &[("idle", 1.0)]);
+        close(&weights_at(&c, &mut s, 0.0, 3.0), &[("run", 1.0)]);
+    }
+
+    #[test]
+    fn blend2d_clips_stay_in_step_and_cross_fades_fit_the_sample_budget() {
+        let mut d = directional(true);
+        let motion = d.states["move"].motion.clone();
+        d.states.insert(
+            "other".into(),
+            StateDef {
+                motion,
+                speed_parameter: None,
+            },
+        );
+        d.parameters.insert(
+            "go".into(),
+            ParamDef {
+                kind: ParamKind::Trigger,
+                default: None,
+                source: None,
+            },
+        );
+        d.transitions.push(TransitionDef {
+            from: "move".into(),
+            to: "other".into(),
+            conditions: vec![Condition {
+                param: "go".into(),
+                op: CondOp::Trigger,
+                value: 0.0,
+            }],
+            duration: 0.5,
+            exit_time: None,
+        });
+        let c = Compiled::compile(&d, &any_length).unwrap();
+        let mut s = c.start();
+        weights_at(&c, &mut s, 0.3, 0.2);
+        for _ in 0..50 {
+            c.tick(&mut s, DT);
+        }
+        // Every sampled clip is at the same normalized time.
+        let phases: Vec<f32> = c
+            .samples(&s)
+            .as_slice()
+            .iter()
+            .map(|x| x.time / any_length(c.clip(x).unwrap()).unwrap())
+            .collect();
+        assert_eq!(phases.len(), 3);
+        assert!(
+            phases.iter().all(|p| (p - phases[0]).abs() < 1e-5),
+            "{phases:?}"
+        );
+        // The cycle is the weight-blended clip length: 50 steps advanced 50 / 120 s of it.
+        let cycle: f32 = c
+            .samples(&s)
+            .as_slice()
+            .iter()
+            .map(|x| x.weight * any_length(c.clip(x).unwrap()).unwrap())
+            .sum();
+        assert!((phases[0] - 50.0 * DT / cycle).abs() < 1e-4);
+        // A cross-fade between two 2D blends samples up to six clips; weights still sum to 1.
+        c.set_param(&mut s, "go", ParamValue::Bool(true)).unwrap();
+        c.tick(&mut s, DT);
+        c.tick(&mut s, DT);
+        let samples = c.samples(&s);
+        assert_eq!(samples.len, 6, "{samples:?}");
+        let sum: f32 = samples.as_slice().iter().map(|x| x.weight).sum();
+        assert!((sum - 1.0).abs() < 1e-5);
+        // The observation lists the current 2D blend's weights.
+        let seen = c.describe(&s);
+        assert_eq!(seen["state"], "other");
+        assert_eq!(seen["blend"].as_array().unwrap().len(), 3, "{seen}");
+        // ... and a 1D controller's observation has no such key.
+        let l = Compiled::compile(&locomotion(), &lengths).unwrap();
+        assert!(l.describe(&l.start()).get("blend").is_none());
+    }
+
+    #[test]
+    fn invalid_2d_blends_are_refused_with_reasons() {
+        let with = |points: serde_json::Value, params: serde_json::Value| {
+            let d: Result<ControllerDef, _> = serde_json::from_value(json!({
+                "parameters": {"x": {"kind":"float"}, "y": {"kind":"float"}, "b": {"kind":"bool"}},
+                "initial": "m",
+                "states": {"m": {"motion": {"kind":"blend2d","parameters":params,"points":points}}}
+            }));
+            match d {
+                Ok(d) => d.validate().map(|_| ()).map_err(|e| format!("{e:#}")),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        let p = |x: f32, y: f32| json!({"at":[x,y],"clip":"c"});
+        let xy = json!(["x", "y"]);
+        assert!(with(
+            json!([p(0.0, 1.0), p(1.0, 0.0), p(0.0, -1.0), p(-1.0, 0.0)]),
+            xy.clone()
+        )
+        .is_ok());
+        let e = with(json!([p(0.0, 1.0), p(0.0, -1.0)]), xy.clone()).unwrap_err();
+        assert!(e.contains("three and more"), "{e}");
+        let e = with(json!([p(1.0, 0.0), p(0.0, 1.0), p(-1.0, 0.0)]), xy.clone()).unwrap_err();
+        assert!(e.contains("less than 180"), "{e}");
+        let e = with(
+            json!([p(0.0, 1.0), p(0.0, 2.0), p(1.0, 0.0), p(-1.0, -1.0)]),
+            xy.clone(),
+        )
+        .unwrap_err();
+        assert!(e.contains("share a direction"), "{e}");
+        let e = with(json!([p(0.0, 0.0), p(0.0, 0.0)]), xy.clone()).unwrap_err();
+        assert!(e.contains("one center"), "{e}");
+        let e = with(json!([p(0.0, 0.0)]), json!(["x", "x"])).unwrap_err();
+        assert!(e.contains("two different"), "{e}");
+        let e = with(json!([p(0.0, 0.0)]), json!(["x", "b"])).unwrap_err();
+        assert!(e.contains("must be a float"), "{e}");
+        let e = with(json!([p(0.0, 0.0)]), json!(["x", "nope"])).unwrap_err();
+        assert!(e.contains("unknown blend parameter"), "{e}");
+        let e = with(json!([p(f32::NAN, 0.0)]), xy.clone()).unwrap_err();
+        assert!(!e.is_empty());
+        let many: Vec<_> = (0..10)
+            .map(|i| p((i as f32).cos(), (i as f32).sin()))
+            .collect();
+        let e = with(json!(many), xy.clone()).unwrap_err();
+        assert!(e.contains("blend points"), "{e}");
+        assert!(with(json!([]), xy).unwrap_err().contains("blend points"));
     }
 
     #[test]

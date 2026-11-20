@@ -286,7 +286,7 @@ pub fn register(r: &mut Registry) {
     r.resource(
         "animation.controllers",
         "animation",
-        json!({"controllers":"stable ID -> {parameters:{NAME:{kind:float|bool|trigger,default?,source?:speed}},initial,states:{NAME:{motion?:{kind:clip,clip,speed?,looping?}|{kind:blend1d,parameter,points:[{at,clip}],speed?,looping?}}},transitions:[{from:STATE|*,to,conditions:[{param,op:gt|lt|eq|ne|true|false|trigger,value?}],duration:seconds,exit_time?:normalized}],layers?:[{name,clip,mode?:override|additive,weight?:0..1,weight_parameter?,mask?:{bones?:[BONE],subtrees?:[BONE]},speed?,looping?}]}"}),
+        json!({"controllers":"stable ID -> {parameters:{NAME:{kind:float|bool|trigger,default?,source?:speed}},initial,states:{NAME:{motion?:{kind:clip,clip,speed?,looping?}|{kind:blend1d,parameter,points:[{at,clip}],speed?,looping?}|{kind:blend2d,parameters:[X,Y],points:[{at:[x,y],clip}] (simple directional: directions around the origin + optional center at [0,0]),speed?,looping?}}},transitions:[{from:STATE|*,to,conditions:[{param,op:gt|lt|eq|ne|true|false|trigger,value?}],duration:seconds,exit_time?:normalized}],layers?:[{name,clip,mode?:override|additive,weight?:0..1,weight_parameter?,mask?:{bones?:[BONE],subtrees?:[BONE]},speed?,looping?}]}"}),
         |v| serde_json::from_value::<controller::Controllers>(v.clone())?.validate(),
     );
     r.component(
