@@ -12,6 +12,15 @@ use serde_json::{json, Value};
 /// array (32 slots) with VFX particle lights, authored lights first.
 pub const MAX_DIRECTIONAL_LIGHTS: usize = 4;
 pub const MAX_LOCAL_LIGHTS: usize = 32;
+/// Spot / point lights with `shadows: true` per world (each spot = one depth pass, each point
+/// = six cube-face passes).
+pub const MAX_SPOT_SHADOWS: usize = 2;
+pub const MAX_POINT_SHADOWS: usize = 1;
+/// Shadow map size of a spot light and of each point light cube face (texels per side).
+pub const SPOT_SHADOW_RESOLUTION: u32 = 1024;
+pub const POINT_SHADOW_RESOLUTION: u32 = 512;
+/// Widest spot cone that may cast shadows (one perspective map).
+pub const MAX_SHADOW_SPOT_DEGREES: f32 = 160.0;
 /// Legacy hard-coded sun, used when a world authors no directional light.
 pub const DEFAULT_SUN_TOWARD: [f32; 3] = [-0.45, 0.85, 0.35];
 pub const DEFAULT_SUN_COLOR: [f32; 3] = [1.12, 1.0, 0.82];
@@ -166,11 +175,13 @@ impl RenderLight {
             );
         }
         if self.shadows {
-            match self.kind {
-                LightKind::Directional => {}
-                LightKind::Point => bail!("point light shadows not supported yet"),
-                LightKind::Spot => bail!("spot light shadows not supported yet"),
-                LightKind::Area => bail!("area light shadows not supported yet"),
+            match (self.kind, self.spot) {
+                (LightKind::Spot, Some(s)) => ensure!(
+                    s.outer_degrees <= MAX_SHADOW_SPOT_DEGREES,
+                    "spot light shadows require outer_degrees <= {MAX_SHADOW_SPOT_DEGREES}"
+                ),
+                (LightKind::Area, _) => bail!("area light shadows not supported yet"),
+                _ => {}
             }
         }
         Ok(())
@@ -187,9 +198,9 @@ pub fn light_schema() -> Value {
         "spot": "kind spot only: {inner_degrees, outer_degrees} full cone angles, 0 <= inner <= outer, outer 1..179; smooth falloff between them",
         "area": "kind area only: {shape: rect|disk, size: [w,h] meters 0.01..100; disk = [d,d]}. APPROXIMATE: lit from the point on the shape closest to the surface (not LTC-accurate), one-sided along -Z",
         "source_radius": "optional, point/spot only, 0..range: softens the light terminator (approximate sphere light)",
-        "shadows": "bool, default false. Directional: the first enabled directional light casts the shadow map, others are unshadowed. point/spot/area shadows are not supported yet (rejected)",
+        "shadows": format!("bool, default false. Directional: the first enabled directional light casts the shadow map, others are unshadowed. Spot: one {SPOT_SHADOW_RESOLUTION}^2 perspective map (outer_degrees <= {MAX_SHADOW_SPOT_DEGREES}). Point: cube map, six {POINT_SHADOW_RESOLUTION}^2 faces. Area shadows are not supported (rejected)"),
         "enabled": "bool, default true",
-        "budget": format!("per world: {MAX_DIRECTIONAL_LIGHTS} directional, {MAX_LOCAL_LIGHTS} point/spot/area; GPU array 32 local lights shared with VFX lights (authored first, then VFX in emitter order)")
+        "budget": format!("per world: {MAX_DIRECTIONAL_LIGHTS} directional, {MAX_LOCAL_LIGHTS} point/spot/area; GPU array 32 local lights shared with VFX lights (authored first, then VFX in emitter order); shadows: true on at most {MAX_SPOT_SHADOWS} spot and {MAX_POINT_SHADOWS} point lights")
     })
 }
 
@@ -484,17 +495,31 @@ pub fn environment_schema() -> Value {
     })
 }
 
-/// World-level light budget (counts every entity with `render.light`, enabled or not, so the
-/// result never depends on scene state).
-pub fn validate_budget(lights: impl Iterator<Item = LightKind>) -> Result<()> {
-    let (mut directional, mut local) = (0, 0);
-    for kind in lights {
-        if kind == LightKind::Directional {
-            directional += 1;
-        } else {
-            local += 1;
+/// World-level light budget over `(kind, shadows)` of every entity with `render.light`, enabled
+/// or not, so the result never depends on scene state.
+pub fn validate_budget(lights: impl Iterator<Item = (LightKind, bool)>) -> Result<()> {
+    let (mut directional, mut local, mut spot_shadows, mut point_shadows) = (0, 0, 0, 0);
+    for (kind, shadows) in lights {
+        match kind {
+            LightKind::Directional => directional += 1,
+            _ => local += 1,
+        }
+        if shadows {
+            match kind {
+                LightKind::Spot => spot_shadows += 1,
+                LightKind::Point => point_shadows += 1,
+                _ => {}
+            }
         }
     }
+    ensure!(
+        spot_shadows <= MAX_SPOT_SHADOWS,
+        "spot light shadow budget exceeded ({spot_shadows} > {MAX_SPOT_SHADOWS} with shadows: true)"
+    );
+    ensure!(
+        point_shadows <= MAX_POINT_SHADOWS,
+        "point light shadow budget exceeded ({point_shadows} > {MAX_POINT_SHADOWS} with shadows: true)"
+    );
     ensure!(
         directional <= MAX_DIRECTIONAL_LIGHTS,
         "directional light budget exceeded ({directional} > {MAX_DIRECTIONAL_LIGHTS})"
@@ -576,26 +601,68 @@ mod tests {
         assert!(err(json!({"kind":"point","range":900})).contains("range"));
         assert!(err(json!({"kind":"point","range":1,"source_radius":2})).contains("source_radius"));
         assert!(err(json!({"kind":"area","range":3,"source_radius":0.1,"area":{"shape":"rect","size":[1,1]}})).contains("source_radius"));
-        assert!(err(json!({"kind":"point","range":3,"shadows":true}))
-            .contains("point light shadows not supported yet"));
-        assert!(err(json!({"kind":"spot","range":3,"shadows":true,"spot":{"inner_degrees":1,"outer_degrees":2}}))
-            .contains("spot light shadows not supported yet"));
+        assert!(err(
+            json!({"kind":"area","range":3,"shadows":true,"area":{"shape":"rect","size":[1,1]}})
+        )
+        .contains("area light shadows not supported yet"));
+        assert!(err(json!({"kind":"spot","range":3,"shadows":true,"spot":{"inner_degrees":1,"outer_degrees":161}}))
+            .contains("outer_degrees <= 160"));
+    }
+
+    #[test]
+    fn spot_and_point_lights_may_cast_shadows() {
+        assert!(
+            light(json!({"kind":"point","range":3,"shadows":true}))
+                .unwrap()
+                .shadows
+        );
+        light(json!({"kind":"spot","range":3,"shadows":true,"spot":{"inner_degrees":1,"outer_degrees":160}})).unwrap();
+        // Without shadows a wider cone is still fine.
+        light(json!({"kind":"spot","range":3,"spot":{"inner_degrees":1,"outer_degrees":179}}))
+            .unwrap();
     }
 
     #[test]
     fn budget_counts_directional_and_local_separately() {
         use LightKind::*;
-        validate_budget([Directional; 4].into_iter().chain([Point; 32])).unwrap();
+        let unshadowed =
+            |kinds: &[LightKind]| kinds.iter().map(|k| (*k, false)).collect::<Vec<_>>();
+        validate_budget(
+            unshadowed(&[[Directional; 4].as_slice(), &[Point; 32]].concat()).into_iter(),
+        )
+        .unwrap();
         assert!(format!(
             "{:#}",
-            validate_budget([Directional; 5].into_iter()).unwrap_err()
+            validate_budget(unshadowed(&[Directional; 5]).into_iter()).unwrap_err()
         )
         .contains("directional light budget"));
         assert!(format!(
             "{:#}",
-            validate_budget([Spot, Area].into_iter().cycle().take(33)).unwrap_err()
+            validate_budget(
+                [Spot, Area]
+                    .into_iter()
+                    .cycle()
+                    .take(33)
+                    .map(|k| (k, false))
+            )
+            .unwrap_err()
         )
         .contains("point/spot/area light budget"));
+        // Shadow casters: 2 spot + 1 point; directional shadows do not count.
+        let casters = [
+            (Spot, true),
+            (Spot, true),
+            (Point, true),
+            (Point, false),
+            (Directional, true),
+            (Directional, true),
+        ];
+        validate_budget(casters.into_iter()).unwrap();
+        let err = |l: &[(LightKind, bool)]| {
+            format!("{:#}", validate_budget(l.iter().copied()).unwrap_err())
+        };
+        assert!(err(&[(Spot, true); 3]).contains("spot light shadow budget exceeded (3 > 2"));
+        assert!(err(&[(Point, true); 2]).contains("point light shadow budget exceeded (2 > 1"));
     }
 
     #[test]

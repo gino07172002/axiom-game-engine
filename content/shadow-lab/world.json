@@ -1,0 +1,31 @@
+{
+ "schema_version":2,"id":"shadow-lab","title":"Shadow Lab / spot and point light shadows",
+ "capabilities":{"animation":1,"core":1,"render":1},"systems":["animation.evaluate"],
+ "entities":[
+  {"id":"ground","components":{"core.transform":{"position":[0,-0.25,0],"scale":[30,0.5,24]},"render.mesh":{"parts":[{"color":[0.42,0.43,0.46],"grid":true}]}}},
+  {"id":"moon","label":"Moon (dim, unshadowed)","components":{"core.transform":{"position":[0,10,0],"rotation":[-0.7750785,0.4133752,0,0.4778853]},"render.light":{"kind":"directional","color":[0.6,0.68,1],"intensity":0.05,"shadows":false}}},
+
+  {"id":"spot/key","label":"Spot light (casts shadows)","components":{"core.transform":{"position":[-4,6,0.5],"rotation":[-0.70710677,0,0,0.70710677]},"render.light":{"kind":"spot","color":[1,0.93,0.8],"intensity":6,"range":12,"spot":{"inner_degrees":50,"outer_degrees":70},"shadows":true}}},
+  {"id":"fighter","label":"Skinned fighter under the spot","components":{"core.transform":{"position":[-3.2,0,0.8],"rotation":[0,-0.2588,0,0.9659]},"animation.player":{"asset":"fighter","clip":"idle"}}},
+  {"id":"spot/crate","components":{"core.transform":{"position":[-5.4,0.5,-0.4]},"render.mesh":{"parts":[{"color":[0.7,0.55,0.4]}]}}},
+  {"id":"spot/pillar","components":{"core.transform":{"position":[-4.6,1.2,1.9],"scale":[0.4,2.4,0.4]},"render.mesh":{"parts":[{"color":[0.75,0.75,0.78]}]}}},
+
+  {"id":"point/lamp","label":"Point light (casts shadows)","components":{"core.transform":{"position":[2.5,1.5,0]},"render.light":{"kind":"point","color":[1,0.7,0.4],"intensity":5,"range":9,"shadows":true}}},
+  {"id":"point/crate/a","components":{"core.transform":{"position":[3.9,0.5,0.9]},"render.mesh":{"parts":[{"color":[0.55,0.62,0.7]}]}}},
+  {"id":"point/crate/b","components":{"core.transform":{"position":[1.4,0.4,-1.3],"rotation":[0,0.258819,0,0.9659258],"scale":[0.8,0.8,0.8]},"render.mesh":{"parts":[{"color":[0.62,0.7,0.55]}]}}},
+  {"id":"point/pillar","components":{"core.transform":{"position":[2.3,1,1.8],"scale":[0.35,2,0.35]},"render.mesh":{"parts":[{"color":[0.75,0.75,0.78]}]}}},
+
+  {"id":"wall","label":"Wall between the point light and the far yard (leak test)","components":{"core.transform":{"position":[6.2,1.5,0],"scale":[0.4,3,8]},"render.mesh":{"parts":[{"color":[0.5,0.48,0.46]}]}}},
+  {"id":"yard/crate","label":"Behind the wall: lit only when light leaks","components":{"core.transform":{"position":[8,0.6,0],"scale":[1.2,1.2,1.2]},"render.mesh":{"parts":[{"color":[0.85,0.85,0.85]}]}}},
+
+  {"id":"camera","components":{"core.transform":{"position":[1.5,9,12.5],"rotation":[-0.2723,0,0,0.9622]},"render.camera":{"projection":{"kind":"perspective","fov_degrees":60},"near":0.1,"far":120,"viewport":[0,0,1,1],"active":true}}}
+ ],
+ "resources":{
+  "animation.library":{"assets":{"fighter":{"path":"fighter.glb"}}},
+  "render.settings":{"accent":[0.55,0.65,1],"shadow_extent":16},
+  "render.environment":{
+   "ambient":{"mode":"gradient","sky":[0.05,0.06,0.1],"equator":[0.03,0.035,0.05],"ground":[0.015,0.012,0.015],"intensity":1},
+   "fog":{"color":[0.02,0.03,0.05],"density":0.012}
+  }
+ }
+}

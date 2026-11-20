@@ -33,6 +33,8 @@ pub(crate) const GLOBALS_STRIDE: u32 = 3328;
 /// Bytes of `Globals` (the WGSL struct in lighting.wgsl must match).
 pub(crate) const GLOBALS_SIZE: u64 = std::mem::size_of::<Globals>() as u64;
 const _: () = assert!(GLOBALS_SIZE <= GLOBALS_STRIDE as u64);
+/// Byte offset of `light_vp` in `Globals` (the only field the depth passes read).
+const LIGHT_VP_OFFSET: u64 = std::mem::offset_of!(Globals, light_vp) as u64;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
@@ -82,6 +84,10 @@ pub struct Renderer {
     sky_late_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    /// Kept to rebuild `bind` when the local shadow maps are allocated.
+    scene_layout: wgpu::BindGroupLayout,
+    shadow_sampler: wgpu::Sampler,
+    local_shadows: crate::shadow_local::LocalShadowGpu,
     shadow_bind: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -190,7 +196,9 @@ impl Renderer {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera globals"),
-            size: u64::from(GLOBALS_STRIDE) * axiom_core::MAX_CAMERAS as u64,
+            // Camera slots, then one slot per local shadow face (only its light_vp is used).
+            size: u64::from(GLOBALS_STRIDE)
+                * (axiom_core::MAX_CAMERAS + crate::shadow_local::FACES) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -204,6 +212,8 @@ impl Renderer {
             },
             count: None,
         };
+        let local_shadows = crate::shadow_local::LocalShadowGpu::new(&device);
+        let [local3, local4, local5] = crate::shadow_local::LocalShadowGpu::layout_entries();
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scene bindings"),
             entries: &[
@@ -224,34 +234,23 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                local3,
+                local4,
+                local5,
             ],
         });
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow uniform only"),
             entries: &[uniform_entry],
         });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene bind"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &uniform,
-                        offset: 0,
-                        size: std::num::NonZeroU64::new(GLOBALS_SIZE),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&shadow),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        let bind = scene_bind(
+            &device,
+            &layout,
+            &uniform,
+            &shadow,
+            &sampler,
+            &local_shadows,
+        );
         let shadow_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow bind"),
             layout: &shadow_layout,
@@ -391,8 +390,14 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let egui = egui_wgpu::Renderer::new(&device, format, None, 1, false);
-        let meshes =
-            crate::mesh_render::MeshRenderer::new(&device, format, &uniform, &shadow, &sampler);
+        let meshes = crate::mesh_render::MeshRenderer::new(
+            &device,
+            format,
+            &uniform,
+            &shadow,
+            &sampler,
+            &local_shadows,
+        );
         let shaders = crate::shader_gpu::ShaderGpu::new(&device, format, &layout, meshes.layouts());
         let vfx = crate::vfx_gpu::VfxGpu::new(&device, format, &uniform, &depth);
         let post =
@@ -413,6 +418,9 @@ impl Renderer {
             sky_late_pipeline,
             uniform,
             bind,
+            scene_layout: layout,
+            shadow_sampler: sampler,
+            local_shadows,
             shadow_bind,
             vertices,
             instances,
@@ -669,6 +677,34 @@ impl Renderer {
         // when the view comes back).
         if snapshot.draw_world {
             self.queue.write_buffer(&self.uniform, 0, &uniforms);
+            if self
+                .local_shadows
+                .ensure(&self.device, &lighting.local_shadows)
+            {
+                self.bind = scene_bind(
+                    &self.device,
+                    &self.scene_layout,
+                    &self.uniform,
+                    &self.shadow,
+                    &self.shadow_sampler,
+                    &self.local_shadows,
+                );
+                self.meshes.rebind_camera(
+                    &self.device,
+                    &self.uniform,
+                    &self.shadow,
+                    &self.shadow_sampler,
+                    &self.local_shadows,
+                );
+            }
+            self.local_shadows.upload(
+                &self.queue,
+                &self.uniform,
+                u64::from(GLOBALS_STRIDE),
+                LIGHT_VP_OFFSET,
+                &lighting.local_shadows,
+                &snapshot.scene_lights,
+            );
             self.meshes
                 .prepare(&self.device, &self.queue, &snapshot.meshes)?;
             self.queue
@@ -725,6 +761,16 @@ impl Renderer {
             self.timer
                 .mark(&mut encoder, crate::gpu_timing::Section::VfxCompute);
         }
+        // Opaque cube runs into a depth pass (sun and local light shadow maps).
+        let cast_cubes = |pass: &mut wgpu::RenderPass<'_>, stats: &mut FrameStats| {
+            for (range, material) in &cube_runs {
+                use crate::shader::Alpha;
+                if material.is_none_or(|m| matches!(m.alpha, Alpha::Inherit | Alpha::Opaque)) {
+                    pass.draw(0..36, range.clone());
+                    stats.add(1, 12 * range.len() as u64);
+                }
+            }
+        };
         // Sun 0 without shadows: the shadow map is not sampled, so skip its depth pass.
         if lighting.shadow && snapshot.draw_world {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -745,22 +791,35 @@ impl Renderer {
             pass.set_bind_group(0, &self.shadow_bind, &[0]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
-            for (range, material) in &cube_runs {
-                use crate::shader::Alpha;
-                if material.is_none_or(|m| matches!(m.alpha, Alpha::Inherit | Alpha::Opaque)) {
-                    pass.draw(0..36, range.clone());
-                    stats.add(1, 12 * range.len() as u64);
-                }
-            }
+            cast_cubes(&mut pass, &mut stats);
             // Imported / procedural meshes cast only where they also receive (authored
             // lighting), so the legacy look keeps its cube-only shadow map.
             if lighting.authored {
-                let (calls, triangles) = self.meshes.draw_shadow(&mut pass, &self.shaders);
+                let (calls, triangles) = self.meshes.draw_shadow(&mut pass, &self.shaders, 0);
                 stats.add(calls, triangles);
             }
             drop(pass);
             self.timer
                 .mark(&mut encoder, crate::gpu_timing::Section::Shadows);
+        }
+        // Spot / point shadow faces: the same casters (meshes always: no legacy look to keep).
+        if snapshot.draw_world && lighting.local_shadows.face_count() > 0 {
+            self.local_shadows.render(
+                &mut encoder,
+                &lighting.local_shadows,
+                GLOBALS_STRIDE,
+                |pass, offset| {
+                    pass.set_pipeline(&self.shadow_pipeline);
+                    pass.set_bind_group(0, &self.shadow_bind, &[offset]);
+                    pass.set_vertex_buffer(0, self.vertices.slice(..));
+                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                    cast_cubes(pass, &mut stats);
+                    let (calls, triangles) = self.meshes.draw_shadow(pass, &self.shaders, offset);
+                    stats.add(calls, triangles);
+                },
+            );
+            self.timer
+                .mark(&mut encoder, crate::gpu_timing::Section::LocalShadows);
         }
         let world_color = if snapshot.postfx.is_empty() {
             &view
@@ -1095,6 +1154,50 @@ impl Renderer {
             }
         }
         Ok(true)
+    }
+}
+
+/// The scene camera group: globals, sun shadow map + comparison sampler, local shadow maps.
+fn scene_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    shadow: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    local: &crate::shadow_local::LocalShadowGpu,
+) -> wgpu::BindGroup {
+    let [local3, local4, local5] = local.bind_entries();
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniform,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(GLOBALS_SIZE),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(shadow),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            local3,
+            local4,
+            local5,
+        ],
+    })
+}
+
+impl Renderer {
+    /// `observe` → `metrics.local_shadows` (None without spot / point shadow casters).
+    pub fn local_shadows_observation(&self) -> Option<serde_json::Value> {
+        self.local_shadows.stats.observation()
     }
 }
 

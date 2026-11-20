@@ -391,11 +391,20 @@ fn light_presets_create_valid_lights_aimed_along_minus_z() {
     .unwrap();
     assert!((glam::Quat::from_array(t.rotation) * -glam::Vec3::Z + glam::Vec3::Y).length() < 1e-5);
     // Bad component values are rejected by the transaction, with the reason.
-    let error = acl(&mut s, "set light.point render.light/shadows true").unwrap_err();
+    let error = acl(&mut s, "set light.area render.light/shadows true").unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("point light shadows not supported yet"),
+            .contains("area light shadows not supported yet"),
+        "{error}"
+    );
+    // Spot and point lights cast shadows within the per-world budget (1 point).
+    acl(&mut s, "set light.point render.light/shadows true").unwrap();
+    let error = acl(&mut s, "set light.point/2 render.light/shadows true").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("point light shadow budget exceeded (2 > 1"),
         "{error}"
     );
 }

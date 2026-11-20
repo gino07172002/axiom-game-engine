@@ -85,6 +85,24 @@ impl MeshRenderer {
     pub fn layouts(&self) -> [&wgpu::BindGroupLayout; 2] {
         [&self.camera_layout, &self.material_layout]
     }
+    /// Rebuilds the camera group after the local shadow maps were allocated.
+    pub(crate) fn rebind_camera(
+        &mut self,
+        device: &wgpu::Device,
+        globals: &wgpu::Buffer,
+        shadow: &wgpu::TextureView,
+        shadow_sampler: &wgpu::Sampler,
+        local: &crate::shadow_local::LocalShadowGpu,
+    ) {
+        self.camera = camera_bind(
+            device,
+            &self.camera_layout,
+            globals,
+            shadow,
+            shadow_sampler,
+            local,
+        );
+    }
     /// `shadow` / `shadow_sampler`: the sun shadow map the meshes sample (bindings 1 and 2 of
     /// the camera group, like the cube pipeline) and cast into (`draw_shadow`).
     pub fn new(
@@ -93,7 +111,9 @@ impl MeshRenderer {
         globals: &wgpu::Buffer,
         shadow: &wgpu::TextureView,
         shadow_sampler: &wgpu::Sampler,
+        local: &crate::shadow_local::LocalShadowGpu,
     ) -> Self {
+        let [local3, local4, local5] = crate::shadow_local::LocalShadowGpu::layout_entries();
         let uniform_entry = wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -124,6 +144,9 @@ impl MeshRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                local3,
+                local4,
+                local5,
             ],
         });
         let globals_binding = || {
@@ -133,24 +156,14 @@ impl MeshRenderer {
                 size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
             })
         };
-        let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("triangle camera"),
-            layout: &camera_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: globals_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(shadow),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
-                },
-            ],
-        });
+        let camera = camera_bind(
+            device,
+            &camera_layout,
+            globals,
+            shadow,
+            shadow_sampler,
+            local,
+        );
         // The depth pass writes the shadow map, so its camera group must not also bind it.
         let shadow_camera_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -676,19 +689,21 @@ impl MeshRenderer {
         }
         (calls, triangles)
     }
-    /// Draws the opaque mesh primitives (after any surface material's alpha) into the sun
-    /// depth pass. Masked and blended primitives do not cast.
+    /// Draws the opaque mesh primitives (after any surface material's alpha) into a depth pass
+    /// whose `light_vp` is in the globals slot at `camera_offset` (0 = the sun). Masked and
+    /// blended primitives do not cast.
     pub fn draw_shadow(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         shaders: &crate::shader_gpu::ShaderGpu,
+        camera_offset: u32,
     ) -> (u32, u64) {
         let (mut calls, mut triangles) = (0, 0);
         if self.active.is_empty() {
             return (calls, triangles);
         }
         pass.set_pipeline(&self.shadow_pipeline);
-        pass.set_bind_group(0, &self.shadow_camera, &[0]);
+        pass.set_bind_group(0, &self.shadow_camera, &[camera_offset]);
         for active in &self.active {
             let mesh = &self.meshes[&active.key];
             let surface = active
@@ -713,6 +728,42 @@ impl MeshRenderer {
         }
         (calls, triangles)
     }
+}
+/// The mesh camera group: globals, sun shadow map + sampler, local shadow maps (bindings 3-5).
+fn camera_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    globals: &wgpu::Buffer,
+    shadow: &wgpu::TextureView,
+    shadow_sampler: &wgpu::Sampler,
+    local: &crate::shadow_local::LocalShadowGpu,
+) -> wgpu::BindGroup {
+    let [local3, local4, local5] = local.bind_entries();
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("triangle camera"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: globals,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(crate::render::GLOBALS_SIZE),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(shadow),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
+            },
+            local3,
+            local4,
+            local5,
+        ],
+    })
 }
 /// A primitive gets its `render.outline` hull when it has a width, is opaque after any surface
 /// material (the [`casts_shadow`] rule) and is single-sided: a double-sided sheet has no inside,

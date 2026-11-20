@@ -47,6 +47,7 @@ pub mod scenario;
 mod screenshot;
 pub mod shader;
 mod shader_gpu;
+pub mod shadow_local;
 pub mod showcase;
 pub mod spatial_audio;
 pub mod trigger;
