@@ -24,6 +24,7 @@ pub mod gameplay;
 pub mod geometry;
 pub mod gpu_timing;
 pub mod hdr;
+pub mod hdr_build;
 mod input;
 pub mod interact;
 pub mod jobs;

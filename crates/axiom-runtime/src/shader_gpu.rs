@@ -56,15 +56,13 @@ impl GpuMaterial {
     }
 }
 
-struct Program {
+pub(crate) struct Program {
     cube: Vec<wgpu::RenderPipeline>,
     mesh: Vec<wgpu::RenderPipeline>,
 }
 
 pub struct ShaderGpu {
-    format: wgpu::TextureFormat,
-    cube: wgpu::PipelineLayout,
-    mesh: wgpu::PipelineLayout,
+    compiler: Compiler,
     uniforms: wgpu::Buffer,
     pub bind: wgpu::BindGroup,
     active: Option<Arc<Prepared>>,
@@ -127,9 +125,11 @@ impl ShaderGpu {
             })
         };
         Self {
-            format,
-            cube: pipeline_layout(&[scene, &layout]),
-            mesh: pipeline_layout(&[mesh_layouts[0], mesh_layouts[1], &layout]),
+            compiler: Compiler {
+                format,
+                cube: pipeline_layout(&[scene, &layout]),
+                mesh: pipeline_layout(&[mesh_layouts[0], mesh_layouts[1], &layout]),
+            },
             uniforms,
             bind,
             active: None,
@@ -255,8 +255,8 @@ impl ShaderGpu {
 
     fn compile(&self, device: &wgpu::Device, id: &str, hook: &str) -> Result<Program> {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let cube = self.variants(device, id, hook, false);
-        let mesh = self.variants(device, id, hook, true);
+        let cube = self.compiler.variants(device, id, hook, false, self.hdr);
+        let mesh = self.compiler.variants(device, id, hook, true, self.hdr);
         if let Some(err) = pollster::block_on(device.pop_error_scope()) {
             let message = err.to_string();
             let compact = message
@@ -275,6 +275,27 @@ impl ShaderGpu {
         }
         Ok(Program { cube, mesh })
     }
+}
+
+/// Pipeline layouts and surface format of the material programs; cloned into the HDR build
+/// worker (`hdr_build`) so it can compile HDR variants off the main thread.
+#[derive(Clone)]
+pub(crate) struct Compiler {
+    format: wgpu::TextureFormat,
+    cube: wgpu::PipelineLayout,
+    mesh: wgpu::PipelineLayout,
+}
+
+impl Compiler {
+    /// The HDR program of `hook`, without an error scope (worker thread: scopes are per
+    /// device in wgpu 24). The hook already compiled for the surface format, and only the
+    /// colour format differs.
+    pub(crate) fn hdr_program(&self, device: &wgpu::Device, id: &str, hook: &str) -> Program {
+        Program {
+            cube: self.variants(device, id, hook, false, true),
+            mesh: self.variants(device, id, hook, true, true),
+        }
+    }
 
     fn variants(
         &self,
@@ -282,6 +303,7 @@ impl ShaderGpu {
         id: &str,
         hook: &str,
         mesh: bool,
+        hdr: bool,
     ) -> Vec<wgpu::RenderPipeline> {
         let (base, wrapper, vertex, layout) = if mesh {
             (
@@ -329,7 +351,7 @@ impl ShaderGpu {
                             entry_point: Some("fs_surface"),
                             compilation_options: Default::default(),
                             targets: &[Some(wgpu::ColorTargetState {
-                                format: if self.hdr {
+                                format: if hdr {
                                     crate::hdr::HDR_FORMAT
                                 } else {
                                     self.format
@@ -376,5 +398,38 @@ impl ShaderGpu {
             }
         }
         variants
+    }
+}
+
+impl ShaderGpu {
+    /// The active programs are `book`'s, prepared for HDR (nothing missing).
+    pub(crate) fn prepared_hdr_for(&self, book: &Arc<Prepared>) -> bool {
+        self.prepared_hdr && self.active.as_ref().is_some_and(|a| Arc::ptr_eq(a, book))
+    }
+
+    pub(crate) fn compiler(&self) -> Compiler {
+        self.compiler.clone()
+    }
+
+    /// `(id, hook)` of `book`'s programs that have no HDR variant cached yet (what the HDR
+    /// build worker still has to compile).
+    pub(crate) fn missing_hdr(&self, book: &Prepared) -> Vec<(String, String)> {
+        let mut seen = std::collections::BTreeSet::new();
+        book.programs
+            .iter()
+            .filter(|(_, hook)| {
+                !self.cache.contains_key(&(true, (*hook).clone())) && seen.insert(*hook)
+            })
+            .map(|(id, hook)| (id.clone(), hook.clone()))
+            .collect()
+    }
+
+    /// HDR programs compiled by the worker, as `(hook, program)`; the next `prepare` with
+    /// `hdr` finds them in the cache (LRU and the variant budget apply as usual).
+    pub(crate) fn install_hdr(&mut self, programs: Vec<(String, Program)>) {
+        for (hook, program) in programs {
+            self.cache
+                .insert((true, hook), (Arc::new(program), self.clock));
+        }
     }
 }

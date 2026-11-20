@@ -24,7 +24,7 @@ pub(crate) fn mesh_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 
 /// The lit triangle pipelines (blend x double-sided) and the outline hull for colour `format`
 /// (the surface format, or `hdr::HDR_FORMAT` while HDR is on).
-fn color_pipelines(
+pub(crate) fn color_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
@@ -401,21 +401,23 @@ impl MeshRenderer {
             active: vec![],
         }
     }
-    /// Draws into the HDR target from now on (`on`), building its pipeline variants on first
-    /// use. Returns the milliseconds spent building them (0 when they existed).
-    pub fn set_hdr(&mut self, device: &wgpu::Device, on: bool) -> f64 {
+    /// Draws into the HDR target (`on`) once its pipeline variants are installed
+    /// (`install_hdr`); until then, and with `on` false, the surface-format pipelines.
+    pub fn set_hdr(&mut self, on: bool) {
         self.use_hdr = on;
-        if !on || self.hdr.is_some() {
-            return 0.0;
-        }
-        let started = std::time::Instant::now();
-        self.hdr = Some(color_pipelines(
-            device,
-            &self.color_layout,
-            &self.shader,
-            crate::hdr::HDR_FORMAT,
-        ));
-        started.elapsed().as_secs_f64() * 1000.0
+    }
+    /// Layout and module the HDR variants are built from (`hdr_build`, worker thread).
+    pub(crate) fn hdr_inputs(&self) -> (wgpu::PipelineLayout, wgpu::ShaderModule) {
+        (self.color_layout.clone(), self.shader.clone())
+    }
+    pub(crate) fn install_hdr(
+        &mut self,
+        pipelines: (Vec<wgpu::RenderPipeline>, wgpu::RenderPipeline),
+    ) {
+        self.hdr = Some(pipelines);
+    }
+    pub(crate) fn has_hdr(&self) -> bool {
+        self.hdr.is_some()
     }
     /// The lit pipelines and the outline pipeline of the current colour target.
     fn color(&self) -> (&[wgpu::RenderPipeline], &wgpu::RenderPipeline) {

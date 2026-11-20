@@ -103,6 +103,10 @@ pub struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     scene_shader: wgpu::ShaderModule,
     hdr_scene: Option<[wgpu::RenderPipeline; 3]>,
+    /// Background build of the post / HDR pipelines (`hdr_build`).
+    post_build: crate::hdr_build::PostBuild,
+    /// Headless `--screenshot` runs: the capture frame waits (bounded) for a running build.
+    pub wait_post_build: bool,
     meshes: crate::mesh_render::MeshRenderer,
     shaders: crate::shader_gpu::ShaderGpu,
     /// Time the last `render` waited for the swapchain image (part of its wall time, not CPU
@@ -354,6 +358,8 @@ impl Renderer {
             pipeline_layout,
             scene_shader: shader,
             hdr_scene: None,
+            post_build: Default::default(),
+            wait_post_build: false,
             device,
             queue,
             config,
@@ -477,6 +483,76 @@ impl Renderer {
             .resize(&self.device, size.width, size.height, &self.depth);
     }
 
+    /// What `requested` needs that is not installed yet (`hdr_build`). No allocation when the
+    /// active material programs are already prepared for HDR.
+    fn post_need(
+        &self,
+        requested: &crate::hdr::Settings,
+        book: &Arc<crate::shader::Prepared>,
+    ) -> crate::hdr_build::Need {
+        let hdr_built = self.hdr_scene.is_some() && self.meshes.has_hdr() && self.vfx.has_hdr();
+        let programs = if requested.hdr.is_some() && !self.shaders.prepared_hdr_for(book) {
+            self.shaders.missing_hdr(book)
+        } else {
+            vec![]
+        };
+        crate::hdr_build::need(requested, self.finish.has_pipelines(), hdr_built, programs)
+    }
+
+    fn spawn_post_build(&mut self, need: crate::hdr_build::Need) {
+        let inputs = crate::hdr_build::Inputs {
+            device: self.device.clone(),
+            post: need.post.then(|| self.finish.post_inputs()),
+            scene: (need.hdr && self.hdr_scene.is_none())
+                .then(|| (self.pipeline_layout.clone(), self.scene_shader.clone())),
+            mesh: (need.hdr && !self.meshes.has_hdr()).then(|| self.meshes.hdr_inputs()),
+            vfx: (need.hdr && !self.vfx.has_hdr()).then(|| self.vfx.hdr_inputs()),
+            compiler: self.shaders.compiler(),
+            programs: need.programs.clone(),
+        };
+        self.post_build.spawn(need, inputs);
+    }
+
+    fn install_post_build(&mut self, built: crate::hdr_build::Built) {
+        if let Some(p) = built.post {
+            self.finish.install(p);
+        }
+        if let Some(p) = built.scene {
+            self.hdr_scene = Some(p);
+        }
+        if let Some(p) = built.mesh {
+            self.meshes.install_hdr(p);
+        }
+        if let Some(p) = built.vfx {
+            self.vfx.install_hdr(p);
+        }
+        self.shaders.install_hdr(built.programs);
+        self.finish.stats.pipeline_ms += built.ms;
+    }
+
+    /// `observe` -> `render_post`: the active settings and pass times, plus the background
+    /// pipeline build (`build`).
+    pub fn post_observation(&self) -> Option<serde_json::Value> {
+        let build = self.post_build.observation();
+        match self.finish.observation() {
+            Some(mut post) => {
+                post["build"] = build;
+                Some(post)
+            }
+            None if self.post_build.state != crate::hdr_build::State::Ready
+                || self.post_build.running() =>
+            {
+                Some(serde_json::json!({"build": build}))
+            }
+            None => None,
+        }
+    }
+
+    /// Status-bar text of the post pipeline build (`(text, is_error)`).
+    pub fn post_status(&self) -> Option<(String, bool)> {
+        self.post_build.status()
+    }
+
     pub fn prepare_shaders(&mut self, book: &Arc<crate::shader::Prepared>) -> Result<()> {
         self.shaders.prepare(&self.device, &self.queue, book)
     }
@@ -496,26 +572,50 @@ impl Renderer {
         game: Option<(&egui::Context, egui::FullOutput)>,
         screenshot: Option<&Path>,
     ) -> Result<bool> {
-        // Without a world pass the post state stays as it is (nothing to finish).
-        let post = crate::hdr::Settings::of(snapshot.environment.post.as_ref());
-        let hdr = post.hdr.is_some();
+        let render_started = std::time::Instant::now();
+        // Without a world pass the post state stays as it is (nothing to finish). The pipelines
+        // a setting needs are built on a worker (`hdr_build`); until all are installed the
+        // frame keeps the legacy output, then switches in one frame.
+        let requested = crate::hdr::Settings::of(snapshot.environment.post.as_ref());
+        let mut post = crate::hdr::Settings::default();
+        let (mut started_build, mut installed_build) = (false, false);
         if snapshot.draw_world {
+            // Headless `--screenshot` frames wait (bounded by the watchdog) so the capture shows
+            // the requested output; interactive frames never wait.
+            let waiting = screenshot.is_some() && self.wait_post_build;
+            for _ in 0..4 {
+                let need = self.post_need(&requested, &snapshot.shaders);
+                let wait = if waiting && (self.post_build.running() || !need.is_empty()) {
+                    crate::hdr_build::BUILD_TIMEOUT
+                } else {
+                    std::time::Duration::ZERO
+                };
+                match self.post_build.update(&need, wait) {
+                    crate::hdr_build::Step::Start(need) => {
+                        self.spawn_post_build(need);
+                        started_build = true;
+                        if !waiting {
+                            break;
+                        }
+                    }
+                    crate::hdr_build::Step::Install(built) => {
+                        self.install_post_build(built);
+                        installed_build = true;
+                    }
+                    crate::hdr_build::Step::Nothing => break,
+                }
+            }
+            if self.post_need(&requested, &snapshot.shaders).is_empty() {
+                post = requested;
+            } else {
+                self.post_build.fallback_frames += 1;
+            }
+            let hdr = post.hdr.is_some();
             self.shaders.hdr = hdr;
-            let started = std::time::Instant::now();
-            if hdr && self.hdr_scene.is_none() {
-                self.hdr_scene = Some(scene_color_pipelines(
-                    &self.device,
-                    &self.pipeline_layout,
-                    &self.scene_shader,
-                    crate::hdr::HDR_FORMAT,
-                ));
-            }
-            let built =
-                self.meshes.set_hdr(&self.device, hdr) + self.vfx.set_hdr(&self.device, hdr);
-            if built > 0.0 {
-                self.finish.stats.hdr_world_ms = started.elapsed().as_secs_f64() * 1000.0;
-            }
+            self.meshes.set_hdr(hdr);
+            self.vfx.set_hdr(hdr);
         }
+        let hdr = post.hdr.is_some();
         self.prepare_shaders(&snapshot.shaders)?;
         if snapshot.draw_world {
             self.vfx.prepare(&self.queue, &snapshot.vfx)?;
@@ -1164,6 +1264,20 @@ impl Renderer {
                 renderer.free_texture(id);
             }
         }
+        // Main-thread work of this render (the swapchain acquire wait is GPU pacing, not work).
+        let ms = render_started
+            .elapsed()
+            .saturating_sub(self.last_acquire)
+            .as_secs_f64()
+            * 1000.0;
+        if started_build {
+            self.post_build.request_frame_ms = ms;
+            self.post_build.before_frame_ms = self.post_build.last_frame_ms;
+        }
+        if installed_build {
+            self.post_build.install_frame_ms = ms;
+        }
+        self.post_build.last_frame_ms = ms;
         Ok(true)
     }
 }
@@ -1244,7 +1358,7 @@ fn depth_view(
 
 /// The cube pipeline and the two background / sky pipelines for colour `format` (the surface
 /// format, or `hdr::HDR_FORMAT` while HDR is on): `[cubes, legacy sky, authored sky]`.
-fn scene_color_pipelines(
+pub(crate) fn scene_color_pipelines(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,

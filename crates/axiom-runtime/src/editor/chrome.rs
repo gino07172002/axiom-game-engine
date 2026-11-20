@@ -2,7 +2,7 @@
 //! redo, Play group, Agent API, preferences) and the status bar. Every button runs a registry
 //! command or the same action its menu item produces.
 use super::icons::Icon;
-use super::theme::{self, divider, ACCENT, MUTED, SUCCESS, TEXT, WARNING};
+use super::theme::{self, divider, ACCENT, ERROR, MUTED, SUCCESS, TEXT, WARNING};
 use super::{Action, Editor};
 use egui::{Color32, Layout, Margin, RichText, Ui};
 
@@ -285,6 +285,11 @@ impl Editor {
                         .on_hover_text("Writing the Scene view screenshot in the background");
                 }
                 self.build_status(ui);
+                if let Some((text, error)) = &self.post_status {
+                    item(ui, text.clone(), if *error { ERROR } else { WARNING }).on_hover_text(
+                        "render.environment.post pipelines build on a worker thread; the view keeps the legacy output until they are ready",
+                    );
+                }
                 if let Some(job) = &self.scenario_job {
                     let (done, total) = job.progress();
                     item(

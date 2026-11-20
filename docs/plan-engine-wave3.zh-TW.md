@@ -135,3 +135,13 @@
   - 1920×1080 無頭量測(`hdr::tests::measure_post_passes_1920x1080`,8 px 棋盤格 = FXAA 最壞情況,299 幀中位數,debug test build;shader 執行與 build 型態無關):bloom(6 層)0.61 ms、tone map 0.48 ms、FXAA 2.44 ms。
   - 遊戲內(1805×950、smoke 74 幀平均,含啟動幀,GPU 與其他代理共用):bloom 0.69–2.8 ms、tone map 0.55–1.9 ms、FXAA 1.2–4.4 ms(同一場景兩次之間差到 2 倍,只能當量級)。沒有做 release 量測。
 - Gate:`cargo fmt --all`、`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` **856 passed / 0 failed / 6 ignored**(基準 848 / 0 / 5;新增 8 個測試 + 1 個 ignored 量測);`editor-smoke-test` ok:true;`editor-world-parity`、`street-editor-parity` identical:true;`m0-smoke-test` PASS;`verify_vfx_gpu` ok(max error 2.1e-6);`effects-smoke-test` 36 站截圖、live edit / 重試 / vertex pipeline 復原都過,最後 900 幀 / 60 秒那一步照已知情況在 MX150 逾時(`Effects native helper timed out or failed`,`live-errors.log` 無錯誤),沒有放寬。
+
+#### W3c 追補:後處理 pipeline 改在背景建立(分支 `w3c-async`)
+
+- **問題**:第一次開 HDR / bloom / FXAA 時,14 條 HDR 世界 pipeline、5 條後處理 pipeline 與材質 HDR 版本在主執行緒同步建立(之前量到 28–546 ms),違反 16 ms 規則。
+- **做法**:新檔 `hdr_build.rs`,用既有的 `jobs::Job`(一次一個 job、每組 pipeline 之間檢查取消、done/total 進度、30 秒 watchdog、關閉時限時 join)。wgpu 24 的 `Device` / layout / module 都是 `Clone`,直接複製到 worker。建好之前畫面走沒有後處理的舊輸出,全部建好的那一幀一次切換;設定在建置中改變 → 停止目前 job(已建好的保留)、結束後用最新設定再開(不排隊);關掉後處理也會取消。失敗 / 逾時 → `render_post.build.state = failed` + `error`、編輯器狀態列紅字,設定改變前不重試。無頭 `--screenshot` 只有截圖那一幀會等(上限 watchdog)。
+- **順帶發現**:主執行緒上一次 `eprintln!` 在隱藏視窗 + stderr 導向檔案的 headless 跑法量到 150–290 ms(比整個建置還久),所以完成紀錄改在 worker 印。主執行緒的其他 `eprintln!`(例如截圖交付的紀錄)可能有同樣問題,這次沒有改。
+- **量測**(debug、MX150、plaza、headless 1805×950、執行中用 ACL 開 `post antialiasing fxaa` + `post bloom on`,`render_post.build` 讀數 = `Renderer::render` 在主執行緒的毫秒,不含等 swapchain):
+  - 改動前(05cba45):開啟那一幀在 `render()` 裡同步建立 pipeline:HDR 世界 24.3 / 25.9 / 25.0 ms + 後處理 6.1 / 5.8 / 5.6 ms(3 次;這幾次驅動的 pipeline 快取是熱的,冷快取時之前量到最多 546 ms),再加上平常的那一幀。
+  - 改動後:要求的那一幀 1.47 / 2.92 / 1.40 ms(前一幀 1.53 / 2.08 / 1.35 ms);切換的那一幀 7.9 / 4.9 / 4.5 ms(含建立 25 MB 目標與第一次 HDR 繪製);worker 花 67 / 83 / 69 ms;期間 2–4 幀照舊輸出。沒有做 release 量測。
+- **證據**:預設關閉時 plaza、street、light-lab、render-lab、shadow-lab 與 05cba45 的 PNG **檔案位元組完全相同**;shadow-lab / plaza 只跑 3 個 smoke 幀就截圖、post 開啟,截圖仍是 HDR + bloom + FXAA 的畫面(截圖幀等到建置完成)。Gate:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 903 passed / 0 failed / 6 ignored(新增 `hdr_build` 3 個測試:取代 / 取消 / 失敗不重試);editor-smoke ok:true;editor-world-parity、street-editor-parity identical:true;m0 smoke PASS。

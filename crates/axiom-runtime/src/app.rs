@@ -1652,7 +1652,7 @@ impl App {
             if let Some(shadows) = renderer.local_shadows_observation() {
                 observation.metrics.insert("local_shadows".into(), shadows);
             }
-            if let Some(post) = renderer.finish.observation() {
+            if let Some(post) = renderer.post_observation() {
                 observation.metrics.insert("render_post".into(), post);
             }
         }
@@ -2678,6 +2678,7 @@ impl App {
             editor.bridge_activity = self._bridge.as_ref().map_or((0, None), Bridge::activity);
             if let Some(renderer) = &mut self.renderer {
                 editor.frame_stats = renderer.stats;
+                editor.post_status = renderer.post_status();
                 // GPU pass timing only while the Profiler is shown (and not paused).
                 let profiler = &mut editor.debug.profiler;
                 profiler.gpu_timing = Some(renderer.timer.unavailable().map_or(Ok(()), Err));
@@ -3279,6 +3280,7 @@ impl ApplicationHandler for App {
                 )?,
             );
             let mut renderer = pollster::block_on(Renderer::new(window.clone()))?;
+            renderer.wait_post_build = self.options.smoke_frames.is_some();
             renderer.prepare_shaders(self.runtime.shaders())?;
             if let Some(editor) = &mut self.editor {
                 // Asset thumbnails render off-screen on this device (from their worker).
