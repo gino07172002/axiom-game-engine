@@ -1631,6 +1631,9 @@ impl App {
                     serde_json::json!({"last":stats,"budget_pipelines":crate::shader_gpu::MAX_PIPELINE_VARIANTS}),
                 );
             }
+            if let Some(post) = renderer.finish.observation() {
+                observation.metrics.insert("render_post".into(), post);
+            }
         }
         observation
     }
@@ -2658,7 +2661,11 @@ impl App {
                 let profiler = &mut editor.debug.profiler;
                 profiler.gpu_timing = Some(renderer.timer.unavailable().map_or(Ok(()), Err));
                 renderer.timer.set_enabled(profiler.wants());
-                let unmeasured = renderer.timer.take(|frame| profiler.push_gpu(frame));
+                let finish = &mut renderer.finish;
+                let unmeasured = renderer.timer.take(|frame| {
+                    profiler.push_gpu(frame);
+                    finish.record(frame);
+                });
                 profiler.gpu_dropped += unmeasured;
                 if self.gpu_alloc_elapsed >= 2.0 {
                     self.gpu_alloc_elapsed = 0.0;
@@ -2669,6 +2676,12 @@ impl App {
                     editor.vram = Some(renderer.vram.read());
                 }
             }
+        } else if let Some(renderer) = &mut self.renderer {
+            // Without the editor Profiler, timestamps run only while a render.environment.post
+            // setting is on, for the pass times `observe` reports (render_post.gpu_ms).
+            renderer.timer.set_enabled(renderer.finish.settings.any());
+            let finish = &mut renderer.finish;
+            renderer.timer.take(|frame| finish.record(frame));
         }
         // Proposals load immediately at startup / after a resolve, then follow the poll.
         let proposals_unknown = self

@@ -69,12 +69,16 @@ pub struct ShaderGpu {
     pub bind: wgpu::BindGroup,
     active: Option<Arc<Prepared>>,
     programs: BTreeMap<String, Arc<Program>>,
-    /// Compiled programs keyed by WGSL hook text (content), shared by ids with the same
-    /// source and retained across revisions; value is (program, last use clock).
-    cache: BTreeMap<String, (Arc<Program>, u64)>,
+    /// Compiled programs keyed by (HDR colour target, WGSL hook text), shared by ids with the
+    /// same source and retained across revisions; value is (program, last use clock).
+    cache: BTreeMap<(bool, String), (Arc<Program>, u64)>,
     clock: u64,
     pub stats: PrepareStats,
     pub materials: BTreeMap<String, GpuMaterial>,
+    /// Build and use the pipelines for `hdr::HDR_FORMAT` (set by the renderer before `prepare`);
+    /// `prepared_hdr` = the target of the active programs.
+    pub hdr: bool,
+    prepared_hdr: bool,
 }
 impl ShaderGpu {
     pub fn new(
@@ -134,6 +138,8 @@ impl ShaderGpu {
             clock: 0,
             stats: PrepareStats::default(),
             materials: BTreeMap::new(),
+            hdr: false,
+            prepared_hdr: false,
         }
     }
 
@@ -147,6 +153,7 @@ impl ShaderGpu {
             .active
             .as_ref()
             .is_some_and(|active| Arc::ptr_eq(active, book))
+            && self.prepared_hdr == self.hdr
         {
             return Ok(());
         }
@@ -170,7 +177,8 @@ impl ShaderGpu {
         let mut compiled = 0;
         let mut programs = BTreeMap::new();
         for (id, hook) in &book.programs {
-            let program = match self.cache.get_mut(hook) {
+            let key = (self.hdr, hook.clone());
+            let program = match self.cache.get_mut(&key) {
                 Some((p, used)) => {
                     *used = self.clock;
                     p.clone()
@@ -178,7 +186,7 @@ impl ShaderGpu {
                 None => {
                     let p = Arc::new(self.compile(device, id, hook)?);
                     compiled += 1;
-                    self.cache.insert(hook.clone(), (p.clone(), self.clock));
+                    self.cache.insert(key, (p.clone(), self.clock));
                     p
                 }
             };
@@ -233,6 +241,7 @@ impl ShaderGpu {
         self.programs = programs;
         self.materials = materials;
         self.active = Some(book.clone());
+        self.prepared_hdr = self.hdr;
         self.stats = PrepareStats {
             compiled_programs: compiled,
             active_programs: self.programs.len(),
@@ -320,7 +329,11 @@ impl ShaderGpu {
                             entry_point: Some("fs_surface"),
                             compilation_options: Default::default(),
                             targets: &[Some(wgpu::ColorTargetState {
-                                format: self.format,
+                                format: if self.hdr {
+                                    crate::hdr::HDR_FORMAT
+                                } else {
+                                    self.format
+                                },
                                 blend: match blend_mode {
                                     0 => None,
                                     2 => Some(wgpu::BlendState {

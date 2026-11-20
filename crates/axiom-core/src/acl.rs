@@ -168,6 +168,8 @@ EDIT (any number, atomic):
   resource remove ID
   sky gradient|procedural|none    render.environment sky preset (+ ambient mode sky when no ambient);
                                   none removes the sky and a sky ambient (World ▸ Sky)
+  post antialiasing none|fxaa | post hdr|bloom on|off | post exposure|threshold|intensity|radius V | post none
+                                  render.environment.post: FXAA, HDR + ACES tone map, bloom (World ▸ POST)
   Later statements see earlier ones (create cube; create cube -> cube, cube/2).
 SEL: enemy/7 | enemy/* | entities[tag=enemy,has=core.health,id=boss*] | prefabs | resources[id=x]
   collections: entities resources prefabs scenes nodes choices rules widgets variables
@@ -455,6 +457,7 @@ enum Statement {
     ResourceCreate(String, Option<Value>),
     ResourceRemove(String),
     Sky(String),
+    Post(String, String),
     AddComponent(Box<Selection>, String, Option<Value>),
     Array(Box<Selection>, String, crate::ops::ArrayEdit),
     Reset(Box<Selection>, String),
@@ -1139,6 +1142,13 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "sky" => {
             ensure!(tokens.len() == 2, "use: sky gradient|procedural|none");
             Statement::Sky(arg(1)?.clone())
+        }
+        "post" => {
+            ensure!(
+                tokens.len() == 3 || (tokens.len() == 2 && tokens[1] == "none"),
+                "use: post antialiasing none|fxaa | post hdr|bloom on|off | post exposure|threshold|intensity|radius V | post none"
+            );
+            Statement::Post(arg(1)?.clone(), tokens.get(2).cloned().unwrap_or_default())
         }
         "add" => {
             ensure!(
@@ -2419,6 +2429,7 @@ pub fn run(
             Statement::ResourceCreate(id, value) => crate::ops::create_resource(w, r, &id, value),
             Statement::ResourceRemove(id) => crate::ops::remove_resource(w, &id),
             Statement::Sky(mode) => crate::ops::set_sky(w, r, &mode),
+            Statement::Post(setting, value) => crate::ops::set_post(w, r, &setting, &value),
             Statement::AddComponent(select, component, value) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_component(w, r, &ids, &component, value)),
             Statement::Array(select, f, edit) => crate::ops::edit_array(w, r, &select, &f, &edit),

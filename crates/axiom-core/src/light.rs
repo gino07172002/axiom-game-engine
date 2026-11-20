@@ -383,6 +383,8 @@ pub struct RenderEnvironment {
     pub fog: Option<Fog>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sky: Option<Sky>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<crate::post::PostProcess>,
 }
 
 fn rgb_ok(c: &[f32; 3]) -> bool {
@@ -428,6 +430,9 @@ impl RenderEnvironment {
         }
         if let Some(sky) = &self.sky {
             sky.validate()?;
+        }
+        if let Some(post) = &self.post {
+            post.validate()?;
         }
         if let Some(f) = &self.fog {
             ensure!(rgb_ok(&f.color), "fog color must be rgb in 0..1");
@@ -480,7 +485,8 @@ pub fn environment_schema() -> Value {
         "ambient": "optional; {mode: color, color: rgb, intensity 0..10} | {mode: gradient, sky, equator, ground: rgb, intensity 0..10} (Unity Trilight) | {mode: sky, intensity 0..10} (sky light: irradiance of the authored sky, requires sky). Omitted = legacy sky/ground hemisphere tinted by render.settings.accent",
         "fog": "optional {color: rgb, density 0..1}: exponential squared, 1 - exp(-(density*distance)^2). Omitted = legacy fog (density ~0.011)",
         "sky": "optional; {mode: gradient, zenith_color, horizon_color, ground_color: rgb, exponent 0.1..8 (default 1), intensity 0..8 (default 1)} | {mode: procedural, sun_size_degrees 0..10 (default 1.5, 0 = no disk), atmosphere 0..4 (default 1), ground_color rgb, exposure 0..8 (default 1)} (analytic, follows the first directional light). Omitted = the legacy screen-space background gradient. Orthographic views see one colour (the view direction)",
-        "edit": "sky gradient|procedural|none (ACL) = World ▸ Sky (editor): preset sky + ambient mode sky"
+        "post": crate::post::POST_SCHEMA,
+        "edit": "sky gradient|procedural|none (ACL) = World ▸ Sky (editor): preset sky + ambient mode sky; post antialiasing none|fxaa, post hdr|bloom on|off, post exposure|threshold|intensity|radius V, post none (ACL) = World ▸ POST row (editor)"
     })
 }
 

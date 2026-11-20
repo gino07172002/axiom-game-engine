@@ -47,6 +47,80 @@ fn pack_curves(e: &vfx::Emitter, u: &mut EmitterUniform) {
         }
     }
 }
+
+/// Sprite / model / ribbon pipelines (alpha and additive each) for colour `format` (the
+/// surface format, or `hdr::HDR_FORMAT` while HDR is on).
+fn draw_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+) -> Vec<wgpu::RenderPipeline> {
+    let mut pipelines = vec![];
+    for kind in ["sprite", "mesh", "ribbon"] {
+        for additive in [false, true] {
+            const ATTRS: [wgpu::VertexAttribute; 3] =
+                wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x4,2=>Float32x4];
+            pipelines.push(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(kind),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some(kind),
+                        compilation_options: Default::default(),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: 48,
+                            step_mode: if kind == "ribbon" {
+                                wgpu::VertexStepMode::Vertex
+                            } else {
+                                wgpu::VertexStepMode::Instance
+                            },
+                            attributes: &ATTRS,
+                        }],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some("fragment"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(if additive {
+                                wgpu::BlendState {
+                                    color: wgpu::BlendComponent {
+                                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                                        dst_factor: wgpu::BlendFactor::One,
+                                        operation: wgpu::BlendOperation::Add,
+                                    },
+                                    alpha: wgpu::BlendComponent::OVER,
+                                }
+                            } else {
+                                wgpu::BlendState::ALPHA_BLENDING
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: false,
+                        depth_compare: wgpu::CompareFunction::LessEqual,
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            );
+        }
+    }
+    pipelines
+}
+
 struct Draw {
     range: Range<u32>,
     mesh: bool,
@@ -61,6 +135,12 @@ pub struct VfxGpu {
     draw_bind: wgpu::BindGroup,
     draw_layout: wgpu::BindGroupLayout,
     pipelines: Vec<wgpu::RenderPipeline>,
+    /// Layout and module of the draw pipelines (their HDR variants are built on demand),
+    /// those variants and whether draws use them.
+    pipeline_layout: wgpu::PipelineLayout,
+    module: wgpu::ShaderModule,
+    hdr: Option<Vec<wgpu::RenderPipeline>>,
+    use_hdr: bool,
     ribbons: wgpu::Buffer,
     ribbon_count: u32,
     draws: Vec<Draw>,
@@ -189,68 +269,7 @@ impl VfxGpu {
             bind_group_layouts: &[&draw_layout],
             push_constant_ranges: &[],
         });
-        let mut pipelines = vec![];
-        for kind in ["sprite", "mesh", "ribbon"] {
-            for additive in [false, true] {
-                const ATTRS: [wgpu::VertexAttribute; 3] =
-                    wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x4,2=>Float32x4];
-                pipelines.push(
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some(kind),
-                        layout: Some(&layout),
-                        vertex: wgpu::VertexState {
-                            module: &module,
-                            entry_point: Some(kind),
-                            compilation_options: Default::default(),
-                            buffers: &[wgpu::VertexBufferLayout {
-                                array_stride: 48,
-                                step_mode: if kind == "ribbon" {
-                                    wgpu::VertexStepMode::Vertex
-                                } else {
-                                    wgpu::VertexStepMode::Instance
-                                },
-                                attributes: &ATTRS,
-                            }],
-                        },
-                        fragment: Some(wgpu::FragmentState {
-                            module: &module,
-                            entry_point: Some("fragment"),
-                            compilation_options: Default::default(),
-                            targets: &[Some(wgpu::ColorTargetState {
-                                format,
-                                blend: Some(if additive {
-                                    wgpu::BlendState {
-                                        color: wgpu::BlendComponent {
-                                            src_factor: wgpu::BlendFactor::SrcAlpha,
-                                            dst_factor: wgpu::BlendFactor::One,
-                                            operation: wgpu::BlendOperation::Add,
-                                        },
-                                        alpha: wgpu::BlendComponent::OVER,
-                                    }
-                                } else {
-                                    wgpu::BlendState::ALPHA_BLENDING
-                                }),
-                                write_mask: wgpu::ColorWrites::ALL,
-                            })],
-                        }),
-                        primitive: wgpu::PrimitiveState {
-                            cull_mode: None,
-                            ..Default::default()
-                        },
-                        depth_stencil: Some(wgpu::DepthStencilState {
-                            format: wgpu::TextureFormat::Depth32Float,
-                            depth_write_enabled: false,
-                            depth_compare: wgpu::CompareFunction::LessEqual,
-                            stencil: Default::default(),
-                            bias: Default::default(),
-                        }),
-                        multisample: Default::default(),
-                        multiview: None,
-                        cache: None,
-                    }),
-                );
-            }
-        }
+        let pipelines = draw_pipelines(device, &layout, &module, format);
         let ribbons = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("VFX ribbon strips"),
             size: 65536 * 48,
@@ -266,6 +285,10 @@ impl VfxGpu {
             draw_bind,
             draw_layout,
             pipelines,
+            pipeline_layout: layout,
+            module,
+            hdr: None,
+            use_hdr: false,
             ribbons,
             ribbon_count: 0,
             draws: vec![],
@@ -415,8 +438,28 @@ impl VfxGpu {
             pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
         }
     }
+    /// Draws into the HDR target from now on (`on`), building its pipeline variants on first
+    /// use. Returns the milliseconds spent building them (0 when they existed).
+    pub fn set_hdr(&mut self, device: &wgpu::Device, on: bool) -> f64 {
+        self.use_hdr = on;
+        if !on || self.hdr.is_some() {
+            return 0.0;
+        }
+        let started = std::time::Instant::now();
+        self.hdr = Some(draw_pipelines(
+            device,
+            &self.pipeline_layout,
+            &self.module,
+            crate::hdr::HDR_FORMAT,
+        ));
+        started.elapsed().as_secs_f64() * 1000.0
+    }
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: u32) -> (u32, u64) {
         let (mut calls, mut triangles) = (0, 0);
+        let pipelines = match &self.hdr {
+            Some(hdr) if self.use_hdr => hdr,
+            _ => &self.pipelines,
+        };
         pass.set_bind_group(
             0,
             &self.draw_bind,
@@ -424,13 +467,13 @@ impl VfxGpu {
         );
         pass.set_vertex_buffer(0, self.particles.slice(..));
         for d in &self.draws {
-            pass.set_pipeline(&self.pipelines[usize::from(d.mesh) * 2 + usize::from(d.additive)]);
+            pass.set_pipeline(&pipelines[usize::from(d.mesh) * 2 + usize::from(d.additive)]);
             pass.draw(0..if d.mesh { 36 } else { 6 }, d.range.clone());
             calls += 1;
             triangles += if d.mesh { 12 } else { 2 } * d.range.len() as u64;
         }
         if self.ribbon_count > 0 {
-            pass.set_pipeline(&self.pipelines[5]);
+            pass.set_pipeline(&pipelines[5]);
             pass.set_vertex_buffer(0, self.ribbons.slice(..));
             pass.draw(0..self.ribbon_count, 0..1);
             calls += 1;

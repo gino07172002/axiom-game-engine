@@ -246,3 +246,59 @@ fn world_window_cost_on_the_street_world() {
     assert_eq!(h.editor.world_panel.builds, 1);
     assert!(open.0.min(open2.0) - closed.0.max(closed2.0) < 16.0);
 }
+
+#[test]
+fn world_window_post_row_toggles_and_slider_write_through_the_shared_op() {
+    let start = World::empty("blank");
+    let registry = crate::installed_registry().authoring;
+    let mut h = Harness::new(start.clone());
+    h.editor.run_command("window.world").unwrap();
+    h.frame(vec![]);
+    // FXAA: one click = `post antialiasing fxaa`.
+    let clicked = h.click("world:post:aa:fxaa");
+    let edits = h.commit(clicked);
+    assert_eq!(
+        json(&edits),
+        json(&ops::set_post(&start, &registry, "antialiasing", "fxaa").unwrap())
+    );
+    h.frame(vec![]);
+    // Bloom (also turns HDR on) = `post bloom on`; the sliders appear.
+    let before = h.editor.world.clone();
+    let clicked = h.click("world:post:bloom");
+    let edits = h.commit(clicked);
+    assert_eq!(
+        json(&edits),
+        json(&ops::set_post(&before, &registry, "bloom", "on").unwrap())
+    );
+    h.frame(vec![]);
+    // Dragging the exposure slider writes once, on release, the same edit as the ACL verb.
+    let before = h.editor.world.clone();
+    let rect = h.rect("world:post:exposure");
+    let from = rect.left_center() + vec2(rect.height() * 0.5, 0.0);
+    let to = from + vec2(40.0, 0.0);
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    assert!(h
+        .frame(vec![Event::PointerMoved(from), button(from, true)])
+        .is_empty());
+    assert!(h.frame(vec![Event::PointerMoved(to)]).is_empty());
+    let draft = h.editor.world_panel.post_draft[0];
+    assert!(draft > 1.0, "dragged right: {draft}");
+    let actions = h.frame(vec![button(to, false)]);
+    let edits = h.commit(actions);
+    let value = format!("{draft:.2}");
+    assert_eq!(
+        json(&edits),
+        json(&ops::set_post(&before, &registry, "exposure", &value).unwrap())
+    );
+    let post = &h.editor.world.resources["render.environment"]["post"];
+    assert_eq!(post["antialiasing"], "fxaa");
+    assert_eq!(
+        post["hdr"]["exposure"].as_f64().unwrap(),
+        value.parse::<f64>().unwrap()
+    );
+}

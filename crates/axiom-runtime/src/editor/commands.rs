@@ -359,6 +359,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "RESOURCE",
     ),
     a("world.sky", "Sky…", "World", "gradient|procedural|none"),
+    a(
+        "world.post",
+        "Post Processing…",
+        "World",
+        "antialiasing none|fxaa | hdr on|off | bloom on|off | exposure|threshold|intensity|radius V | none",
+    ),
     a("event.declare", "Declare Event…", "World", "NAME"),
     c(
         "world.migrate_camera_blockers",
@@ -689,6 +695,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "world.resource_create",
     "world.resource_remove",
     "world.sky",
+    "world.post",
     "event.declare",
     "world.migrate_camera_blockers",
     "game.main_camera",
@@ -1042,6 +1049,7 @@ impl Editor {
             | "world.resource_create"
             | "world.resource_remove"
             | "world.sky"
+            | "world.post"
             | "event.declare"
             | "world.migrate_camera_blockers"
                 if busy =>
@@ -1976,6 +1984,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "world.resource_create": "resource create ID [JSON]",
                 "world.resource_remove": "resource remove ID",
                 "world.sky": "sky gradient|procedural|none (World ▸ Sky; tune: set resources[id=render.environment] sky/… VALUE)",
+                "world.post": "post antialiasing none|fxaa | post hdr|bloom on|off | post exposure|threshold|intensity|radius V | post none (World ▸ POST row: toggles and sliders)",
                 "event.declare": "event declare NAME (Problems: Declare event on an undeclared-event error)",
                 "inspector.multi_edit": "set entities[id=a,id=b] FIELD VALUE (Inspector with several objects selected)",
                 "inspector.rotation": "rotate SEL x,y,z (Euler degrees) or create … rot=x,y,z",

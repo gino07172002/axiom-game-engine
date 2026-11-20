@@ -113,7 +113,7 @@ fn toon_fragment(color:vec4<f32>,n:vec3<f32>,world:vec3<f32>,alpha:f32)->vec4<f3
  lit+=rim.rgb*rim.a*pow(1.0-clamp(dot(n,view),0.0,1.0),d.style.x);
  if !authored {return vec4<f32>(lit,alpha);}
  lit=axiom_fog(lit,world);
- return vec4<f32>(lit/(lit+vec3<f32>(0.7)),alpha);
+ return vec4<f32>(axiom_tone(lit),alpha);
 }
 @fragment fn fragment_main(v:Out,@builtin(front_facing) front:bool)->@location(0) vec4<f32>{
  var color=textureSample(base,base_sampler,v.uv)*d.color;
@@ -140,7 +140,7 @@ fn toon_fragment(color:vec4<f32>,n:vec3<f32>,world:vec3<f32>,alpha:f32)->vec4<f3
   }
   var lit=diffuse*(axiom_ambient(n)+direct+axiom_lighting(v.world,n))+reflection;
   lit=axiom_fog(lit,v.world);
-  return vec4<f32>(lit/(lit+vec3<f32>(0.7)),alpha);
+  return vec4<f32>(axiom_tone(lit),alpha);
  }
  // Legacy look (no authored directional light or environment): flat key light.
  let lighting=0.67+0.33*max(dot(n,normalize(vec3<f32>(-0.4,0.8,0.5))),0.);
