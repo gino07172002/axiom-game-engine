@@ -259,7 +259,7 @@ impl World {
         crate::light::validate_budget(
             entities
                 .iter()
-                .filter_map(|e: &CompiledEntity| e.light.as_ref().map(|l| l.kind)),
+                .filter_map(|e: &CompiledEntity| e.light.as_ref().map(|l| (l.kind, l.shadows))),
         )
         .map_err(|err| Diagnostic::error("light_budget", "/entities", format!("{err:#}")))?;
         let zones: Vec<(&str, &crate::trigger::TriggerZone)> = entities

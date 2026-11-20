@@ -1,6 +1,8 @@
 // Shared per-view globals and lighting (prepended to scene, mesh and VFX shaders).
 // Local light kinds (direction_kind.w): 0 point, 1 spot, 2 area rect, 3 area disk.
-// params: spot = (cos inner half-angle, cos outer half-angle); area = (half width/radius, half height).
+// params: spot = (cos inner half-angle, cos outer half-angle, shadow face, shadow texel);
+// point = (0, 0, shadow face, shadow texel) (shadow_local.wgsl; face 0 = unshadowed);
+// area = (0, 0, half width/radius, half height).
 // axis = (area right axis xyz, point/spot source radius).
 struct LocalLight {position_range:vec4<f32>,color_intensity:vec4<f32>,direction_kind:vec4<f32>,params:vec4<f32>,axis:vec4<f32>}
 // direction_shadow.xyz points TOWARD the light; w = 1 when this sun samples the shadow map.
@@ -85,6 +87,8 @@ fn axiom_lighting(p:vec3<f32>,n:vec3<f32>)->vec3<f32> {
   var cone=1.0;
   if kind>0.5&&kind<1.5 {cone=smoothstep(light.params.y,light.params.x,dot(-l,axis));}
   if kind>1.5 {cone=max(dot(-l,axis),0.0);}
-  color+=light.color_intensity.rgb*light.color_intensity.w*falloff*ndl*cone;
+  var visible=1.0;
+  if falloff*ndl*cone>0.0 {visible=axiom_local_shadow(light,p,n);}
+  color+=light.color_intensity.rgb*light.color_intensity.w*falloff*ndl*cone*visible;
  }return color;
 }

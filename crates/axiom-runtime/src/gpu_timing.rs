@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub enum Section {
     VfxCompute,
     Shadows,
+    LocalShadows,
     World,
     VfxDraw,
     Post,
@@ -22,12 +23,13 @@ pub enum Section {
     Ui,
 }
 
-pub const SECTIONS: usize = 7;
+pub const SECTIONS: usize = 8;
 
 impl Section {
     pub const ALL: [Section; SECTIONS] = [
         Section::VfxCompute,
         Section::Shadows,
+        Section::LocalShadows,
         Section::World,
         Section::VfxDraw,
         Section::Post,
@@ -39,6 +41,7 @@ impl Section {
         match self {
             Section::VfxCompute => "vfx_compute",
             Section::Shadows => "shadows",
+            Section::LocalShadows => "local_shadows",
             Section::World => "world",
             Section::VfxDraw => "vfx_draw",
             Section::Post => "post",
@@ -55,8 +58,8 @@ pub struct GpuFrame {
     pub total: f32,
 }
 
-/// Timestamps one frame may write: the start, VFX compute, shadows, three per camera view
-/// (`MAX_CAMERAS` = 8) and two interface passes is 29.
+/// Timestamps one frame may write: the start, VFX compute, sun and local shadows, three per
+/// camera view (`MAX_CAMERAS` = 8) and two interface passes is 30.
 const QUERIES: u32 = 32;
 /// Frames in flight at most (readbacks usually complete 1–3 frames later).
 const SLOTS: usize = 4;
@@ -300,6 +303,12 @@ impl Slot {
     }
 }
 
+/// `AXIOM_GPU_TIMING=1`: a Play run (no editor) times every frame and prints the means with
+/// the `--smoke-frames` result (QA measurements).
+pub fn requested_by_env() -> bool {
+    std::env::var_os("AXIOM_GPU_TIMING").is_some_and(|v| v == "1")
+}
+
 fn off_by_env() -> bool {
     std::env::var_os("AXIOM_GPU_TIMING").is_some_and(|v| v == "0")
 }
@@ -362,7 +371,7 @@ mod tests {
         assert!(frame(&[10], &sections, 1.0).is_none());
         assert_eq!(
             Section::ALL.map(|s| s as usize),
-            [0, 1, 2, 3, 4, 5, 6],
+            [0, 1, 2, 3, 4, 5, 6, 7],
             "ALL indexes GpuFrame::ms"
         );
     }

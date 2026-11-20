@@ -20,15 +20,20 @@ use glam::{Mat4, Vec3};
 pub const SCENE_WGSL: &str = concat!(
     include_str!("lighting.wgsl"),
     include_str!("shadow.wgsl"),
+    include_str!("shadow_local.wgsl"),
     include_str!("scene.wgsl")
 );
 pub const MESH_WGSL: &str = concat!(
     include_str!("lighting.wgsl"),
     include_str!("shadow.wgsl"),
+    include_str!("shadow_local.wgsl"),
     include_str!("mesh.wgsl")
 );
-pub const VFX_DRAW_WGSL: &str =
-    concat!(include_str!("lighting.wgsl"), include_str!("vfx_draw.wgsl"));
+pub const VFX_DRAW_WGSL: &str = concat!(
+    include_str!("lighting.wgsl"),
+    include_str!("shadow_local_none.wgsl"),
+    include_str!("vfx_draw.wgsl")
+);
 
 pub const GPU_LOCAL_LIGHTS: usize = 32;
 pub const GPU_SUNS: usize = 4;
@@ -249,6 +254,8 @@ pub struct PackedLighting {
     pub authored: bool,
     /// The authored sky (`SkyParams::NONE` = legacy screen-space background).
     pub sky: SkyParams,
+    /// Spot / point shadow casters and their face matrices (shadow_local.rs).
+    pub local_shadows: crate::shadow_local::LocalShadowPlan,
 }
 
 impl PackedLighting {
@@ -320,13 +327,15 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
     };
 
     let mut locals = [GpuLocalLight::zeroed(); GPU_LOCAL_LIGHTS];
+    let local_shadows = crate::shadow_local::plan(&frame.scene_lights);
     let authored_locals = frame
         .scene_lights
         .iter()
-        .filter(|l| l.light.kind != LightKind::Directional)
-        .map(|s| {
+        .enumerate()
+        .filter(|(_, l)| l.light.kind != LightKind::Directional)
+        .map(|(i, s)| {
             let l = &s.light;
-            let (kind, params) = match l.kind {
+            let (kind, mut params) = match l.kind {
                 LightKind::Spot => {
                     let cone = l.spot.expect("validated spot");
                     let outer = (cone.outer_degrees.to_radians() * 0.5).cos();
@@ -346,6 +355,11 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
                 }
                 _ => (KIND_POINT, [0.0; 4]),
             };
+            // Spot / point casters: params.zw = (1 + first shadow face, texel size per meter).
+            if let Some([face, texel]) = local_shadows.params(i) {
+                params[2] = face;
+                params[3] = texel;
+            }
             GpuLocalLight {
                 position_range: [
                     s.position.x,
@@ -441,6 +455,7 @@ pub fn pack(frame: &RenderFrame) -> PackedLighting {
         fog,
         authored,
         sky: sky_params,
+        local_shadows,
     }
 }
 
@@ -614,6 +629,51 @@ mod tests {
         assert_eq!(p.locals[2].axis[..3], [1.0, 0.0, 0.0]);
         assert_eq!(p.locals[3].direction_kind[3], KIND_DISK);
         assert_eq!(p.locals[3].params[2], 1.5);
+    }
+
+    #[test]
+    fn shadow_casters_carry_their_face_and_texel_size() {
+        let mut f = frame();
+        f.scene_lights = vec![
+            light(
+                "sun",
+                json!({"kind":"directional","shadows":true}),
+                Vec3::ZERO,
+                -Vec3::Y,
+            ),
+            light(
+                "spot",
+                json!({"kind":"spot","range":8,"shadows":true,"spot":{"inner_degrees":30,"outer_degrees":60}}),
+                Vec3::new(0.0, 4.0, 0.0),
+                -Vec3::Y,
+            ),
+            light(
+                "lamp",
+                json!({"kind":"point","range":5,"shadows":true}),
+                Vec3::ONE,
+                -Vec3::Z,
+            ),
+            light(
+                "plain",
+                json!({"kind":"point","range":5}),
+                Vec3::ONE,
+                -Vec3::Z,
+            ),
+        ];
+        let p = pack(&f);
+        // Scene light indices 1 and 2 are the casters; GPU slots skip the directional light.
+        assert_eq!(p.local_shadows.spot, [Some(1), None]);
+        assert_eq!(p.local_shadows.point, [Some(2)]);
+        assert_eq!(p.local_shadows.face_count(), 7);
+        assert_eq!(p.locals[0].params[2], 1.0);
+        assert!(p.locals[0].params[3] > 0.0);
+        // Spot cone parameters are untouched.
+        assert!((p.locals[0].params[1] - 30f32.to_radians().cos()).abs() < 1e-6);
+        assert_eq!(p.locals[1].params[2], 3.0);
+        assert!((p.locals[1].params[3] - 2.0 * (1.0 + 6.0 / 512.0) / 512.0).abs() < 1e-7);
+        assert_eq!(p.locals[2].params, [0.0; 4], "unshadowed lights keep zero");
+        // Without casters nothing changes.
+        assert_eq!(pack(&frame()).local_shadows.face_count(), 0);
     }
 
     #[test]

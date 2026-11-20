@@ -118,13 +118,49 @@ fn disabled_and_scene_inactive_lights_are_not_drawn() {
 }
 
 #[test]
+fn shadow_lab_spot_and_point_lights_cast() {
+    let mut runtime = WorldRuntime::new(pack("shadow-lab"), 1, installed_registry()).unwrap();
+    for _ in 0..4 {
+        runtime.step(&ActionMap::default());
+    }
+    let frame = runtime.render_frame();
+    let packed = lighting::pack(&frame);
+    let id = |i: Option<usize>| i.map(|i| frame.scene_lights[i].id.as_str());
+    assert_eq!(packed.local_shadows.spot.map(id), [Some("spot/key"), None]);
+    assert_eq!(packed.local_shadows.point.map(id), [Some("point/lamp")]);
+    assert_eq!(packed.local_shadows.face_count(), 7);
+    assert_eq!(packed.local_shadows.ignored, 0);
+    // The skinned fighter is a mesh caster in the frame.
+    assert!(frame.meshes.iter().any(|m| m.id == "fighter"));
+    // Turning shadows off removes every shadow pass.
+    let mut world = pack("shadow-lab");
+    for e in &mut world.entities {
+        if let Some(light) = e.components.get_mut("render.light") {
+            light["shadows"] = false.into();
+        }
+    }
+    let runtime = WorldRuntime::new(world, 1, installed_registry()).unwrap();
+    let packed = lighting::pack(&runtime.render_frame());
+    assert_eq!(packed.local_shadows.face_count(), 0);
+    assert!(packed.locals.iter().all(|l| l.params[2] == 0.0));
+}
+
+#[test]
 fn invalid_light_content_is_rejected_by_the_store() {
     use axiom_core::{Request, Store};
     let mut store = Store::memory_with(installed_registry().authoring, pack("light-lab")).unwrap();
     for (script, reason) in [
         (
-            "set statue/spot render.light/shadows true",
-            "spot light shadows not supported yet",
+            "set sign/light render.light/shadows true",
+            "area light shadows not supported yet",
+        ),
+        (
+            "set statue/spot render.light/shadows true\nset statue/spot render.light/spot/outer_degrees 170",
+            "spot light shadows require outer_degrees <= 160",
+        ),
+        (
+            "set lamp/west/light render.light/shadows true\nset lamp/east/light render.light/shadows true",
+            "point light shadow budget exceeded (2 > 1",
         ),
         (
             "set moon render.light/range 4",

@@ -1,7 +1,7 @@
 # 燈光系統(`render.light` 與 `render.environment`)
 
 參考 Blender / Unity 的燈光類型。燈光是一般元件,和其他內容一樣走交易協定(`apply` / ACL / 編輯器),不需要改 Rust。
-範例內容包:`content/light-lab`(夜間廣場,`Play Light Lab.cmd`)。
+範例內容包:`content/light-lab`(夜間廣場,`Play Light Lab.cmd`);`content/shadow-lab`(聚光燈 / 點光源陰影)。
 
 ## `render.light`(元件,capability `render`)
 
@@ -58,11 +58,22 @@
 | 種類 | 狀態 |
 |---|---|
 | directional | 第一盞啟用的 directional 可投射陰影(2048² PCF,和舊版相同) |
-| spot | **尚未支援**,`shadows: true` 會被拒絕:`spot light shadows not supported yet` |
-| point | **尚未支援**,`shadows: true` 會被拒絕:`point light shadows not supported yet` |
-| area | **尚未支援**,`shadows: true` 會被拒絕:`area light shadows not supported yet` |
+| spot | `shadows: true`:一張 **1024²** 透視陰影貼圖(涵蓋外錐角 + PCF 邊距),3×3 PCF。外錐角必須 ≤ 160°(`spot light shadows require outer_degrees <= 160`) |
+| point | `shadows: true`:**cube 陰影**,6 個 90° 透視面,每面 **512²**,3×3 PCF(存成 2D 陣列的 6 層,shader 依主軸選面) |
+| area | **不支援**,`shadows: true` 會被拒絕:`area light shadows not supported yet` |
 
-聚光燈陰影的成本量測見下方「量測」。點光源與面光源也不會被物體遮擋(光會穿過牆)。
+- **預算**(`World::compile` 檢查,和燈光數量預算一樣計算所有帶 `render.light` 的實體,不論啟用與否):`shadows: true` 的 spot 最多 **2** 盞、point 最多 **1** 盞;超過時交易失敗(`light_budget`:`spot light shadow budget exceeded (3 > 2)` / `point light shadow budget exceeded (2 > 1)`)。directional 的 `shadows` 不計入(只有第一盞會投影)。
+- 投影的燈光:啟用中、在作用場景裡、`shadows: true` 的 spot / point,依實體編寫順序。編輯器 Inspector 尚未提交的草稿預覽不經過 compile,所以畫面上可能暫時超過預算:超出的燈光照明但不投影,`observe` 的 `local_shadows.ignored` 會計數。
+- 誰會遮光 / 被遮:方塊部件(不透明,和平行光陰影同一條規則:自訂材質 alpha opaque / inherit)與匯入 / 程序網格的不透明 primitive 都會**投射**;方塊、網格(含 `render.toon`)、自訂材質的 `axiom_local_light` 都會**接收**。網格投影到局部燈光陰影**不需要**編寫平行光(和太陽陰影不同:局部陰影是新內容,沒有舊畫面要保留)。VFX 粒子不接收局部陰影,也不投影。每個 view 自己的 instance(編輯器輔助線)不投影。
+- 偏移:shader 沿法線移 1.5 個陰影貼圖 texel、再往燈光方向移 1 個 texel(以該點到燈光的距離換算成公尺),加上深度 pass 本身的 slope bias(和太陽相同)。很靠近燈光的牆角會有些許 peter-panning;燈光放在物體**裡面**時會被該物體完全擋住(近平面 = range 的 1%,夾在 0.01–0.1 m)。
+- 每幀都重畫有投影燈光的陰影面(沒有偵測靜態場景):要正確偵測就得比對每幀所有方塊 instance、網格變形與燈光矩陣,而角色、轉動的方塊、VFX 幾乎每幀都在變;量測見下方「量測(聚光燈 / 點光源陰影)」。沒有投影燈光時不跑任何 pass,也不配置貼圖。
+- 記憶體:第一次出現投影燈光時才配置 spot 陣列(1024² × 2 層 Depth32,8 MiB)與 point 陣列(512² × 6 層,6 MiB),之後保留;之前綁的是 1×1 佔位貼圖。陰影 pass 重用平行光的兩條深度 pipeline(每個面把矩陣寫進相機 globals 後面的額外槽位),**沒有新增 pipeline 變體**;陰影貼圖大小與視窗無關,所以改變視窗大小不影響。
+- `observe` 的 `metrics.local_shadows`(只在有投影燈光的 GPU 執行時出現):`casters`(id、kind)、`faces`(這幀的深度 pass 數)、`ignored`、`resolution`。GPU 時間在 Profiler(`editor.debug.profiler.gpu.mean_ms.local_shadows`),或 Play 時設 `AXIOM_GPU_TIMING=1` 搭配 `--smoke-frames`,最後的 JSON 會有 `gpu_timing.mean_ms`。
+- 範例:`content/shadow-lab`(聚光燈照著角色與方塊、點光源在方塊之間、牆後的箱子測試漏光)。
+
+點光源為什麼用 cube 不用雙拋物面(dual-paraboloid):雙拋物面只要 2 個 pass,但投影是非線性的,只在頂點上做;這個引擎的場景大多是低面數方塊(一面牆每面只有 2 個三角形),大三角形在拋物面空間裡會被「拉直」,陰影邊緣明顯錯位,除非把幾何細分。cube 的 6 個透視面是線性投影,方塊與網格都正確;代價是 6 個深度 pass,量測見下方。
+
+面光源仍然不會被物體遮擋(光會穿過牆);`shadows: false` 的點光源 / 聚光燈也一樣。
 
 ## `render.environment`(資源,capability `render`)
 
@@ -118,6 +129,7 @@
   - **接收** sun 0 的陰影(同一張 2048² 陰影貼圖、同樣的 3×3 PCF;網格的 camera bind group 多了陰影貼圖與比較取樣器,自訂材質的 `SurfaceInput.shadow` 也是實際值);
   - **投射**陰影:不透明的 primitive(材質 alpha opaque,或自訂材質 alpha opaque)在 sun depth pass 畫進陰影貼圖(不剔除背面,深度偏移和方塊相同);mask / blend 不投射。自訂材質的 `vertex_offset` 不影響投影(陰影用未位移的幾何)。
 - 自訂材質(`render.shaders`):`SurfaceInput.diffuse` / `shadow` 改成第一盞 directional(或預設太陽)的值;`axiom_local_light(p, n)` 現在包含編寫的 point / spot / area 光和 VFX 光源。
+- 聚光燈 / 點光源陰影這一版(W3d):沒有投影局部燈光的內容包畫面不變。1920×1080 smoke 截圖(60 幀)改動前後逐像素比對:plaza、street、light-lab 0 個像素不同;fps 只有右上角 18×13 的 FPS 數字區(151 個像素,每次執行都會變)。
 
 ## 編輯器與無頭操作
 
@@ -131,6 +143,8 @@
 Gizmo(場景工具列 Gizmos 開關,隱藏的物件不畫):directional = 小圓 + 箭頭(標 SUN);point = 三個軸向的 range 圓(有 source_radius 再加一個小圓);spot = 外錐(邊緣在 range 球面上)+ 較暗的內錐圓 + 光軸;area = 矩形 / 圓盤外框 + 法線。停用的燈光畫暗色,選取中的畫白色。Hierarchy 標籤 `LIGHT`。
 
 ## 量測(聚光燈陰影要不要做)
+
+> 歷史紀錄:當時決定不做;W3d 已實作聚光燈 / 點光源陰影,新量測見文末「量測(聚光燈 / 點光源陰影,W3d)」。
 
 先量現有平行光陰影的成本,當作「多一張陰影貼圖」的代價估計(聚光燈陰影同樣是一個深度 pass 加上 PCF 取樣)。
 
@@ -158,3 +172,17 @@ Gizmo(場景工具列 Gizmos 開關,隱藏的物件不畫):directional = 小圓 
 | 網格投影 pass(1 個 2466 頂點的角色)vs 略過 | 6.41 ms | 6.44 ms | 測不出來 | 3/7 |
 
 結論:反射與網格投影在這個場景落在雜訊內;天空背景大約多 2 ms / 幀的量級(第二輪只有 4/7 回合較慢,不是穩定的結果)。把天空改成在不透明幾何之後畫沒有量到改善,保留它是因為只算看得到的像素、不改變畫面。沒有量 GPU 時間戳(這是整個 process 的牆鐘時間差);CPU 端天空光積分每幀 256 個方向,沒有單獨量。
+
+## 量測(聚光燈 / 點光源陰影,W3d)
+
+- 環境:**debug build**、NVIDIA GeForce MX150 / Vulkan、`AXIOM_WINDOW_SIZE=1920x1080` 隱藏視窗、`content/shadow-lab`(13 個實體:10 個方塊部件 + 1 個 2466 頂點的骨架角色)。**同時有其他代理在編譯並使用同一張 GPU**。
+- 方法:GPU timestamp(`AXIOM_GPU_TIMING=1` + `--smoke-frames 300`,每個 process 量到 295 幀的平均;timestamp 在 pass 之間,是編碼器時間點,不是精確的單一 pass 時間)。四種設定(兩盞都投影 / 只有 spot / 只有 point / 都不投影)各用一個隔離 DB,交錯 3 回合(順序 ABCD、DCBA、ABCD),取中位數。
+
+| 設定 | `local_shadows` 每回合(ms) | 中位數 | `world` 每回合(ms) |
+|---|---|---|---|
+| spot + point(7 個面) | 0.661 / 0.341 / 0.307 | **0.34 ms** | 14.7 / 6.5 / 6.1 |
+| 只有 spot(1 個 1024² 面) | 0.270 / 0.118 / 0.142 | **0.14 ms** | 11.5 / 4.2 / 5.9 |
+| 只有 point(6 個 512² 面) | 0.259 / 0.241 / 0.141 | **0.24 ms** | 13.9 / 12.6 / 7.1 |
+| 都不投影 | 0 / 0 / 0(不跑 pass) | 0 | 11.9 / 11.6 / 3.5 |
+
+結論:陰影深度 pass 本身在這個場景每幀約 0.1–0.3 ms(debug);point 的 6 個 512² 面(共 1.57 M texel)和一個 1024² spot(1.05 M texel)同一量級。取樣端(world pass 裡每個像素多 9 次比較取樣)被 GPU 共用的雜訊蓋過:同一設定的 world 時間在回合之間差到 3 倍,**無法宣稱**有或沒有差。和上面「聚光燈陰影要不要做」的舊量測(整個 process 牆鐘差,2048² 太陽陰影在 rts-bench 約 +0.9 ms / 幀)方法不同、不能直接相減;舊量測擔心的「點光源 6 倍成本」在這裡沒有出現,因為每面只有 512²、場景三角形很少。大場景(上千個方塊)時每個面都要畫全部投影物,成本會隨面數 × 物件數成長(沒有逐面剔除),預算(2 spot + 1 point = 最多 8 個面)就是為此設的上限。沒有量 release。

@@ -48,3 +48,13 @@
 同 `docs/plan-packaging.zh-TW.md`:各工作線在本檔下方寫「### W3x 執行補記」(做了什麼、偏離、證據),整合者寫「整合補記」與 WORKLOG。
 
 ## 執行補記
+
+### W3d 執行補記
+
+- **做了什麼**:`render.light` 的 spot / point `shadows: true` 可用(area 仍拒絕)。spot = 一張 1024² 透視陰影貼圖;point = cube 陰影(6 個 90° 透視面,每面 512²,存成 2D 陣列層,shader 依主軸選面);3×3 PCF,法線 + 朝燈光方向的線性偏移。新檔 `shadow_local.rs`(投影燈光挑選、矩陣、GPU 貼圖 / pass、observe)、`shadow_local.wgsl`、`shadow_local_none.wgsl`(VFX 粒子不接收);共用檔只做小改:`lighting.rs`(pack 填 `params.zw`)、`lighting.wgsl`(局部光乘可見度)、`render.rs`(globals buffer 多 8 個槽、bindings 3–5、陰影面 pass、`scene_bind` helper)、`mesh_render.rs`(camera group 多 3 個 binding、`draw_shadow` 帶 offset)、`gpu_timing.rs`(新區段 `local_shadows`)、`app.rs`(observe `local_shadows`、`AXIOM_GPU_TIMING=1` 的 Play 計時)。
+- **預算**:`World::compile`(`light::validate_budget` 改收 `(kind, shadows)`)最多 2 spot + 1 point 投影;`RenderLight::validate` 拒絕投影 spot 的 `outer_degrees > 160`。錯誤是可恢復的交易錯誤(`light_budget`)。renderer 另外在執行期上限(編輯器草稿預覽不經 compile),超出的燈光照明不投影並計入 `observe` `local_shadows.ignored`。
+- **選擇 cube 而非雙拋物面**:雙拋物面的非線性投影只在頂點上做,本引擎多為低面數方塊(大三角形),陰影邊會錯位;cube 6 個透視面是線性的。量到 point 的 6 個 512² 面 GPU 時間和 1 張 1024² spot 同一量級(見下),沒有理由為省 pass 而接受錯誤的陰影。
+- **偏離 / 限制**:沒有新增 `shadow_resolution` / bias 欄位(固定解析度,所以不需要新 ops / ACL / parity test,`docs/editor-parity.zh-TW.md` 加了說明列);不偵測靜態場景,有投影燈光時每幀重畫(正確偵測需比對全部 instance、網格變形、燈光矩陣,成本與風險都不低,量到的 pass 時間 0.1–0.3 ms);沒有逐面剔除(大場景每面畫全部投影物);陰影貼圖第一次需要時才配置(spot 8 MiB + point 6 MiB),之後不釋放;VFX 粒子不接收也不投射局部陰影;timestamp 是 pass 之間的時間點;新增 QA 環境變數 `AXIOM_GPU_TIMING=1`(只影響沒有編輯器的 Play,最後 JSON 多 `gpu_timing`)。`effects-smoke-test` 最後 900 幀 / 60 s 步驟在這台 MX150 逾時(已知,未放寬);前面 36 站截圖、live edit、retry、vertex pipeline 復原都通過。
+- **證據**:新內容包 `content/shadow-lab`。1920×1080 GPU 截圖(debug):shadows on —— 聚光燈下柱子與骨架角色在地上投出陰影,點光源讓柱子、兩個箱子投出放射狀長影;off —— 同場景沒有任何局部陰影。牆測試(俯視牆兩側):off 時牆後地面有暖色光暈、牆後箱子頂面被照亮;on 時牆後地面與箱子全暗,只有牆端以外的地面受光。預設內容 A/B(改動前 exe vs 改動後,1920×1080,60 幀):plaza、street、light-lab 0 像素不同;fps 只有右上角 FPS 數字區 151 像素(每次執行都會變)。`observe` 回報 `local_shadows {casters:[spot/key spot, point/lamp point], faces:7, ignored:0}`;關掉陰影後該欄位消失。
+- **量測**(debug,MX150,1920×1080,GPU timestamp,`content/shadow-lab`,4 設定交錯 3 回合,每次 295 幀;同時有其他代理使用 GPU):`local_shadows` 中位數 spot + point 0.34 ms、只 spot 0.14 ms、只 point 0.24 ms、關閉 0;world pass 回合間差到 3 倍,取樣端成本無法宣稱。和 `docs/lighting.zh-TW.md` 先前的牆鐘量測(2048² 太陽陰影約 +0.9 ms / 幀,rts-bench)方法不同,不直接比較。沒有量 release。
+- **Gate**:fmt 乾淨;clippy `-D warnings` 乾淨;`cargo test --workspace --no-fail-fast` 855 過 / 0 失敗 / 5 ignored(基準 848 + 7 新測試);m0-smoke PASS;editor-smoke ok:true;editor-world-parity identical:true(1→13);street-editor-parity identical:true(8→16);effects-smoke 見上(已知逾時)。

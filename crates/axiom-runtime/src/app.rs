@@ -141,6 +141,9 @@ struct App {
     game_style: Arc<egui::Style>,
     /// Seconds since the editor's GPU allocator readout was refreshed (every 2 s).
     gpu_alloc_elapsed: f32,
+    /// Play without editor under `AXIOM_GPU_TIMING=1`: summed section ms, summed total ms and
+    /// measured frames (reported with the `--smoke-frames` result).
+    play_gpu: Option<([f64; crate::gpu_timing::SECTIONS], f64, u64)>,
 }
 
 /// Play-in-editor debug overlay, projected through the first active game view.
@@ -803,6 +806,11 @@ impl App {
             game_pointer: false,
             game_style,
             gpu_alloc_elapsed: f32::INFINITY,
+            play_gpu: crate::gpu_timing::requested_by_env().then_some((
+                [0.0; crate::gpu_timing::SECTIONS],
+                0.0,
+                0,
+            )),
         })
     }
 
@@ -1630,6 +1638,9 @@ impl App {
                     "shader_gpu".into(),
                     serde_json::json!({"last":stats,"budget_pipelines":crate::shader_gpu::MAX_PIPELINE_VARIANTS}),
                 );
+            }
+            if let Some(shadows) = renderer.local_shadows_observation() {
+                observation.metrics.insert("local_shadows".into(), shadows);
             }
         }
         observation
@@ -2669,6 +2680,17 @@ impl App {
                     editor.vram = Some(renderer.vram.read());
                 }
             }
+        } else if let (Some((sums, total, frames)), Some(renderer)) =
+            (&mut self.play_gpu, &mut self.renderer)
+        {
+            renderer.timer.set_enabled(true);
+            renderer.timer.take(|frame| {
+                for (sum, ms) in sums.iter_mut().zip(frame.ms) {
+                    *sum += f64::from(ms);
+                }
+                *total += f64::from(frame.total);
+                *frames += 1;
+            });
         }
         // Proposals load immediately at startup / after a resolve, then follow the poll.
         let proposals_unknown = self
@@ -3163,10 +3185,21 @@ impl App {
                 .renderer
                 .as_ref()
                 .map(|r| crate::measure::gpu_memory(&r.device));
-            println!(
-                "{}",
-                serde_json::json!({"ok":true,"frames":self.frames,"gpu":self.ui.gpu,"gpu_memory":gpu_memory,"process_memory":crate::measure::process_memory(),"observation":obs,"screenshot":self.options.screenshot})
-            );
+            let mut result = serde_json::json!({"ok":true,"frames":self.frames,"gpu":self.ui.gpu,"gpu_memory":gpu_memory,"process_memory":crate::measure::process_memory(),"observation":obs,"screenshot":self.options.screenshot});
+            if let Some((sums, total, frames)) = &self.play_gpu {
+                let n = (*frames).max(1) as f64;
+                let unavailable = self.renderer.as_ref().and_then(|r| r.timer.unavailable());
+                result["gpu_timing"] = serde_json::json!({
+                    "frames": frames,
+                    "unavailable": unavailable,
+                    "total_mean_ms": total / n,
+                    "mean_ms": crate::gpu_timing::Section::ALL
+                        .iter()
+                        .map(|s| (s.name().to_owned(), serde_json::json!(sums[*s as usize] / n)))
+                        .collect::<serde_json::Map<_, _>>(),
+                });
+            }
+            println!("{result}");
             event_loop.exit();
         }
         Ok(())
