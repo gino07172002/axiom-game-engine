@@ -1319,6 +1319,14 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// Object ▸ Add Joint (`object.joint ARGS` = `ACL: physics SEL joint ARGS`, the same parser).
+    pub(super) fn joint_selection(&mut self, arg: &str) -> Option<Action> {
+        let tokens: Vec<&str> = arg.split_whitespace().collect();
+        let result = ops::parse_joint(&tokens)
+            .and_then(|joint| ops::add_joint(&self.world, &self.selection(), &joint));
+        self.op_write(result, None)
+    }
+
     /// Object ▸ Add Nav Agent (`ACL: nav SEL agent [speed=] [radius=]`).
     pub(super) fn add_nav_agents(&mut self, options: &ops::NavOptions) -> Option<Action> {
         let result = ops::add_nav_agent(&self.world, &self.selection(), options);

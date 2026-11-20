@@ -24,7 +24,7 @@ const META: [&str; 12] = [
 ];
 
 /// References the description text cannot name: (type, field) -> `x-ref` (+ `x-has`).
-const REFS: [(&str, &str, &str, Option<&str>); 8] = [
+const REFS: [(&str, &str, &str, Option<&str>); 9] = [
     (
         "render.material",
         "id",
@@ -47,6 +47,7 @@ const REFS: [(&str, &str, &str, Option<&str>); 8] = [
     ),
     ("nav.grid", "pointer_agent", "entity", Some("nav.agent")),
     ("path.follow", "path", "entity", Some("path.spline")),
+    ("physics.joint", "to", "entity", Some("physics.body")),
     ("render.decal", "image", "key:ui.document/images", None),
 ];
 

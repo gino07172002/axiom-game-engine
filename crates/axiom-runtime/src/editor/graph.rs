@@ -13,6 +13,8 @@
 mod anim;
 use super::{form, Action, Dock, Editor};
 use crate::world::WorldRuntime;
+#[cfg(test)]
+pub(crate) use anim::{next_direction, state_label as anim_state_label};
 use axiom_core::ops::{self, FsmEdit, GraphDoc, GraphProblem};
 use axiom_core::World;
 use egui::{pos2, vec2, Color32, PointerButton, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};

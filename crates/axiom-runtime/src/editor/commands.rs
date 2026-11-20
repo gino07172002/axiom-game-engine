@@ -203,6 +203,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     c("object.nav_agent", "Add Nav Agent", "Object", ""),
     c("object.rigid_body", "Add Rigid Body", "Object", ""),
     a(
+        "object.joint",
+        "Add Joint…",
+        "Object",
+        "fixed|revolute|prismatic|spherical [to=ENTITY|world] [anchor=x,y,z] [axis=x,y,z] [limits=MIN,MAX] [collide=on|off] [velocity=V] [position=P] [stiffness=K] [damping=D] [max_force=F]",
+    ),
+    a(
         "rig.edit",
         "Rig: Spring / Collider / Look-at / IK Socket…",
         "Object",
@@ -657,6 +663,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "object.obstacle",
     "object.nav_agent",
     "object.rigid_body",
+    "object.joint",
     "rig.edit",
     "nav.target_object",
     "nav.target_point",
@@ -949,6 +956,7 @@ impl Editor {
             | "object.follow_path"
             | "object.nav_agent"
             | "object.rigid_body"
+            | "object.joint"
             | "object.interactable"
             | "object.audio_source"
             | "object.audio_listener"
@@ -1010,6 +1018,7 @@ impl Editor {
             | "object.obstacle"
             | "object.nav_agent"
             | "object.rigid_body"
+            | "object.joint"
             | "nav.target_object"
             | "nav.target_point"
             | "nav.clear_target"
@@ -1934,6 +1943,7 @@ pub fn register_topics(r: &mut axiom_core::Registry) {
                 "object.obstacle": "create obstacle",
                 "object.nav_agent": "nav SEL agent [speed=] [radius=]",
                 "object.rigid_body": "physics SEL body [kind=dynamic|kinematic] [mass=] [shape=box|sphere|capsule]",
+                "object.joint": "physics SEL joint KIND [to=ENTITY|world] [anchor=] [axis=] [limits=MIN,MAX] [collide=on|off] [velocity=] [position=] [stiffness=] [damping=] [max_force=]",
                 "nav.target_object": "nav AGENTS target ENTITY",
                 "nav.target_point": "nav AGENTS target x,y,z (scene view: click the ground)",
                 "nav.clear_target": "nav AGENTS target none",

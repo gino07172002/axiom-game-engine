@@ -454,7 +454,9 @@ pub fn collect_blockers(
     for (i, e) in entities.iter().enumerate() {
         let tagged = mesh_blocks(e);
         let blocker = e.components.get("nav.blocker");
-        if e.collider.is_none() && blocker.is_none() && !tagged {
+        // Sensors are trigger volumes, not walls.
+        let collider = e.collider.as_ref().filter(|c| !c.sensor);
+        if collider.is_none() && blocker.is_none() && !tagged {
             continue;
         }
         if crate::navigation::moved_by_system(entities, parents, movers, i) {
@@ -467,7 +469,7 @@ pub fn collect_blockers(
                 .flat_map(|mesh| mesh.parts.iter())
                 .map(move |p| Shape::unit_box(m * p.transform.matrix()))
         };
-        if let Some(collider) = &e.collider {
+        if let Some(collider) = collider {
             out.push(Blocker {
                 shape: collider_shape(collider, m),
                 owner: i,

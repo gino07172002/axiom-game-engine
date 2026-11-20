@@ -10,7 +10,7 @@
 //!   character controllers and moving platforms push dynamic bodies (one way: the controller
 //!   keeps its own collision);
 //! - every other collider is static scenery at its authored pose.
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -23,6 +23,16 @@ pub const MAX_FRICTION: f32 = 10.0;
 pub const MAX_SOLVER_ITERATIONS: u32 = 16;
 pub const MAX_MASS: f32 = 100_000.0;
 pub const MAX_SPEED: f32 = 1000.0;
+pub const JOINT: &str = "physics.joint";
+/// `physics.joint` components per world.
+pub const MAX_JOINTS: usize = 256;
+/// Colliders with `on_enter` / `on_exit` per world.
+pub const MAX_EVENT_COLLIDERS: usize = 256;
+/// Contact enter + exit events one fixed step may emit (more halts the system with a reason).
+pub const MAX_CONTACT_EVENTS_PER_STEP: usize = 64;
+pub const MAX_JOINT_EXTENT: f32 = 1000.0;
+pub const MAX_JOINT_FORCE: f32 = 1.0e9;
+pub const MAX_MOTOR_GAIN: f32 = 1.0e6;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -153,6 +163,182 @@ impl PhysicsSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JointKind {
+    /// Welds the two bodies at their authored relative pose.
+    Fixed,
+    /// Hinge: rotation about `axis` through `anchor` only.
+    Revolute,
+    /// Slider: translation along `axis` only.
+    Prismatic,
+    /// Ball and socket: free rotation about `anchor`.
+    Spherical,
+}
+
+impl JointKind {
+    /// Has a single free axis (`axis`, `limits`, `motor` apply).
+    pub fn has_axis(self) -> bool {
+        matches!(self, JointKind::Revolute | JointKind::Prismatic)
+    }
+}
+
+fn default_max_force() -> f32 {
+    MAX_JOINT_FORCE
+}
+
+/// Drive of a revolute (degrees) or prismatic (meters) joint along its axis: rapier's
+/// acceleration-based motor, `stiffness · (target_position − position) + damping ·
+/// (target_velocity − velocity)`, capped by `max_force`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct JointMotor {
+    /// Degrees per second (revolute) or meters per second (prismatic).
+    #[serde(default)]
+    pub target_velocity: f32,
+    /// Degrees (revolute) or meters (prismatic) from the authored pose; needs `stiffness`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_position: Option<f32>,
+    #[serde(default)]
+    pub stiffness: f32,
+    #[serde(default = "one")]
+    pub damping: f32,
+    #[serde(default = "default_max_force")]
+    pub max_force: f32,
+}
+
+/// `physics.joint`: connects this entity's `physics.body` to the body of `to` (or to the world).
+/// Frames come from the authored poses: the joint holds the bodies' relative placement at
+/// `anchor` as authored (angle / offset 0 there).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PhysicsJoint {
+    pub kind: JointKind,
+    /// Entity ID of the other body; absent = attached to the world.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Joint point in this entity's local space (scaled by its transform scale).
+    #[serde(default)]
+    pub anchor: [f32; 3],
+    /// Revolute / prismatic only: free axis in this entity's local space (default +Y).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis: Option<[f32; 3]>,
+    /// Revolute / prismatic only: `[min,max]` degrees / meters from the authored pose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motor: Option<JointMotor>,
+    /// Let the two connected bodies collide with each other (default: they do not).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collide_connected: bool,
+}
+
+impl Default for PhysicsJoint {
+    fn default() -> Self {
+        Self {
+            kind: JointKind::Revolute,
+            to: None,
+            anchor: [0.0; 3],
+            axis: Some([0.0, 1.0, 0.0]),
+            limits: None,
+            motor: None,
+            collide_connected: false,
+        }
+    }
+}
+
+impl PhysicsJoint {
+    /// The free axis, unit length (revolute / prismatic; +Y when not authored).
+    pub fn unit_axis(&self) -> [f32; 3] {
+        let [x, y, z] = self.axis.unwrap_or([0.0, 1.0, 0.0]);
+        let n = (x * x + y * y + z * z).sqrt();
+        [x / n, y / n, z / n]
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let angular = self.kind == JointKind::Revolute;
+        ensure!(
+            self.anchor
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= MAX_JOINT_EXTENT),
+            "anchor components must be finite and within ±{MAX_JOINT_EXTENT} m"
+        );
+        if let Some(to) = &self.to {
+            crate::valid_id(to).context("to")?;
+        }
+        if !self.kind.has_axis() {
+            ensure!(
+                self.axis.is_none() && self.limits.is_none() && self.motor.is_none(),
+                "axis, limits and motor apply to revolute and prismatic joints only"
+            );
+            return Ok(());
+        }
+        if let Some(a) = self.axis {
+            ensure!(
+                a.iter()
+                    .all(|v| v.is_finite() && v.abs() <= MAX_JOINT_EXTENT)
+                    && a.iter().map(|v| v * v).sum::<f32>() >= 1e-6,
+                "axis must be a finite non-zero [x,y,z]"
+            );
+        }
+        let range = if angular { 180.0 } else { MAX_JOINT_EXTENT };
+        let unit = if angular { "degrees" } else { "meters" };
+        if let Some([min, max]) = self.limits {
+            ensure!(
+                min.is_finite() && max.is_finite() && -range <= min && min < max && max <= range,
+                "limits must be [min,max] {unit} with -{range} <= min < max <= {range}"
+            );
+        }
+        if let Some(m) = &self.motor {
+            let speed = if angular { 3600.0 } else { MAX_SPEED };
+            ensure!(
+                m.target_velocity.is_finite() && m.target_velocity.abs() <= speed,
+                "motor target_velocity must be within ±{speed} {unit} per second"
+            );
+            if let Some(p) = m.target_position {
+                ensure!(
+                    p.is_finite() && p.abs() <= range,
+                    "motor target_position must be within ±{range} {unit}"
+                );
+                ensure!(
+                    m.stiffness > 0.0,
+                    "motor target_position needs stiffness > 0"
+                );
+            }
+            ensure!(
+                [m.stiffness, m.damping]
+                    .iter()
+                    .all(|v| v.is_finite() && (0.0..=MAX_MOTOR_GAIN).contains(v)),
+                "motor stiffness and damping must be 0..{MAX_MOTOR_GAIN}"
+            );
+            ensure!(
+                m.stiffness > 0.0 || m.damping > 0.0,
+                "a motor needs stiffness or damping > 0"
+            );
+            ensure!(
+                m.max_force.is_finite() && m.max_force > 0.0 && m.max_force <= MAX_JOINT_FORCE,
+                "motor max_force must be > 0 and <= {MAX_JOINT_FORCE}"
+            );
+        }
+        Ok(())
+    }
+}
+
+pub fn joint_schema() -> Value {
+    json!({
+        "kind": "fixed (weld at the authored pose) | revolute (hinge about axis) | prismatic (slide along axis) | spherical (ball joint)",
+        "to": "optional entity ID with physics.body (the other body); absent = attached to the world",
+        "anchor": format!("vec3 meters in this entity's local space (scaled by its transform scale), default [0,0,0]; within ±{MAX_JOINT_EXTENT}"),
+        "axis": "optional vec3: revolute / prismatic free axis in this entity's local space, default [0,1,0]",
+        "limits": "optional [min,max] from the authored pose: degrees -180..180 (revolute) or meters (prismatic)",
+        "motor": format!("optional {{target_velocity (deg/s | m/s, default 0), target_position? (deg | m, needs stiffness), stiffness 0..{MAX_MOTOR_GAIN} (default 0), damping 0..{MAX_MOTOR_GAIN} (default 1), max_force (default {MAX_JOINT_FORCE})}}: revolute / prismatic only"),
+        "collide_connected": "bool, default false: whether the two connected bodies collide with each other",
+        "requires": "physics.body on this entity (and on `to`); at least one of the two is dynamic; never the entity itself",
+        "budget": format!("{MAX_JOINTS} joints per world"),
+        "observe": "physics.inspect {id} reports the joint angle (degrees) or offset (meters); physics.set_motor {id,target_velocity?,target_position?} changes motor targets at runtime (saved in checkpoints)"
+    })
+}
+
 pub fn body_schema() -> Value {
     json!({
         "kind": "dynamic (default; gravity, contacts, sleeping) | kinematic (moves by its velocity, pushes dynamic bodies)",
@@ -187,6 +373,8 @@ pub fn validate_world(
     entities: &[crate::CompiledEntity],
     parents: &[Option<usize>],
 ) -> Result<()> {
+    validate_events(world, entities)?;
+    validate_joints(entities)?;
     let bodies = entities.iter().filter(|e| e.body.is_some()).count();
     if bodies == 0 {
         return Ok(());
@@ -284,6 +472,143 @@ pub fn validate_world(
                 ));
             }
             cursor = parents[p];
+        }
+    }
+    Ok(())
+}
+
+/// Contact events: `physics.step` and `behavior.execute` run, every event is declared with only
+/// the text fields `self` / `other`, the event collider budget, and no sensor on a dynamic body.
+fn validate_events(world: &crate::World, entities: &[crate::CompiledEntity]) -> Result<()> {
+    let at = |id: &str, field: &str| {
+        format!(
+            "/entities/@{}/components/physics.collider{field}",
+            crate::local::escape(id)
+        )
+    };
+    let has = |system: &str| world.systems.iter().any(|s| s == system);
+    let program = world.resources.get("behavior.program");
+    let mut eventful = 0;
+    for e in entities {
+        let Some(c) = &e.collider else { continue };
+        if c.sensor && e.body.as_ref().is_some_and(|b| b.kind == BodyKind::Dynamic) {
+            return Err(crate::Diagnostic::error(
+                "invalid_physics",
+                at(&e.id, "/sensor"),
+                format!(
+                    "{} is a dynamic body with a sensor collider; it would fall through everything (use a kinematic body, a static or a moved collider)",
+                    e.id
+                ),
+            ));
+        }
+        if !c.has_events() {
+            continue;
+        }
+        eventful += 1;
+        for (field, event) in [("/on_enter", &c.on_enter), ("/on_exit", &c.on_exit)] {
+            if event.is_empty() {
+                continue;
+            }
+            let invalid = |message: String| {
+                crate::Diagnostic::error("invalid_physics", at(&e.id, field), message)
+            };
+            if !has(SYSTEM) || !has("behavior.execute") {
+                return Err(invalid(format!(
+                    "contact events need the {SYSTEM} and behavior.execute systems"
+                )));
+            }
+            let fields = program
+                .and_then(|p| p.pointer(&format!("/events/{}/fields", crate::local::escape(event))))
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "collider emits {event}, which behavior.program does not declare"
+                    ))
+                })?;
+            if !fields
+                .iter()
+                .all(|(k, t)| (k == "self" || k == "other") && t == "text")
+            {
+                return Err(invalid(format!(
+                    "contact event {event} may only declare text fields `self` and `other`"
+                )));
+            }
+        }
+    }
+    if eventful > MAX_EVENT_COLLIDERS {
+        return Err(crate::Diagnostic::error(
+            "physics_budget",
+            "/entities",
+            format!("contact event collider budget exceeded ({eventful} > {MAX_EVENT_COLLIDERS})"),
+        ));
+    }
+    Ok(())
+}
+
+/// The joint of entity `e` (already validated as a component).
+pub fn joint_of(e: &crate::CompiledEntity) -> Option<PhysicsJoint> {
+    e.components
+        .get(JOINT)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Joints: on a body, to an existing other body (never itself), one dynamic side, budget.
+fn validate_joints(entities: &[crate::CompiledEntity]) -> Result<()> {
+    let joints: Vec<_> = entities
+        .iter()
+        .filter_map(|e| Some((e, joint_of(e)?)))
+        .collect();
+    if joints.is_empty() {
+        return Ok(());
+    }
+    if joints.len() > MAX_JOINTS {
+        return Err(crate::Diagnostic::error(
+            "physics_budget",
+            "/entities",
+            format!("joint budget exceeded ({} > {MAX_JOINTS})", joints.len()),
+        ));
+    }
+    let index: std::collections::BTreeMap<&str, &crate::CompiledEntity> =
+        entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    for (e, joint) in joints {
+        let invalid = |message: String| {
+            crate::Diagnostic::error(
+                "invalid_physics",
+                format!(
+                    "/entities/@{}/components/{JOINT}",
+                    crate::local::escape(&e.id)
+                ),
+                message,
+            )
+        };
+        let Some(body) = &e.body else {
+            return Err(invalid(format!(
+                "{} has {JOINT} but no {BODY} (a joint connects rigid bodies)",
+                e.id
+            )));
+        };
+        let other = match &joint.to {
+            None => None,
+            Some(to) if *to == e.id => {
+                return Err(invalid(format!("{} cannot be jointed to itself", e.id)))
+            }
+            Some(to) => {
+                let Some(target) = index.get(to.as_str()) else {
+                    return Err(invalid(format!("joint target {to} does not exist")));
+                };
+                let Some(b) = &target.body else {
+                    return Err(invalid(format!(
+                        "joint target {to} has no {BODY} (attach to the world by omitting `to`)"
+                    )));
+                };
+                Some(b.kind)
+            }
+        };
+        if body.kind != BodyKind::Dynamic && other != Some(BodyKind::Dynamic) {
+            return Err(invalid(format!(
+                "joint on {} connects no dynamic body (at least one side must be dynamic)",
+                e.id
+            )));
         }
     }
     Ok(())

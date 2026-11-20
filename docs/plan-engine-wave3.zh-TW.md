@@ -78,3 +78,28 @@
 - 每次建立執行期(每個 revision 啟用)都會重讀檔案片段並算 SHA-256 來查快取(在背景啟用執行緒上;16 MiB 上限)。若要省掉,之後可改成以路徑 + 大小 + 修改時間做第一層 key。
 - 匯入 pack 時的解碼在載入 pack 的執行緒上做;debug 下 30 秒檔案約 1–1.7 秒。
 - 無頭 scenario 的手把每個步驟會配置一個 `ActionMap`(只有注入手把時;沒有手把的 scenario 路徑不變)。
+
+### W3b 執行補記
+
+**完成(C 關節與接觸事件)**
+- `physics.joint`(`axiom-core/src/physics.rs`):fixed / revolute / prismatic / spherical,`to`(穩定 ID,省略 = 世界)、`anchor`(本地、乘縮放)、`axis`、`limits`(revolute 度 / prismatic 公尺)、`motor`(target_velocity / target_position / stiffness / damping / max_force)、`collide_connected`。嚴格驗證:未知欄位、範圍、兩邊必須是 `physics.body`、不能連自己、至少一邊動態、每個世界 256 個(`invalid_physics` / `physics_budget`)。框架取自編寫姿勢,不必寫對方錨點。
+- 執行期(`axiom-runtime/src/physics.rs`):rapier impulse joint;被連的實體是 rapier 的 body 2,所以角度 / 位移 / 限位 / 馬達描述的是它自己的運動(第一次實作把它放在 body 1,測試抓到 prismatic 位移與馬達轉向都反號,已修正)。連到世界的關節共用一個固定剛體,只在需要時建立,沒有關節的世界模擬不變。`physics.inspect` 回報 `joint {kind,to,angle|offset,motor}`;新動作 `physics.set_motor`。
+- `physics.collider` 新增 `sensor`、`on_enter`、`on_exit`(預設值不序列化,舊內容不變)。事件 payload 只能宣告文字欄位 `self` / `other`,沿用 trigger / nav 的 `RuntimeCommand::Emit` 機制與 world 驗證。每步在 rapier 步進後以 `contact_pairs_with` / `intersection_pairs_with` 計算,事件碰撞體與對方都依實體 ID 排序(與編寫順序無關),每步上限 64 個事件(超過停止事件並在 observe 說明)。感應器加上 KINEMATIC_FIXED / KINEMATIC_KINEMATIC 碰撞類型,靜態感應區看得到角色(跟隨者);不配對靜態對靜態。感應器不是相機阻擋、導航障礙或 FPS 掩體。
+- Checkpoint:執行期改過的馬達目標、每個事件碰撞體的接觸名單(ID)、已送出數都存檔;缺少時明確拒絕;讀檔後不會重送已存在接觸的 `on_enter`。熱重載依 ID 保留接觸名單,編寫未變的關節保留馬達目標。
+- 編寫:ACL `physics SEL joint KIND [to=] [anchor=] [axis=] [limits=] [collide=] [velocity=] [position=] [stiffness=] [damping=] [max_force=]`(`ops::parse_joint` + `ops::add_joint`),編輯器 `object.joint ARGS`(Object ▸ Add Joint…)共用同一個解析器;Add component / Inspector 表單由 schema 產生(`to` 是實體參照)。
+- 示範包 `content/joint-lab`(只用引擎內建方塊與程序球體)+ `Play Joint Lab.cmd` + `examples/joint-lab.scenario.json`:被 path 角色推開、彈簧馬達拉回的鉸鏈門;四節鏈條 + 擺錘;角色與落球進出的感應區(事件計數進 `behavior.program` 變數)。文件:`docs/physics.zh-TW.md` 新增「關節」「感應器與接觸事件」「跟 trigger.zone 怎麼選」,限制段移除「沒有關節 / 觸發事件 / 碰撞事件」。
+
+**完成(D 2D blend tree)**
+- `Motion::Blend2d {parameters:[X,Y], points:[{at:[x,y],clip}], speed?, looping?}`,最多 9 點(8 方向 + 中心)。權重採 **simple directional**:選它是因為 8 方向移動正是其用途,O(點數) 角度查找加 2×2 解,最多 3 個樣本、不配置記憶體;超出外緣沿徑向夾到外緣,無中心時只看方向。驗證:兩個不同的 float 參數;方向 1 個或 ≥3 個且相鄰夾角 < 180°;同方向兩點、兩個中心拒絕。時間同步與 blend1d 相同(一圈 = 依權重加總的片段長度)。`MAX_SAMPLES` 4 → 6(兩個 2D 狀態淡入淡出)。2D 狀態的 observe 多 `blend`(其他控制器觀測不變)。
+- ACL 說明、`animation.controllers` schema 文字、`ops_anim` 參數使用檢查(2D 使用中的參數不能刪)、編輯器 Animator 狀態表單(2D blend tree:X / Y 參數、點清單 x / y / 片段、+ Point 依序填 N、E、S、W、斜向、中心、x 移除)、節點副標題;`docs/skeletal-animation.zh-TW.md`、`docs/editor-parity.zh-TW.md` 兩列新增 / 一列更新。
+
+**偏離**
+- 關節的「連到對方錨點」不提供手寫欄位(自動由編寫姿勢求出);沒有可斷裂關節、多體關節。
+- 實心(非感應器)碰撞體的事件沿用 rapier 預設碰撞類型:至少一邊是動態剛體才有接觸。
+- 2D 混合只做 simple directional(freeform / cartesian 未做)。編輯器點清單的加入 / 移除以 `next_direction` 純函式與 parity 測試驗證,沒有寫 egui 點擊測試。
+- 沒有量測 N 個關節的步進成本,因此不做效能宣稱。
+
+**證據**(debug,本機 MX150)
+- 新測試:`tests/joints.rs` 10 項(鉸鏈門被推開且鉸鏈點不動、限位;球窩鏈不分離且擺動;fixed 抗重力、prismatic 只沿軸且限位;馬達、`set_motor`、checkpoint 往返與缺狀態拒絕、熱重載;感應器進出各一次且球穿過落地;靜態感應區看到運動學角色、同一步兩球依 ID 排序;讀檔 / 熱重載不重送;joint-lab scenario 兩次 state_hash 相同;編寫錯誤;感應器不是相機阻擋)。`controller.rs` 3 項 2D 權重 / 時間同步 / 驗證單元測試;`tests/animator.rs` 2 項(mascot 第一方片段的 8 方向 + idle 權重、scenario 重播雜湊相同、穩定步進配置數等於無播放器基準);parity `joints_and_sensors_match_acl`、`blend2d_states_match_animctl`。
+- GPU 截圖 `axiom.exe --pack content\joint-lab play --start --smoke-frames 240/480 --screenshot`:240 幀時角色正推著門、門繞門柱轉開,鏈條與擺錘斜向擺動且各節相連,球停在綠色感應區內的地上;480 幀時門被馬達拉回中途、鏈條擺到另一側。observe:`joints 6`、`contact_events.emitted 3`(tick 79 角色進入、tick 90 球進入、tick 306 角色離開)、`touching {zone:[ball]}`。
+- Gate(debug):`cargo fmt --all -- --check` 通過;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` **865 passed / 0 failed / 5 ignored**(基準 848 + 新增 17)。中途一次全量執行時 `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(500 ms 牆鐘門檻)在機器滿載時失敗,單獨重跑通過,最終全量執行也通過。`scripts\editor-smoke-test.ps1` ok:true;`editor-world-parity.ps1` 與 `street-editor-parity.ps1` identical:true;`build-street.ps1` / `build-plaza.ps1` 之後 `content/street`、`content/plaza` 無變化;`m0-smoke-test.ps1` PASS。

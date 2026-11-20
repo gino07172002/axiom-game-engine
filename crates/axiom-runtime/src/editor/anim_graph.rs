@@ -67,7 +67,7 @@ fn number(v: &Value) -> String {
 }
 
 /// Node subtitle of an animation state.
-pub(super) fn state_label(state: &Value) -> String {
+pub(crate) fn state_label(state: &Value) -> String {
     let m = &state["motion"];
     match m["kind"].as_str() {
         Some("clip") => {
@@ -87,6 +87,14 @@ pub(super) fn state_label(state: &Value) -> String {
                 m["parameter"].as_str().unwrap_or("?"),
                 clips.join("·")
             )
+        }
+        Some("blend2d") => {
+            let clips: Vec<&str> = m["points"]
+                .as_array()
+                .map(|p| p.iter().filter_map(|x| x["clip"].as_str()).collect())
+                .unwrap_or_default();
+            let param = |i: usize| m["parameters"][i].as_str().unwrap_or("?");
+            format!("blend2d {}×{}: {}", param(0), param(1), clips.join("·"))
         }
         Some(other) => other.to_owned(),
         None => "rest pose".into(),
@@ -797,7 +805,7 @@ impl Editor {
     }
 }
 
-/// State form: motion kind (rest pose / clip / 1D blend) and its fields.
+/// State form: motion kind (rest pose / clip / 1D blend / 2D blend) and its fields.
 fn motion_form(
     ui: &mut Ui,
     state: &mut Value,
@@ -818,11 +826,17 @@ fn motion_form(
             .selected_text(match kind.as_str() {
                 "clip" => "Clip",
                 "blend1d" => "1D blend tree",
+                "blend2d" => "2D blend tree",
                 _ => "Rest pose",
             })
             .width(120.0)
             .show_ui(ui, |ui| {
-                for (k, title) in [("rest", "Rest pose"), ("clip", "Clip"), ("blend1d", "1D blend tree")] {
+                for (k, title) in [
+                    ("rest", "Rest pose"),
+                    ("clip", "Clip"),
+                    ("blend1d", "1D blend tree"),
+                    ("blend2d", "2D blend tree"),
+                ] {
                     if ui.selectable_label(kind == k, title).clicked() && kind != k {
                         let first_clip = clips.first().cloned().unwrap_or_default();
                         let float = params
@@ -839,6 +853,19 @@ fn motion_form(
                                 o.insert(
                                     "motion".into(),
                                     json!({"kind":"blend1d","parameter":float,"points":[{"at":0.0,"clip":first_clip}]}),
+                                );
+                            }
+                            "blend2d" => {
+                                // The first two float parameters (another one is picked below).
+                                let mut floats = params
+                                    .iter()
+                                    .filter(|(_, kind)| kind == "float")
+                                    .map(|(n, _)| n.clone());
+                                let x = floats.next().unwrap_or_default();
+                                let y = floats.next().unwrap_or_default();
+                                o.insert(
+                                    "motion".into(),
+                                    json!({"kind":"blend2d","parameters":[x,y],"points":[{"at":[0.0,0.0],"clip":first_clip}]}),
                                 );
                             }
                             _ => {
@@ -943,6 +970,7 @@ fn motion_form(
                 );
             }
         }
+        "blend2d" => changed |= blend2d_form(ui, motion, params, clips),
         _ => {}
     }
     ui.horizontal(|ui| {
@@ -966,6 +994,105 @@ fn motion_form(
             changed = true;
         }
     });
+    changed
+}
+
+/// Where "+ Point" puts a new 2D blend point: the first free compass direction (N, E, S, W,
+/// then the diagonals, unit length), then the center.
+pub(crate) fn next_direction(points: &[Value]) -> [f64; 2] {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let compass = [
+        [0.0, 1.0],
+        [1.0, 0.0],
+        [0.0, -1.0],
+        [-1.0, 0.0],
+        [s, s],
+        [s, -s],
+        [-s, -s],
+        [-s, s],
+        [0.0, 0.0],
+    ];
+    let taken = |c: &[f64; 2]| {
+        points.iter().any(|p| {
+            let at = |k: usize| p["at"][k].as_f64().unwrap_or(f64::NAN);
+            (at(0) - c[0]).abs() < 1e-3 && (at(1) - c[1]).abs() < 1e-3
+        })
+    };
+    compass
+        .iter()
+        .find(|c| !taken(c))
+        .copied()
+        .unwrap_or([0.0, 0.0])
+}
+
+/// 2D blend tree fields: the X / Y float parameters and the points (x, y, clip; add / remove).
+fn blend2d_form(
+    ui: &mut Ui,
+    motion: &mut Value,
+    params: &[(String, String)],
+    clips: &[String],
+) -> bool {
+    let mut changed = false;
+    if !motion["parameters"].is_array() {
+        motion["parameters"] = json!(["", ""]);
+    }
+    for (i, axis) in ["X param", "Y param"].into_iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(axis).small().color(MUTED));
+            let current = motion["parameters"][i].as_str().unwrap_or("").to_owned();
+            egui::ComboBox::from_id_salt(("anim_blend2d_param", i))
+                .selected_text(if current.is_empty() {
+                    "(float)"
+                } else {
+                    current.as_str()
+                })
+                .show_ui(ui, |ui| {
+                    for (n, k) in params {
+                        if k == "float"
+                            && ui.selectable_label(*n == current, n).clicked()
+                            && *n != current
+                        {
+                            motion["parameters"][i] = json!(n);
+                            changed = true;
+                        }
+                    }
+                });
+        });
+    }
+    let mut remove = None;
+    if let Some(points) = motion["points"].as_array_mut() {
+        let n = points.len();
+        for (i, p) in points.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                if !p["at"].is_array() {
+                    p["at"] = json!([0.0, 0.0]);
+                }
+                ui.label(RichText::new("x").small().color(MUTED));
+                changed |= drag(ui, &mut p["at"][0], -1000.0..=1000.0, 0.05);
+                ui.label(RichText::new("y").small().color(MUTED));
+                changed |= drag(ui, &mut p["at"][1], -1000.0..=1000.0, 0.05);
+                changed |= clip_combo(ui, ("anim_point2d", i), clips, &mut p["clip"]);
+                if n > 1 && ui.small_button("x").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            points.remove(i);
+            changed = true;
+        }
+        if n < axiom_animation::controller::MAX_POINTS_2D && ui.small_button("+ Point").clicked() {
+            let at = next_direction(points);
+            let clip = clips.first().cloned().unwrap_or_default();
+            points.push(json!({"at": at, "clip": clip}));
+            changed = true;
+        }
+        ui.label(
+            RichText::new("Simple directional: one point per direction around [0,0] (3+ directions less than 180° apart), optional center at [0,0]")
+                .small()
+                .color(MUTED),
+        );
+    }
     changed
 }
 

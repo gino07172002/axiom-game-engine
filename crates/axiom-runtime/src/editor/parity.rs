@@ -2452,6 +2452,174 @@ fn rigid_bodies_match_acl() {
     }
 }
 
+#[test]
+fn joints_and_sensors_match_acl() {
+    // Two rigid bodies: a door and a frame (kinematic, so the door is the dynamic side).
+    let start = headless(
+        &lab(),
+        "create cube id=door at=0,1,0\ncreate cube id=frame at=-1,1,0\ncreate cube id=lamp at=3,1,0\nphysics entities[id=door,id=lamp] body\nphysics frame body kind=kinematic",
+    );
+    // Object ▸ Add Joint with the ACL's arguments, on the selection.
+    let args = "revolute to=frame anchor=-0.5,0,0 axis=0,1,0 limits=-90,90 position=0 stiffness=4";
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e.run_command_with("object.joint", Some(args)).unwrap()]
+        },
+        &format!("physics door joint {args}"),
+    );
+    let jointed = headless(&start, &format!("physics door joint {args}"));
+    assert_eq!(
+        jointed.entity("door").unwrap().components["physics.joint"],
+        serde_json::json!({"kind":"revolute","to":"frame","anchor":[-0.5,0.0,0.0],"axis":[0.0,1.0,0.0],
+            "limits":[-90.0,90.0],"motor":{"target_velocity":0.0,"target_position":0.0,"stiffness":4.0,"damping":1.0,"max_force":1.0e9}})
+    );
+    // to=world and a ball joint on two objects at once.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            e.extra.insert("lamp".into());
+            vec![e
+                .run_command_with("object.joint", Some("spherical to=world anchor=0,0.5,0"))
+                .unwrap()]
+        },
+        "physics entities[id=door,id=lamp] joint spherical to=world anchor=0,0.5,0",
+    );
+    // Inspector ▸ Add component physics.joint (the default hinge to the world) = ACL `add`.
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.select(Some("door".into()));
+            vec![e
+                .run_command_with("object.add_component", Some("physics.joint"))
+                .unwrap()]
+        },
+        "add door physics.joint",
+    );
+    // Inspector form edits of the joint and of the collider's sensor flag = ACL `set`.
+    for (component, field, value, script) in [
+        (
+            "physics.joint",
+            "kind",
+            serde_json::json!("prismatic"),
+            r#"set door physics.joint/kind "prismatic""#,
+        ),
+        (
+            "physics.collider",
+            "sensor",
+            serde_json::json!(true),
+            "set frame physics.collider/sensor true",
+        ),
+    ] {
+        let id = if component == "physics.joint" {
+            "door"
+        } else {
+            "frame"
+        };
+        assert_parity(
+            jointed.clone(),
+            |e| {
+                e.select(Some(id.into()));
+                let entity = e.world.entity(id).unwrap().clone();
+                let world = e.world.clone();
+                let draft = e.draft.as_mut().unwrap();
+                draft.open_component(&world, &entity, component);
+                draft.form.as_mut().unwrap()[field] = value;
+                draft.form_dirty = true;
+                let edits = super::inspector_edits(&e.world, &e.registry, draft, &e.extra).unwrap();
+                vec![vec![e.write(edits, None)]]
+            },
+            script,
+        );
+    }
+    // A bad argument is refused on both paths with the same message, nothing written.
+    let mut editor = Editor::new(start.clone(), 1, None);
+    editor.select(Some("door".into()));
+    assert!(editor
+        .run_command_with("object.joint", Some("hinge"))
+        .is_ok_and(|a| a.is_empty()));
+    assert!(
+        editor.status.contains("unknown joint kind"),
+        "{}",
+        editor.status
+    );
+    let error = acl_outcome(&start, "physics door joint hinge");
+    assert!(error.contains("unknown joint kind"), "{error}");
+}
+
+#[test]
+fn blend2d_states_match_animctl() {
+    // Two float parameters, then a 2D blend state written by the Animator form's commit path.
+    let start = headless(
+        &animator_lab(),
+        "animctl locomotion param set mx {\"kind\":\"float\"}\nanimctl locomotion param set my {\"kind\":\"float\"}",
+    );
+    // "+ Point" fills the compass directions in order, then the center.
+    let mut points = vec![];
+    for clip in ["walk", "run", "walk", "run", "idle"] {
+        let at = super::graph::next_direction(&points);
+        points.push(serde_json::json!({"at": at, "clip": clip}));
+    }
+    assert_eq!(points[1]["at"], serde_json::json!([1.0, 0.0]));
+    assert_eq!(
+        points[4]["at"],
+        serde_json::json!([
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2
+        ])
+    );
+    points.remove(4);
+    points.push(serde_json::json!({"at":[0.0,0.0],"clip":"idle"}));
+    let state =
+        serde_json::json!({"motion":{"kind":"blend2d","parameters":["mx","my"],"points":points}});
+    assert_parity(
+        start.clone(),
+        |e| {
+            e.run_command_with("graph.open_controller", Some("locomotion"))
+                .unwrap();
+            let edit = axiom_core::ops::FsmEdit::SetState {
+                name: "move".into(),
+                state: state.clone(),
+            };
+            vec![e.graph_edit_for_test(edit).into_iter().collect()]
+        },
+        &format!("animctl locomotion state set move {state}"),
+    );
+    // The node subtitle names the parameters and clips; a parameter the blend uses cannot go.
+    assert_eq!(
+        super::graph::anim_state_label(&state),
+        "blend2d mx×my: walk·run·walk·run·idle"
+    );
+    let blended = headless(
+        &start,
+        &format!("animctl locomotion state set move {state}"),
+    );
+    let refused = acl_outcome(&blended, "animctl locomotion param remove my");
+    assert!(refused.contains("state move"), "{refused}");
+    // Two opposite directions only are refused with the reason (nothing written).
+    let bad = serde_json::json!({"motion":{"kind":"blend2d","parameters":["mx","my"],
+        "points":[{"at":[0.0,1.0],"clip":"walk"},{"at":[0.0,-1.0],"clip":"run"}]}});
+    let refused = acl_outcome(&start, &format!("animctl locomotion state set move {bad}"));
+    assert!(refused.contains("three and more"), "{refused}");
+}
+
+/// The response (or error) text of ACL `script` on `start`; asserts nothing was committed.
+fn acl_outcome(start: &World, script: &str) -> String {
+    let mut s = store(start);
+    let out = s
+        .execute(Request::Acl {
+            text: script.into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .map_or_else(|e| format!("{e:#}"), |v| v.to_string());
+    assert_eq!(&s.current().unwrap().1, start, "{script} committed: {out}");
+    out
+}
+
 fn animator_lab() -> World {
     axiom_core::ContentPackage::load(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/animator-lab"),

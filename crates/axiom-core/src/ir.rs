@@ -630,6 +630,17 @@ pub struct Collider {
     /// Bounciness 0..1 for `physics.step` (absent = 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restitution: Option<f32>,
+    /// `physics.step` trigger volume: reports overlaps, never pushes or stops anything. Not a
+    /// camera blocker, navigation obstacle or FPS cover.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sensor: bool,
+    /// `behavior.program` event when another physics collider starts touching (solid) or
+    /// overlapping (sensor) this one ("" = none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub on_enter: String,
+    /// Event when that contact / overlap ends ("" = none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub on_exit: String,
 }
 impl Collider {
     pub fn new(shape: ColliderShape) -> Self {
@@ -637,7 +648,14 @@ impl Collider {
             shape,
             friction: None,
             restitution: None,
+            sensor: false,
+            on_enter: String::new(),
+            on_exit: String::new(),
         }
+    }
+    /// Whether this collider emits contact events.
+    pub fn has_events(&self) -> bool {
+        !self.on_enter.is_empty() || !self.on_exit.is_empty()
     }
     pub fn validate(&self) -> Result<()> {
         let v = match self.shape {
@@ -664,6 +682,11 @@ impl Collider {
                 .is_none_or(|r| r.is_finite() && (0.0..=1.0).contains(&r)),
             "restitution must be 0..1"
         );
+        for (field, event) in [("on_enter", &self.on_enter), ("on_exit", &self.on_exit)] {
+            if !event.is_empty() {
+                valid_id(event).context(field)?;
+            }
+        }
         Ok(())
     }
 }

@@ -409,6 +409,7 @@ pub fn default_value(world: &World, registry: &Registry, id: &str) -> Option<Val
             half_extents: [0.5; 3]
         }))),
         crate::physics::BODY => typed::<crate::physics::RigidBody>(),
+        crate::physics::JOINT => Some(json!(crate::physics::PhysicsJoint::default())),
         crate::physics::SETTINGS => typed::<crate::physics::PhysicsSettings>(),
         "render.environment" => typed::<crate::light::RenderEnvironment>(),
         "nav.grid" => Some(json!(crate::navigation::NavSettings::default())),

@@ -63,7 +63,11 @@ fn param_users(c: &Value, name: &str) -> Vec<String> {
     let mut out = vec![];
     if let Some(states) = c["states"].as_object() {
         for (s, def) in states {
-            if def["motion"]["parameter"] == name {
+            let motion = &def["motion"];
+            let blend2d = motion["parameters"]
+                .as_array()
+                .is_some_and(|ps| ps.iter().any(|p| p == name));
+            if motion["parameter"] == name || blend2d {
                 out.push(format!("state {s}"));
             }
         }

@@ -40,6 +40,9 @@ EDIT (any number, atomic):
   nav SEL target x,y,z|ENTITY|none       authored walk target (runtime: call nav.go)
   physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule]   physics.body on each
                                   object (+ physics.collider fitted to its mesh when missing or shape= given)
+  physics SEL joint fixed|revolute|prismatic|spherical [to=ENTITY|world] [anchor=x,y,z] [axis=x,y,z]
+        [limits=MIN,MAX] [collide=on|off] [velocity=V] [position=P] [stiffness=K] [damping=D] [max_force=F]
+                                  physics.joint on each body (degrees for revolute; frames from the authored poses)
   rig SEL spring CHAIN [root=BONE] [tip=BONE|none] [stiffness=0..64] [drag=0..1] [gravity=x,y,z] [radius=M]
         [colliders=ID,..|all] [enabled=on|off]   animation.spring chain (new chains need root=)
   rig SEL collider ID [bone=BONE] [radius=M] [offset=x,y,z] [tail=x,y,z|none]   sphere / capsule on a bone
@@ -146,7 +149,8 @@ EDIT (any number, atomic):
  animation controllers (Graphs ▸ Animator; C = animation.controllers controller; positions in editor.layout anim/C):
   animctl C create [INITIAL] | animctl C remove    one rest-pose state (default idle) | refused while attached
   animctl C state add|remove|rename|set ..     state {\"motion\":{\"kind\":\"clip\",\"clip\":ID,\"speed\"?,\"looping\"?}
-                                  |{\"kind\":\"blend1d\",\"parameter\":P,\"points\":[{\"at\":V,\"clip\":ID}..]}}; no motion = rest pose
+                                  |{\"kind\":\"blend1d\",\"parameter\":P,\"points\":[{\"at\":V,\"clip\":ID}..]}
+                                  |{\"kind\":\"blend2d\",\"parameters\":[X,Y],\"points\":[{\"at\":[x,y],\"clip\":ID}..]}}; 2D = simple directional; no motion = rest pose
   animctl C initial S | animctl C transition add FROM|* TO [JSON] | transition remove|move|set ..
                                   {\"conditions\":[{\"param\":P,\"op\":\"gt|lt|eq|ne|true|false|trigger\",\"value\"?:N}],
                                    \"duration\":S,\"exit_time\"?:N}; new transitions: exit_time 1, duration 0.2
@@ -438,6 +442,7 @@ enum Statement {
     NavTarget(Box<Selection>, Option<crate::navigation::NavTarget>),
     Interact(Box<Selection>, crate::ops::InteractOptions),
     RigidBody(Box<Selection>, crate::ops::BodyOptions),
+    Joint(Box<Selection>, crate::physics::PhysicsJoint),
     Rig(Box<Selection>, crate::ops::RigEdit),
     AudioClip(String, String),
     /// `audio clip ID file=PATH [gain=G]`.
@@ -1420,9 +1425,13 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         }
         "physics" => {
             let select = Box::new(selector(arg(1)?)?);
+            if arg(2)?.as_str() == "joint" {
+                let rest: Vec<&str> = tokens[3..].iter().map(String::as_str).collect();
+                return Ok(Statement::Joint(select, crate::ops::parse_joint(&rest)?));
+            }
             ensure!(
                 arg(2)?.as_str() == "body",
-                "use: physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule]"
+                "use: physics SEL body [kind=dynamic|kinematic] [mass=KG] [shape=box|sphere|capsule] | physics SEL joint KIND [to=..] .."
             );
             let mut options = crate::ops::BodyOptions::default();
             for t in &tokens[3..] {
@@ -2432,6 +2441,8 @@ pub fn run(
                 .and_then(|ids| crate::ops::make_interactable(w, &ids, &options)),
             Statement::RigidBody(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_rigid_body(w, &ids, &options)),
+            Statement::Joint(select, joint) => entity_ids(w, r, &select, line)
+                .and_then(|ids| crate::ops::add_joint(w, &ids, &joint)),
             Statement::Rig(select, edit) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::rig_edit(w, r, &ids, &edit)),
             Statement::AudioClip(id, preset) => crate::ops::add_audio_clip(w, &id, &preset),

@@ -67,6 +67,62 @@
 - 熱重載(新 revision):實體 ID 相同且編寫的 transform 沒變的剛體保留模擬中的姿勢、速度與睡眠狀態;改了 transform 的剛體從新的編寫位置靜止開始;改了 `velocity` / `angular_velocity` 的剛體改用新的速度(運動學剛體的行為就是它的速度)。拿掉 `physics.body` 的實體變成靜態碰撞體,停在模擬到的位置。接觸快取重建(堆疊在重載瞬間可能有極小的調整)。
 - **存檔(checkpoint)支援**:世界啟用 `save` capability 時,checkpoint 除了 transform 之外,在 `systems["physics.step"]` 存每個剛體的速度、角速度、睡眠狀態與睡眠計時;讀檔會還原。缺少這份狀態的存檔(例如手改過)明確拒絕,不會默默讓剛體從靜止重來。讀檔後求解器的接觸快取重建,所以「存檔後繼續」與「沒存檔一路跑下去」不保證逐位元相同,但同一份存檔讀兩次一定相同。
 
+## 關節(`physics.joint`)
+
+把這個實體的 `physics.body` 連到另一個剛體(`to`,穩定 ID)或世界(省略 `to`)。示範包 `content/joint-lab`(雙擊 `Play Joint Lab.cmd`):被角色推開、自己彈回的鉸鏈門、四節鏈條加擺錘、一個感應區。
+
+```json
+{"kind":"revolute","to":"frame","anchor":[-0.5,0,0],"axis":[0,1,0],"limits":[-110,110],
+ "motor":{"target_position":0,"stiffness":6,"damping":2,"max_force":400},"collide_connected":false}
+```
+
+| 欄位 | 說明 |
+|---|---|
+| `kind` | `fixed`(焊死在編寫時的相對姿勢)、`revolute`(鉸鏈,繞 `axis` 轉)、`prismatic`(滑軌,沿 `axis` 移動)、`spherical`(球窩) |
+| `to` | 另一個有 `physics.body` 的實體;省略 = 連到世界(固定點) |
+| `anchor` | 關節點,這個實體的本地座標(乘上它的 transform 縮放,與碰撞體相同),預設原點 |
+| `axis` | 只限 revolute / prismatic:自由軸(本地方向,只套旋轉),預設 +Y |
+| `limits` | 只限 revolute / prismatic:`[min,max]`,相對編寫姿勢;revolute 是度(-180..180),prismatic 是公尺 |
+| `motor` | 只限 revolute / prismatic:rapier 的加速度型馬達,`stiffness ·(target_position − 位置)+ damping ·(target_velocity − 速度)`,上限 `max_force`。`target_velocity` 度/秒或 m/s(預設 0),`target_position` 度或公尺(需要 `stiffness > 0`),`stiffness` 預設 0、`damping` 預設 1、`max_force` 預設 1e9 |
+| `collide_connected` | 預設 false:相連的兩個剛體彼此不碰撞(鏈條相鄰節不會互卡) |
+
+框架取自**編寫姿勢**:關節在 `anchor` 處保持兩個剛體當時的相對擺放(角度 / 位移 0 就是編寫姿勢),所以不必另外寫對方的錨點(等同 Unity 的 auto configure connected anchor)。
+
+編寫錯誤(`World::compile`):沒有 `physics.body`、`to` 不存在或沒有剛體、連到自己、兩邊都不是動態剛體 = `invalid_physics`;axis / limits / motor 用在 fixed / spherical、未知欄位、範圍外 = `invalid_component`;每個世界最多 256 個關節(`physics_budget`)。
+
+執行期:每個關節是一個 rapier impulse joint,建立執行期時依實體順序加入(連到世界的關節共用一個固定剛體,只有存在這種關節時才建立,所以沒有關節的世界模擬逐位元不變)。`physics.inspect {id}` 多一段 `joint`:`kind`、`to`、`angle`(revolute,度)或 `offset`(prismatic,公尺)、`motor` 目前目標。`physics.set_motor {id, target_velocity?, target_position?}` 在執行期改馬達目標(範圍規則同編寫,沒有馬達的關節拒絕)。`observe` 的 `physics` 段在有關節時多 `joints`(數量)。
+
+存檔:關節由元件重建;`physics.set_motor` 改過的馬達目標存在 checkpoint 的 `systems["physics.step"].motors`,讀檔還原,缺少時明確拒絕。熱重載時,編寫內容沒變的關節保留執行期的馬達目標。
+
+## 感應器與接觸事件(`sensor` / `on_enter` / `on_exit`)
+
+`physics.collider` 新增三個選填欄位(舊內容序列化結果不變):
+
+| 欄位 | 說明 |
+|---|---|
+| `sensor` | 預設 false。true = 感應體積:只回報重疊,不推、不擋任何東西;也不算相機阻擋、導航障礙或 FPS 掩體。動態剛體不能是感應器(會穿過一切掉下去,編寫錯誤) |
+| `on_enter` | 另一個物理碰撞體開始接觸(實心)或重疊(感應器)時送進 `behavior.program` 的事件("" = 無) |
+| `on_exit` | 接觸 / 重疊結束時的事件("" = 無);碰撞體停用(場景關閉)也算結束 |
+
+事件 payload 只能宣告文字欄位 `self`(帶事件的碰撞體實體 ID)和 / 或 `other`(對方實體 ID)。需要 `physics.step` 與 `behavior.execute` 系統;未宣告的事件、其他欄位都是 `invalid_physics`。每個世界最多 256 個帶事件的碰撞體。
+
+- **誰算接觸**:感應器跟動態剛體、運動學剛體與跟隨者(角色、移動平台)都會配對,所以「角色走進區域」可以用靜態感應器做;靜態對靜態不配對(放在地板上的感應區不會回報地板)。實心碰撞體依 rapier 預設:至少一邊是動態剛體才有接觸。
+- **順序(確定性)**:每個固定步在 rapier 步進之後計算;帶事件的碰撞體依實體 ID 排序,每個先送離開、再送進入,對方也依實體 ID 排序。同一步兩個物體同時進入,事件順序與編寫順序無關。
+- **預算**:一步最多 64 個接觸事件;超過時這一步不送,接觸事件停止,`observe` 的 `physics.contact_events.halted` 寫明原因(模擬本身繼續)。
+- `observe` 的 `physics.contact_events`(只有世界有事件碰撞體時才出現):`colliders`、`emitted`、`touching`(碰撞體 → 目前接觸的 ID,各最多 16 個)、`halted`、`fault`(第一個送出失敗)。`physics.inspect` 對事件碰撞體多 `touching`。
+- **存檔**:每個事件碰撞體目前的接觸名單(以 ID)與已送出數存在 checkpoint;讀檔後不會對已經存在的接觸重送 `on_enter`。缺少這份狀態明確拒絕。熱重載依 ID 保留接觸名單。
+
+### 跟 `trigger.zone` 怎麼選
+
+| | `trigger.zone`(`docs/triggers.zh-TW.md`) | `physics.collider` 感應器 |
+|---|---|---|
+| 判定 | 實體**原點**(pivot)在方塊 / 球內 | 兩個碰撞體**形狀**重疊 |
+| 誰能觸發 | 任何有 `core.transform` 的實體,依 tag / 元件 filter | 只有物理碰撞體(剛體、跟隨者) |
+| 需要 | `trigger.detect` | `physics.step` |
+| 其他 | `once`、`exit_margin` 遲滯、Play 線框、tag filter;checkpoint 不支援 | 實心碰撞體也能發事件(撞擊);checkpoint 支援 |
+
+不需要物理的遊戲邏輯(玩家走到某處、NPC 進入範圍)用 `trigger.zone`;跟剛體有關的(箱子掉進洞、球滾過終點線、門被撞)或需要依形狀判定時用感應器 / 接觸事件。
+
 ## 執行期指令(AI、UI、行為程式共用)
 
 | 動作 | 參數 | 效果 |
@@ -75,6 +131,7 @@
 | `physics.set_velocity` | `{"id":剛體,"velocity":[..],"angular_velocity":[..]}`(至少一個) | 設定速度,喚醒剛體 |
 | `physics.inspect` | `{"id":有碰撞體的實體}` | kind、position、velocity、angular_velocity、speed、mass、sleeping、out_of_bounds |
 | `physics.summary` | `{}` | 同 observe 的 `physics` 段 |
+| `physics.set_motor` | `{"id":關節實體,"target_velocity"?:N,"target_position"?:N}` | 改關節馬達目標(見「關節」),喚醒兩邊剛體 |
 
 只有動態剛體接受衝量與速度;靜態碰撞體、跟隨者、運動學剛體回傳說明原因的錯誤。編輯器 Play 時選取物件,Inspector 的即時區會顯示 `physics.inspect` 的結果。
 
@@ -92,11 +149,16 @@ set crate physics.collider/restitution 0.6
 set crate physics.body/mass 4
 resource create physics.settings
 call physics impulse {"id":"crate","impulse":[0,6,0]}
+physics door joint revolute to=frame anchor=-0.5,0,0 axis=0,1,0 limits=-90,90   # physics.joint
+physics entities[tag=link] joint spherical anchor=0,0.25,0                     # 省略 to = 連到世界
+set zone physics.collider/sensor true
+set zone physics.collider/on_enter "zone_enter"
+call physics set_motor {"id":"door","target_position":45}
 ```
 
 擬合:碰撞體以實體原點為中心,所以每個半軸取網格部件在該軸最遠的點(偏心的網格會得到較大的對稱箱子);沒有網格就是 1 m 方塊。
 
-編輯器:Object ▸ Add Rigid Body(選項對話框:Kind / Mass / Collider;下方顯示等價的 ACL 行),與 ACL 走同一個 `ops::add_rigid_body`(parity 測試 `rigid_bodies_match_acl`)。Add Component 也能加 `physics.body` / `physics.collider`(Inspector 表單由型別化 schema 產生)。場景視口的元件 gizmo 畫出模擬用的形狀(含縮放):靜態綠色、動態藍色、運動學與跟隨者琥珀色,Play 時睡著的剛體變暗,選取的物件白色。
+編輯器:Object ▸ Add Rigid Body(選項對話框:Kind / Mass / Collider;下方顯示等價的 ACL 行),與 ACL 走同一個 `ops::add_rigid_body`(parity 測試 `rigid_bodies_match_acl`)。Object ▸ Add Joint…(`object.joint ARGS`,參數與 ACL `physics SEL joint` 之後相同,同一個 `ops::parse_joint` / `ops::add_joint`,parity 測試 `joints_and_sensors_match_acl`)。Add Component 也能加 `physics.body` / `physics.collider` / `physics.joint`(Inspector 表單由型別化 schema 產生)。場景視口的元件 gizmo 畫出模擬用的形狀(含縮放):靜態綠色、動態藍色、運動學與跟隨者琥珀色,Play 時睡著的剛體變暗,選取的物件白色。
 
 ## 效能
 
@@ -104,7 +166,7 @@ release 量測(`perf_bench --generated-physics N --ticks 600`,全部醒著、4 �
 
 ## 限制
 
-- 沒有關節、複合剛體、網格碰撞體、觸發事件 / 碰撞事件、載具、布料。
+- 沒有複合剛體、網格碰撞體、載具、布料、可斷裂關節、多體(multibody)關節與 ragdoll 自動生成;接觸事件不帶接觸點 / 衝量。執行期 spawn 的實體不能帶關節(它們本來就不能帶剛體)。
 - 角色控制器是單向推動者:動態剛體不會擋住角色(角色仍走自己的碰撞)。
 - 跟隨者一步內移動超過 0.5 m(60 m/s)或轉動超過 0.2 rad(約 1400°/s)視為瞬移:直接放到新姿勢,不帶推動速度(否則 ping_pong 路徑在端點瞬間轉身 180° 會把貼著的箱子以上百 m/s 甩出去)。與它重疊的動態剛體由接觸修正慢慢推出。
 - 只在本機 Windows / x86-64 驗證確定性。
