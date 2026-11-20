@@ -1181,6 +1181,9 @@ impl Editor {
         let mut tween_ui = self.tween_ui.clone();
         let mut tween_request = None;
         let audio = self.selected.as_deref().and_then(|id| self.audio_clips(id));
+        let audio_file = audio
+            .as_ref()
+            .and_then(|(_, current)| self.audio_file_caption(current));
         let mut audio_clip: Option<String> = None;
         self.refresh_tag_cache();
         self.refresh_mixed();
@@ -1548,10 +1551,13 @@ impl Editor {
                                                 });
                                             new_clip = ui
                                                 .button("New clip…")
-                                                .on_hover_text("Procedural presets (no audio files); pick the preset and the clip ID")
+                                                .on_hover_text("A procedural preset, or a .wav / .ogg file of the pack; pick it and the clip ID")
                                                 .clicked();
                                         });
                                     });
+                                    if let Some(file) = &audio_file {
+                                        caption(ui, file.as_str());
+                                    }
                                     caption(
                                         ui,
                                         "Edit volume, loop, distances and rolloff under Components › audio.source; play with call audio.play in Play",

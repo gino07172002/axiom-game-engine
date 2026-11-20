@@ -1801,6 +1801,63 @@ pub fn add_audio_clip(world: &World, id: &str, preset: &str) -> Result<Vec<Edit>
     Ok(edits)
 }
 
+/// Adds clip `id` that plays the WAV / Ogg Vorbis file `path` (`audio.library`, created when
+/// missing, with the `audio` capability). The path is written as given: pack-relative paths
+/// are resolved when a content pack is loaded, other worlds resolve it against the working
+/// directory when the runtime decodes it. An existing clip ID is refused.
+pub fn add_audio_file_clip(
+    world: &World,
+    id: &str,
+    path: &str,
+    gain: Option<f32>,
+) -> Result<Vec<Edit>> {
+    let at = format!("/resources/audio.library/clips/{}", escape(id));
+    check_new_id(at.clone(), id)?;
+    let file = crate::audio::ClipFile {
+        path: path.to_owned(),
+        gain: gain.unwrap_or(1.0),
+    };
+    file.validate()
+        .map_err(|e| Diagnostic::error("invalid_value", format!("{at}/file"), format!("{e:#}")))?;
+    let mut library = audio_library(world)?;
+    if library.clips.contains_key(id) {
+        return Err(Diagnostic::error(
+            "id_taken",
+            at,
+            format!("audio.library already has a clip {id}"),
+        ));
+    }
+    let clip = crate::audio::AudioClip {
+        file: Some(file),
+        ..Default::default()
+    };
+    library.clips.insert(id.to_owned(), clip);
+    library.validate().map_err(|e| {
+        Diagnostic::error("audio_budget", "/resources/audio.library", format!("{e:#}"))
+    })?;
+    let mut entry = json!({"path": path});
+    if let Some(gain) = gain {
+        entry["gain"] = json!(gain);
+    }
+    let mut value = world
+        .resources
+        .get("audio.library")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    value
+        .as_object_mut()
+        .map(|l| l.entry("clips").or_insert_with(|| json!({})))
+        .and_then(Value::as_object_mut)
+        .expect("audio.library parsed as an object with a clips map")
+        .insert(id.to_owned(), json!({ "file": entry }));
+    let mut edits = enable_system(world, Some("audio"), None);
+    edits.push(Edit::Core(CoreEdit::SetResource {
+        id: "audio.library".into(),
+        value,
+    }));
+    Ok(edits)
+}
+
 /// Object ▸ Add Audio Source: puts an `audio.source` (defaults plus `options`) on each entity,
 /// replacing an existing one. The clip must exist in `audio.library` (`missing_clip`); without
 /// a clip option the library's first clip is used, and a world without clips gets the `tone`

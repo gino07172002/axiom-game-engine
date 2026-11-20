@@ -65,7 +65,9 @@
     "animation.library":{"assets":{"fighter":{"path":"fighter.glb"},"sentinel":{"path":"fighter-alt.glb"}}},
     "input.bindings":{"capture_pointer":true,
       "axes":{"move_x":{"positive":"KeyD","negative":"KeyA"},"move_z":{"positive":"KeyW","negative":"KeyS"},"orbit":{"positive":"KeyE","negative":"KeyQ"}},
-      "buttons":{"attack":"MouseLeft","dodge":"Space","lock":"KeyF"}
+      "buttons":{"attack":"MouseLeft","dodge":"Space","lock":"KeyF"},
+      "gamepad":{"axes":{"move_x":{"positive":"PadLStickRight","negative":"PadLStickLeft"},"move_z":{"positive":"PadLStickUp","negative":"PadLStickDown"},"orbit":{"positive":"PadRStickRight","negative":"PadRStickLeft"}},
+        "buttons":{"attack":"PadX","dodge":"PadA","lock":"PadRB"}}
     },
     "audio.library":{"cues":{
       "swing":{"frequency":420,"duration_ms":75,"gain":0.13},

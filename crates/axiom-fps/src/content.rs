@@ -102,7 +102,8 @@ pub fn convert(old: &LegacyWorld) -> Result<World> {
                 ("fire".into(), "MouseLeft".into()),
                 ("reload".into(), "KeyR".into())
             ]),
-            capture_pointer: true
+            capture_pointer: true,
+            gamepad: Default::default(),
         }),
     );
     let mut player = Entity::new("player");

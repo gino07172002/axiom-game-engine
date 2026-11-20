@@ -14,14 +14,16 @@ use crate::audio_mix::{ClipTable, VoiceParams, MAX_VOICES};
 use crate::world::*;
 use anyhow::{bail, ensure, Context, Result};
 use axiom_core::audio::{
-    attenuation, pan, pan_gains, AudioClip, AudioLibrary, AudioListener, AudioSource,
-    ListenerForward, SAMPLE_RATE,
+    attenuation, pan, pan_gains, AudioClip, AudioLibrary, AudioListener, AudioSource, ClipFile,
+    ListenerForward, MAX_FILE_BYTES, MAX_LIBRARY_SAMPLES, SAMPLE_RATE,
 };
 use glam::Vec3;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     any::Any,
     collections::BTreeMap,
+    io::Read,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex,
@@ -33,9 +35,26 @@ pub const CLIP_CACHE_BYTES: usize = 32 << 20;
 /// Gain below which a playing source is inaudible (-80 dB) and takes no voice.
 const MIN_AUDIBLE: f32 = 1e-4;
 
+/// What a decoded file clip held (`observe`, the editor's Inspector).
+#[derive(Clone, Debug)]
+pub struct FileInfo {
+    /// As authored after pack resolution (absolute inside the pack).
+    pub path: String,
+    pub format: &'static str,
+    pub channels: u16,
+    pub rate: u32,
+    /// Source duration.
+    pub seconds: f64,
+    /// Encoded size.
+    pub bytes: u64,
+    /// Wall time of the one decode (on the thread that built the runtime or loaded the pack).
+    pub decode_ms: f64,
+}
+
 struct CacheEntry {
     text: String,
     pcm: Arc<[i16]>,
+    file: Option<FileInfo>,
 }
 
 static CLIP_CACHE: Mutex<BTreeMap<u64, CacheEntry>> = Mutex::new(BTreeMap::new());
@@ -48,25 +67,92 @@ fn fnv1a(text: &str) -> u64 {
     h.max(1)
 }
 
-/// PCM of `clip` by content hash: rendered on a miss (outside the lock), shared afterwards.
-/// Entries no runtime references are evicted when the cache would exceed its budget; a clip
-/// that still does not fit is an error, not a silent drop.
-pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>)> {
+/// The encoded bytes of a file clip (bounded) and its cache text: content hash and gain, so
+/// the same file under two paths is decoded once and a changed file is decoded again.
+fn file_key(file: &ClipFile) -> Result<(String, Vec<u8>)> {
+    let path = std::path::Path::new(&file.path);
+    let size = std::fs::metadata(path)
+        .with_context(|| format!("audio file {} not found", file.path))?
+        .len();
+    let too_big = |size: u64| {
+        anyhow::anyhow!(
+            "audio file {} is {size} bytes (budget {MAX_FILE_BYTES})",
+            file.path
+        )
+    };
+    if size > MAX_FILE_BYTES {
+        return Err(too_big(size));
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .with_context(|| format!("audio file {} could not be read", file.path))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(too_big(bytes.len() as u64));
+    }
+    let hex: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok((
+        format!("file:{hex}:gain:{:08x}", file.gain.to_bits()),
+        bytes,
+    ))
+}
+
+/// PCM of `clip` by content hash: synthesised or decoded on a miss (outside the lock), shared
+/// afterwards. Entries no runtime references are evicted when the cache would exceed its
+/// budget; a clip that still does not fit is an error, not a silent drop. File clips also
+/// return what the file held.
+pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>, Option<FileInfo>)> {
     clip.validate()?;
-    let text = serde_json::to_string(clip)?;
+    let (text, bytes) = match &clip.file {
+        Some(file) => {
+            let (text, bytes) = file_key(file)?;
+            (text, Some(bytes))
+        }
+        None => (serde_json::to_string(clip)?, None),
+    };
     let key = fnv1a(&text);
     let poisoned = |_| anyhow::anyhow!("audio clip cache lock poisoned");
+    let found = |e: &CacheEntry| {
+        let file = e.file.clone().map(|mut info| {
+            // Same content under another path: report the path this clip names.
+            if let Some(f) = &clip.file {
+                info.path.clone_from(&f.path);
+            }
+            info
+        });
+        (key, e.pcm.clone(), file)
+    };
     if let Some(e) = CLIP_CACHE.lock().map_err(poisoned)?.get(&key) {
         ensure!(
             e.text == text,
             "audio clip content hash collision ({key:016x})"
         );
-        return Ok((key, e.pcm.clone()));
+        return Ok(found(e));
     }
-    let pcm: Arc<[i16]> = clip.synthesize().into();
+    let (pcm, file): (Arc<[i16]>, _) = match (&clip.file, bytes) {
+        (Some(f), Some(bytes)) => {
+            let started = std::time::Instant::now();
+            let decoded = crate::audio_file::decode(&bytes, f.gain)
+                .with_context(|| format!("audio file {}", f.path))?;
+            let info = FileInfo {
+                path: f.path.clone(),
+                format: decoded.format,
+                channels: decoded.channels,
+                rate: decoded.rate,
+                seconds: decoded.seconds,
+                bytes: bytes.len() as u64,
+                decode_ms: started.elapsed().as_secs_f64() * 1000.0,
+            };
+            (decoded.pcm.into(), Some(info))
+        }
+        _ => (clip.synthesize().into(), None),
+    };
     let mut cache = CLIP_CACHE.lock().map_err(poisoned)?;
     if let Some(e) = cache.get(&key) {
-        return Ok((key, e.pcm.clone()));
+        return Ok(found(e));
     }
     let bytes = |c: &BTreeMap<u64, CacheEntry>| c.values().map(|e| e.pcm.len() * 2).sum::<usize>();
     if bytes(&cache) + pcm.len() * 2 > CLIP_CACHE_BYTES {
@@ -84,9 +170,10 @@ pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>)> {
         CacheEntry {
             text,
             pcm: pcm.clone(),
+            file: file.clone(),
         },
     );
-    Ok((key, pcm))
+    Ok((key, pcm, file))
 }
 
 /// PCM bytes currently held by the clip cache.
@@ -95,6 +182,71 @@ pub fn clip_cache_bytes() -> usize {
         .lock()
         .map(|c| c.values().map(|e| e.pcm.len() * 2).sum())
         .unwrap_or(0)
+}
+
+/// What the cache knows about the file at `path` (decoded by an earlier runtime build or pack
+/// load in this process), without touching the file.
+pub fn file_info(path: &str) -> Option<FileInfo> {
+    CLIP_CACHE.lock().ok().and_then(|c| {
+        c.values()
+            .filter_map(|e| e.file.as_ref())
+            .find(|f| f.path == path)
+            .cloned()
+    })
+}
+
+/// Package resolver: every file clip's pack-relative path becomes the absolute path inside
+/// the pack, and the file is decoded now (through the cache, so the runtime build that
+/// follows reuses it): a missing, corrupt, over-budget or escaping file fails the import with
+/// its clip's path. Only the `path` strings change; the rest keeps its authored text.
+pub fn resolve_files(root: &std::path::Path, world: &mut axiom_core::World) -> Result<()> {
+    let Some(clips) = world
+        .resources
+        .get_mut("audio.library")
+        .and_then(|l| l.get_mut("clips"))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    for (id, value) in clips.iter_mut() {
+        let Some(raw) = value
+            .pointer("/file/path")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let at = format!(
+            "/resources/audio.library/clips/{}/file",
+            axiom_core::local::escape(id)
+        );
+        let resolved = axiom_core::local::at(
+            &at,
+            (|| -> Result<String> {
+                ensure!(
+                    !raw.contains(':') && !raw.starts_with('/') && !raw.starts_with('\\'),
+                    "audio file {raw} must be a path relative to the content pack"
+                );
+                let path = root
+                    .join(raw.replace('\\', "/"))
+                    .canonicalize()
+                    .with_context(|| format!("audio file {raw} not found in the content pack"))?;
+                ensure!(
+                    path.starts_with(root),
+                    "audio file {raw} escapes the content pack"
+                );
+                let resolved = path.to_string_lossy().into_owned();
+                let mut clip: AudioClip = serde_json::from_value(value.clone())?;
+                if let Some(file) = clip.file.as_mut() {
+                    file.path.clone_from(&resolved);
+                }
+                cached_clip(&clip).with_context(|| format!("audio file {raw}"))?;
+                Ok(resolved)
+            })(),
+        )?;
+        value["file"]["path"] = Value::String(resolved);
+    }
+    Ok(())
 }
 
 static NEXT_TOKEN: AtomicU32 = AtomicU32::new(1);
@@ -106,6 +258,7 @@ struct Clip {
     name: String,
     hash: u64,
     seconds: f32,
+    file: Option<FileInfo>,
 }
 
 struct Source {
@@ -216,12 +369,13 @@ impl AudioSpatialSystem {
                         .clips
                         .get(&def.clip)
                         .with_context(|| format!("audio.library has no clip {}", def.clip))?;
-                    let (hash, samples) =
+                    let (hash, samples, file) =
                         cached_clip(synth).with_context(|| format!("clip {}", def.clip))?;
                     system.clips.push(Clip {
                         name: def.clip.clone(),
                         hash,
                         seconds: samples.len() as f32 / SAMPLE_RATE as f32,
+                        file,
                     });
                     pcm.push((hash, samples));
                     system.clips.len() - 1
@@ -249,6 +403,12 @@ impl AudioSpatialSystem {
         ensure!(
             system.sources.len() <= axiom_core::audio::MAX_AUDIO_SOURCES,
             "audio source budget exceeded"
+        );
+        // Procedural clips are budgeted when authored; decoded files only now.
+        let samples: usize = pcm.iter().map(|(_, p)| p.len()).sum();
+        ensure!(
+            samples <= MAX_LIBRARY_SAMPLES,
+            "audio clip memory budget exceeded ({samples} > {MAX_LIBRARY_SAMPLES} samples of 16-bit PCM at {SAMPLE_RATE} Hz in the clips sources use)"
         );
         system.table = Arc::new(ClipTable::new(pcm));
         system.order.reserve(system.sources.len());
@@ -338,7 +498,13 @@ impl AudioSpatialSystem {
                     "gain": round(s.gain), "left": round(s.left), "right": round(s.right),
                     "pan": round(s.pan), "distance": round(s.distance)})
             }).collect::<Vec<_>>(),
-            "clips": {"count": self.table.len(), "bytes": self.table.bytes(), "cache_bytes": clip_cache_bytes()},
+            "clips": {"count": self.table.len(), "bytes": self.table.bytes(), "cache_bytes": clip_cache_bytes(),
+                "files": self.clips.iter().filter_map(|c| {
+                    let f = c.file.as_ref()?;
+                    Some(json!({"clip": c.name, "path": f.path, "format": f.format, "channels": f.channels,
+                        "rate": f.rate, "seconds": round(f.seconds as f32), "bytes": f.bytes,
+                        "decode_ms": (f.decode_ms * 1000.0).round() / 1000.0}))
+                }).collect::<Vec<_>>()},
             "halted": self.halted,
         });
         if self.heard.is_none() && self.sources.iter().any(|s| s.def.spatial) {
@@ -652,6 +818,7 @@ pub fn register(r: &mut RuntimeRegistry) {
         json!({"result":"the observe `audio` section: listener, counts, voices"}),
         |_| Ok(()),
     );
+    r.authoring.package_resolvers.push(resolve_files);
     r.factories.insert("audio.spatial".into(), |state| {
         Ok(Box::new(AudioSpatialSystem::new(state)?))
     });

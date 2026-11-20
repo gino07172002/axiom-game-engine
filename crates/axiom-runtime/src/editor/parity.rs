@@ -480,6 +480,26 @@ fn audio_sources_listeners_and_clips_match_acl() {
         },
         "audio clip engine engine",
     );
+    // New clip… with a file = ACL audio clip ID file=PATH (the dialog shows that line).
+    assert_parity(
+        sourced.clone(),
+        |e| {
+            e.select(Some("car".into()));
+            let mut dialog =
+                super::options::OptionsDialog::for_command(e, "audio.new_clip").unwrap();
+            dialog.set("Clip ID", "music");
+            dialog.set(
+                "File (.wav / .ogg, instead of the preset)",
+                "sounds/theme song.ogg",
+            );
+            assert_eq!(
+                dialog.acl(e),
+                r#"audio clip music file="sounds/theme song.ogg""#
+            );
+            vec![dialog.run(e).unwrap().into_iter().collect()]
+        },
+        r#"audio clip music file="sounds/theme song.ogg""#,
+    );
     let engined = headless(&sourced, "audio clip engine engine");
     assert_parity(
         engined.clone(),
@@ -2114,6 +2134,66 @@ fn tuning_editor_edits_match_acl() {
                 .unwrap()]
         },
         "input axis orbit KeyQ KeyE",
+    );
+    // Input Map ▸ pad cells and deadzone = ACL input pad / input deadzone.
+    assert_parity(
+        town(),
+        |e| {
+            vec![e
+                .input_pad_pick(
+                    "attack",
+                    super::input_map::Slot::Button,
+                    Some("PadX".into()),
+                )
+                .into_iter()
+                .collect()]
+        },
+        "input pad attack PadX",
+    );
+    let axis = headless(&town(), "input axis orbit KeyQ KeyE");
+    assert_parity(
+        axis.clone(),
+        |e| {
+            vec![e
+                .input_pad_pick(
+                    "orbit",
+                    super::input_map::Slot::Positive,
+                    Some("PadRStickRight".into()),
+                )
+                .into_iter()
+                .collect()]
+        },
+        "input pad orbit PadRStickRight PadRStickLeft",
+    );
+    let padded = headless(&axis, "input pad orbit PadRStickRight PadRStickLeft");
+    assert_parity(
+        padded.clone(),
+        |e| {
+            vec![e
+                .input_pad_pick(
+                    "orbit",
+                    super::input_map::Slot::Negative,
+                    Some("PadLT".into()),
+                )
+                .into_iter()
+                .collect()]
+        },
+        "input pad orbit PadRStickRight PadLT",
+    );
+    assert_parity(
+        padded.clone(),
+        |e| {
+            vec![e
+                .input_pad_pick("orbit", super::input_map::Slot::Positive, None)
+                .into_iter()
+                .collect()]
+        },
+        "input pad orbit off",
+    );
+    assert_parity(
+        padded,
+        |e| vec![e.input_deadzone(0.3).into_iter().collect()],
+        "input deadzone 0.3",
     );
     assert_parity(
         town(),

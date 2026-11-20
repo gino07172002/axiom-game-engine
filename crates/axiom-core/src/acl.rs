@@ -50,7 +50,8 @@ EDIT (any number, atomic):
                                   (one fixed step lag); each SEL needs an animation.player
   interact SEL [event=E] [prompt=TEXT] [range=M] [action=BUTTON]   interact.target on each object
                                   (defaults: event interacted declared with interactor/target, action interact -> KeyE)
-  audio clip ID tone|engine|fountain|creak|footstep   procedural clip in audio.library (no audio files)
+  audio clip ID tone|engine|fountain|creak|footstep   procedural clip in audio.library
+  audio clip ID file=PATH [gain=G]  WAV / Ogg Vorbis file clip (pack-relative path; gain 0..1)
   audio SEL source [clip=ID] [volume=V] [loop=on|off] [autoplay=on|off] [spatial=on|off] [min=M] [max=M]
         [rolloff=inverse|linear]  audio.source on each object (default clip: the first; none -> clip tone)
   audio ID listener               audio.listener on ID; every other listener becomes inactive
@@ -116,6 +117,8 @@ EDIT (any number, atomic):
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
   input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
                                   KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft
+  input pad ACTION PAD | input pad ACTION POS NEG | input pad ACTION off | input deadzone V
+                                  gamepad (XInput) input of an existing action: PadA PadRT PadLStickUp ..
   loc set LOCALE KEY TEXT | loc key add KEY [TEXT] | loc key remove KEY   (new key: TEXT in the
                                   default locale, empty elsewhere) | loc locale add L [from=L2] | loc locale remove L
   ability ID event add TICK SOUND | ability ID event move I TICK | ability ID event sound I SOUND
@@ -437,6 +440,8 @@ enum Statement {
     RigidBody(Box<Selection>, crate::ops::BodyOptions),
     Rig(Box<Selection>, crate::ops::RigEdit),
     AudioClip(String, String),
+    /// `audio clip ID file=PATH [gain=G]`.
+    AudioFileClip(String, String, Option<f32>),
     AudioSource(Box<Selection>, Box<crate::ops::AudioSourceOptions>),
     AudioListener(String),
     TweenClip(Box<Selection>, String, Box<crate::ops::TweenClipOptions>),
@@ -543,8 +548,25 @@ fn tuning_statement(tokens: &[String]) -> Result<TuningStatement> {
         ["input", "remove", action] => TuningStatement::Input(InputEdit::Remove {
             action: (*action).into(),
         }),
+        ["input", "pad", action, "off"] => TuningStatement::Input(InputEdit::PadRemove {
+            action: (*action).into(),
+        }),
+        ["input", "pad", action, input] => TuningStatement::Input(InputEdit::PadButton {
+            action: (*action).into(),
+            input: (*input).into(),
+        }),
+        ["input", "pad", action, positive, negative] => TuningStatement::Input(InputEdit::PadAxis {
+            action: (*action).into(),
+            positive: (*positive).into(),
+            negative: (*negative).into(),
+        }),
+        ["input", "deadzone", v] => TuningStatement::Input(InputEdit::Deadzone {
+            value: v
+                .parse()
+                .with_context(|| format!("'{v}' is not a deadzone (0..0.9)"))?,
+        }),
         ["input", ..] => bail!(
-            "use: input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION"
+            "use: input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION | input pad ACTION PAD | input pad ACTION POS NEG | input pad ACTION off | input deadzone V"
         ),
         ["loc", "set", locale, key, t] => TuningStatement::Loc(LocEdit::Set {
             locale: (*locale).into(),
@@ -1695,10 +1717,33 @@ fn camera_follow(tokens: &[String]) -> Result<Statement> {
 /// `source` or `listener`); otherwise `source` / `listener` in third place select entities
 /// (an entity named `clip` still works).
 fn audio(tokens: &[String]) -> Result<Statement> {
-    const USE: &str = "use: audio clip ID PRESET | audio SEL source [clip=..] [volume=..] [loop=..] [autoplay=..] [spatial=..] [min=..] [max=..] [rolloff=..] | audio ID listener";
+    const USE: &str = "use: audio clip ID PRESET | audio clip ID file=PATH [gain=..] | audio SEL source [clip=..] [volume=..] [loop=..] [autoplay=..] [spatial=..] [min=..] [max=..] [rolloff=..] | audio ID listener";
     let arg = |n: usize| tokens.get(n).map(String::as_str).context(USE);
     if tokens.len() == 4 && tokens[1] == "clip" && !tokens[3].contains('=') {
         return Ok(Statement::AudioClip(tokens[2].clone(), tokens[3].clone()));
+    }
+    if tokens.len() >= 4 && tokens[1] == "clip" && tokens[3].starts_with("file=") {
+        let mut path = None;
+        let mut gain = None;
+        for t in &tokens[3..] {
+            match t.split_once('=') {
+                Some(("file", v)) => {
+                    path = Some(match value(v) {
+                        Value::String(s) => s,
+                        _ => v.to_owned(),
+                    })
+                }
+                Some(("gain", v)) => {
+                    gain = Some(v.parse::<f32>().context("gain must be a number")?)
+                }
+                _ => bail!("use: audio clip ID file=PATH [gain=0..1]"),
+            }
+        }
+        return Ok(Statement::AudioFileClip(
+            tokens[2].clone(),
+            path.context("audio clip ID file=PATH")?,
+            gain,
+        ));
     }
     match (arg(1)?, arg(2)?) {
         (sel, "source") => {
@@ -2390,6 +2435,9 @@ pub fn run(
             Statement::Rig(select, edit) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::rig_edit(w, r, &ids, &edit)),
             Statement::AudioClip(id, preset) => crate::ops::add_audio_clip(w, &id, &preset),
+            Statement::AudioFileClip(id, path, gain) => {
+                crate::ops::add_audio_file_clip(w, &id, &path, gain)
+            }
             Statement::AudioSource(select, options) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_audio_source(w, &ids, &options)),
             Statement::AudioListener(id) => crate::ops::add_audio_listener(w, &id),

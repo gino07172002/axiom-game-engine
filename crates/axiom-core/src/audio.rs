@@ -1,12 +1,12 @@
 //! Audio authoring types: the `audio.library` resource (short tone cues for gameplay events and
 //! procedural clips), positional sources (`audio.source`) and the listener (`audio.listener`).
 //!
-//! Clips are synthesis definitions, not files: the runtime renders each one once to 22,050 Hz
-//! mono 16-bit PCM (cached by the definition's content hash) when a runtime is built, so playing
-//! a clip never decodes anything. Spatialisation is a pure function of the listener and source
-//! poses ([`attenuation`], [`pan`], [`pan_gains`]); the runtime system `audio.spatial` applies it
-//! every fixed step and reports the results in `observe`, so headless runs can verify what a
-//! listener would hear without an audio device.
+//! Clips are synthesis definitions or WAV / Ogg Vorbis files: the runtime renders or decodes
+//! each one once to 22,050 Hz mono 16-bit PCM (cached by content hash) when a runtime is built,
+//! so playing a clip never decodes anything. Spatialisation is a pure function of the listener
+//! and source poses ([`attenuation`], [`pan`], [`pan_gains`]); the runtime system
+//! `audio.spatial` applies it every fixed step and reports the results in `observe`, so
+//! headless runs can verify what a listener would hear without an audio device.
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +26,12 @@ pub const MAX_LIBRARY_SAMPLES: usize = 8 * 1024 * 1024;
 pub const MAX_AUDIO_SOURCES: usize = 1024;
 /// Clip names a preset can create (`ops::add_audio_clip`, ACL `audio clip ID PRESET`).
 pub const CLIP_PRESETS: [&str; 5] = ["tone", "engine", "fountain", "creak", "footstep"];
+/// Encoded size of one file clip (WAV / Ogg Vorbis).
+pub const MAX_FILE_BYTES: u64 = 16 << 20;
+/// Decoded duration of one file clip (decoded whole, never streamed).
+pub const MAX_FILE_SECONDS: f32 = 120.0;
+/// File extensions a file clip may name.
+pub const FILE_EXTENSIONS: [&str; 2] = ["wav", "ogg"];
 
 /// A short tone cue played by `audio.events` (gameplay sounds such as hit feedback).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -100,6 +106,44 @@ pub struct AudioClip {
     pub release: f32,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// A WAV / Ogg Vorbis file instead of synthesis (then no synthesis field may be given).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<ClipFile>,
+}
+
+/// The file of a file-backed clip. `path` is relative to the content pack (resolved to an
+/// absolute path inside it when the pack is loaded); a world authored without a pack names a
+/// path relative to the working directory, or an absolute one.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ClipFile {
+    pub path: String,
+    /// Linear gain applied when decoding (0..1, default 1: the file as recorded).
+    #[serde(default = "one")]
+    pub gain: f32,
+}
+
+impl ClipFile {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.path.trim().is_empty() && self.path.len() <= 512,
+            "file path must be 1..512 characters"
+        );
+        let ext = std::path::Path::new(&self.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        ensure!(
+            ext.as_deref().is_some_and(|e| FILE_EXTENSIONS.contains(&e)),
+            "file {} must be a .wav or .ogg file",
+            self.path
+        );
+        ensure!(
+            self.gain.is_finite() && (0.0..=1.0).contains(&self.gain),
+            "file gain must be 0..1"
+        );
+        Ok(())
+    }
 }
 
 impl Default for AudioClip {
@@ -118,6 +162,7 @@ impl Default for AudioClip {
             attack: short_ramp(),
             release: short_ramp(),
             seed: 1,
+            file: None,
         }
     }
 }
@@ -189,11 +234,27 @@ impl AudioClip {
         })
     }
 
+    /// Synthesised samples; 0 for a file clip (its length is known once decoded, and the
+    /// runtime checks the budgets then).
     pub fn samples(&self) -> usize {
+        if self.file.is_some() {
+            return 0;
+        }
         (self.seconds * SAMPLE_RATE as f32).round() as usize
     }
 
     pub fn validate(&self) -> Result<()> {
+        if let Some(file) = &self.file {
+            let bare = Self {
+                file: None,
+                ..self.clone()
+            };
+            ensure!(
+                bare == Self::default(),
+                "a file clip takes no synthesis fields (wave, frequency, seconds, gain, ...); set file.gain instead"
+            );
+            return file.validate();
+        }
         let within = |v: f32, lo: f32, hi: f32| v.is_finite() && (lo..=hi).contains(&v);
         ensure!(
             within(self.frequency, 20.0, 8000.0),
@@ -540,6 +601,7 @@ pub fn library_schema() -> Value {
     json!({
         "cues": format!("stable ID -> {{frequency:40..4000 Hz,duration_ms:10..150,gain:0..0.5}} (<= {MAX_CUES}); played by audio.events for gameplay events"),
         "clips": format!("stable ID -> procedural clip (<= {MAX_LIBRARY_CLIPS}): {{wave:sine|square|saw|triangle|noise, frequency:20..8000 Hz (220), frequency_end:optional sweep target, seconds:0.01..{MAX_CLIP_SECONDS} (1), gain:peak 0..1 (0.5), harmonics:0..8, lowpass_hz:optional 20..11025, tremolo_hz:0..40, tremolo_depth:0..1, jitter:0..1 pitch wobble, attack/release:seconds (0.005), seed:u64}}; presets: {}", CLIP_PRESETS.join(", ")),
+        "files": format!("a clip may instead be {{file:{{path, gain:0..1 (1)}}}} with no synthesis field: a .wav (PCM 8/16/24/32-bit or 32-bit float) or .ogg (Vorbis) file, mono or stereo, 8..192 kHz, <= {MAX_FILE_BYTES} bytes and <= {MAX_FILE_SECONDS} s; path relative to the content pack (confined to it); decoded once (downmixed to mono, resampled to {SAMPLE_RATE} Hz) when the runtime is built; add with `audio clip ID file=PATH [gain=G]`"),
         "output": format!("mono {SAMPLE_RATE} Hz 16-bit PCM rendered once per definition (cached by content hash, never per play); mixer output stereo {SAMPLE_RATE} Hz through the native Windows host"),
         "budget": format!("{MAX_LIBRARY_SAMPLES} PCM samples across a library's clips; the runtime clip cache holds at most 32 MiB"),
         "events": "cues: simulation tick + monotonic sequence"

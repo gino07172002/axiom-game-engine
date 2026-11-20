@@ -1487,6 +1487,36 @@ impl Editor {
         self.op_write(result, None)
     }
 
+    /// New clip… with a file (`ACL: audio clip ID file=PATH`).
+    pub(super) fn add_audio_file_clip(&mut self, id: &str, path: &str) -> Option<Action> {
+        let result = ops::add_audio_file_clip(&self.world, id, path, None);
+        self.op_write(result, None)
+    }
+
+    /// Inspector caption of a file clip: its path and, once decoded in this process (pack
+    /// load or a runtime build), duration, channels and rate. `None` for procedural clips.
+    pub(super) fn audio_file_caption(&self, clip: &str) -> Option<String> {
+        let path = self
+            .world
+            .resources
+            .get("audio.library")?
+            .pointer(&format!(
+                "/clips/{}/file/path",
+                axiom_core::local::escape(clip)
+            ))?
+            .as_str()?;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map_or(path.into(), |n| n.to_string_lossy());
+        Some(match crate::spatial_audio::file_info(path) {
+            Some(f) => format!(
+                "File {name} · {:.2} s · {} ch · {} Hz {} (decoded {:.1} ms)",
+                f.seconds, f.channels, f.rate, f.format, f.decode_ms
+            ),
+            None => format!("File {name} · not decoded yet (enter Play to load it)"),
+        })
+    }
+
     /// Clip IDs of `audio.library` and the clip of `id`'s `audio.source`, when it has one.
     pub(super) fn audio_clips(&self, id: &str) -> Option<(Vec<String>, String)> {
         let entity = self.world.entity(id)?;

@@ -1,6 +1,7 @@
 //! Input Map tab: `input.bindings` as a table of button and axis actions. Clicking a key cell
 //! starts "press a key": the next key press (or Mouse Left) becomes the binding in one
-//! revision (`ACL: input button ACTION KEY` / `input axis ACTION POSITIVE NEGATIVE`). Keys
+//! revision (`ACL: input button ACTION KEY` / `input axis ACTION POSITIVE NEGATIVE`); each row
+//! also has gamepad dropdowns (`input pad ..`) and the header the stick deadzone. Keys
 //! bound to more than one action are flagged (the runtime allows it; every action sees the
 //! key). Esc cancels a capture; the editor's shortcuts stand down while one is running.
 use super::icons::Icon;
@@ -40,6 +41,8 @@ pub(crate) struct InputUi {
     pub capture: Option<Capture>,
     /// Name typed for Add Button / Add Axis.
     pub new_action: String,
+    /// Gamepad deadzone while it is being dragged or typed (written on release).
+    deadzone: Option<f32>,
     cache: Option<Model>,
     /// Times the table model was rebuilt (tests: not per frame).
     pub builds: usize,
@@ -179,9 +182,70 @@ fn captured(ctx: &egui::Context, before: egui::Modifiers) -> Option<Result<Strin
     })
 }
 
+/// The natural other half of an axis made from `input` (stick and d-pad directions, paired
+/// buttons, triggers and shoulders).
+fn opposite(input: &str) -> &'static str {
+    const PAIRS: [(&str, &str); 12] = [
+        ("PadA", "PadB"),
+        ("PadX", "PadY"),
+        ("PadLB", "PadRB"),
+        ("PadBack", "PadStart"),
+        ("PadLS", "PadRS"),
+        ("PadDpadUp", "PadDpadDown"),
+        ("PadDpadRight", "PadDpadLeft"),
+        ("PadRT", "PadLT"),
+        ("PadLStickUp", "PadLStickDown"),
+        ("PadLStickRight", "PadLStickLeft"),
+        ("PadRStickUp", "PadRStickDown"),
+        ("PadRStickRight", "PadRStickLeft"),
+    ];
+    PAIRS
+        .iter()
+        .find_map(|&(a, b)| {
+            if a == input {
+                Some(b)
+            } else if b == input {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .unwrap_or("PadLStickDown")
+}
+
+/// A gamepad input dropdown; `Some(pick)` when the person chose a different entry
+/// (`Some(None)` = "—", no gamepad input).
+fn pad_choice(
+    ui: &mut Ui,
+    salt: String,
+    current: Option<&str>,
+    enabled: bool,
+) -> Option<Option<String>> {
+    let mut picked = None;
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .width(118.0)
+            .selected_text(RichText::new(current.unwrap_or("—")).monospace())
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_none(), "—").clicked() && current.is_some() {
+                    picked = Some(None);
+                }
+                for name in axiom_core::PAD_INPUTS {
+                    if ui.selectable_label(current == Some(name), name).clicked()
+                        && current != Some(name)
+                    {
+                        picked = Some(Some(name.to_owned()));
+                    }
+                }
+            });
+    });
+    picked
+}
+
 enum Intent {
     Capture(String, Slot, bool),
     Bind(InputEdit),
+    Pad(String, Slot, Option<String>),
     Cancel,
 }
 
@@ -190,6 +254,41 @@ impl Editor {
     pub(super) fn input_edit(&mut self, edit: &InputEdit) -> Option<Action> {
         let result = ops::edit_input(&self.world, edit);
         self.tuning_write(result)
+    }
+
+    /// Input Map ▸ Pad cell (`ACL: input pad ACTION ..`): the gamepad input of `action`'s
+    /// `slot`; `None` removes the action's gamepad binding. Picking one side of an axis that
+    /// has no gamepad binding yet fills the other side with the opposite input.
+    pub(super) fn input_pad_pick(
+        &mut self,
+        action: &str,
+        slot: Slot,
+        pick: Option<String>,
+    ) -> Option<Action> {
+        let bound = self
+            .bindings()
+            .and_then(|b| b.gamepad.axes.get(action).cloned());
+        let action = action.to_owned();
+        let edit = match (slot, pick) {
+            (_, None) => InputEdit::PadRemove { action },
+            (Slot::Button, Some(input)) => InputEdit::PadButton { action, input },
+            (Slot::Positive, Some(input)) => InputEdit::PadAxis {
+                negative: bound.map_or_else(|| opposite(&input).to_owned(), |a| a.negative),
+                positive: input,
+                action,
+            },
+            (Slot::Negative, Some(input)) => InputEdit::PadAxis {
+                positive: bound.map_or_else(|| opposite(&input).to_owned(), |a| a.positive),
+                negative: input,
+                action,
+            },
+        };
+        self.input_edit(&edit)
+    }
+
+    /// Input Map ▸ Deadzone (`ACL: input deadzone V`).
+    pub(super) fn input_deadzone(&mut self, value: f32) -> Option<Action> {
+        self.input_edit(&InputEdit::Deadzone { value })
     }
 
     /// `input.capture ACTION[+|-]`: starts "press a key" for an existing action's key.
@@ -286,6 +385,9 @@ impl Editor {
                 Intent::Bind(edit) => {
                     self.tuning.input.capture = None;
                     actions.extend(self.input_edit(&edit));
+                }
+                Intent::Pad(action, slot, pick) => {
+                    actions.extend(self.input_pad_pick(&action, slot, pick));
                 }
             }
         }
@@ -462,6 +564,34 @@ impl Editor {
                 });
             }
         }
+        let pad_editable = editable && capture.is_none();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Gamepad (XInput) deadzone").color(theme::MUTED));
+            let authored = bindings.gamepad.deadzone;
+            let mut value = self.tuning.input.deadzone.unwrap_or(authored);
+            let r = ui.add_enabled(
+                pad_editable,
+                egui::DragValue::new(&mut value)
+                    .range(0.0..=0.9)
+                    .speed(0.005)
+                    .fixed_decimals(2),
+            );
+            mark!(self.rects, "input:deadzone".into(), r.rect);
+            self.tuning.input.deadzone = Some(value);
+            if r.drag_stopped() || r.lost_focus() {
+                self.tuning.input.deadzone = None;
+                if (value - authored).abs() > 1e-6 {
+                    actions.extend(self.input_deadzone(value));
+                }
+            } else if !r.dragged() && !r.has_focus() {
+                self.tuning.input.deadzone = None;
+            }
+            ui.label(
+                RichText::new("pad cells: a second input of each action (— = none)")
+                    .size(11.0)
+                    .color(theme::MUTED),
+            );
+        });
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .id_salt("input_map_scroll")
@@ -485,6 +615,13 @@ impl Editor {
                             capture.as_ref(),
                             intents,
                         );
+                        let pad = bindings.gamepad.buttons.get(action).map(String::as_str);
+                        ui.label(RichText::new("pad").color(theme::MUTED));
+                        if let Some(pick) =
+                            pad_choice(ui, format!("input_pad:{action}"), pad, pad_editable)
+                        {
+                            intents.push(Intent::Pad(action.clone(), Slot::Button, pick));
+                        }
                         self.remove_cell(ui, action, editable && capture.is_none(), intents);
                     });
                 }
@@ -521,6 +658,21 @@ impl Editor {
                             capture.as_ref(),
                             intents,
                         );
+                        let pad = bindings.gamepad.axes.get(action);
+                        ui.label(RichText::new("pad +").color(theme::MUTED));
+                        let positive = pad.map(|a| a.positive.as_str());
+                        if let Some(pick) =
+                            pad_choice(ui, format!("input_pad+:{action}"), positive, pad_editable)
+                        {
+                            intents.push(Intent::Pad(action.clone(), Slot::Positive, pick));
+                        }
+                        ui.label(RichText::new("−").color(theme::MUTED));
+                        let negative = pad.map(|a| a.negative.as_str());
+                        if let Some(pick) =
+                            pad_choice(ui, format!("input_pad-:{action}"), negative, pad_editable)
+                        {
+                            intents.push(Intent::Pad(action.clone(), Slot::Negative, pick));
+                        }
                         self.remove_cell(ui, action, editable && capture.is_none(), intents);
                     });
                 }

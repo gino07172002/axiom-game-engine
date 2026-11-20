@@ -35,6 +35,36 @@ impl ActionMap {
         }
         a
     }
+    /// [`Self::from_bindings`] plus `input.bindings.gamepad` read from `pads`: a pad button
+    /// (level >= 0.5) presses its action as well; a pad axis adds `positive - negative` to the
+    /// keyboard value (clamped to -1..1). Without a connected pad the result is exactly
+    /// `from_bindings`.
+    pub fn from_input(
+        bindings: &InputBindings,
+        keys: &BTreeSet<String>,
+        pads: &crate::gamepad::Pads,
+    ) -> Self {
+        let mut a = Self::from_bindings(bindings, keys);
+        let pad = &bindings.gamepad;
+        if pads.connected() == 0 || pad.is_empty() {
+            return a;
+        }
+        let levels = pads.levels(pad.deadzone);
+        let level = |name: &str| axiom_core::pad_input(name).map_or(0.0, |i| levels[i]);
+        for (name, input) in &pad.buttons {
+            if let Some(v) = a.0.get_mut(name) {
+                if level(input) >= 0.5 {
+                    *v = 1.0;
+                }
+            }
+        }
+        for (name, axis) in &pad.axes {
+            if let Some(v) = a.0.get_mut(name) {
+                *v = (*v + level(&axis.positive) - level(&axis.negative)).clamp(-1.0, 1.0);
+            }
+        }
+        a
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct RuntimeEntityId {

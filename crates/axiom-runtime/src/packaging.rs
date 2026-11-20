@@ -787,6 +787,31 @@ mod tests {
     }
 
     #[test]
+    fn audio_file_clips_are_referenced_and_packaged() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("audio");
+        let pack = base.join("pack");
+        copy_dir(&content("audio-lab"), &pack);
+        std::fs::write(pack.join("sounds/unused.wav"), b"not read").unwrap();
+        let out = base.join("out/Game");
+        let report = package(
+            &registry,
+            &options(&pack, &out, &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            strings(&report, "unreferenced"),
+            ["sounds/unused.wav"],
+            "{report}"
+        );
+        for file in ["sounds/hum.wav", "sounds/chime.ogg"] {
+            assert!(out.join("content").join(file).is_file(), "{file}");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn sanitize_drops_reserved_characters() {
         assert_eq!(sanitize("Sakura: Plaza?"), "Sakura Plaza");
         assert_eq!(

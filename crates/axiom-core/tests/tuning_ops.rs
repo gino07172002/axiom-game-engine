@@ -730,3 +730,168 @@ fn vfx_curve_and_gradient_verbs_write_whole_lists_and_remove_them() {
         );
     }
 }
+
+#[test]
+fn gamepad_bindings_are_alternates_of_existing_actions() {
+    let w = world();
+    for (script, edit) in [
+        (
+            "input pad jump PadA",
+            InputEdit::PadButton {
+                action: "jump".into(),
+                input: "PadA".into(),
+            },
+        ),
+        (
+            "input pad move_x PadLStickRight PadLStickLeft",
+            InputEdit::PadAxis {
+                action: "move_x".into(),
+                positive: "PadLStickRight".into(),
+                negative: "PadLStickLeft".into(),
+            },
+        ),
+        ("input deadzone 0.3", InputEdit::Deadzone { value: 0.3 }),
+    ] {
+        let edits = ops::edit_input(&w, &edit).unwrap();
+        let mut s = store();
+        assert_eq!(acl(&mut s, script).unwrap(), apply(edits), "{script}");
+    }
+    let mut s = store();
+    let after = acl(
+        &mut s,
+        "input pad jump PadA\ninput pad move_x PadLStickRight PadLStickLeft",
+    )
+    .unwrap();
+    let b: axiom_core::InputBindings =
+        serde_json::from_value(after.resources["input.bindings"].clone()).unwrap();
+    assert_eq!(b.gamepad.buttons["jump"], "PadA");
+    assert_eq!(b.gamepad.deadzone, axiom_core::PAD_STICK_DEADZONE);
+    // Gamepad conflicts are flagged like keys.
+    let both = acl(&mut s, "input pad use PadA").unwrap();
+    let b: axiom_core::InputBindings =
+        serde_json::from_value(both.resources["input.bindings"].clone()).unwrap();
+    assert_eq!(
+        ops::input_conflicts(&b),
+        vec![("PadA".to_owned(), vec!["jump".to_owned(), "use".to_owned()])]
+    );
+    // Removing the action drops its gamepad binding; `off` drops only that.
+    let removed = acl(&mut s, "input remove use\ninput pad move_x off").unwrap();
+    let pad: axiom_core::GamepadBindings =
+        serde_json::from_value(removed.resources["input.bindings"]["gamepad"].clone()).unwrap();
+    assert_eq!(
+        (
+            pad.buttons.len(),
+            pad.buttons["jump"].as_str(),
+            pad.axes.len()
+        ),
+        (1, "PadA", 0)
+    );
+    let cleared = acl(&mut s, "input pad jump off").unwrap();
+    assert!(
+        cleared.resources["input.bindings"].get("gamepad").is_none(),
+        "an empty gamepad map is not written"
+    );
+    // Errors: unknown input, missing or wrong-kind action, pad name as a key, deadzone.
+    let err = |edit: InputEdit| code(&ops::edit_input(&w, &edit).unwrap_err());
+    assert_eq!(
+        err(InputEdit::PadButton {
+            action: "jump".into(),
+            input: "PadZ".into()
+        }),
+        "invalid_value"
+    );
+    assert_eq!(
+        err(InputEdit::PadButton {
+            action: "move_x".into(),
+            input: "PadA".into()
+        }),
+        "action_kind"
+    );
+    assert_eq!(
+        err(InputEdit::PadButton {
+            action: "fly".into(),
+            input: "PadA".into()
+        }),
+        "action_kind"
+    );
+    assert_eq!(
+        err(InputEdit::Button {
+            action: "jump".into(),
+            key: "PadA".into()
+        }),
+        "invalid_value"
+    );
+    assert_eq!(err(InputEdit::Deadzone { value: 0.95 }), "invalid_value");
+    assert_eq!(
+        err(InputEdit::PadRemove {
+            action: "jump".into()
+        }),
+        "not_found"
+    );
+}
+
+#[test]
+fn old_bindings_round_trip_unchanged_and_bad_gamepad_maps_fail_validation() {
+    let raw = json!({"axes":{"move_x":{"positive":"KeyD","negative":"KeyA"}},"buttons":{"jump":"Space"},"capture_pointer":true});
+    let b: axiom_core::InputBindings = serde_json::from_value(raw.clone()).unwrap();
+    assert!(b.gamepad.is_empty());
+    assert_eq!(serde_json::to_value(&b).unwrap(), raw);
+    let registry = Registry::core();
+    let check = |bindings: Value| {
+        let mut w = World::empty("pads");
+        w.resources.insert("input.bindings".into(), bindings);
+        w.compile(&registry)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+    };
+    check(raw.clone()).unwrap();
+    let mut with = raw.clone();
+    with["gamepad"] = json!({"buttons":{"jump":"PadA"},"axes":{"move_x":{"positive":"PadLStickRight","negative":"PadLStickLeft"}}});
+    check(with.clone()).unwrap();
+    with["gamepad"]["buttons"]["fly"] = json!("PadB");
+    assert!(check(with).unwrap_err().contains("not a button"));
+    let mut bad = raw.clone();
+    bad["gamepad"] = json!({"buttons":{"jump":"PadZ"}});
+    assert!(check(bad.clone())
+        .unwrap_err()
+        .contains("unknown gamepad input"));
+    bad["gamepad"] = json!({"axes":{"jump":{"positive":"PadA","negative":"PadB"}}});
+    assert!(check(bad.clone()).unwrap_err().contains("not an axis"));
+    bad["gamepad"] = json!({"deadzone":1.5});
+    assert!(check(bad.clone()).unwrap_err().contains("deadzone"));
+    bad["gamepad"] = json!({"rumble":true});
+    assert!(check(bad).is_err());
+}
+
+#[test]
+fn audio_file_clips_are_added_by_acl_like_the_op() {
+    let w = world();
+    let edits = ops::add_audio_file_clip(&w, "theme", "sounds/theme.ogg", Some(0.5)).unwrap();
+    let mut s = store();
+    let after = acl(&mut s, "audio clip theme file=sounds/theme.ogg gain=0.5").unwrap();
+    assert_eq!(after, apply(edits));
+    assert_eq!(
+        after.resources["audio.library"]["clips"]["theme"],
+        json!({"file":{"path":"sounds/theme.ogg","gain":0.5}})
+    );
+    assert!(after.capabilities.contains_key("audio"));
+    let quoted = acl(&mut s, r#"audio clip hum file="my sounds/hum.WAV""#).unwrap();
+    assert_eq!(
+        quoted.resources["audio.library"]["clips"]["hum"],
+        json!({"file":{"path":"my sounds/hum.WAV"}})
+    );
+    let err = |r: anyhow::Result<Vec<Edit>>| code(&r.unwrap_err());
+    assert_eq!(
+        err(ops::add_audio_file_clip(&quoted, "theme", "a.wav", None)),
+        "id_taken"
+    );
+    assert_eq!(
+        err(ops::add_audio_file_clip(&w, "x", "song.mp3", None)),
+        "invalid_value"
+    );
+    assert_eq!(
+        err(ops::add_audio_file_clip(&w, "x", "a.wav", Some(3.0))),
+        "invalid_value"
+    );
+    assert!(acl(&mut s, "audio clip x file=a.wav loud=1").is_err());
+}
