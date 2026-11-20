@@ -10,3 +10,4 @@
 *.jpg binary
 *.wav binary
 *.sqlite binary
+*.ogg binary

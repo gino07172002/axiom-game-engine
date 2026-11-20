@@ -3,7 +3,7 @@ mod ui;
 use crate::{
     presentation::{Instance, RenderFrame},
     ui::{Action, UiState},
-    world::{ActionMap, RuntimeRegistry, RuntimeState, RuntimeSystem},
+    world::{ActionMap, RuntimeRegistry, RuntimeState, RuntimeSystem, FIXED_DT},
 };
 use anyhow::Result;
 use axiom_core::Transform;
@@ -11,6 +11,8 @@ use axiom_fps::{ModelPart, Session, Visuals};
 use glam::{Mat4, Quat, Vec3};
 use serde_json::Value;
 use std::{any::Any, collections::BTreeMap};
+/// Bound look axes at full deflection turn this fast (radians per second).
+const LOOK_RATE: f32 = 3.0;
 pub fn register(registry: &mut RuntimeRegistry) {
     axiom_fps::register(&mut registry.authoring);
     registry.authoring.action(
@@ -133,6 +135,13 @@ impl RuntimeSystem for FpsSystem {
         self
     }
     fn step(&mut self, state: &mut RuntimeState, input: &ActionMap) {
+        // Stick / key look through bindings (`look.x` right, `look.y` up), added to the
+        // mouse look; unbound axes read 0.
+        let (x, y) = (input.axis("look.x"), input.axis("look.y"));
+        if (x != 0.0 || y != 0.0) && self.pointer_allowed() {
+            let per_step = LOOK_RATE * FIXED_DT / simulation::LOOK_PER_COUNT;
+            self.sim.look(x * per_step, -y * per_step);
+        }
         self.sim.step(simulation::Input {
             forward: input.axis("move.forward"),
             right: input.axis("move.right"),

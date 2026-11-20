@@ -48,3 +48,33 @@
 同 `docs/plan-packaging.zh-TW.md`:各工作線在本檔下方寫「### W3x 執行補記」(做了什麼、偏離、證據),整合者寫「整合補記」與 WORKLOG。
 
 ## 執行補記
+
+### W3a 執行補記
+
+**做了什麼**
+
+- A 音效檔:`audio.library.clips.ID` 可寫 `{"file":{"path":"sounds/x.wav|.ogg","gain":0..1}}`(不能同時寫合成欄位)。WAV 解析器自己寫(PCM 8/16/24/32-bit、float32、EXTENSIBLE、未知 chunk 跳過);OGG 用 `lewton`。單 / 雙聲道、8..192 kHz,串流降混成單聲道並重新取樣到 22,050 Hz(移動平均 + 線性內插),混音器與 voice 參數**沒改**。解碼走既有的程序片段快取(key = 檔案 SHA-256 + gain,32 MiB 預算不變),新增 package resolver(`spatial_audio::resolve_files`,和 shader 檔同一個機制):pack 相對路徑 → pack 內絕對路徑、限制在 pack 內、匯入時就解碼一次(壞檔 / 超預算 / 缺檔 / 逃出 pack = 帶 `/resources/audio.library/clips/ID/file` 與檔名的可恢復錯誤),執行期建立時命中快取。預算:檔案 16 MiB、解碼後 120 s、一個執行期用到的片段 PCM 合計 8,388,608 樣本。`observe audio.clips.files` 回報 clip / path / format / channels / rate / seconds / bytes / decode_ms;`audio.inspect.length` 是解碼後長度。Ogg 解碼器的 panic 會被攔下變成錯誤。
+- 權益(parity):`ops::add_audio_file_clip` + ACL `audio clip ID file=PATH [gain=G]` + 編輯器 New clip… 對話框的 File 欄位 + Inspector 顯示檔名 / 長度 / 聲道 / 取樣率;parity 測試 `audio_sources_listeners_and_clips_match_acl`,`docs/editor-parity.zh-TW.md` 一列。
+- B 手把:`input.bindings.gamepad {buttons, axes, deadzone}`,24 個輸入名稱(`PadA`…`PadRStickRight`,`axiom_core::PAD_INPUTS`),是**既有動作的第二組輸入**(種類必須相同);舊世界不變(欄位不存在就不序列化)。`ActionMap::from_input`:按鈕 ≥0.5 按下、軸加到鍵盤值並夾到 -1..1,沒有手把時與 `from_bindings` 完全相同。XInput 走 `windows` 0.58 的 `Win32_UI_Input_XboxController` feature(沒有新 crate),原生宿主每畫面在主執行緒輪詢一次,空槽每 1 秒才探測;測試 / 無頭 / scenario 不讀硬體。Scenario `inputs[].pad` 注入虛擬手把。FPS 新增 `look.x` / `look.y` 軸(3 rad/s);`content/fps` 與 `content/action` 加了手把綁定(FPS 另加方向鍵視角)。ACL `input pad ACTION PAD|POS NEG|off`、`input deadzone V`,Input Map 分頁 pad 下拉與 deadzone;parity `tuning_editor_edits_match_acl`。說明在新檔 `docs/input.zh-TW.md`(原本沒有輸入文件)。
+
+**偏離**
+
+- 檔案片段一律降混成單聲道(混音器只吃單聲道 PCM;改立體聲 voice 會動到 seqlock / 混音熱路徑)。2D 立體聲音樂會失去左右資訊 → 列為已知限制。
+- 檔案增益是 `file.gain`(物件內),不是片段層級的 `gain`:片段層級的 `gain` 預設 0.5 且代表峰值正規化,語意不同。
+- 不支援「只有手把」的動作(必須先有鍵盤綁定),這樣 interact / camera / behavior.program / scenario 檢查按鈕或軸是否存在的地方都不用改。
+- 沒有 pack 的世界(`apply` / ACL)寫的相對路徑以工作目錄解析(和 `animation.library` 資產相同),不受 pack 限制。
+
+**證據**(debug build,MX150 筆電,其他 agent 同時在編譯)
+
+- `axiom.exe --db artifacts\w3a\lab.sqlite --pack content\audio-lab play --port 0 --start --smoke-frames 120 --screenshot ...`:`audio.voiced = 2`(hum.wav 左、chime.ogg 右,pan ±0.338),`clips.files` = hum wav 1 ch 22,050 Hz 1.0 s(decode 12.0 ms)、chime ogg 2 ch 44,100 Hz 2.0 s(80.2 ms);`output.device = open`、`rendered 208`、`underruns 0`、`voices_mixed 2`。聽不到聲音,只能看 observe。截圖確認三個喇叭方塊。
+- 30 秒片段解碼時間(兩次各一個新程序):WAV float32 立體聲 44.1 kHz 10.6 MB = 946 / 1665 ms;Ogg Vorbis 立體聲 44.1 kHz 118 KB = 1054 / 1477 ms。解碼發生在載入 pack 的執行緒(CLI 啟動時,在事件迴圈之前)與 revision 啟用的背景執行緒;**不在每個畫面**,但 debug 下 30 s 檔案超過 16 ms,所以不要在主執行緒的互動路徑上匯入大音檔(release 未量測)。
+- 手把:`gamepad` 觀測 `backend xinput`、`connected [false×4]`、`polls 120`、`poll_us_last 1`、`poll_us_max 366`(第一次探測 4 個空槽)。**實機手把測試:NOT RUN**(這台機器沒有接手把)。
+- 無頭手把:`examples/fps-gamepad.scenario.json`(左搖桿右推 + RT)與鍵盤版 `fps-regression` 的 `state_hash` 相同;拿掉 `gamepad` 綁定後同一個 scenario 斷言失敗;右搖桿 0.5 s 轉 1.5 rad;動作遊戲左搖桿上推 30 步主角移動 > 0.5 m(`tests/gamepad.rs`)。
+- 新 crate:`lewton` 0.10.2(MIT OR Apache-2.0)、`ogg` 0.8.0(BSD-3-Clause)、`tinyvec` 1.13.3(Zlib OR Apache-2.0 OR MIT);`byteorder` 原本就在 lock 裡。axiom.exe(debug)95,522,262 → 96,211,387 bytes(+689 KB,含本工作線全部程式碼與 XInput)。編譯時間:`lewton` + `ogg` + `tinyvec`(+ 已有的 `byteorder`)在空 target 目錄單獨建置 7.2 s(debug,依賴 opt-level 2;`byteorder` 單獨 1.4 s),所以新 crate 約 +6 s。`windows` 加 `Win32_UI_Input_XboxController` feature 會讓 `windows` → `wgpu-hal` → … → `axiom-runtime` 一次性重編;本工作線加完後的 `cargo build -p axiom-runtime` 花了 19 分 11 秒,但其他三個 agent 同時編譯,無法拆出單獨的增量(未隔離量測)。
+- Gate:`cargo fmt --all`、`cargo clippy --workspace --all-targets -- -D warnings` 乾淨;`cargo test --workspace --no-fail-fast` = **868 passed / 0 failed / 5 ignored**(基準 848 / 0 / 5;第一次全跑時 `app::tests::editor_scenario_runs_in_background…`(<250 ms)與 `m15::agent_timeout…`(<10 s)兩個計時測試在多 agent 同時編譯的負載下失敗,單獨重跑與第二次全跑都通過;另一個是我自己的重新取樣測試門檻寫錯,已修)。`scripts\editor-smoke-test.ps1` ok:true;`editor-world-parity.ps1` 與 `street-editor-parity.ps1` identical:true;`m0-smoke-test.ps1` PASS。
+
+**已知限制 / 注意**
+
+- 每次建立執行期(每個 revision 啟用)都會重讀檔案片段並算 SHA-256 來查快取(在背景啟用執行緒上;16 MiB 上限)。若要省掉,之後可改成以路徑 + 大小 + 修改時間做第一層 key。
+- 匯入 pack 時的解碼在載入 pack 的執行緒上做;debug 下 30 秒檔案約 1–1.7 秒。
+- 無頭 scenario 的手把每個步驟會配置一個 `ActionMap`(只有注入手把時;沒有手把的 scenario 路徑不變)。

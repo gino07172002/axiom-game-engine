@@ -74,8 +74,21 @@ pub enum InputEdit {
         positive: String,
         negative: String,
     },
-    /// Removes an action (references elsewhere then fail validation with their path).
+    /// Removes an action (references elsewhere then fail validation with their path) and
+    /// its gamepad binding.
     Remove { action: String },
+    /// Binds a gamepad input to an existing button action (`PadA`, `PadRT`, ...).
+    PadButton { action: String, input: String },
+    /// Binds gamepad inputs to an existing axis action.
+    PadAxis {
+        action: String,
+        positive: String,
+        negative: String,
+    },
+    /// Removes an action's gamepad binding.
+    PadRemove { action: String },
+    /// The radial stick deadzone (0..0.9).
+    Deadzone { value: f32 },
 }
 
 /// A key name as the runtime matches it: winit `KeyCode` names (`KeyW`, `Space`, `Digit1`,
@@ -107,14 +120,24 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
             format!("input.bindings does not parse: {e}"),
         )
     })?;
+    let none = String::new();
     let action = match edit {
         InputEdit::Button { action, .. }
         | InputEdit::Axis { action, .. }
-        | InputEdit::Remove { action } => action,
+        | InputEdit::Remove { action }
+        | InputEdit::PadButton { action, .. }
+        | InputEdit::PadAxis { action, .. }
+        | InputEdit::PadRemove { action } => action,
+        InputEdit::Deadzone { .. } => &none,
     };
     let path = |map: &str| format!("/resources/input.bindings/{map}/{}", escape(action));
     let key_ok = |key: &str, map: &str| -> Result<()> {
-        if valid_key_name(key) {
+        if pad_input(key).is_some() {
+            Err(invalid(
+                path(map),
+                format!("'{key}' is a gamepad input; bind it with input pad {action} {key}"),
+            ))
+        } else if valid_key_name(key) {
             Ok(())
         } else {
             Err(invalid(
@@ -135,6 +158,28 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
                 format!("'{action}' is not an action name (letters, digits, . _ / -, at most {MAX_INPUT_NAME})"),
             ))
         }
+    };
+    let pad_ok = |input: &str, map: &str| -> Result<()> {
+        if pad_input(input).is_some() {
+            Ok(())
+        } else {
+            Err(invalid(
+                path(map),
+                format!(
+                    "'{input}' is not a gamepad input (use {})",
+                    PAD_INPUTS.join(", ")
+                ),
+            ))
+        }
+    };
+    let pad_kind = |kind: &str, map: &str| {
+        Diagnostic::error(
+            "action_kind",
+            path(map),
+            format!(
+                "{action} is not a {kind} of input.bindings; gamepad bindings are a second input of an existing action (bind a key first)"
+            ),
+        )
     };
     let added = !bindings.buttons.contains_key(action) && !bindings.axes.contains_key(action);
     match edit {
@@ -179,6 +224,54 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
                     format!("input.bindings has no action {action}"),
                 ));
             }
+            bindings.gamepad.buttons.remove(action);
+            bindings.gamepad.axes.remove(action);
+        }
+        InputEdit::PadButton { input, .. } => {
+            pad_ok(input, "gamepad/buttons")?;
+            if !bindings.buttons.contains_key(action) {
+                return Err(pad_kind("button", "buttons"));
+            }
+            bindings
+                .gamepad
+                .buttons
+                .insert(action.clone(), input.clone());
+        }
+        InputEdit::PadAxis {
+            positive, negative, ..
+        } => {
+            pad_ok(positive, "gamepad/axes")?;
+            pad_ok(negative, "gamepad/axes")?;
+            if !bindings.axes.contains_key(action) {
+                return Err(pad_kind("axis", "axes"));
+            }
+            bindings.gamepad.axes.insert(
+                action.clone(),
+                AxisBinding {
+                    positive: positive.clone(),
+                    negative: negative.clone(),
+                },
+            );
+        }
+        InputEdit::PadRemove { .. } => {
+            if bindings.gamepad.buttons.remove(action).is_none()
+                && bindings.gamepad.axes.remove(action).is_none()
+            {
+                return Err(Diagnostic::error(
+                    "not_found",
+                    path("gamepad/buttons"),
+                    format!("{action} has no gamepad binding"),
+                ));
+            }
+        }
+        InputEdit::Deadzone { value } => {
+            if !(value.is_finite() && (0.0..=0.9).contains(value)) {
+                return Err(invalid(
+                    "/resources/input.bindings/gamepad/deadzone",
+                    "gamepad deadzone must be 0..0.9",
+                ));
+            }
+            bindings.gamepad.deadzone = round(f64::from(*value)) as f32;
         }
     }
     if added && bindings.buttons.len() + bindings.axes.len() > MAX_INPUT_ACTIONS {
@@ -195,20 +288,41 @@ pub fn edit_input(world: &World, edit: &InputEdit) -> Result<Vec<Edit>> {
     let mut out = raw.clone();
     out["buttons"] = json!(bindings.buttons);
     out["axes"] = json!(bindings.axes);
+    if let Some(map) = out.as_object_mut() {
+        if bindings.gamepad.is_empty() {
+            map.remove("gamepad");
+        } else {
+            map.insert("gamepad".into(), json!(bindings.gamepad));
+        }
+    }
     if out == *raw {
         return Ok(vec![]);
     }
     Ok(put(INPUT_BINDINGS, out))
 }
 
-/// Keys bound to more than one action (an axis half counts as `ACTION+` / `ACTION-`), in key
-/// order. The runtime allows it (every action sees the key), so this is a warning.
+/// Keys (and gamepad inputs) bound to more than one action (an axis half counts as `ACTION+` /
+/// `ACTION-`), in key order. The runtime allows it (every action sees the key), so this is a
+/// warning.
 pub fn input_conflicts(bindings: &InputBindings) -> Vec<(String, Vec<String>)> {
     let mut by_key: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (action, key) in &bindings.buttons {
         by_key.entry(key).or_default().push(action.clone());
     }
     for (action, axis) in &bindings.axes {
+        by_key
+            .entry(&axis.positive)
+            .or_default()
+            .push(format!("{action}+"));
+        by_key
+            .entry(&axis.negative)
+            .or_default()
+            .push(format!("{action}-"));
+    }
+    for (action, input) in &bindings.gamepad.buttons {
+        by_key.entry(input).or_default().push(action.clone());
+    }
+    for (action, axis) in &bindings.gamepad.axes {
         by_key
             .entry(&axis.positive)
             .or_default()

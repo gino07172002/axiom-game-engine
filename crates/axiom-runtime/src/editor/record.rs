@@ -202,6 +202,7 @@ impl Recorder {
             self.inputs.push(ScenarioInput {
                 tick: self.ticks,
                 actions,
+                pad: None,
             });
         }
         self.ticks += 1;

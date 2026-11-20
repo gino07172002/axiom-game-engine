@@ -729,6 +729,109 @@ pub struct InputBindings {
     pub buttons: BTreeMap<String, String>,
     #[serde(default)]
     pub capture_pointer: bool,
+    /// Gamepad inputs of existing actions (absent in worlds without any).
+    #[serde(default, skip_serializing_if = "GamepadBindings::is_empty")]
+    pub gamepad: GamepadBindings,
+}
+/// Named gamepad inputs (XInput), each a 0..1 level: buttons, triggers and the four
+/// directions of both sticks (see `docs/input.zh-TW.md`). The first 14 are digital buttons.
+pub const PAD_INPUTS: [&str; 24] = [
+    "PadA",
+    "PadB",
+    "PadX",
+    "PadY",
+    "PadLB",
+    "PadRB",
+    "PadBack",
+    "PadStart",
+    "PadLS",
+    "PadRS",
+    "PadDpadUp",
+    "PadDpadDown",
+    "PadDpadLeft",
+    "PadDpadRight",
+    "PadLT",
+    "PadRT",
+    "PadLStickUp",
+    "PadLStickDown",
+    "PadLStickLeft",
+    "PadLStickRight",
+    "PadRStickUp",
+    "PadRStickDown",
+    "PadRStickLeft",
+    "PadRStickRight",
+];
+/// Default radial stick deadzone (fraction of full deflection; XInput's left-stick value
+/// 7849 / 32767).
+pub const PAD_STICK_DEADZONE: f32 = 0.24;
+/// Trigger values at or below this (of 255) read as 0 (XInput's threshold).
+pub const PAD_TRIGGER_THRESHOLD: u8 = 30;
+fn default_deadzone() -> f32 {
+    PAD_STICK_DEADZONE
+}
+/// `input.bindings.gamepad`: a second input for actions already bound in `buttons` / `axes`
+/// (same kind). Button levels >= 0.5 press; axis values add to the keyboard's (clamped).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GamepadBindings {
+    #[serde(default)]
+    pub axes: BTreeMap<String, AxisBinding>,
+    #[serde(default)]
+    pub buttons: BTreeMap<String, String>,
+    #[serde(default = "default_deadzone")]
+    pub deadzone: f32,
+}
+impl Default for GamepadBindings {
+    fn default() -> Self {
+        Self {
+            axes: BTreeMap::new(),
+            buttons: BTreeMap::new(),
+            deadzone: PAD_STICK_DEADZONE,
+        }
+    }
+}
+impl GamepadBindings {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+/// Index of a gamepad input name in [`PAD_INPUTS`].
+pub fn pad_input(name: &str) -> Option<usize> {
+    PAD_INPUTS.iter().position(|n| *n == name)
+}
+impl InputBindings {
+    /// Gamepad entries name known inputs and rebind existing actions of the same kind.
+    pub fn validate_gamepad(&self) -> Result<()> {
+        let pad = &self.gamepad;
+        ensure!(
+            pad.deadzone.is_finite() && (0.0..=0.9).contains(&pad.deadzone),
+            "gamepad deadzone must be 0..0.9"
+        );
+        let known = |name: &str| -> Result<()> {
+            ensure!(
+                pad_input(name).is_some(),
+                "unknown gamepad input {name} (use {})",
+                PAD_INPUTS.join(", ")
+            );
+            Ok(())
+        };
+        for (action, input) in &pad.buttons {
+            ensure!(
+                self.buttons.contains_key(action),
+                "gamepad button {action} is not a button of input.bindings (bind a key first; gamepad entries are a second input of an existing action)"
+            );
+            known(input)?;
+        }
+        for (action, axis) in &pad.axes {
+            ensure!(
+                self.axes.contains_key(action),
+                "gamepad axis {action} is not an axis of input.bindings (bind keys first; gamepad entries are a second input of an existing action)"
+            );
+            known(&axis.positive)?;
+            known(&axis.negative)?;
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]

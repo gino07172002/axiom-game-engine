@@ -98,6 +98,8 @@ struct App {
     error: Option<anyhow::Error>,
     fps_smooth: f32,
     audio: crate::audio::Output,
+    /// XInput controllers; polled only by the native host (`run`), so tests stay deterministic.
+    gamepads: crate::gamepad::Gamepads,
     /// File ▸ Exit requested from the editor.
     quit: bool,
     /// Main-thread phases of the last revision reload; reported as `metrics.reload`.
@@ -487,6 +489,7 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
     }
     let editor_mode = matches!(options.mode, RunMode::Editor { .. });
     let mut app = App::new(options, registry, store)?;
+    app.gamepads = crate::gamepad::Gamepads::new(true);
     if editor_mode {
         app.enable_writer(None)?;
     }
@@ -798,6 +801,7 @@ impl App {
             requester: Author::Human,
             closing: false,
             audio: crate::audio::Output::new(),
+            gamepads: crate::gamepad::Gamepads::new(false),
             game_ctx: None,
             game_input: false,
             game_pointer: false,
@@ -1420,7 +1424,8 @@ impl App {
         if self.mouse_down {
             keys.insert("MouseLeft".into());
         }
-        let input = ActionMap::from_bindings(&self.runtime.bindings, &keys);
+        let pads = *self.gamepads.poll();
+        let input = ActionMap::from_input(&self.runtime.bindings, &keys, &pads);
         let max = (12.0 * scale.max(1.0)).ceil() as u32;
         let mut steps = 0;
         while self.accumulator >= FIXED_DT && steps < max {
@@ -1435,7 +1440,7 @@ impl App {
                 self.wheel -= self.wheel.signum();
                 let mut keys = keys.clone();
                 keys.insert(key.into());
-                ActionMap::from_bindings(&self.runtime.bindings, &keys)
+                ActionMap::from_input(&self.runtime.bindings, &keys, &pads)
             });
             let input = wheeled.as_ref().unwrap_or(&input);
             if let Some(recorder) = self.recorder() {
@@ -1603,6 +1608,11 @@ impl App {
         let mut observation = self.runtime.observation();
         if observation.metrics.contains_key("audio") {
             observation.metrics.get_mut("audio").unwrap()["output"] = self.audio.observation();
+        }
+        if self.gamepads.enabled() {
+            observation
+                .metrics
+                .insert("gamepad".into(), self.gamepads.observation());
         }
         if let Some(editor) = &self.editor {
             observation

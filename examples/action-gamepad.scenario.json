@@ -1,0 +1,1 @@
+{"ticks":120,"inputs":[{"tick":0,"actions":{},"pad":{"left_stick":[0.0,1.0]}},{"tick":30,"actions":{},"pad":{"left_stick":[0.1,0.1]}},{"tick":60,"actions":{},"pad":{"buttons":["PadX"]}},{"tick":61,"actions":{},"pad":{}}],"assertions":[{"kind":"finite"},{"kind":"equals","pointer":"/action/defeated","value":false}]}

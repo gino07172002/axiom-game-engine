@@ -214,6 +214,12 @@ impl OptionsDialog {
                         Text,
                         ops::free_audio_clip_id(&editor.world, "tone"),
                     ),
+                    Field::new(
+                        "file",
+                        "File (.wav / .ogg, instead of the preset)",
+                        Text,
+                        "",
+                    ),
                 ],
             ),
             "object.follow_path" => (
@@ -506,6 +512,10 @@ impl OptionsDialog {
                 token(self.field("Clip name").value.trim())
             ),
             "object.audio_source" => format!("audio {sel} source {options}"),
+            "audio.new_clip" if self.text("file").is_some_and(|f| !f.is_empty()) => format!(
+                "audio clip {} {options}",
+                token(self.field("Clip ID").value.trim())
+            ),
             "audio.new_clip" => format!(
                 "audio clip {} {}",
                 token(self.field("Clip ID").value.trim()),
@@ -621,8 +631,13 @@ impl OptionsDialog {
             }
             "audio.new_clip" => {
                 let id = self.field("Clip ID").value.trim().to_owned();
-                let preset = self.field("Preset").value.clone();
-                editor.add_audio_clip(&id, &preset)
+                match self.text("file").filter(|f| !f.is_empty()) {
+                    Some(file) => editor.add_audio_file_clip(&id, &file),
+                    None => {
+                        let preset = self.field("Preset").value.clone();
+                        editor.add_audio_clip(&id, &preset)
+                    }
+                }
             }
             "object.follow_path" => {
                 let end = self.text("end").map(|e| match e.as_str() {

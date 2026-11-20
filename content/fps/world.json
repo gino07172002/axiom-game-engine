@@ -10327,6 +10327,14 @@
     },
     "input.bindings": {
       "axes": {
+        "look.x": {
+          "negative": "ArrowLeft",
+          "positive": "ArrowRight"
+        },
+        "look.y": {
+          "negative": "ArrowDown",
+          "positive": "ArrowUp"
+        },
         "move.forward": {
           "negative": "KeyS",
           "positive": "KeyW"
@@ -10342,7 +10350,33 @@
         "reload": "KeyR",
         "sprint": "ShiftLeft"
       },
-      "capture_pointer": true
+      "capture_pointer": true,
+      "gamepad": {
+        "axes": {
+          "look.x": {
+            "negative": "PadRStickLeft",
+            "positive": "PadRStickRight"
+          },
+          "look.y": {
+            "negative": "PadRStickDown",
+            "positive": "PadRStickUp"
+          },
+          "move.forward": {
+            "negative": "PadLStickDown",
+            "positive": "PadLStickUp"
+          },
+          "move.right": {
+            "negative": "PadLStickLeft",
+            "positive": "PadLStickRight"
+          }
+        },
+        "buttons": {
+          "fire": "PadRT",
+          "jump": "PadA",
+          "reload": "PadX",
+          "sprint": "PadLS"
+        }
+      }
     },
     "render.settings": {
       "accent": [

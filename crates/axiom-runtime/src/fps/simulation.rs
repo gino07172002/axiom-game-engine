@@ -6,6 +6,9 @@ use serde::Serialize;
 
 pub const FIXED_DT: f32 = 1.0 / 120.0;
 
+/// Radians of turn per mouse count (pointer delta unit).
+pub const LOOK_PER_COUNT: f32 = 0.002;
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct EntityId {
     pub index: u32,
@@ -367,9 +370,10 @@ impl Simulation {
     pub fn victory(&self) -> bool {
         self.alive() == 0 && !self.actors.health.is_empty()
     }
+    /// Turns by mouse counts (`LOOK_PER_COUNT` radians each; +dy looks down).
     pub fn look(&mut self, dx: f32, dy: f32) {
-        self.yaw += dx * 0.002;
-        self.pitch = (self.pitch - dy * 0.002).clamp(-1.5, 1.5);
+        self.yaw += dx * LOOK_PER_COUNT;
+        self.pitch = (self.pitch - dy * LOOK_PER_COUNT).clamp(-1.5, 1.5);
     }
 
     fn move_capsule(&self, handle: ColliderHandle, delta: Vec3, dt: f32) -> (Vec3, bool) {

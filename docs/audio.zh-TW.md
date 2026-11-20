@@ -4,12 +4,12 @@
 
 執行期系統是 `audio.spatial`(capability `audio`,phase 45:所有移動、補間、相機與觸發區都寫完這一步的姿態之後)。所有計算結果都在 `observe` 的 `audio` 段,**無頭執行(CI、AI)不需要音效裝置就能驗證聽者會聽到什麼**。
 
-## 音訊資源:程序合成,不用音檔
+## 音訊資源:程序合成片段與音檔
 
 `audio.library` 有兩種內容:
 
 - `cues`:既有的短音提示(`audio.events` 播放,例如動作遊戲的命中音),格式不變。
-- `clips`:**程序合成的片段**,給 `audio.source` 用。repo 裡沒有任何第三方音檔;片段是合成參數,不是檔案。
+- `clips`:給 `audio.source` 用的片段:**程序合成參數**,或 pack 裡的 **WAV / Ogg Vorbis 檔**(見下方「檔案片段」)。repo 裡沒有任何第三方音檔(`content/audio-lab` 的兩個檔案由 `scripts/audio-lab-assets.py` 產生)。
 
 ```json
 "audio.library":{"clips":{
@@ -32,6 +32,36 @@
 | `seed` | 亂數種子(噪音、抖動),同參數永遠產生同一段 PCM |
 
 預設片段(`audio clip ID PRESET` / 編輯器 New clip):`tone`(440 Hz 正弦 1 秒)、`engine`(引擎低鳴,可循環)、`fountain`(低通噪音 + 慢顫動,可循環)、`creak`(門的吱嘎聲,單次)、`footstep`(短促的低通噪音,單次)。可循環的預設片段都是整數個振盪 / 顫動週期,而且沒有淡入淡出,接縫不會爆音。
+
+### 檔案片段(WAV / Ogg Vorbis)
+
+片段也可以是 pack 裡的音檔,用法和程序合成片段完全相同(`audio.source` 的 `clip`、迴圈、音量、空間化、voice 預算、熱重載都一樣):
+
+```json
+"audio.library":{"clips":{
+  "hum":{"file":{"path":"sounds/hum.wav"}},
+  "chime":{"file":{"path":"sounds/chime.ogg","gain":0.9}}
+}}
+```
+
+| 欄位 | 說明 |
+|---|---|
+| `file.path` | pack 內的相對路徑,`.wav` 或 `.ogg`(大小寫不拘)。載入 pack 時解析成 pack 內的絕對路徑;絕對路徑、`..` 跑出 pack、檔案不存在都是錯誤(和 GLB / UI 圖片同一條規則) |
+| `file.gain` | 0..1,預設 1:解碼時乘上的線性增益(不做峰值正規化,檔案照原音量) |
+
+檔案片段**不能**再寫合成欄位(`wave`、`seconds`、`gain` …),寫了是驗證錯誤。格式:
+
+- WAV:PCM 8 / 16 / 24 / 32-bit 整數與 32-bit float(含 `WAVE_FORMAT_EXTENSIBLE`),自己寫的解析器(不加 crate),未知 chunk 跳過、奇數大小補齊。
+- Ogg Vorbis:`lewton` 0.10.2(純 Rust,MIT OR Apache-2.0;連帶新增 `ogg` 0.8.0(BSD-3-Clause)與 `tinyvec`(Zlib OR Apache-2.0 OR MIT))。解碼器若 panic 會被攔下變成這個檔案的錯誤。
+- 單聲道或立體聲,8..192 kHz。**全部轉成和程序片段相同的格式**:聲道平均成單聲道,串流重新取樣到 22,050 Hz(降頻時先做寬度 ≈ 比例的移動平均再線性內插),所以混音器完全沒改。立體聲檔案的左右資訊在空間化時本來就由聲源位置決定;2D 立體聲音樂會變成單聲道(已知限制)。
+- 預算(超過是錯誤,不截斷):檔案 ≤ 16 MiB、解碼後 ≤ 120 秒(WAV 從標頭判斷,解碼前就拒絕;Vorbis 每個封包檢查);一個執行期用到的片段 PCM 合計 ≤ 8,388,608 樣本;全程序快取 32 MiB 不變。
+- 何時解碼:**匯入 pack 時**(package resolver 解碼一次以便把壞檔變成匯入錯誤)與**建立執行期時**(背景執行緒上的 revision 啟用流程,不在主執行緒);兩者都走同一個快取,key = 檔案內容 SHA-256 + gain,所以第二次是快取命中、同內容不同路徑也只解碼一次;檔案內容改了 → hash 變 → 熱重載時從頭播放。播放時不解碼、不配置。
+- 錯誤都帶片段路徑 `/resources/audio.library/clips/ID/file` 與檔名,例如 `audio file sounds/none.wav not found in the content pack`、`audio file sounds/long.wav: audio file is 125.0 s long (budget 120 s)`、`WAV chunk data is truncated`、`Ogg Vorbis header: …`。
+- 沒有 pack 的世界(`apply` / ACL 寫入)的相對路徑以**工作目錄**為基準解析(和 `animation.library` 的資產相同);打包請用 pack 內容。
+
+`observe` 的 `audio.clips.files`(每個被聲源用到的檔案片段一列):`clip`、`path`、`format`(`wav` / `ogg`)、`channels`、`rate`(原始取樣率)、`seconds`(原始長度)、`bytes`(檔案大小)、`decode_ms`(那一次解碼的耗時)。`audio.inspect` 的 `length` 是解碼後長度。
+
+量測(debug build,MX150 筆電,其他 agent 同時在編譯):見 `docs/plan-engine-wave3.zh-TW.md` 的「W3a 執行補記」。
 
 **解碼 / 合成不在播放時做**:建立執行期時(背景執行緒上的 revision 啟用流程)把**有被聲源用到的**片段合成成 22,050 Hz 單聲道 16-bit PCM,用定義內容的 hash(FNV-1a,含全文比對)放進全程序共用的快取;熱重載與其他執行期共用同一份 PCM。`audio.play` 只換播放狀態,不做任何解碼。
 
@@ -159,6 +189,7 @@
 | Object ▸ Make Audio Listener(`object.audio_listener`,主選取) | `audio ID listener`(其他聽者在同一個 revision 設為 inactive) |
 | Inspector ▸ Audio source ▸ Clip 下拉選單 | `set ID audio.source/clip "CLIP"`(片段不存在 = `missing_clip`) |
 | Inspector ▸ Audio source ▸ New clip ▸ 預設片段(名稱 = 預設名,重複時 `engine2`…) | `audio clip ID tone\|engine\|fountain\|creak\|footstep` |
+| Inspector ▸ Audio source ▸ New clip ▸ File 欄位(填了就忽略 Preset);選到檔案片段時 Inspector 顯示檔名、長度、聲道、取樣率與解碼耗時(本程序解碼過之後;否則「not decoded yet」) | `audio clip ID file=PATH [gain=G]`(`ops::add_audio_file_clip`;路徑照寫入) |
 | Inspector ▸ Components ▸ `audio.source` / `audio.listener` 表單 | `set ID audio.source/FIELD V` |
 
 注意:Add Audio Source / Make Audio Listener 會**取代**物件上既有的同名元件(和 Make Interactable 相同),沒給的欄位回到預設值;只想改片段或欄位請用 Clip 下拉選單或表單(`set`)。
@@ -168,7 +199,7 @@ Gizmo(受 Gizmos 開關與隱藏旗標控制):`spatial` 聲源畫 `min_distance`
 ## 已知限制
 
 - 沒有都卜勒、HRTF、殘響、遮蔽;聲像只用水平方位角(上下不分)。
-- 只有程序合成片段,不讀 WAV / OGG 檔。
+- 檔案片段整段解碼(最長 120 秒),沒有串流;沒有 MP3;2D 立體聲檔案會混成單聲道。
 - voice 參數每個畫面送一次:比一個畫面還短的單次聲音(例如 10 ms 片段、或畫面卡頓時)可能在兩次送出之間開始又結束而聽不到(`observe` 照樣記錄 `finished`)。
 - 模擬端的播放時間與音訊執行緒的實際位置各自前進,長時間播放會有小幅偏差;只在 voice 重新開始時對齊。
 - `waveOutWrite` 失敗的緩衝會在下一次醒來重新混音(聲音會跳一小段),計入 `write_errors`。

@@ -27,9 +27,12 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.17"
 sha2 = "0.10"
+# Ogg Vorbis decoding of file-backed audio clips (pure Rust, MIT OR Apache-2.0; default
+# feature `ogg` = the Ogg container, no async).
+lewton = "0.10"
 
 
-# Per-process video memory for the editor status bar (vram.rs). Already built for wgpu-hal's
-# D3D12 backend (same version and features), so this adds no crate and no compile time.
+# Per-process video memory for the editor status bar (vram.rs; the crate is already built for
+# wgpu-hal's D3D12 backend) and XInput gamepads (gamepad.rs).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Dxgi"] }
+windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_UI_Input_XboxController"] }

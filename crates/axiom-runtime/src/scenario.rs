@@ -59,6 +59,10 @@ pub const MAX_LOOK_DELTAS: usize = 256;
 pub struct ScenarioInput {
     pub tick: u32,
     pub actions: BTreeMap<String, f32>,
+    /// A virtual controller from this tick on (until the next input with a `pad`), read
+    /// through `input.bindings.gamepad` like a real one; `actions` override its results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad: Option<crate::gamepad::PadInput>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -201,6 +205,10 @@ pub fn run_observed(
                     .all(|v| v.is_finite() && (-1.0..=1.0).contains(v)),
             "invalid action values"
         );
+        if let Some(pad) = &input.pad {
+            pad.state()
+                .with_context(|| format!("scenario input at tick {}", input.tick))?;
+        }
         previous = Some(input.tick);
     }
     for a in &scenario.assertions {
@@ -227,6 +235,8 @@ pub fn run_observed(
         }
     }
     let mut input = ActionMap::default();
+    let mut pads = crate::gamepad::Pads::default();
+    let no_keys = std::collections::BTreeSet::new();
     let mut next = 0;
     let mut commands = scenario.commands.iter().peekable();
     let mut saves = BTreeMap::new();
@@ -292,10 +302,21 @@ pub fn run_observed(
                 for (k, v) in &event.actions {
                     input.0.insert(k.clone(), *v);
                 }
+                if let Some(p) = &event.pad {
+                    pads.0[0] = Some(p.state()?);
+                }
                 next += 1;
             }
         }
-        runtime.step(&input);
+        if pads.connected() > 0 {
+            let mut merged = ActionMap::from_input(&runtime.bindings, &no_keys, &pads);
+            for (k, v) in &input.0 {
+                merged.0.insert(k.clone(), *v);
+            }
+            runtime.step(&merged);
+        } else {
+            runtime.step(&input);
+        }
         runtime.assert_valid()?;
     }
     if let Some(p) = progress {
