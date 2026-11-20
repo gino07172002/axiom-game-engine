@@ -2966,6 +2966,66 @@ fn sky_presets_and_surface_match_acl() {
     );
 }
 
+#[test]
+fn post_settings_match_acl() {
+    let blank = World::empty("blank");
+    // World ▸ POST / `world.post SETTING VALUE` == ACL `post SETTING VALUE`.
+    for (arg, script) in [
+        ("antialiasing fxaa", "post antialiasing fxaa"),
+        ("hdr on", "post hdr on"),
+        ("bloom on", "post bloom on"),
+    ] {
+        assert_parity(
+            blank.clone(),
+            |e| vec![e.run_command_with("world.post", Some(arg)).unwrap()],
+            script,
+        );
+    }
+    let bloom = headless(&blank, "post antialiasing fxaa\npost bloom on");
+    assert_eq!(bloom.capabilities.get("render"), Some(&1));
+    for (arg, script) in [
+        ("exposure 1.25", "post exposure 1.25"),
+        ("threshold 0.8", "post threshold 0.8"),
+        ("intensity 1.5", "post intensity 1.5"),
+        ("radius 0.4", "post radius 0.4"),
+        ("bloom off", "post bloom off"),
+        ("hdr off", "post hdr off"),
+        ("none", "post none"),
+    ] {
+        assert_parity(
+            bloom.clone(),
+            |e| vec![e.run_command_with("world.post", Some(arg)).unwrap()],
+            script,
+        );
+    }
+    let cleared = headless(&bloom, "post none");
+    assert_eq!(
+        cleared.resources["render.environment"],
+        serde_json::json!({})
+    );
+    // Unchanged = no write; bad values = a problem and no write on both sides.
+    let mut e = Editor::new(bloom.clone(), 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    assert!(e
+        .run_command_with("world.post", Some("bloom on"))
+        .unwrap()
+        .is_empty());
+    assert!(e
+        .run_command_with("world.post", Some("antialiasing msaa"))
+        .unwrap()
+        .is_empty());
+    let mut s = store(&blank);
+    let error = s
+        .execute(Request::Acl {
+            text: "post exposure 2".into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("hdr is off"));
+}
+
 fn rig_lab() -> World {
     axiom_core::ContentPackage::load(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/rig-lab"),

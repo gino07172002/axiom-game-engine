@@ -96,6 +96,13 @@ pub struct Renderer {
     can_capture: bool,
     vfx: crate::vfx_gpu::VfxGpu,
     post: crate::postfx_gpu::PostGpu,
+    /// `render.environment.post`: HDR target, bloom, tone map and FXAA passes.
+    pub(crate) finish: crate::hdr::Finish,
+    /// Layout and module of the cube / sky pipelines, kept to build their HDR variants, and
+    /// those variants (`scene_color_pipelines` for `hdr::HDR_FORMAT`, built on first use).
+    pipeline_layout: wgpu::PipelineLayout,
+    scene_shader: wgpu::ShaderModule,
+    hdr_scene: Option<[wgpu::RenderPipeline; 3]>,
     meshes: crate::mesh_render::MeshRenderer,
     shaders: crate::shader_gpu::ShaderGpu,
     /// Time the last `render` waited for the swapchain image (part of its wall time, not CPU
@@ -286,34 +293,6 @@ impl Renderer {
             stencil: Default::default(),
             bias: Default::default(),
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("instanced geometry"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_state.clone()),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("instanced shadow"),
             layout: Some(&shadow_pipeline_layout),
@@ -340,44 +319,8 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        // Legacy background: drawn first, over everything (depth Always). An authored sky is
-        // drawn after the opaque geometry instead (LessEqual against the cleared far depth),
-        // so only the pixels where sky shows run its per-pixel direction and sky formula.
-        let sky = |label: &'static str, depth_compare: wgpu::CompareFunction| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_sky"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_sky"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: Default::default(),
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: false,
-                    depth_compare,
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                multiview: None,
-                cache: None,
-            })
-        };
-        let sky_pipeline = sky("sky", wgpu::CompareFunction::Always);
-        let sky_late_pipeline = sky("authored sky", wgpu::CompareFunction::LessEqual);
+        let [pipeline, sky_pipeline, sky_late_pipeline] =
+            scene_color_pipelines(&device, &pipeline_layout, &shader, format);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shared unit cube"),
             contents: bytemuck::cast_slice(&cube_vertices()),
@@ -402,10 +345,15 @@ impl Renderer {
         let vfx = crate::vfx_gpu::VfxGpu::new(&device, format, &uniform, &depth);
         let post =
             crate::postfx_gpu::PostGpu::new(&device, format, config.width, config.height, &depth);
+        let finish = crate::hdr::Finish::new(&device, format);
         Ok(Self {
             surface,
             vfx,
             post,
+            finish,
+            pipeline_layout,
+            scene_shader: shader,
+            hdr_scene: None,
             device,
             queue,
             config,
@@ -548,6 +496,26 @@ impl Renderer {
         game: Option<(&egui::Context, egui::FullOutput)>,
         screenshot: Option<&Path>,
     ) -> Result<bool> {
+        // Without a world pass the post state stays as it is (nothing to finish).
+        let post = crate::hdr::Settings::of(snapshot.environment.post.as_ref());
+        let hdr = post.hdr.is_some();
+        if snapshot.draw_world {
+            self.shaders.hdr = hdr;
+            let started = std::time::Instant::now();
+            if hdr && self.hdr_scene.is_none() {
+                self.hdr_scene = Some(scene_color_pipelines(
+                    &self.device,
+                    &self.pipeline_layout,
+                    &self.scene_shader,
+                    crate::hdr::HDR_FORMAT,
+                ));
+            }
+            let built =
+                self.meshes.set_hdr(&self.device, hdr) + self.vfx.set_hdr(&self.device, hdr);
+            if built > 0.0 {
+                self.finish.stats.hdr_world_ms = started.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
         self.prepare_shaders(&snapshot.shaders)?;
         if snapshot.draw_world {
             self.vfx.prepare(&self.queue, &snapshot.vfx)?;
@@ -579,6 +547,16 @@ impl Renderer {
                 self.config.width,
                 self.config.height,
                 snapshot.tick,
+            );
+        }
+        if snapshot.draw_world {
+            self.finish.prepare(
+                &self.device,
+                &self.queue,
+                post,
+                views.iter().map(|v| v.camera.viewport),
+                self.config.width,
+                self.config.height,
             );
         }
         let lighting = crate::lighting::pack(snapshot);
@@ -664,6 +642,10 @@ impl Renderer {
             };
             if self.unlit_view == Some(v.id.as_str()) {
                 unlit_globals(&mut global);
+            }
+            // ambient_ground.w: lit shaders write linear radiance for the tone map pass.
+            if hdr {
+                global.ambient[2][3] = 1.0;
             }
             let bytes = bytemuck::bytes_of(&global);
             uniforms[i * GLOBALS_STRIDE as usize..i * GLOBALS_STRIDE as usize + bytes.len()]
@@ -821,10 +803,20 @@ impl Renderer {
             self.timer
                 .mark(&mut encoder, crate::gpu_timing::Section::LocalShadows);
         }
-        let world_color = if snapshot.postfx.is_empty() {
-            &view
-        } else {
+        // HDR: every view draws into the float target and is tone mapped (into the postfx
+        // scene colour when there are volumes). FXAA: the low dynamic range frame is drawn
+        // into its own target and filtered into the swapchain after the last view.
+        let ldr_out = self.finish.ldr_view().unwrap_or(&view);
+        let world_color = if let Some(hdr_view) = self.finish.hdr_view() {
+            hdr_view
+        } else if !snapshot.postfx.is_empty() {
             &self.post.scene
+        } else {
+            ldr_out
+        };
+        let (cube_pipeline, sky_pipeline, sky_late_pipeline) = match &self.hdr_scene {
+            Some([cube, sky, late]) if hdr => (cube, sky, late),
+            _ => (&self.pipeline, &self.sky_pipeline, &self.sky_late_pipeline),
         };
         for (i, camera_view) in views.iter().enumerate() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -868,11 +860,11 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
             let late_sky = lighting.sky.mode != crate::lighting::SKY_NONE;
             if !late_sky {
-                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_pipeline(sky_pipeline);
                 pass.draw(0..3, 0..1);
                 stats.add(1, 1);
             }
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(cube_pipeline);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
             for blend in [false, true] {
@@ -880,7 +872,7 @@ impl Renderer {
                     pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
                     // After every opaque draw, before the transparent ones (they blend over it).
                     if late_sky {
-                        pass.set_pipeline(&self.sky_late_pipeline);
+                        pass.set_pipeline(sky_late_pipeline);
                         pass.draw(0..3, 0..1);
                         stats.add(1, 1);
                     }
@@ -899,13 +891,13 @@ impl Renderer {
                         ));
                         pass.set_bind_group(1, &self.shaders.bind, &[material.offset]);
                     } else {
-                        pass.set_pipeline(&self.pipeline);
+                        pass.set_pipeline(cube_pipeline);
                     }
                     pass.draw(0..36, range.clone());
                     stats.add(1, 12 * range.len() as u64);
                 }
                 if !blend && !ranges[i].is_empty() {
-                    pass.set_pipeline(&self.pipeline);
+                    pass.set_pipeline(cube_pipeline);
                     pass.draw(0..36, ranges[i].clone());
                     stats.add(1, 12 * ranges[i].len() as u64);
                 }
@@ -943,10 +935,25 @@ impl Renderer {
                 self.timer
                     .mark(&mut encoder, crate::gpu_timing::Section::VfxDraw);
             }
+            if hdr {
+                let dest = if snapshot.postfx.is_empty() {
+                    ldr_out
+                } else {
+                    &self.post.scene
+                };
+                let calls = self.finish.resolve_view(
+                    &mut encoder,
+                    &mut self.timer,
+                    dest,
+                    i as u32,
+                    camera_view.camera.viewport,
+                );
+                stats.add(calls, u64::from(calls));
+            }
             if !snapshot.postfx.is_empty() {
                 self.post.draw(
                     &mut encoder,
-                    &view,
+                    ldr_out,
                     i as u32,
                     camera_view.camera.viewport,
                     self.config.width,
@@ -956,6 +963,10 @@ impl Renderer {
                 self.timer
                     .mark(&mut encoder, crate::gpu_timing::Section::Post);
             }
+        }
+        if post.fxaa && !views.is_empty() {
+            let calls = self.finish.fxaa(&mut encoder, &mut self.timer, &view);
+            stats.add(calls, u64::from(calls));
         }
         // No world pass wrote the frame: the first interface pass starts from a cleared one.
         let mut cleared = !views.is_empty();
@@ -1229,6 +1240,91 @@ fn depth_view(
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// The cube pipeline and the two background / sky pipelines for colour `format` (the surface
+/// format, or `hdr::HDR_FORMAT` while HDR is on): `[cubes, legacy sky, authored sky]`.
+fn scene_color_pipelines(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+) -> [wgpu::RenderPipeline; 3] {
+    let buffers = cube_vertex_layouts();
+    let depth_state = wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: Default::default(),
+        bias: Default::default(),
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("instanced geometry"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &buffers,
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(depth_state),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    // Legacy background: drawn first, over everything (depth Always). An authored sky is
+    // drawn after the opaque geometry instead (LessEqual against the cleared far depth),
+    // so only the pixels where sky shows run its per-pixel direction and sky formula.
+    let sky = |label: &'static str, depth_compare: wgpu::CompareFunction| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        })
+    };
+    let sky_pipeline = sky("sky", wgpu::CompareFunction::Always);
+    let sky_late_pipeline = sky("authored sky", wgpu::CompareFunction::LessEqual);
+    [pipeline, sky_pipeline, sky_late_pipeline]
 }
 
 fn cube_vertices() -> Vec<Vertex> {

@@ -45,7 +45,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) world: vec3<f3
     var lit=diffuse*(ambient+direct)+spec+base*emission+reflection;
     lit+=diffuse*axiom_lighting(v.world,n);
     lit=axiom_fog(lit,v.world);
-    lit=lit/(lit+vec3<f32>(0.7));
+    lit=axiom_tone(lit);
     return vec4<f32>(lit,1.0);
 }
 @vertex fn vs_sky(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
@@ -65,5 +65,6 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) world: vec3<f3
     let near=g.inv_view_proj*vec4<f32>(ndc,0.0,1.0);
     let far=g.inv_view_proj*vec4<f32>(ndc,1.0,1.0);
     let d=normalize(far.xyz/far.w-near.xyz/near.w);
-    return vec4<f32>(min(axiom_sky(d,true),vec3<f32>(1.0)),1.0);
+    let sky=axiom_sky(d,true);
+    return vec4<f32>(select(min(sky,vec3<f32>(1.0)),sky,g.ambient_ground.w>0.5),1.0);
 }

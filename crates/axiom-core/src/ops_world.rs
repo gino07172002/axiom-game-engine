@@ -602,6 +602,137 @@ pub fn set_sky(world: &World, registry: &Registry, mode: &str) -> Result<Vec<Edi
     })])
 }
 
+/// World ▸ POST row / ACL `post SETTING VALUE` (`render.environment.post`, see
+/// `crate::post`): `antialiasing none|fxaa`, `hdr on|off`, `bloom on|off` (on also turns HDR
+/// on), `exposure V` (needs HDR), `threshold|intensity|radius V` (need bloom), and `none`
+/// (empty value) to remove every setting. `render.environment` is created with its capability
+/// when missing. Settings that end up all off remove `post` (the legacy output). Only `post`
+/// changes; the other authored values are copied as they are. Unchanged = empty batch.
+pub fn set_post(
+    world: &World,
+    registry: &Registry,
+    setting: &str,
+    value: &str,
+) -> Result<Vec<Edit>> {
+    use crate::post::{Antialiasing, Bloom, Hdr, PostProcess};
+    let path = format!("/resources/render.environment/post/{}", escape(setting));
+    let current = world.resources.get("render.environment");
+    let mut env_value = current.cloned().unwrap_or_else(|| json!({}));
+    let Some(env) = env_value.as_object_mut() else {
+        return Err(invalid(
+            "/resources/render.environment",
+            "render.environment must be an object",
+        ));
+    };
+    let before: PostProcess = match env.get("post") {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            invalid(
+                "/resources/render.environment/post",
+                format!("authored post is invalid: {e}"),
+            )
+        })?,
+        None => PostProcess::default(),
+    };
+    let mut post = before;
+    let switch = |v: &str| match v {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(invalid(
+            &path,
+            format!("post {setting} takes on|off, not '{other}'"),
+        )),
+    };
+    let number = |v: &str| {
+        v.parse::<f32>()
+            .ok()
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| invalid(&path, format!("post {setting} needs a number, not '{v}'")))
+    };
+    match setting {
+        "none" if value.is_empty() => post = PostProcess::default(),
+        "antialiasing" => {
+            post.antialiasing = match value {
+                "none" => Antialiasing::None,
+                "fxaa" => Antialiasing::Fxaa,
+                other => {
+                    return Err(invalid(
+                        &path,
+                        format!("post antialiasing takes none|fxaa, not '{other}' (MSAA is not implemented)"),
+                    ))
+                }
+            }
+        }
+        "hdr" => {
+            if switch(value)? {
+                post.hdr.get_or_insert_with(Hdr::default);
+            } else {
+                post.hdr = None;
+            }
+        }
+        "bloom" => {
+            if switch(value)? {
+                post.hdr
+                    .get_or_insert_with(Hdr::default)
+                    .bloom
+                    .get_or_insert_with(Bloom::default);
+            } else if let Some(hdr) = &mut post.hdr {
+                hdr.bloom = None;
+            }
+        }
+        "exposure" => {
+            let x = number(value)?;
+            post.hdr
+                .as_mut()
+                .ok_or_else(|| invalid(&path, "post hdr is off (post hdr on first)"))?
+                .exposure = x;
+        }
+        "threshold" | "intensity" | "radius" => {
+            let x = number(value)?;
+            let bloom = post
+                .hdr
+                .as_mut()
+                .and_then(|h| h.bloom.as_mut())
+                .ok_or_else(|| invalid(&path, "post bloom is off (post bloom on first)"))?;
+            match setting {
+                "threshold" => bloom.threshold = x,
+                "intensity" => bloom.intensity = x,
+                _ => bloom.radius = x,
+            }
+        }
+        other => {
+            return Err(invalid(
+                &path,
+                format!("post takes antialiasing|hdr|bloom|exposure|threshold|intensity|radius VALUE or none, not '{other}{}'", if value.is_empty() { String::new() } else { format!(" {value}") }),
+            ))
+        }
+    }
+    post.validate()
+        .map_err(|e| invalid(&path, format!("{e:#}")))?;
+    if post == before && (env.contains_key("post") || post.is_off()) {
+        return Ok(vec![]);
+    }
+    if post.is_off() {
+        env.remove("post");
+    } else {
+        // Through text: f32 fields print shortest (0.7), not widened to f64 (0.699999988…).
+        let text = serde_json::to_string(&post)?;
+        env.insert("post".into(), serde_json::from_str(&text)?);
+    }
+    if current == Some(&env_value) || (current.is_none() && post.is_off()) {
+        return Ok(vec![]);
+    }
+    if current.is_none() {
+        return create_resource(world, registry, "render.environment", Some(env_value));
+    }
+    if let Some(d) = registry.resources.get("render.environment") {
+        (d.validate)(&env_value).map_err(|e| invalid(&path, format!("{e:#}")))?;
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetResource {
+        id: "render.environment".into(),
+        value: env_value,
+    })])
+}
+
 /// World ▸ ID / ACL `world id ID`. Unchanged = empty batch.
 pub fn set_world_id(world: &World, id: &str) -> Result<Vec<Edit>> {
     if valid_id(id).is_err() {

@@ -2000,3 +2000,90 @@ fn set_sky_presets_keep_authored_values() {
     );
     assert_eq!(code(acl(&mut s, "sky").unwrap_err()), "acl_syntax");
 }
+
+#[test]
+fn set_post_toggles_settings_and_keeps_the_rest_of_the_environment() {
+    let registry = Registry::core();
+    let world = lab();
+    // Off on a world without an environment: nothing to write.
+    assert!(ops::set_post(&world, &registry, "hdr", "off")
+        .unwrap()
+        .is_empty());
+    assert!(ops::set_post(&world, &registry, "none", "")
+        .unwrap()
+        .is_empty());
+    let fxaa = apply(ops::set_post(&world, &registry, "antialiasing", "fxaa").unwrap());
+    assert_eq!(fxaa.capabilities.get("render"), Some(&1));
+    assert_eq!(
+        fxaa.resources["render.environment"],
+        serde_json::json!({"post":{"antialiasing":"fxaa"}})
+    );
+    // Bloom on also turns HDR on (defaults); the same setting again is an empty batch.
+    let bloom = apply(ops::set_post(&fxaa, &registry, "bloom", "on").unwrap());
+    let post = &bloom.resources["render.environment"]["post"];
+    assert_eq!(post["hdr"]["exposure"], 1.0);
+    assert_eq!(post["hdr"]["tonemap"], "aces");
+    assert_eq!(post["hdr"]["bloom"]["threshold"], 1.0);
+    assert!(ops::set_post(&bloom, &registry, "bloom", "on")
+        .unwrap()
+        .is_empty());
+    let tuned = apply(ops::set_post(&bloom, &registry, "intensity", "1.5").unwrap());
+    let tuned = apply(ops::set_post(&tuned, &registry, "exposure", "1.2").unwrap());
+    let post = &tuned.resources["render.environment"]["post"];
+    assert_eq!(post["hdr"]["bloom"]["intensity"], 1.5);
+    assert_eq!(post["hdr"]["exposure"], 1.2);
+    // HDR off drops bloom too; antialiasing none then removes post (legacy output), and the
+    // other environment values are copied as they are.
+    let mut fogged = tuned.clone();
+    fogged.resources.get_mut("render.environment").unwrap()["fog"] =
+        serde_json::json!({"color":[0.1,0.1,0.1],"density":0.02});
+    let plain = apply(ops::set_post(&fogged, &registry, "hdr", "off").unwrap());
+    assert_eq!(
+        plain.resources["render.environment"]["post"],
+        serde_json::json!({"antialiasing":"fxaa"})
+    );
+    let plain = apply(ops::set_post(&plain, &registry, "antialiasing", "none").unwrap());
+    assert_eq!(
+        plain.resources["render.environment"],
+        serde_json::json!({"fog":{"color":[0.1,0.1,0.1],"density":0.02}})
+    );
+    let cleared = apply(ops::set_post(&tuned, &registry, "none", "").unwrap());
+    assert_eq!(
+        cleared.resources["render.environment"],
+        serde_json::json!({})
+    );
+    // Structured errors: unknown values, missing prerequisites, out-of-range numbers.
+    for (setting, value, needle) in [
+        ("antialiasing", "msaa", "none|fxaa"),
+        ("hdr", "yes", "on|off"),
+        ("exposure", "1", "hdr is off"),
+        ("threshold", "1", "bloom is off"),
+        ("gamma", "2", "post takes"),
+    ] {
+        let error = ops::set_post(&fxaa, &registry, setting, value).unwrap_err();
+        let response = error_response(&error);
+        assert_eq!(code(response.clone()), "invalid_value", "{setting}");
+        assert!(
+            response.to_string().contains(needle),
+            "{setting}: {response}"
+        );
+    }
+    for (setting, value) in [("exposure", "0"), ("radius", "2"), ("intensity", "nan")] {
+        let error = ops::set_post(&bloom, &registry, setting, value).unwrap_err();
+        assert_eq!(code(error_response(&error)), "invalid_value", "{setting}");
+    }
+    // The ACL verb is the same op.
+    let mut s = store();
+    acl(&mut s, "post bloom on").unwrap();
+    assert_eq!(
+        s.current().unwrap().1.resources["render.environment"]["post"]["hdr"]["bloom"]["radius"],
+        0.7
+    );
+    acl(&mut s, "post none").unwrap();
+    assert_eq!(code(acl(&mut s, "post").unwrap_err()), "acl_syntax");
+    assert_eq!(code(acl(&mut s, "post hdr").unwrap_err()), "acl_syntax");
+    assert_eq!(
+        code(acl(&mut s, "post hdr on extra").unwrap_err()),
+        "acl_syntax"
+    );
+}

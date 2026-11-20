@@ -23,6 +23,7 @@ pub mod gamepad;
 pub mod gameplay;
 pub mod geometry;
 pub mod gpu_timing;
+pub mod hdr;
 mod input;
 pub mod interact;
 pub mod jobs;

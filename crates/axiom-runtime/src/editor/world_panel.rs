@@ -35,6 +35,8 @@ struct WorldRows {
     resources: Vec<Row>,
     missing_resources: Vec<String>,
     heading: [String; 3],
+    /// `render.environment` post settings (default = off; invalid authored values read as off).
+    post: axiom_core::post::PostProcess,
     /// `render.environment` sky mode: none | gradient | procedural.
     sky: &'static str,
 }
@@ -145,6 +147,12 @@ impl WorldRows {
             missing_systems,
             resources,
             missing_resources,
+            post: world
+                .resources
+                .get("render.environment")
+                .and_then(|e| e.get("post"))
+                .and_then(|p| serde_json::from_value(p.clone()).ok())
+                .unwrap_or_default(),
             sky: match world
                 .resources
                 .get("render.environment")
@@ -176,6 +184,10 @@ pub(crate) struct WorldPanel {
     meta_key: Option<WorldKey>,
     /// The world id/title last loaded into the fields.
     loaded: (String, String),
+    /// POST slider values while dragging (exposure, threshold, intensity, radius), reloaded
+    /// from the world when it changes.
+    pub(super) post_draft: [f32; 4],
+    post_key: Option<WorldKey>,
     /// Row rebuilds so far (tests: the rows are not rebuilt per frame).
     #[cfg(test)]
     pub builds: usize,
@@ -199,6 +211,8 @@ enum WorldRequest {
     ResourceRemove(String),
     ResourceOpen(String),
     Sky(String),
+    /// `ops::set_post` (setting, value).
+    Post(String, String),
 }
 
 /// Inspector tag chips: the tag being typed and the chips of the current selection.
@@ -428,6 +442,9 @@ impl Editor {
             }
             WorldRequest::ResourceRemove(id) => ops::remove_resource(&world, &id),
             WorldRequest::Sky(mode) => ops::set_sky(&world, &registry, &mode),
+            WorldRequest::Post(setting, value) => {
+                ops::set_post(&world, &registry, &setting, &value)
+            }
             WorldRequest::ResourceOpen(id) => {
                 if self.dirty() {
                     self.set_error("Apply or reload the inspector draft first");
@@ -533,6 +550,10 @@ impl Editor {
             }
             "world.resource_remove" => self.world_request(WorldRequest::ResourceRemove(arg.into())),
             "world.sky" => self.world_request(WorldRequest::Sky(arg.into())),
+            "world.post" => {
+                let (setting, value) = split(arg);
+                self.world_request(WorldRequest::Post(setting, value))
+            }
             other => {
                 self.set_error(format!("{other} takes no argument"));
                 None
@@ -564,6 +585,13 @@ impl Editor {
             }
             panel.loaded = (self.world.id.clone(), self.world.title.clone());
             panel.meta_key = Some(key);
+        }
+        if panel.post_key != Some(key) {
+            let rows = panel.rows.as_ref().unwrap();
+            let hdr = rows.post.hdr.unwrap_or_default();
+            let bloom = hdr.bloom.unwrap_or_default();
+            panel.post_draft = [hdr.exposure, bloom.threshold, bloom.intensity, bloom.radius];
+            panel.post_key = Some(key);
         }
         let mut requests: Vec<WorldRequest> = vec![];
         let enabled = !self.dirty() && !self.previewing;
@@ -746,6 +774,71 @@ impl Editor {
                                     .small()
                                     .color(MUTED),
                             );
+                            ui.separator();
+                            ui.label(RichText::new("POST · render.environment").small().color(MUTED));
+                            let post = &rows.post;
+                            ui.horizontal(|ui| {
+                                ui.label("Anti-aliasing");
+                                for (value, label, hint) in [
+                                    ("none", "None", "No anti-aliasing (the legacy output)"),
+                                    ("fxaa", "FXAA", "Post-process edge filter on the final colours (not MSAA); can soften fine texture detail"),
+                                ] {
+                                    let current = if post.fxaa() { "fxaa" } else { "none" };
+                                    let item = ui.selectable_label(current == value, label).on_hover_text(hint);
+                                    #[cfg(test)]
+                                    rects.push((format!("world:post:aa:{value}"), item.rect));
+                                    if item.clicked() && current != value {
+                                        requests.push(WorldRequest::Post("antialiasing".into(), value.into()));
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                let mut hdr = post.hdr.is_some();
+                                let item = ui
+                                    .checkbox(&mut hdr, "HDR + ACES")
+                                    .on_hover_text("16-bit float scene colour, exposure and ACES (Hill fitted) tone mapping");
+                                #[cfg(test)]
+                                rects.push(("world:post:hdr".into(), item.rect));
+                                if item.changed() {
+                                    requests.push(WorldRequest::Post("hdr".into(), if hdr { "on" } else { "off" }.into()));
+                                }
+                                let mut bloom = post.hdr.is_some_and(|h| h.bloom.is_some());
+                                let item = ui
+                                    .checkbox(&mut bloom, "Bloom")
+                                    .on_hover_text("Glow around bright (HDR) pixels; turns HDR on");
+                                #[cfg(test)]
+                                rects.push(("world:post:bloom".into(), item.rect));
+                                if item.changed() {
+                                    requests.push(WorldRequest::Post("bloom".into(), if bloom { "on" } else { "off" }.into()));
+                                }
+                            });
+                            if let Some(hdr) = post.hdr {
+                                use axiom_core::post::{EXPOSURE_RANGE, INTENSITY_RANGE, RADIUS_RANGE, THRESHOLD_RANGE};
+                                let bloom = hdr.bloom.unwrap_or_default();
+                                let sliders = [
+                                    ("exposure", "Exposure", EXPOSURE_RANGE, hdr.exposure, true),
+                                    ("threshold", "Bloom threshold", THRESHOLD_RANGE, bloom.threshold, hdr.bloom.is_some()),
+                                    ("intensity", "Bloom intensity", INTENSITY_RANGE, bloom.intensity, hdr.bloom.is_some()),
+                                    ("radius", "Bloom radius", RADIUS_RANGE, bloom.radius, hdr.bloom.is_some()),
+                                ];
+                                for (k, (setting, label, (lo, hi), current, shown)) in sliders.into_iter().enumerate() {
+                                    if !shown {
+                                        continue;
+                                    }
+                                    let draft = &mut panel.post_draft[k];
+                                    let item = ui.add(egui::Slider::new(draft, lo..=hi).step_by(0.01).text(label));
+                                    #[cfg(test)]
+                                    rects.push((format!("world:post:{setting}"), item.rect));
+                                    // One write per gesture: on release (drag or click), or a typed /
+                                    // keyboard change while the pointer is not holding the slider.
+                                    let done = item.drag_stopped()
+                                        || item.clicked()
+                                        || (item.changed() && !item.is_pointer_button_down_on());
+                                    if done && *draft != current {
+                                        requests.push(WorldRequest::Post(setting.into(), format!("{:.2}", *draft)));
+                                    }
+                                }
+                            }
                         });
                 });
                 if !enabled {

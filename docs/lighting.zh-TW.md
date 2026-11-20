@@ -88,6 +88,7 @@
   - 省略時沿用舊版:ground `(0.11,0.16,0.19)` 到 sky `(0.37,0.48,0.53)` 的半球漸層,再乘 `0.85 + accent × 0.15`(`render.settings.accent`)。編寫了 ambient 就**不再**乘 accent。
 - `fog`(選填):`{color, density}`,指數平方霧 `1 - exp(-(density × 距離)²)`(Unity ExponentialSquared 的定義)。省略時沿用舊版(`k = 0.00012`,約等於 density 0.011)。
 - `sky`(選填,見下節「天空」)。省略時背景沿用舊版固定的螢幕空間漸層。
+- `post`(選填):FXAA、HDR(`Rgba16Float` + 曝光 + ACES tone mapping)與 bloom,預設關閉;見 [post-processing.zh-TW.md](post-processing.zh-TW.md)。HDR 開啟時,內建光照路徑不再套下面提到的 `x/(x+0.7)` 色調曲線,改由後處理統一 tone map。
 
 ### 天空(`render.environment.sky`)與天空光
 

@@ -21,6 +21,101 @@ pub(crate) fn mesh_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
         attributes: &ATTRIBUTES,
     }
 }
+
+/// The lit triangle pipelines (blend x double-sided) and the outline hull for colour `format`
+/// (the surface format, or `hdr::HDR_FORMAT` while HDR is on).
+fn color_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+) -> (Vec<wgpu::RenderPipeline>, wgpu::RenderPipeline) {
+    let mut pipelines = vec![];
+    for blend in [false, true] {
+        for double_sided in [false, true] {
+            pipelines.push(
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("textured triangle pipeline"),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: shader,
+                        entry_point: Some("vertex_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[mesh_vertex_layout()],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: shader,
+                        entry_point: Some("fragment_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: if blend {
+                                Some(wgpu::BlendState::ALPHA_BLENDING)
+                            } else {
+                                None
+                            },
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        cull_mode: if double_sided {
+                            None
+                        } else {
+                            Some(wgpu::Face::Back)
+                        },
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: !blend,
+                        depth_compare: wgpu::CompareFunction::LessEqual,
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    multiview: None,
+                    cache: None,
+                }),
+            );
+        }
+    }
+    // Same layout and camera group as the lit pipelines; position-only vertex stage.
+    let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("mesh outline pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_outline"),
+            compilation_options: Default::default(),
+            buffers: &[mesh_vertex_layout()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_outline"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            cull_mode: Some(wgpu::Face::Front),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    (pipelines, outline_pipeline)
+}
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Draw {
@@ -67,6 +162,12 @@ pub struct MeshRenderer {
     pipelines: Vec<wgpu::RenderPipeline>,
     /// `render.outline` inverted hull (front faces culled).
     outline_pipeline: wgpu::RenderPipeline,
+    /// Layout and module of the colour pipelines, kept to build their HDR variants on demand.
+    color_layout: wgpu::PipelineLayout,
+    shader: wgpu::ShaderModule,
+    /// `color_pipelines` for `hdr::HDR_FORMAT` (built on first use) and whether draws use them.
+    hdr: Option<(Vec<wgpu::RenderPipeline>, wgpu::RenderPipeline)>,
+    use_hdr: bool,
     /// Clamped sampler of decal images (no repeat bleeding at the image border).
     decal_sampler: wgpu::Sampler,
     meshes: BTreeMap<String, Mesh>,
@@ -234,55 +335,7 @@ impl MeshRenderer {
             label: Some("triangle shader"),
             source: wgpu::ShaderSource::Wgsl(crate::lighting::MESH_WGSL.into()),
         });
-        let mut pipelines = vec![];
-        for blend in [false, true] {
-            for double_sided in [false, true] {
-                pipelines.push(
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some("textured triangle pipeline"),
-                        layout: Some(&layout),
-                        vertex: wgpu::VertexState {
-                            module: &shader,
-                            entry_point: Some("vertex_main"),
-                            compilation_options: Default::default(),
-                            buffers: &[mesh_vertex_layout()],
-                        },
-                        fragment: Some(wgpu::FragmentState {
-                            module: &shader,
-                            entry_point: Some("fragment_main"),
-                            compilation_options: Default::default(),
-                            targets: &[Some(wgpu::ColorTargetState {
-                                format,
-                                blend: if blend {
-                                    Some(wgpu::BlendState::ALPHA_BLENDING)
-                                } else {
-                                    None
-                                },
-                                write_mask: wgpu::ColorWrites::ALL,
-                            })],
-                        }),
-                        primitive: wgpu::PrimitiveState {
-                            cull_mode: if double_sided {
-                                None
-                            } else {
-                                Some(wgpu::Face::Back)
-                            },
-                            ..Default::default()
-                        },
-                        depth_stencil: Some(wgpu::DepthStencilState {
-                            format: wgpu::TextureFormat::Depth32Float,
-                            depth_write_enabled: !blend,
-                            depth_compare: wgpu::CompareFunction::LessEqual,
-                            stencil: Default::default(),
-                            bias: Default::default(),
-                        }),
-                        multisample: Default::default(),
-                        multiview: None,
-                        cache: None,
-                    }),
-                );
-            }
-        }
+        let (pipelines, outline_pipeline) = color_pipelines(device, &layout, &shader, format);
         let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("triangle shadow"),
             bind_group_layouts: &[&shadow_camera_layout, &material_layout],
@@ -316,41 +369,6 @@ impl MeshRenderer {
             multiview: None,
             cache: None,
         });
-        // Same layout and camera group as the lit pipelines; position-only vertex stage.
-        let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mesh outline pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_outline"),
-                compilation_options: Default::default(),
-                buffers: &[mesh_vertex_layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_outline"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Front),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
         let decal_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("decal sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -374,9 +392,36 @@ impl MeshRenderer {
             draws,
             pipelines,
             outline_pipeline,
+            color_layout: layout,
+            shader,
+            hdr: None,
+            use_hdr: false,
             decal_sampler,
             meshes: BTreeMap::new(),
             active: vec![],
+        }
+    }
+    /// Draws into the HDR target from now on (`on`), building its pipeline variants on first
+    /// use. Returns the milliseconds spent building them (0 when they existed).
+    pub fn set_hdr(&mut self, device: &wgpu::Device, on: bool) -> f64 {
+        self.use_hdr = on;
+        if !on || self.hdr.is_some() {
+            return 0.0;
+        }
+        let started = std::time::Instant::now();
+        self.hdr = Some(color_pipelines(
+            device,
+            &self.color_layout,
+            &self.shader,
+            crate::hdr::HDR_FORMAT,
+        ));
+        started.elapsed().as_secs_f64() * 1000.0
+    }
+    /// The lit pipelines and the outline pipeline of the current colour target.
+    fn color(&self) -> (&[wgpu::RenderPipeline], &wgpu::RenderPipeline) {
+        match &self.hdr {
+            Some((pipelines, outline)) if self.use_hdr => (pipelines, outline),
+            _ => (&self.pipelines, &self.outline_pipeline),
         }
     }
     pub fn prepare(
@@ -630,7 +675,7 @@ impl MeshRenderer {
                     pass.set_bind_group(2, &shaders.bind, &[surface.offset]);
                 } else {
                     let pipeline = usize::from(blend) * 2 + usize::from(m.double_sided);
-                    pass.set_pipeline(&self.pipelines[pipeline]);
+                    pass.set_pipeline(&self.color().0[pipeline]);
                 }
                 pass.set_bind_group(1, &m.bind, &[((active.first + i) * DRAW_STRIDE) as u32]);
                 pass.draw_indexed(m.range.clone(), 0, 0..1);
@@ -664,7 +709,7 @@ impl MeshRenderer {
                 .as_ref()
                 .and_then(|id| shaders.materials.get(id));
             if !bound {
-                pass.set_pipeline(&self.outline_pipeline);
+                pass.set_pipeline(self.color().1);
                 bound = true;
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));

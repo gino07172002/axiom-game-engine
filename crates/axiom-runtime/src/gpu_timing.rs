@@ -19,11 +19,14 @@ pub enum Section {
     World,
     VfxDraw,
     Post,
+    Bloom,
+    Tonemap,
+    Fxaa,
     GameUi,
     Ui,
 }
 
-pub const SECTIONS: usize = 8;
+pub const SECTIONS: usize = 11;
 
 impl Section {
     pub const ALL: [Section; SECTIONS] = [
@@ -33,6 +36,9 @@ impl Section {
         Section::World,
         Section::VfxDraw,
         Section::Post,
+        Section::Bloom,
+        Section::Tonemap,
+        Section::Fxaa,
         Section::GameUi,
         Section::Ui,
     ];
@@ -45,6 +51,9 @@ impl Section {
             Section::World => "world",
             Section::VfxDraw => "vfx_draw",
             Section::Post => "post",
+            Section::Bloom => "bloom",
+            Section::Tonemap => "tonemap",
+            Section::Fxaa => "fxaa",
             Section::GameUi => "game_ui",
             Section::Ui => "ui",
         }
@@ -58,9 +67,10 @@ pub struct GpuFrame {
     pub total: f32,
 }
 
-/// Timestamps one frame may write: the start, VFX compute, sun and local shadows, three per
-/// camera view (`MAX_CAMERAS` = 8) and two interface passes is 30.
-const QUERIES: u32 = 32;
+/// Timestamps one frame may write: the start, VFX compute, sun and local shadows, five per
+/// camera view (world, VFX, bloom, tone map, post; `MAX_CAMERAS` = 8), FXAA and two interface
+/// passes is 47.
+const QUERIES: u32 = 48;
 /// Frames in flight at most (readbacks usually complete 1–3 frames later).
 const SLOTS: usize = 4;
 
@@ -371,7 +381,7 @@ mod tests {
         assert!(frame(&[10], &sections, 1.0).is_none());
         assert_eq!(
             Section::ALL.map(|s| s as usize),
-            [0, 1, 2, 3, 4, 5, 6, 7],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             "ALL indexes GpuFrame::ms"
         );
     }

@@ -13,6 +13,8 @@ struct SunLight {direction_shadow:vec4<f32>,color:vec4<f32>,specular:vec4<f32>}
 // screen gradient, 1 gradient, 2 procedural), sky_horizon.w = shape, sky_ground.w = scale,
 // sky_sun = (cos sun-disk half angle (> 1 = no disk), haze, 0, 0). Sun = suns[0].
 // sky_viewport = this view's viewport (x, y, width, height) in framebuffer pixels.
+// ambient_ground.w = 1 while the view renders into the HDR target (render.environment.post.hdr):
+// lit shaders then write linear radiance and the post pass tone maps (hdr.rs).
 struct Globals { view_proj: mat4x4<f32>, light_vp: mat4x4<f32>, eye_time: vec4<f32>, accent: vec4<f32>, lights:array<LocalLight,32>, view_params:vec4<f32>, suns:array<SunLight,4>, ambient_sky:vec4<f32>, ambient_equator:vec4<f32>, ambient_ground:vec4<f32>, fog:vec4<f32>, inv_view_proj: mat4x4<f32>, sky_zenith:vec4<f32>, sky_horizon:vec4<f32>, sky_ground:vec4<f32>, sky_sun:vec4<f32>, sky_viewport:vec4<f32> }
 @group(0) @binding(0) var<uniform> g: Globals;
 
@@ -60,6 +62,11 @@ fn axiom_ambient(n:vec3<f32>)->vec3<f32> {
  let t=clamp(n.y,-1.0,1.0);
  if t>=0.0 {return mix(g.ambient_equator.rgb,g.ambient_sky.rgb,t);}
  return mix(g.ambient_equator.rgb,g.ambient_ground.rgb,-t);
+}
+// The built-in tone curve of the lit paths; identity into the HDR target.
+fn axiom_tone(lit:vec3<f32>)->vec3<f32> {
+ if g.ambient_ground.w>0.5 {return lit;}
+ return lit/(lit+vec3<f32>(0.7));
 }
 fn axiom_fog(lit:vec3<f32>,p:vec3<f32>)->vec3<f32> {
  let distance=length(g.eye_time.xyz-p);
