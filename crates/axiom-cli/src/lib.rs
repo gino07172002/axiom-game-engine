@@ -131,6 +131,9 @@ enum Command {
         /// Replace an existing packaged game folder.
         #[arg(long)]
         force: bool,
+        /// Refuse to publish unless the shipped pack files hash to this report `pack_digest`.
+        #[arg(long)]
+        expected_pack_digest: Option<String>,
     },
     /// Drive a running editor (--connect): select/frame objects, switch dock, capture a PNG.
     View {
@@ -507,6 +510,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         exe_name,
         exclude,
         force,
+        expected_pack_digest,
     } = command
     {
         ensure!(cli.connect.is_none(), "package cannot use --connect");
@@ -524,6 +528,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 excludes: exclude,
                 force,
                 player_exe: axiom_runtime::packaging::default_player_exe()?,
+                expected_pack_digest,
             },
             &Default::default(),
         )?;

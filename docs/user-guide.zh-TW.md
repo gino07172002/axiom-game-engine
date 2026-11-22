@@ -49,12 +49,12 @@ cargo build -p axiom -p axiom-player
 
 資料夾內容:`<作品名>.exe`、`game.json`(format 1:`id`、`title`、`pack`、`exe`)、`content\`。玩家雙擊執行檔即可:沒有主控台視窗、沒有開發工具列與控制台(Tab 無效)、不開 loopback 連接埠,視窗標題是作品名,執行檔內嵌 Axiom 圖示。每次啟動都重新匯入 `content\`,資料庫、`saves\` 與 `crash.log` 位於 `%APPDATA%\Axiom\<id>\`,遊戲資料夾本身不會被寫入。Esc 暫停(畫面上方顯示 `PAUSED · ESC`),內容 UI(`ui.document`、存讀檔按鈕)照常顯示。
 
-啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
+啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(給了 `--db` 時寫在資料庫旁,此時不需要 `APPDATA`;還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
 
 ### 打包報告、外部素材與編輯器
 
-- `package` 的 JSON 報告列出每個檔案(相對路徑、大小、SHA-256)、`skipped`(預設排除 `build/`、`.git/`、`*.acl`、`*.blend`、`*.blend1`、`*.py`、`*.ps1`,可用 `--exclude dir/|*.ext|相對路徑` 追加)、`unreferenced`(有複製但看不出被引用的檔,只是警告)與 `warnings`。相同輸入兩次打包,檔案清單與雜湊相同。
-- pack 引用了 pack 以外的檔案(例如動畫素材 `external: true`)時,打包在寫入任何東西之前失敗並列出這些檔案;請把素材搬進 pack、用相對路徑。輸出先寫到 `<輸出>.partial`,驗證通過才改名,失敗或取消不留半成品。已存在的輸出要加 `--force`,而且只會取代先前打包出來(帶 `game.json`)的資料夾。
+- `package` 的 JSON 報告列出每個檔案(相對路徑、大小、SHA-256,含 `game.json`)、`pack_digest`(出貨 pack 檔案的雜湊;`--expected-pack-digest HEX` 或編輯器的 `expected_pack_digest` 要求與審核過的值相同,不同就不發佈)、`skipped`(前 32 項,總數在 `skipped_total`;預設排除 `build/`、`.git/`、`*.acl`、`*.blend`、`*.blend1`、`*.py`、`*.ps1`,可用 `--exclude dir/|*.ext|相對路徑` 追加)、`unreferenced`(有複製但看不出被引用的檔,只是警告)與 `warnings`。相同輸入兩次打包,檔案清單與雜湊相同。
+- pack 引用了 pack 以外的檔案(例如動畫素材 `external: true`)時,打包在寫入任何東西之前失敗並列出這些檔案;請把素材搬進 pack、用相對路徑。輸出先寫到本次建置自己建立的 `<輸出>.partial-<pid>-<n>`,驗證通過才改名;失敗或取消時只刪這個目錄,不留半成品(程序被強制結束時可能殘留,需手動刪除)。同一個輸出一次只允許一個建置。已存在的輸出要加 `--force`,而且只會取代先前打包出來的資料夾(帶 `game.json`,不能是連結或 junction):舊版先移到 `<輸出>.old-*`,新版就位後才刪除,失敗時移回。建置期間才出現的同名目錄,沒有 `--force` 就不會被覆蓋。玩家程式啟動時也會確認 `pack` 的實際位置在遊戲資料夾內,且沒有 `external` 動畫素材。
 - 編輯器以 `--pack` 開啟時,`File > Build Game…` 在背景做同一件事(進度、取消、完成後 Open folder);打包的是磁碟上的 pack,只存在編輯器資料庫的修改不會包含。
 - 輸出不要放在 repo 裡提交(`/dist/` 已忽略);含第三方素材的作品不要公開上傳。
 - 驗證:`scripts\package-smoke-test.ps1 [-Release]` 打包 plaza、adv、fps、action,複製到別處後用隔離的 APPDATA 執行玩家程式並截圖,另含外部素材與 `--force` 的拒絕案例。

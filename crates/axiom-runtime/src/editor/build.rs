@@ -17,7 +17,7 @@ use std::time::Duration;
 
 /// Watchdog: a debug build of a large pack copies a few hundred MB; ten minutes is far beyond it.
 pub(crate) const BUILD_TIMEOUT: Duration = Duration::from_secs(600);
-/// How long shutdown waits for a cancelled build to remove its `*.partial` folder.
+/// How long shutdown waits for a cancelled build to remove its `*.partial-*` folder.
 const JOIN_LIMIT: Duration = Duration::from_secs(5);
 pub(crate) const NO_PACK: &str = "the editor was not opened with --pack: Build Game ships a content package directory, not the authoring database";
 
@@ -32,6 +32,21 @@ struct Running {
     /// The packager's own counters and cancel flag (the job's are mirrored from it).
     progress: Arc<Progress>,
     out: PathBuf,
+    /// Editor authoring revision when the build started (informational: the build ships the
+    /// pack on disk, which this revision does not describe).
+    rev: i64,
+}
+
+/// `file.build_game` JSON form; a misspelt field or a wrong type is an error, not a default.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildSpec {
+    out: Option<String>,
+    title: Option<String>,
+    #[serde(default)]
+    force: bool,
+    /// The `pack_digest` of a reviewed build: refuse to publish a pack that changed since.
+    expected_pack_digest: Option<String>,
 }
 
 #[derive(Default)]
@@ -58,7 +73,7 @@ impl Drop for BuildGame {
             run.progress.cancel.store(true, Relaxed);
             if !run.job.shutdown(JOIN_LIMIT) {
                 eprintln!(
-                    "build_game: worker did not stop within {} s on shutdown; detached ({}.partial may remain)",
+                    "build_game: worker did not stop within {} s on shutdown; detached ({}.partial-* may remain)",
                     JOIN_LIMIT.as_secs(),
                     run.out.display()
                 );
@@ -94,8 +109,9 @@ impl Editor {
         self.build.running.is_some()
     }
 
-    /// `file.build_game`: no argument / `open` = the dialog; `{"out","title","force"}` (all
-    /// optional) = start a build; `start` = start with the dialog's values; `cancel`.
+    /// `file.build_game`: no argument / `open` = the dialog; `{"out","title","force",
+    /// "expected_pack_digest"}` (all optional, nothing else accepted) = start a build; `start` =
+    /// start with the dialog's values; `cancel`.
     pub(super) fn build_command(&mut self, arg: Option<&str>) -> Result<()> {
         let arg = arg.map(str::trim).filter(|a| !a.is_empty());
         match arg {
@@ -110,21 +126,15 @@ impl Editor {
                 }
                 let d = self.build.dialog.as_ref().unwrap();
                 let (out, title, force) = (d.out.clone(), d.title.clone(), d.force);
-                self.start_build(&out, &title, force)?;
+                self.start_build(&out, &title, force, None)?;
             }
             Some(text) => {
-                let spec: Value = serde_json::from_str(text).context(
-                    "file.build_game takes open | start | cancel | {\"out\":DIR,\"title\":T,\"force\":BOOL}",
+                let spec: BuildSpec = serde_json::from_str(text).context(
+                    "file.build_game takes open | start | cancel | {\"out\":DIR,\"title\":T,\"force\":BOOL,\"expected_pack_digest\":HEX64} (all optional, no other fields)",
                 )?;
-                anyhow::ensure!(spec.is_object(), "file.build_game JSON must be an object");
-                let title = spec["title"]
-                    .as_str()
-                    .map_or_else(|| self.world.title.clone(), str::to_owned);
-                let out = spec["out"]
-                    .as_str()
-                    .map_or_else(|| default_out(&title), str::to_owned);
-                let force = spec["force"].as_bool().unwrap_or(false);
-                self.start_build(&out, &title, force)?;
+                let title = spec.title.unwrap_or_else(|| self.world.title.clone());
+                let out = spec.out.unwrap_or_else(|| default_out(&title));
+                self.start_build(&out, &title, spec.force, spec.expected_pack_digest)?;
             }
         }
         Ok(())
@@ -141,7 +151,13 @@ impl Editor {
         }
     }
 
-    pub(super) fn start_build(&mut self, out: &str, title: &str, force: bool) -> Result<()> {
+    pub(super) fn start_build(
+        &mut self,
+        out: &str,
+        title: &str,
+        force: bool,
+        expected_pack_digest: Option<String>,
+    ) -> Result<()> {
         let started = std::time::Instant::now();
         anyhow::ensure!(self.build.running.is_none(), "a build is already running");
         let pack = self.build.pack.clone().context(NO_PACK)?;
@@ -165,6 +181,7 @@ impl Editor {
             excludes: vec![],
             force,
             player_exe: PathBuf::new(),
+            expected_pack_digest,
         };
         let job = Job::spawn(
             "build_game",
@@ -184,7 +201,12 @@ impl Editor {
             started.elapsed().as_secs_f64() * 1000.0
         );
         self.notice(format!("Building game · {}", out.display()));
-        self.build.running = Some(Running { job, progress, out });
+        self.build.running = Some(Running {
+            job,
+            progress,
+            out,
+            rev: self.rev,
+        });
         Ok(())
     }
 
@@ -232,10 +254,13 @@ impl Editor {
                     .as_str()
                     .map_or_else(|| run.out.clone(), PathBuf::from);
                 self.last_job = Some(json!({"kind":"build_game","label":out,"state":"finished","done":done,"total":total,"elapsed_ms":elapsed_ms}));
-                // packaging::package checks cancellation before each file and before the player
-                // copy; a cancel during the player copy or validation arrives too late.
+                // packaging::package checks cancellation throughout the walk, copy and
+                // validation, and last at its publish cut-off (before anything is renamed); a
+                // cancel seen here arrived after that cut-off.
                 let late = run.progress.cancel.load(Relaxed);
-                self.build.last = Some(json!({"ok":true,"out":path.to_string_lossy(),"files":files,"bytes":bytes,"elapsed_ms":elapsed_ms,"cancel_too_late":late}));
+                // pack_digest identifies what shipped; authoring_rev only records the editor's
+                // revision at start (the build reads the pack on disk, not the database).
+                self.build.last = Some(json!({"ok":true,"out":path.to_string_lossy(),"files":files,"bytes":bytes,"elapsed_ms":elapsed_ms,"cancel_too_late":late,"pack_digest":report["pack_digest"],"authoring_rev_at_start":run.rev,"authoring_rev_note":"informational: the build ships the pack on disk"}));
                 eprintln!(
                     "build_game: ok {} · {files} files · {bytes} bytes · {elapsed_ms} ms{}",
                     path.display(),
@@ -272,7 +297,7 @@ impl Editor {
             Outcome::Abandoned { stop } => (
                 "abandoned",
                 format!(
-                    "build worker did not stop within {} s after {}; detached ({out}.partial may remain)",
+                    "build worker did not stop within {} s after {}; detached ({out}.partial-* may remain)",
                     STOP_GRACE.as_secs(),
                     stop.name()
                 ),
@@ -503,7 +528,7 @@ impl Editor {
             self.cancel_build();
         }
         if build {
-            if let Err(e) = self.start_build(&out, &title, force) {
+            if let Err(e) = self.start_build(&out, &title, force, None) {
                 self.set_error(format!("{e:#}"));
             }
         }
@@ -631,6 +656,7 @@ mod tests {
                 excludes: vec![],
                 force: false,
                 player_exe: f.player.clone(),
+                expected_pack_digest: None,
             },
             &Progress::default(),
         )
@@ -638,6 +664,62 @@ mod tests {
         assert_eq!(hashes(&via_job), hashes(&direct));
         assert!(!hashes(&direct).is_empty());
         assert!(job_out.join("Two Cams.exe").is_file());
+        // R9 F8: the completion report names what shipped and the editor revision at start.
+        assert_eq!(last["pack_digest"], direct["pack_digest"], "{last}");
+        assert_eq!(last["pack_digest"].as_str().map(str::len), Some(64));
+        assert_eq!(last["authoring_rev_at_start"], f.editor.rev);
+    }
+
+    fn staging_leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.contains(".partial-") || n.contains(".old-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // R9 F9: a misspelt field or a wrong type is refused before any worker starts.
+    #[test]
+    fn build_json_rejects_unknown_fields_and_wrong_types() {
+        let mut f = fixture("spec");
+        for bad in [
+            json!({"output": f.base.join("out/x")}),
+            json!({"out": f.base.join("out/x"), "force": "true"}),
+            json!({"out": 3}),
+            json!(["out"]),
+        ] {
+            let error = f
+                .editor
+                .run_command_with("file.build_game", Some(&bad.to_string()))
+                .err()
+                .expect("invalid build arguments must be refused");
+            assert!(
+                format!("{error:#}").contains("file.build_game takes"),
+                "{error:#}"
+            );
+            assert!(!f.editor.build_running(), "{bad}");
+        }
+        assert!(!f.base.join("out").exists());
+        // Pinned to a digest that does not match: a recoverable build error, no output.
+        let arg = json!({"out": f.base.join("out/pinned"), "expected_pack_digest": "0".repeat(64)});
+        f.editor
+            .run_command_with("file.build_game", Some(&arg.to_string()))
+            .unwrap();
+        finish(&mut f.editor);
+        let last = f.editor.observation()["build"]["last"].clone();
+        assert_eq!(last["ok"], false, "{last}");
+        assert!(
+            last["error"]
+                .as_str()
+                .unwrap()
+                .contains("expected_pack_digest"),
+            "{last}"
+        );
+        assert!(!f.base.join("out/pinned").exists());
     }
 
     #[test]
@@ -656,7 +738,7 @@ mod tests {
             last["error"].as_str().unwrap().contains("cancelled"),
             "{last}"
         );
-        assert!(!out.exists() && !f.base.join("out/cancelled.partial").exists());
+        assert!(!out.exists() && staging_leftovers(&f.base.join("out")).is_empty());
         assert!(!f.editor.error, "a cancel is a notice, not an error");
         // An existing output without force is a recoverable error, shown in the status line.
         f.editor.build.cancel_before_start = false;
