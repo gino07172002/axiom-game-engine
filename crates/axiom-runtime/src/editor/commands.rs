@@ -645,7 +645,9 @@ pub(crate) const COMMANDS: &[Command] = &[
         "COMPONENT/FIELD",
     ),
 ];
-/// Commands that write authoring revisions (refused during Play with the reason).
+/// Commands that write authoring revisions (refused during Play with the reason, before any
+/// other check). A new command that writes belongs here; `content_commands_are_refused_
+/// during_play` checks the list against the handlers.
 pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
@@ -715,7 +717,35 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "merge.commit",
     "prefab.revert",
     "prefab.apply",
+    "ui.place",
+    "ui.style",
+    "ui.button",
+    "ui.slider",
+    "ui.effect_add",
+    "ui.effect_set",
+    "ui.effect_remove",
+    "graph.add_state",
+    "graph.set_initial",
+    "graph.delete",
+    "graph.new_controller",
+    "graph.attach_controller",
+    "graph.param",
+    "graph.layer",
+    "behavior.fsm_agent",
+    "behavior.patrol",
+    "behavior.guard",
+    "behavior.dialogue",
+    "asset.new_material",
+    "asset.new_prefab",
+    "asset.new_machine",
+    "asset.new_ui_document",
+    "asset.new_input_map",
+    "asset.place",
+    "asset.rename",
 ];
+const PLAY_BLOCKED: &str =
+    "stop Play first (Play runs a pinned revision; edits would not show in it)";
+
 pub(crate) fn command(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
 }
@@ -753,6 +783,157 @@ impl Shortcut {
             && (i.modifiers.command || i.modifiers.ctrl) == self.ctrl
             && i.modifiers.shift == self.shift
             && i.modifiers.alt == self.alt
+    }
+}
+
+/// After a failed preferences write, the next attempt waits this long.
+const PREFS_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+/// Watchdog of one preferences write.
+const PREFS_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Shutdown / flush: longest wait for a running preferences write.
+const PREFS_FLUSH_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The preferences file, replaced whole: a temporary file renamed over it, so a failed or
+/// interrupted write never leaves a truncated file.
+fn write_prefs_file(path: &std::path::Path, prefs: &Prefs) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(prefs).map_err(|e| e.to_string())?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, text)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })
+}
+
+/// A background preferences file write.
+type PrefsJob = crate::jobs::Job<Result<(), String>>;
+
+/// Preferences file writes. Each frame compares the preferences with what the file holds
+/// (no serialization); a change is written by a background job; a failed write keeps the
+/// change pending and is retried. Dropping it (editor shutdown) waits a bounded time for a
+/// running write and writes the newest unsaved value.
+#[derive(Default)]
+pub(crate) struct PrefsSaver {
+    /// What the file holds (as loaded or last written).
+    saved: Option<Prefs>,
+    /// The running write: (file, value, job).
+    job: Option<(std::path::PathBuf, Prefs, PrefsJob)>,
+    /// After a failed write: when to try again and the value that failed (reported once).
+    retry: Option<(std::time::Instant, Prefs)>,
+    /// The newest value not written and not being written (flushed on shutdown).
+    pending: Option<(std::path::PathBuf, Prefs)>,
+}
+
+impl PrefsSaver {
+    pub(crate) fn loaded(prefs: Prefs) -> Self {
+        Self {
+            saved: Some(prefs),
+            job: None,
+            retry: None,
+            pending: None,
+        }
+    }
+
+    /// Once per frame: collects a finished write, starts the next one. Returns a write
+    /// error to show (once per failing value), or `Ok` when a write succeeds after one.
+    pub(crate) fn tick(
+        &mut self,
+        path: &std::path::Path,
+        prefs: &Prefs,
+    ) -> Option<Result<(), String>> {
+        let mut event = None;
+        if let Some((_, _, job)) = &mut self.job {
+            if let Some(outcome) = job.poll() {
+                let (_, value, _) = self.job.take().unwrap();
+                let result = match outcome {
+                    crate::jobs::Outcome::Done { value, .. } => value,
+                    crate::jobs::Outcome::Abandoned { stop } => {
+                        Err(format!("the write {}", stop.name()))
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        if self.retry.take().is_some() {
+                            event = Some(Ok(()));
+                        }
+                        self.saved = Some(value);
+                    }
+                    Err(e) => {
+                        if self.retry.as_ref().is_none_or(|(_, v)| *v != value) {
+                            event = Some(Err(e));
+                        }
+                        self.retry = Some((std::time::Instant::now() + PREFS_RETRY, value));
+                    }
+                }
+            }
+        }
+        if self.saved.as_ref() == Some(prefs) {
+            self.pending = None;
+            return event;
+        }
+        let waiting = self.job.as_ref().is_some_and(|(_, v, _)| v == prefs)
+            || self
+                .retry
+                .as_ref()
+                .is_some_and(|(at, _)| std::time::Instant::now() < *at);
+        if self.job.is_some() || waiting {
+            // Written once the running write or the retry delay is over (or on shutdown).
+            if self.job.as_ref().is_none_or(|(_, v, _)| v != prefs)
+                && self.pending.as_ref().is_none_or(|(_, p)| p != prefs)
+            {
+                self.pending = Some((path.to_owned(), prefs.clone()));
+            }
+            return event;
+        }
+        let (file, value) = (path.to_owned(), prefs.clone());
+        let label = path.display().to_string();
+        match crate::jobs::Job::spawn("prefs", label, PREFS_WRITE_TIMEOUT, move |_| {
+            write_prefs_file(&file, &value)
+        }) {
+            Ok(job) => {
+                self.pending = None;
+                self.job = Some((path.to_owned(), prefs.clone(), job));
+            }
+            Err(e) => {
+                self.retry = Some((std::time::Instant::now() + PREFS_RETRY, prefs.clone()));
+                event = Some(Err(format!("{e:#}")));
+            }
+        }
+        event
+    }
+
+    /// Bounded: waits at most `PREFS_FLUSH_LIMIT` for a running write, then writes the
+    /// newest unsaved value on this thread (shutdown and tests only).
+    pub(crate) fn flush(&mut self) {
+        if let Some((path, value, mut job)) = self.job.take() {
+            match job.poll_within(PREFS_FLUSH_LIMIT) {
+                Some(crate::jobs::Outcome::Done { value: Ok(()), .. }) => {
+                    self.saved = Some(value);
+                }
+                _ => {
+                    if self.pending.is_none() {
+                        self.pending = Some((path, value));
+                    }
+                }
+            }
+        }
+        if let Some((path, prefs)) = self.pending.take() {
+            if self.saved.as_ref() != Some(&prefs) {
+                match write_prefs_file(&path, &prefs) {
+                    Ok(()) => self.saved = Some(prefs),
+                    Err(e) => eprintln!("editor preferences not saved: {e}"),
+                }
+            }
+        }
+    }
+}
+
+impl Drop for PrefsSaver {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -912,6 +1093,10 @@ impl Editor {
 
     /// Why a command cannot run right now, if it cannot.
     pub(crate) fn command_blocked(&self, id: &str) -> Option<&'static str> {
+        // Play runs a pinned revision: authoring edits from the editor wait for Stop.
+        if self.previewing && CONTENT_COMMANDS.contains(&id) {
+            return Some(PLAY_BLOCKED);
+        }
         if let Some(reason) = self.graph_blocked(id) {
             return reason;
         }
@@ -928,10 +1113,6 @@ impl Editor {
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
         match id {
-            // Play runs a pinned revision: authoring edits from the editor wait for Stop.
-            id if self.previewing && CONTENT_COMMANDS.contains(&id) => {
-                Some("stop Play first (Play runs a pinned revision; edits would not show in it)")
-            }
             "play.stop" | "play.pause" | "play.step" if !self.previewing => Some("not playing"),
             "play.record" if self.previewing && self.debug.recorder.is_none() => {
                 Some("a recording starts with Play: stop Play first")
@@ -1199,10 +1380,19 @@ impl Editor {
         }
         if cmd.arg.is_empty() {
             anyhow::ensure!(arg.is_none(), "{id} takes no argument");
-        } else if id.starts_with("ui.") {
-            return Ok(self.ui_command(id, arg));
         } else {
-            return Ok(self.run_with_arg(id, arg));
+            // These handlers show their errors in the status line; the caller (CLI, palette)
+            // gets the same diagnostic instead of a success with no actions.
+            let seq = self.error_seq.0;
+            let actions = if id.starts_with("ui.") {
+                self.ui_command(id, arg)
+            } else {
+                self.run_with_arg(id, arg)
+            };
+            if actions.is_empty() && self.error_seq.0 != seq {
+                return Err(self.reported_error());
+            }
+            return Ok(actions);
         }
         let mut actions = vec![];
         match id {
@@ -1213,7 +1403,7 @@ impl Editor {
                     layout::show(state, Dock::World);
                 }
             }
-            "file.verify" => actions.push(Action::Verify),
+            "file.verify" => self.start_verify()?,
             "file.copy_context" => {
                 self.pending_copy = Some(self.context_text());
                 self.notice(format!(
@@ -1785,7 +1975,9 @@ impl Editor {
         ]
     }
 
-    /// Persist preferences when they changed (dock layout included). Errors become a notice.
+    /// Persist preferences when they changed (dock layout included), off the main thread. Once
+    /// per frame: an equality check, no serialization unless something changed. Errors are
+    /// shown and the write retried.
     pub(crate) fn save_prefs(&mut self) {
         if let Some(spec) = self.layout.sync() {
             self.prefs.layout = spec;
@@ -1796,17 +1988,22 @@ impl Editor {
         let Some(path) = &self.prefs_path else {
             return;
         };
-        let text = serde_json::to_string_pretty(&self.prefs).unwrap();
-        if self.prefs_saved.as_deref() == Some(text.as_str()) {
-            return;
+        match self.prefs_saved.tick(path, &self.prefs) {
+            Some(Err(e)) => self.set_error(format!(
+                "Could not save editor preferences: {e} (retrying every {} s)",
+                PREFS_RETRY.as_secs()
+            )),
+            Some(Ok(())) => self.notice("Editor preferences saved"),
+            None => {}
         }
-        match std::fs::write(path, &text) {
-            Ok(()) => self.prefs_saved = Some(text),
-            Err(e) => {
-                self.prefs_saved = Some(text);
-                self.set_error(format!("Could not save editor preferences: {e}"));
-            }
-        }
+    }
+
+    /// Writes changed preferences now (bounded wait for a running write). Shutdown does the
+    /// same when the editor is dropped (`PrefsSaver::drop`).
+    #[cfg(test)]
+    pub(crate) fn flush_prefs(&mut self) {
+        self.save_prefs();
+        self.prefs_saved.flush();
     }
     pub fn set_prefs_path(&mut self, path: std::path::PathBuf) {
         self.prefs = Prefs::load(&path);
@@ -1865,7 +2062,7 @@ impl Editor {
         if let Some(problem) = problem {
             self.set_error(problem);
         }
-        self.prefs_saved = serde_json::to_string_pretty(&self.prefs).ok();
+        self.prefs_saved = PrefsSaver::loaded(self.prefs.clone());
         self.prefs_path = Some(path);
     }
 }
@@ -2246,7 +2443,7 @@ mod tests {
         editor.set_prefs_path(path.clone());
         editor.prefs.bookmarks = bookmarks;
         editor.prefs.fly_speed = 12.5;
-        editor.save_prefs();
+        editor.flush_prefs();
         let (mut again, _) = fixture();
         again.set_prefs_path(path.clone());
         assert_eq!(again.prefs.fly_speed, 12.5);
@@ -2272,7 +2469,7 @@ mod tests {
         editor.prefs.snap = true;
         editor.prefs.snap_move = 0.5;
         editor.show_dock(Dock::Assets);
-        editor.save_prefs();
+        editor.flush_prefs();
         let (mut again, _) = fixture();
         again.set_prefs_path(path.clone());
         assert!(again.prefs.snap && again.prefs.snap_move == 0.5);
@@ -2287,5 +2484,156 @@ mod tests {
         assert_eq!(loaded.snap_rotate_degrees, 180.0);
         assert!(loaded.shortcuts.is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// R8 F6: a command with an argument whose handler reports an error returns that error
+    /// to the caller (CLI, palette) instead of an empty success.
+    #[test]
+    fn argument_errors_reach_the_caller() {
+        let (mut editor, _) = fixture();
+        editor.set_component_hints(&crate::installed_registry().authoring);
+        let error = editor
+            .run_command_with("ui.select", Some("no_such_widget"))
+            .err()
+            .expect("an error");
+        assert!(format!("{error:#}").contains("no_such_widget"), "{error:#}");
+        editor.select(Some("stage/crate".into()));
+        let error = editor
+            .run_command_with("object.camera_blocker", Some("maybe"))
+            .err()
+            .expect("an error");
+        assert!(format!("{error:#}").contains("on|off"), "{error:#}");
+        // A structured failure keeps its diagnostic code.
+        let error = editor
+            .run_command_with("world.capability_add", Some("no.such.capability"))
+            .err()
+            .expect("an error");
+        let response = axiom_core::error_response(&error);
+        assert_ne!(response["diagnostics"][0]["code"], "", "{response}");
+        // Valid no-change operations still succeed with no actions.
+        let title = editor.world.title.clone();
+        assert!(editor
+            .run_command_with("world.set_title", Some(&title))
+            .is_ok_and(|a| a.is_empty()));
+        // Valid operations write.
+        assert!(matches!(
+            editor
+                .run_command_with("object.camera_blocker", Some("on"))
+                .unwrap()
+                .as_slice(),
+            [Action::Write { .. }]
+        ));
+    }
+
+    /// R8 F13: every command that writes is refused during Play by the same table, before
+    /// its own checks; none that stays available produces a write.
+    #[test]
+    fn content_commands_are_refused_during_play() {
+        let (mut editor, _) = fixture();
+        editor.set_component_hints(&crate::installed_registry().authoring);
+        editor.select(Some("stage/crate".into()));
+        editor.previewing = true;
+        for id in [
+            "ui.place",
+            "ui.effect_add",
+            "graph.add_state",
+            "behavior.patrol",
+            "asset.new_material",
+            "asset.place",
+            "object.cube",
+        ] {
+            assert_eq!(editor.command_blocked(id), Some(PLAY_BLOCKED), "{id}");
+            let error = editor
+                .run_command_with(id, Some("x"))
+                .err()
+                .expect("refused");
+            assert!(
+                format!("{error:#}").contains("stop Play first"),
+                "{id}: {error:#}"
+            );
+        }
+        for cmd in COMMANDS {
+            if let Ok(actions) = editor.run_command(cmd.id) {
+                assert!(
+                    !actions.iter().any(|a| matches!(
+                        a,
+                        Action::Write { .. }
+                            | Action::Restore { .. }
+                            | Action::RestoreTo { .. }
+                            | Action::ResolveProposal { .. }
+                    )),
+                    "{} writes during Play: add it to CONTENT_COMMANDS",
+                    cmd.id
+                );
+            }
+            editor.previewing = true;
+        }
+    }
+
+    /// R1 6.2-F5 (editor part): File ▸ Verify World compiles on a background job.
+    #[test]
+    fn verify_runs_off_the_main_thread_and_reports_the_revision() {
+        let (mut editor, _) = fixture();
+        editor.set_component_hints(&crate::installed_registry().authoring);
+        assert!(editor.run_command("file.verify").unwrap().is_empty());
+        assert!(editor.observation()["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"] == "verify"));
+        assert!(editor.run_command("file.verify").is_err(), "one at a time");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while editor.verify_job.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "verify never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            editor.poll_jobs();
+        }
+        assert!(
+            !editor.error && editor.status.starts_with("Verify passed · revision 1 ·"),
+            "{}",
+            editor.status
+        );
+        editor.saving = 1;
+        assert!(editor.run_command("file.verify").is_err());
+    }
+
+    /// R8 F10: preferences are written by a background job; a failed write is reported,
+    /// kept pending and retried, never marked as saved.
+    #[test]
+    fn a_failed_preferences_write_is_retried() {
+        let dir = std::env::temp_dir().join(format!("axiom-prefs-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("w.editor-prefs.json");
+        let mut saver = PrefsSaver::loaded(Prefs::default());
+        let prefs = Prefs {
+            snap: true,
+            ..Prefs::default()
+        };
+        // The directory does not exist yet: the write fails and is reported once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let error = loop {
+            if let Some(event) = saver.tick(&path, &prefs) {
+                break event.unwrap_err();
+            }
+            assert!(std::time::Instant::now() < deadline, "no write result");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        assert!(!error.is_empty());
+        assert!(saver.saved.as_ref() != Some(&prefs), "not marked as saved");
+        std::fs::create_dir_all(&dir).unwrap();
+        let recovered = loop {
+            if let Some(event) = saver.tick(&path, &prefs) {
+                break event;
+            }
+            assert!(std::time::Instant::now() < deadline, "never retried");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(recovered, Ok(()));
+        assert!(Prefs::load(&path).snap);
+        assert!(!dir.join("w.editor-prefs.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

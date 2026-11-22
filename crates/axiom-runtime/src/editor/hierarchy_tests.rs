@@ -254,6 +254,7 @@ fn hidden_and_locked_flags_persist_per_world_in_prefs_only() {
     // Clicking the eye of another row toggles that row only.
     let eye = h.rect("eye:stage/beacon").center();
     assert!(h.click(eye, PointerButton::Primary).is_empty());
+    h.editor.flush_prefs();
     let mut again = Editor::new(lab(), 1, None);
     again.set_prefs_path(path.clone());
     let hidden = again.view_flagged(false);

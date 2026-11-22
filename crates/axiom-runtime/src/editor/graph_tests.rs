@@ -702,3 +702,44 @@ fn animator_graph_edits_through_egui_match_animctl_and_play_highlights_live_stat
         editor.play_graph_overlay(ctx, runtime)
     });
 }
+
+/// R8 F3: an agent opening another graph (`editor_view {command:"graph.open"}` or
+/// `{open:"graph:M"}`) never commits the state the person is typing; the person's own
+/// switch (menu, palette) still commits it as before.
+#[test]
+fn remote_graph_open_refuses_to_commit_the_persons_draft() {
+    let mut h = Harness::new(town());
+    h.editor
+        .run_command_with("graph.open", Some("lumi"))
+        .unwrap();
+    h.frame(vec![]);
+    let mut typed = h.store.current().unwrap().1.resources["fsm.machines"]["machines"]["lumi"]
+        ["states"]["idle"]
+        .clone();
+    typed["clip"] = json!("wave");
+    h.editor.graph_type_into_state_for_test("idle", typed);
+    for refused in [
+        h.editor
+            .remote_command("graph.open", Some("shopkeeper"))
+            .map(|_| ()),
+        h.editor.remote_open("graph:shopkeeper"),
+        h.editor.remote_command("graph.add_state", None).map(|_| ()),
+    ] {
+        let error = refused.expect_err("refused");
+        let response = axiom_core::error_response(&error);
+        assert_eq!(response["diagnostics"][0]["code"], "editor_dirty");
+        assert!(
+            format!("{error:#}").contains("Graphs state 'idle' of lumi"),
+            "{error:#}"
+        );
+    }
+    assert_eq!(h.editor.graph.machine.as_deref(), Some("lumi"));
+    // View-only graph commands still work for the agent.
+    h.editor.remote_command("graph.zoom", Some("in")).unwrap();
+    // The person's own switch commits the draft (one write, as before).
+    let actions = h
+        .editor
+        .run_command_with("graph.open", Some("shopkeeper"))
+        .unwrap();
+    assert!(matches!(actions.as_slice(), [Action::Write { .. }]));
+}

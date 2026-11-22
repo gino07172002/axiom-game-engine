@@ -1651,6 +1651,7 @@ impl Editor {
                 live_commit = true;
             }
         }
+        let mut submitted = None;
         if copy || write.is_some() {
             match super::inspector_edits(&self.world, &self.registry, draft, &self.extra) {
                 Ok(edits) if edits.is_empty() && live_commit => draft.mark_committed(),
@@ -1672,6 +1673,8 @@ impl Editor {
                                 edits,
                             }
                         } else {
+                            // Kept until the write commits: a refused write brings it back.
+                            submitted = Some((draft.clone(), edits.clone()));
                             Request::Apply {
                                 expected_rev,
                                 edits,
@@ -1689,6 +1692,9 @@ impl Editor {
                 Ok(_) => {}
                 Err(error) => issue = Some(format!("Invalid component JSON · {error}")),
             }
+        }
+        if let Some((draft, edits)) = submitted {
+            self.track_submitted(draft, self.world.clone(), &edits);
         }
         if let Some(error) = issue {
             self.set_error(error);
@@ -2069,7 +2075,7 @@ impl Editor {
             }
             Dock::Problems => {
                 ui.horizontal(|ui| {
-                    if ui.button("Verify world").clicked() { actions.push(Action::Verify); }
+                    if ui.button("Verify world").clicked() { if let Err(e) = self.start_verify() { self.set_error(format!("{e:#}")); } }
                     if !self.problems.is_empty() && ui.button("Clear").clicked() { self.problems.clear(); }
                 });
                 if self.problems.is_empty() { caption(ui,"No problems. Failed edits and verification errors appear here with their paths."); }

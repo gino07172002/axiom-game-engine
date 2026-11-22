@@ -438,3 +438,66 @@ fn missing_strings_are_counted_per_locale() {
     h.frame(vec![]);
     assert!(h.shows("2 missing string(s)"), "{:?}", h.shown);
 }
+
+/// R8 F4: a revision from elsewhere (an agent's unrelated edit) keeps the form value being
+/// edited; a revision that changed the same effect drops it with an error naming it.
+#[test]
+fn a_revision_from_elsewhere_keeps_an_unrelated_ui_editor_draft() {
+    let start = acl(&town(), "ui effect add coins.pulse coins pulse");
+    let mut h = Harness::new(start.clone());
+    assert!(h.click("ui_canvas:coins").is_empty());
+    assert!(h.click("ui_effect:coins.pulse").is_empty());
+    h.frame(vec![]);
+    let agent = |h: &mut Harness, edit: &str| {
+        h.store
+            .execute(Request::Acl {
+                text: edit.into(),
+                preview: false,
+                expected_rev: None,
+                propose: false,
+            })
+            .unwrap();
+        let (rev, world) = h.store.current().unwrap();
+        h.editor.update(rev, world, false);
+    };
+    // Typed, not committed yet (the form commits when nothing is held or focused).
+    h.editor
+        .ui_effect_draft_for_test()
+        .as_mut()
+        .expect("effect form open")
+        .ticks = Some(90);
+    h.store
+        .apply(
+            None,
+            vec![Edit::set("title", serde_json::json!("AI title"))],
+        )
+        .unwrap();
+    let (rev, world) = h.store.current().unwrap();
+    h.editor.update(rev, world, false);
+    let kept = h.frame(vec![]);
+    h.commit(kept);
+    assert_eq!(
+        h.world().resources["ui.document"]["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "coins.pulse")
+            .unwrap()["ticks"],
+        90
+    );
+    assert_eq!(h.world().title, "AI title");
+    // The same effect changed elsewhere: the draft is not written over it.
+    h.frame(vec![]);
+    h.editor
+        .ui_effect_draft_for_test()
+        .as_mut()
+        .expect("effect form open")
+        .ticks = Some(240);
+    agent(&mut h, "ui effect set coins.pulse ticks=60");
+    assert!(h.frame(vec![]).is_empty());
+    assert!(
+        h.editor.error && h.editor.status.contains("coins.pulse"),
+        "{}",
+        h.editor.status
+    );
+}

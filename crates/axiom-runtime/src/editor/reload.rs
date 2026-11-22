@@ -39,6 +39,11 @@ impl Editor {
         Ok(())
     }
 
+    /// The host adopted reloaded model files: their Assets thumbnails are made again.
+    pub(crate) fn models_reloaded(&mut self) {
+        self.assets.thumbs.invalidate_models();
+    }
+
     /// The host takes the pending request once per frame.
     pub(crate) fn take_asset_reload(&mut self) -> Option<AssetReloadAsk> {
         self.reload_ask.take()

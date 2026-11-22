@@ -414,6 +414,25 @@ fn stale_inspector_draft_merges_field_by_field_like_a_proposal() {
     else {
         panic!("expected one write, got {} action(s)", actions.len());
     };
+    // The stale draft is kept until that write commits: a refused merge brings it back,
+    // ready to merge again (R8 F2); its commit drops it.
+    assert!(!h.editor.dirty());
+    let request = Request::Apply {
+        expected_rev: *expected_rev,
+        edits: edits.clone(),
+    };
+    assert!(h.editor.restore_submitted());
+    assert!(h.editor.dirty() && h.editor.merge_base.is_some());
+    assert_eq!(h.editor.draft.as_ref().unwrap().rev, 1);
+    h.editor.reset_draft();
+    h.editor.track_submitted(
+        h.editor.draft.clone().unwrap(),
+        std::sync::Arc::new(start.clone()),
+        edits,
+    );
+    h.editor
+        .record(request, &json!({"rev": rev + 1, "changed": true}));
+    assert!(!h.editor.restore_submitted(), "the commit confirmed it");
     assert_eq!(*expected_rev, Some(rev));
     s.execute(Request::Apply {
         expected_rev: *expected_rev,
@@ -654,5 +673,73 @@ fn measure_m10_coedit() {
             "merge_town_ms": merge,
             "editor_frame_ms": {"ghosts_off": off, "ghosts_64": on, "ghosts_off_again": off_again},
         })
+    );
+}
+
+/// R8 F2 + F7: an agent reaches the stale-draft merge through `editor_view` (the generic
+/// dirty-draft refusal does not apply to it, but still to everything else); a merge whose
+/// result is empty is checked against the newer revision before it drops the draft.
+#[test]
+fn agents_merge_a_stale_draft_and_an_outdated_empty_merge_keeps_it() {
+    let start = lab();
+    let mut s = store(&start);
+    let mut h = Harness::new(start.clone(), 1);
+    h.editor.prefs.live_inspector = false;
+    h.editor.select(Some("stage/crate".into()));
+    {
+        let d = h.editor.draft.as_mut().unwrap();
+        d.label = "Mine".into();
+        d.label_dirty = true;
+    }
+    // The agent writes the same label: the draft goes stale and merging adds nothing.
+    acl(&mut s, "set stage/crate label Mine", false);
+    let (rev, world) = s.current().unwrap();
+    h.editor.update(rev, world, false);
+    // Docks and framing do not touch the draft; a selection change or a content command does.
+    h.editor.remote_view(&[], true, Some("history")).unwrap();
+    for refused in [
+        h.editor
+            .remote_view(&["stage/beacon".into()], false, None)
+            .map(|_| vec![]),
+        h.editor.remote_command("edit.delete", None),
+        h.editor.remote_command("merge.open", Some("proposal:1")),
+    ] {
+        let response = axiom_core::error_response(&refused.err().expect("refused"));
+        assert_eq!(
+            response["diagnostics"][0]["code"], "editor_dirty",
+            "{response}"
+        );
+        assert!(
+            response["error"]
+                .as_str()
+                .unwrap()
+                .contains("stale Inspector draft of stage/crate (revision 1)"),
+            "{response}"
+        );
+    }
+    assert!(h
+        .editor
+        .remote_command("merge.open", Some("draft"))
+        .unwrap()
+        .is_empty());
+    h.wait("draft merge listing", |e| e.merge.prepared.is_some());
+    h.editor.remote_command("merge.commit", None).unwrap();
+    // Another revision lands while the (empty) merge is being built: not dropped silently.
+    acl(&mut s, "set stage/beacon label Theirs", false);
+    let (rev, world) = s.current().unwrap();
+    h.editor.update(rev, world, false);
+    h.wait("merge relisted", |e| {
+        e.merge.commit.is_none() && e.merge.job.is_none() && e.merge.prepared.is_some()
+    });
+    assert!(h.editor.dirty(), "the draft is kept");
+    assert_eq!(h.editor.merge.source, Some(merge::MergeSource::Draft));
+    // Listed again against the newest revision, the empty merge drops the draft.
+    h.editor.remote_command("merge.commit", None).unwrap();
+    h.wait("merge closed", |e| e.merge.source.is_none());
+    assert!(!h.editor.dirty());
+    assert!(
+        h.editor.status.contains("already has every change"),
+        "{}",
+        h.editor.status
     );
 }

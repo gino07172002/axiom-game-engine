@@ -963,6 +963,9 @@ impl Profiler {
     }
 }
 
+/// Watchdog of writing a stopped recording (at most 1 MiB of scenario text).
+const RECORDING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Everything the debug tabs and the recorder keep.
 pub(crate) struct Debug {
     pub console: Console,
@@ -974,6 +977,8 @@ pub(crate) struct Debug {
     pub record_dir: std::path::PathBuf,
     /// Summary of the last finished recording (observe).
     pub last_recording: Option<Value>,
+    /// The stopped recording being converted, validated and written (background job).
+    pub saving: Option<crate::jobs::Job<anyhow::Result<Value>>>,
     /// Lines of the game's output already copied into the Console (host bookkeeping).
     pub game_output_seen: usize,
 }
@@ -987,6 +992,7 @@ impl Default for Debug {
             recorder: None,
             record_dir: "examples".into(),
             last_recording: None,
+            saving: None,
             game_output_seen: 0,
         }
     }
@@ -1155,12 +1161,88 @@ impl Editor {
             );
             return Ok(vec![Action::RecordStop]);
         }
+        anyhow::ensure!(
+            self.debug.saving.is_none(),
+            "the last recording is still being written; try again in a moment"
+        );
         let name = match arg.map(str::trim).filter(|a| !a.is_empty()) {
             Some(name) => name.to_owned(),
             None => super::record::free_name(&self.debug.record_dir, &self.world.id),
         };
         self.debug.recorder = Some(Recorder::new(&self.debug.record_dir, &name)?);
         Ok(vec![Action::Play])
+    }
+
+    /// A stopped recording: its scenario text is built, validated and written by a
+    /// background job (`poll_recording` reports it); `hash` is the Play state hash now.
+    pub(crate) fn save_recording(&mut self, recorder: Recorder, hash: String) {
+        let label = recorder.path.display().to_string();
+        match crate::jobs::Job::spawn("recording", label, RECORDING_TIMEOUT, move |_| {
+            recorder.finish(&hash)
+        }) {
+            Ok(job) => {
+                if let Some(old) = self.debug.saving.replace(job) {
+                    old.detach();
+                }
+                self.notice("Writing the recording…");
+            }
+            Err(error) => self.set_error(format!("Recording not saved: {error:#}")),
+        }
+    }
+
+    /// Once per frame (from `poll_jobs`): reports a written recording.
+    pub(crate) fn poll_recording(&mut self) {
+        let Some(job) = &mut self.debug.saving else {
+            return;
+        };
+        let Some(outcome) = job.poll() else {
+            return;
+        };
+        self.debug.saving = None;
+        self.recording_written(outcome);
+    }
+
+    /// Shutdown and tests: waits at most `limit` for the recording being written.
+    pub(crate) fn flush_recording(&mut self, limit: std::time::Duration) {
+        let Some(job) = &mut self.debug.saving else {
+            return;
+        };
+        let Some(outcome) = job.poll_within(limit) else {
+            return;
+        };
+        self.debug.saving = None;
+        self.recording_written(outcome);
+    }
+
+    fn recording_written(&mut self, outcome: crate::jobs::Outcome<anyhow::Result<Value>>) {
+        let result = match outcome {
+            crate::jobs::Outcome::Done { value, .. } => value,
+            crate::jobs::Outcome::Abandoned { stop } => {
+                Err(anyhow::anyhow!("the recording writer {}", stop.name()))
+            }
+        };
+        match result {
+            Ok(summary) => {
+                let path = summary["path"].as_str().unwrap_or_default().to_owned();
+                let ticks = summary["ticks"].as_u64().unwrap_or(0);
+                match summary["inexact"].as_str() {
+                    None => self.notice(format!(
+                        "Recorded {ticks} ticks to {path} (replay: axiom scenario {path})"
+                    )),
+                    Some(why) => {
+                        self.notice(format!(
+                            "Recorded {ticks} ticks to {path}; no state_hash assertion: {why}"
+                        ));
+                        self.console_warn(&format!(
+                            "Recording {path} will not replay exactly: {why}"
+                        ));
+                    }
+                }
+                self.add_scenario(path);
+                self.debug.last_recording = Some(summary);
+            }
+            Err(error) => self.set_error(format!("Recording not saved: {error:#}")),
+        }
     }
 
     /// Console tab body.

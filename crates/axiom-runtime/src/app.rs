@@ -517,7 +517,8 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
     // A scenario still being recorded when the window closed is written now.
     if app.recorder().is_some() {
         app.finish_recording();
-        if let Some(editor) = &app.editor {
+        if let Some(editor) = &mut app.editor {
+            editor.flush_recording(std::time::Duration::from_secs(10));
             eprintln!("{}", editor.status);
         }
     }
@@ -1246,6 +1247,8 @@ impl App {
                 if !matches!(item.stage, Stage::Refused) {
                     editor.set_error(format!("Not saved ({what}): {error:#}"));
                 }
+                // An Inspector draft this write carried comes back unsaved (R8 F1).
+                editor.restore_submitted();
                 if self.closing {
                     eprintln!("editor writer: not saved ({what}): {error:#}");
                 }
@@ -1328,6 +1331,7 @@ impl App {
                             "/",
                             message,
                         ));
+                        editor.restore_submitted();
                     }
                 }
             }
@@ -1530,28 +1534,9 @@ impl App {
             )),
             Err(e) => recorder.mark_inexact(format!("current revision unknown: {e:#}")),
         }
-        let hash = crate::scenario::state_hash(&self.runtime);
-        let result = hash.and_then(|hash| recorder.finish(&hash));
-        match result {
-            Ok(summary) => {
-                let path = summary["path"].as_str().unwrap_or_default().to_owned();
-                let ticks = summary["ticks"].as_u64().unwrap_or(0);
-                match summary["inexact"].as_str() {
-                    None => editor.notice(format!(
-                        "Recorded {ticks} ticks to {path} (replay: axiom scenario {path})"
-                    )),
-                    Some(why) => {
-                        editor.notice(format!(
-                            "Recorded {ticks} ticks to {path}; no state_hash assertion: {why}"
-                        ));
-                        editor.console_warn(&format!(
-                            "Recording {path} will not replay exactly: {why}"
-                        ));
-                    }
-                }
-                editor.add_scenario(path);
-                editor.debug.last_recording = Some(summary);
-            }
+        // The state hash is taken now; the file is built and written off this thread.
+        match crate::scenario::state_hash(&self.runtime) {
+            Ok(hash) => editor.save_recording(recorder, hash),
             Err(error) => editor.set_error(format!("Recording not saved: {error:#}")),
         }
     }
@@ -1807,7 +1792,7 @@ impl App {
             }
             // Registered editor commands run exactly as from the menu bar or palette.
             let commanded = match command.as_deref() {
-                Some(id) => Some(editor.run_command_with(id, arg.as_deref())?),
+                Some(id) => Some(editor.remote_command(id, arg.as_deref())?),
                 None => None,
             };
             for action in editor::coalesce(commanded.unwrap_or_default()) {
@@ -2276,6 +2261,9 @@ impl App {
                     Ok(old) => {
                         retire(old);
                         self.asset_reload.adopted(Ok(()), adopt_ms);
+                        if let Some(editor) = &mut self.editor {
+                            editor.models_reloaded();
+                        }
                     }
                     Err(error) => self.asset_reload.adopted(Err(error), adopt_ms),
                 }
@@ -2576,14 +2564,6 @@ impl App {
             }
             editor::Action::CancelScenario => {
                 editor.cancel_scenario();
-                Ok(())
-            }
-            editor::Action::Verify => {
-                let result = self.store.execute(Request::Verify {})?;
-                self.editor.as_mut().unwrap().notice(format!(
-                    "Verify passed · revision {} · {} entities",
-                    result["rev"], result["entities"]
-                ));
                 Ok(())
             }
             editor::Action::Restore { rev, redo } => {
@@ -4407,6 +4387,65 @@ mod tests {
     }
 
     #[test]
+    fn inspector_draft_survives_a_refused_write_until_it_commits() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("draft-kept.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        let action = app
+            .editor
+            .as_mut()
+            .unwrap()
+            .test_inspector_apply_position([5.0, 1.0, 0.0]);
+        app.editor_action(action).unwrap();
+        wait_ready(&mut app);
+        // The optimistic world is shown; the Inspector shows its values, nothing unsaved.
+        assert!(!app.editor.as_ref().unwrap().dirty());
+        // An agent commits first: the editor's write is refused (revision conflict).
+        let mut bridge = Store::open_with(
+            &app.options.db,
+            app.store.registry.clone(),
+            World::empty("x"),
+        )
+        .unwrap();
+        bridge
+            .apply(Some(base), vec![Edit::set("title", json!("AI edit"))])
+            .unwrap();
+        drop(held);
+        drain(&mut app);
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.rev, base + 1);
+        // The person's edit is back as a stale draft on its own revision, mergeable.
+        let (dirty, rev, merge_base, edits) = editor.test_draft_state();
+        assert!(dirty && merge_base, "{}", editor.status);
+        assert_eq!(rev, Some(base));
+        assert!(
+            edits
+                .iter()
+                .any(|e| e.to_string().contains("[5.0,1.0,0.0]")),
+            "{edits:?}"
+        );
+        assert!(
+            editor.status.contains("kept as an unsaved draft"),
+            "{}",
+            editor.status
+        );
+
+        // A write that commits drops the kept draft.
+        let mut app = writer_app("draft-committed.sqlite", None);
+        let action = app
+            .editor
+            .as_mut()
+            .unwrap()
+            .test_inspector_apply_position([6.0, 1.0, 0.0]);
+        app.editor_action(action).unwrap();
+        drain(&mut app);
+        let editor = app.editor.as_mut().unwrap();
+        assert!(!editor.dirty());
+        assert!(!editor.restore_submitted(), "nothing left to restore");
+    }
+
+    #[test]
     fn undo_queued_behind_a_pending_write_and_blocked_writes_say_why() {
         let gate = Arc::new(std::sync::Mutex::new(()));
         let mut app = writer_app("undo.sqlite", Some(gate.clone()));
@@ -5010,6 +5049,15 @@ mod tests {
         press(&mut app, &[], 5);
         let ticks = app.runtime.state.tick;
         command(&mut app, "play.stop", None).unwrap();
+        // Stopping hands the file to a background job (R8 F11); the frame loop reports it.
+        let editor = app.editor.as_mut().unwrap();
+        assert!(editor.debug.saving.is_some() && editor.debug.last_recording.is_none());
+        assert!(editor.observation()["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"] == "recording"));
+        editor.flush_recording(std::time::Duration::from_secs(30));
         assert!(app.editing());
         let editor = app.editor.as_ref().unwrap();
         assert!(editor.debug.recorder.is_none());
@@ -5093,6 +5141,10 @@ mod tests {
         command(&mut app, "play.record", Some("mouse")).unwrap();
         drive(&mut app);
         command(&mut app, "play.stop", None).unwrap();
+        app.editor
+            .as_mut()
+            .unwrap()
+            .flush_recording(std::time::Duration::from_secs(30));
         let summary = app
             .editor
             .as_ref()

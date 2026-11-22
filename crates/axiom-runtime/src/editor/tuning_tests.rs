@@ -724,4 +724,40 @@ fn shader_check_runs_in_the_background_and_marks_the_error_line() {
         h.frame(vec![]);
     }
     assert!(h.editor.tuning.shader.job.is_none());
+    // R8 F5: source the person typed is never replaced by an agent's shader.draft.
+    let typed = format!(
+        "{fixed}
+// typed"
+    );
+    h.editor.tuning.shader.draft = typed.clone();
+    let agent = serde_json::to_string(&format!(
+        "{fixed}
+// agent"
+    ))
+    .unwrap();
+    for refused in [
+        h.editor.remote_command("shader.draft", Some(&agent)),
+        h.editor.run_command_with("shader.draft", Some(&agent)),
+    ] {
+        let response = axiom_core::error_response(&refused.err().expect("refused"));
+        assert_eq!(
+            response["diagnostics"][0]["code"], "editor_dirty",
+            "{response}"
+        );
+    }
+    assert_eq!(h.editor.tuning.shader.draft, typed);
+    // Nothing typed: the agent sets a draft, and may replace its own draft again.
+    h.editor.tuning.shader.draft = h.editor.tuning.shader.base.clone();
+    h.editor
+        .remote_command("shader.draft", Some(&agent))
+        .unwrap();
+    let again = serde_json::to_string(&format!(
+        "{fixed}
+// agent 2"
+    ))
+    .unwrap();
+    h.editor
+        .remote_command("shader.draft", Some(&again))
+        .unwrap();
+    assert!(h.editor.tuning.shader.draft.ends_with("// agent 2"));
 }

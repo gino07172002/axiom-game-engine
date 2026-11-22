@@ -1440,8 +1440,7 @@ fn world_panel_operations_match_acl() {
     e.set_component_hints(&crate::installed_registry().authoring);
     assert!(e
         .run_command_with("world.capability_remove", Some("trigger"))
-        .unwrap()
-        .is_empty());
+        .is_err());
     assert_eq!(e.problem_codes()[0], "capability_in_use");
     let mut s = store(&full);
     let error = s
@@ -1899,10 +1898,7 @@ fn ui_editor_edits_match_acl() {
     e.set_component_hints(&crate::installed_registry().authoring);
     assert!(e.ui_style("emote_wave", Some(TextStyle::Value)).is_none());
     assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
-    assert!(e
-        .run_command_with("ui.place", Some("nope top"))
-        .unwrap()
-        .is_empty());
+    assert!(e.run_command_with("ui.place", Some("nope top")).is_err());
     assert!(e.problem_codes().contains(&"not_found".to_owned()));
 }
 
@@ -2539,7 +2535,7 @@ fn joints_and_sensors_match_acl() {
     editor.select(Some("door".into()));
     assert!(editor
         .run_command_with("object.joint", Some("hinge"))
-        .is_ok_and(|a| a.is_empty()));
+        .is_err());
     assert!(
         editor.status.contains("unknown joint kind"),
         "{}",
@@ -2933,10 +2929,7 @@ fn sky_presets_and_surface_match_acl() {
         .run_command_with("world.sky", Some("procedural"))
         .unwrap()
         .is_empty());
-    assert!(e
-        .run_command_with("world.sky", Some("hdri"))
-        .unwrap()
-        .is_empty());
+    assert!(e.run_command_with("world.sky", Some("hdri")).is_err());
     let mut s = store(&lit);
     let error = s
         .execute(Request::Acl {
@@ -3012,8 +3005,7 @@ fn post_settings_match_acl() {
         .is_empty());
     assert!(e
         .run_command_with("world.post", Some("antialiasing msaa"))
-        .unwrap()
-        .is_empty());
+        .is_err());
     let mut s = store(&blank);
     let error = s
         .execute(Request::Acl {
@@ -3262,8 +3254,7 @@ fn body_part_commands_match_the_parts_verb() {
     e.select(Some("stage/floor".into()));
     assert!(e
         .run_command_with("object.parts", Some("auto 0.05"))
-        .unwrap()
-        .is_empty());
+        .is_err());
     assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
 }
 
@@ -3296,8 +3287,7 @@ fn slider_batch_button_and_orbit_options_match_acl() {
     let mut e = Editor::new(lab.clone(), 1, None);
     assert!(e
         .run_command_with("ui.slider", Some("add s2 nokey 0 1 variable=rate"))
-        .unwrap()
-        .is_empty());
+        .is_err());
     assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
     // camera.follow drag / bone via Object ▸ Camera Follow Selected (dialog options).
     assert_parity(

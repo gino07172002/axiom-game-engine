@@ -152,6 +152,7 @@ fn dragging_a_tab_onto_the_scene_splits_it_and_saves_the_layout_on_release() {
         "{history_rect:?} {after:?}"
     );
     assert!(h.editor.scene_visible);
+    h.editor.flush_prefs();
     // Saved on release: a new editor with the same preferences shows the same layout.
     let saved: super::commands::Prefs =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -177,6 +178,7 @@ fn dragging_a_tab_onto_the_scene_splits_it_and_saves_the_layout_on_release() {
             "no write while held"
         );
     });
+    h.editor.flush_prefs();
     assert_ne!(
         std::fs::read_to_string(&path).unwrap(),
         text,
@@ -294,6 +296,7 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
         .run_command_with("layout.save_as", Some("Mine 中文"))
         .unwrap();
     h.frame(vec![]);
+    h.editor.flush_prefs();
     assert!(path.exists());
     let tall_without_graphs = layout::to_spec(h.state());
     assert!(h
@@ -334,6 +337,7 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
         .run_command_with("layout.delete", Some("Default"))
         .is_err());
     b.frame(vec![]);
+    b.editor.flush_prefs();
     let saved: super::commands::Prefs =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(saved.layouts.is_empty());
@@ -381,6 +385,7 @@ fn layouts_save_load_and_bad_or_old_preferences_fall_back_with_a_notice() {
     assert!(m.editor.prefs.snap);
     assert!(!layout::is_open(m.state(), Dock::Changes) && layout::is_open(m.state(), Dock::Assets));
     m.frame(vec![]);
+    m.editor.flush_prefs();
     let migrated: super::commands::Prefs =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(migrated.layout_version, layout::LAYOUT_VERSION);
