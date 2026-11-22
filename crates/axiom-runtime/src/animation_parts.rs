@@ -366,10 +366,13 @@ fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
     if (o - (a + u * s)).length_squared() <= r * r {
         return Some(0.0);
     }
+    // Discriminants come from the perpendicular offset at the closest approach (`r^2 - |q|^2`),
+    // not from `b^2 - (|oc|^2 - r^2)`: far from a small part the latter cancels in `f32` and
+    // reports misses as grazing hits.
     let sphere = |c: Vec3| -> Option<f32> {
         let oc = o - c;
         let b = oc.dot(d);
-        let h = b * b - (oc.length_squared() - r * r);
+        let h = r * r - (oc - d * b).length_squared();
         (h >= 0.0).then(|| -b - h.sqrt()).filter(|t| *t >= 0.0)
     };
     let mut best = sphere(a);
@@ -377,18 +380,21 @@ fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
         if let Some(t) = sphere(b) {
             best = Some(best.map_or(t, |x| x.min(t)));
         }
-        // Side: |(o + t d - a) x u|^2 = r^2 |u|^2 with the hit's axis coordinate in (0, |u|^2).
+        // Side: in the plane perpendicular to the axis, the ray `wp + t dp` meets the circle of
+        // radius r around the axis; the hit's axis coordinate must lie inside the segment.
+        let n = u / uu.sqrt();
         let w = o - a;
-        let (ud, uw) = (u.dot(d), u.dot(w));
-        let k2 = uu - ud * ud;
-        if k2 > 1e-9 * uu {
-            let k1 = uu * w.dot(d) - uw * ud;
-            let k0 = uu * w.length_squared() - uw * uw - r * r * uu;
-            let h = k1 * k1 - k2 * k0;
+        let wp = w - n * w.dot(n);
+        let dp = d - n * d.dot(n);
+        let k2 = dp.length_squared();
+        if k2 > 1e-9 {
+            let k1 = wp.dot(dp);
+            let q = wp - dp * (k1 / k2);
+            let h = k2 * (r * r - q.length_squared());
             if h >= 0.0 {
                 let t = (-k1 - h.sqrt()) / k2;
-                let y = uw + t * ud;
-                if t >= 0.0 && y > 0.0 && y < uu {
+                let y = (w + d * t).dot(n);
+                if t >= 0.0 && y > 0.0 && y * y < uu {
                     best = Some(best.map_or(t, |x| x.min(t)));
                 }
             }
@@ -561,5 +567,40 @@ mod tests {
         )
         .unwrap();
         assert!((t - (5.0 - 0.2)).abs() < 1e-4, "{t}");
+    }
+
+    #[test]
+    fn far_rays_beside_a_tiny_part_miss_it() {
+        // Review R4 F12 (round 2): 100 m away, a ray four radii beside a 5 mm sphere or a
+        // 1 cm capsule must miss; `b^2 - (|oc|^2 - r^2)` cancelled to 0 and reported a hit.
+        let o = Vec3::new(0.02, 0.0, 100.0);
+        assert_eq!(
+            ray_capsule(o, Vec3::NEG_Z, Vec3::ZERO, Vec3::ZERO, 0.005),
+            None
+        );
+        let side = Vec3::new(0.02, 0.005, 100.0);
+        assert_eq!(
+            ray_capsule(side, Vec3::NEG_Z, Vec3::ZERO, Vec3::Y * 0.01, 0.005),
+            None
+        );
+        // The same rays inside the radius still hit at the front surface.
+        let t = ray_capsule(
+            Vec3::new(0.003, 0.0, 100.0),
+            Vec3::NEG_Z,
+            Vec3::ZERO,
+            Vec3::ZERO,
+            0.005,
+        )
+        .unwrap();
+        assert!((t - (100.0 - 0.004)).abs() < 1e-3, "{t}");
+        let t = ray_capsule(
+            Vec3::new(0.003, 0.005, 100.0),
+            Vec3::NEG_Z,
+            Vec3::ZERO,
+            Vec3::Y * 0.01,
+            0.005,
+        )
+        .unwrap();
+        assert!((t - (100.0 - 0.004)).abs() < 1e-3, "{t}");
     }
 }

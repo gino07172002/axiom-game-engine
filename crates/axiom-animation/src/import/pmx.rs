@@ -234,8 +234,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
             } else {
                 let image = confined(path.parent().unwrap_or(Path::new(".")), source)
                     .and_then(|file| super::read_texture_file(&file))
-                    .and_then(|bytes| super::texture(&bytes))
-                    .and_then(|image| super::push_texture(&mut textures, &mut decoded, image));
+                    .and_then(|bytes| super::push_texture(&mut textures, &mut decoded, &bytes));
                 let i = image.with_context(|| format!("PMX texture {source}"))?;
                 loaded.insert(source.clone(), i);
                 Some(i)

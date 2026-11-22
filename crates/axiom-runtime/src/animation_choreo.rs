@@ -306,6 +306,7 @@ impl AnimationSystem {
             let Some(p) = self.players.get(&slot.entity) else {
                 continue;
             };
+            let (clip, time) = p.playhead();
             let primary = match &p.animator {
                 Some(a) => a.compiled.primary(&a.state).map(|(c, d, _)| (c, d)),
                 None => p
@@ -320,19 +321,14 @@ impl AnimationSystem {
                 }
             };
             match slot.field {
-                AnimationField::Clip => text(value, primary.map_or("", |(c, _)| c)),
+                AnimationField::Clip => text(value, clip.unwrap_or("")),
                 AnimationField::State => text(
                     value,
                     p.animator
                         .as_ref()
                         .map_or("", |a| &a.compiled.states[a.state.current.state as usize]),
                 ),
-                AnimationField::Time => {
-                    *value = number(match &p.animator {
-                        Some(a) => a.state.current.frac * primary.map_or(0.0, |(_, d)| d),
-                        None => p.time,
-                    })
-                }
+                AnimationField::Time => *value = number(time),
                 AnimationField::Normalized => {
                     *value = number(match &p.animator {
                         Some(a) => a.state.current.frac,

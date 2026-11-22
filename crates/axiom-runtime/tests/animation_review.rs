@@ -81,6 +81,63 @@ fn a_revision_removing_the_clip_playing_at_runtime_still_activates() {
 }
 
 #[test]
+fn an_authored_clip_switch_starts_the_new_clip_from_its_head() {
+    // Review R4 N2: switching the authored clip while the old one still exists must not carry
+    // the old clip's time into the new one.
+    let authored = |clip: &str| {
+        let mut w = plain();
+        w.resources.get_mut("animation.library").unwrap()["clips"] = json!({
+            "long":{"id":"long","duration":10.0,"tracks":[]},
+            "short":{"id":"short","duration":1.0,"tracks":[]}
+        });
+        let p = player_mut(&mut w, "walker");
+        p["clip"] = json!(clip);
+        p["looping"] = json!(false);
+        w
+    };
+    let mut r = runtime(authored("long"));
+    run(&mut r, 360);
+    let before = player(&r, "walker");
+    assert_eq!(before["clip"], "long", "{before}");
+    assert!(before["time"].as_f64().unwrap() > 2.5, "{before}");
+    r.reconcile(authored("short"), 2).unwrap();
+    let after = player(&r, "walker");
+    assert_eq!(after["clip"], "short", "{after}");
+    assert_eq!(after["time"], 0.0, "{after}");
+    run(&mut r, 60);
+    let t = player(&r, "walker")["time"].as_f64().unwrap();
+    assert!(t > 0.1 && t < 0.9, "plays from the head: {t}");
+    // An unrelated edit still continues the running playback.
+    let mut moved = authored("short");
+    moved
+        .entities
+        .iter_mut()
+        .find(|e| e.id == "floor")
+        .unwrap()
+        .components
+        .get_mut("core.transform")
+        .unwrap()["position"] = json!([0, -0.1, 0]);
+    r.reconcile(moved, 3).unwrap();
+    assert_eq!(player(&r, "walker")["time"].as_f64().unwrap(), t);
+}
+
+#[test]
+fn inspect_and_observe_report_the_controller_clip_and_time() {
+    // Review R4 N3: with a controller, the top-level clip / time are the controller state's
+    // primary clip, as the gameplay bindings report, not the clip-playback fields.
+    let mut r = runtime(load("animator-lab"));
+    run(&mut r, 90);
+    let inspected = call(&mut r, "inspect", json!({"entity":"walker"})).unwrap();
+    assert_eq!(inspected["controller"]["state"], "move", "{inspected}");
+    assert_eq!(inspected["clip"], "walk", "{inspected}");
+    let time = inspected["time"].as_f64().unwrap();
+    assert!(time > 0.0, "{inspected}");
+    let observed = player(&r, "walker");
+    assert_eq!(observed["clip"], "walk", "{observed}");
+    assert_eq!(observed["time"].as_f64().unwrap(), time, "{observed}");
+}
+
+#[test]
 fn a_misspelled_player_clip_fails_validation_not_activation() {
     let registry = axiom_runtime::installed_registry();
     let mut w = plain();
@@ -282,6 +339,29 @@ fn an_unchanged_pose_reuses_the_skinned_vertices() {
     run(&mut r, 3);
     let b = vertices(&r);
     assert!(Arc::ptr_eq(&a, &b), "paused: the same skinned snapshot");
+    // Review R4 F8 (round 2): a committed command that leaves pose and weights unchanged
+    // (a visibility round trip, a seek to the same time) keeps the snapshot.
+    let parts = call(&mut r, "inspect", json!({"entity":"face","parts":true})).unwrap();
+    let part = parts["parts"][0]["id"].as_str().unwrap().to_owned();
+    for visible in [false, true] {
+        call(
+            &mut r,
+            "visibility",
+            json!({"entity":"face","group":part,"visible":visible}),
+        )
+        .unwrap();
+    }
+    assert!(
+        Arc::ptr_eq(&b, &vertices(&r)),
+        "visibility kept the snapshot"
+    );
+    call(
+        &mut r,
+        "seek",
+        json!({"entity":"face","seconds":0.3,"paused":true}),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&b, &vertices(&r)), "an equal seek kept it");
     // A morph weight change re-skins.
     call(
         &mut r,

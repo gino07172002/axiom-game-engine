@@ -53,13 +53,15 @@ struct ManualMorph {
 }
 /// The last skinned vertices of a player with the pose and morph weights they came from, so
 /// an extraction whose inputs did not change reuses them (paused characters, idle editor).
-/// A cloned player starts empty (a copy evaluated by `prepare` must not share it).
+/// A cloned player starts empty (a copy evaluated by `prepare` must not share it); a command
+/// that commits the copy hands it the cache with [`SkinCache::take_from`].
 #[derive(Default)]
 struct SkinCache(std::sync::Mutex<Option<SkinnedSnapshot>>);
 struct SkinnedSnapshot {
     pose: Vec<Trs>,
     morph_weights: Vec<f32>,
     vertices: Arc<Vec<SkinnedVertex>>,
+    scratch: skin::Scratch,
 }
 impl Clone for SkinCache {
     fn clone(&self) -> Self {
@@ -67,6 +69,12 @@ impl Clone for SkinCache {
     }
 }
 impl SkinCache {
+    /// Moves `old`'s snapshot here. Only for a player that replaces `old` with the same asset
+    /// and skinning mode: the snapshot is keyed by pose and morph weights alone.
+    fn take_from(&mut self, old: &SkinCache) {
+        let taken = old.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        *self.0.get_mut().unwrap_or_else(|e| e.into_inner()) = taken;
+    }
     /// The skinned vertices of `pose` / `weights`: the cached ones when both are unchanged.
     fn get(
         &self,
@@ -81,23 +89,39 @@ impl SkinCache {
                 return Ok(s.vertices.clone());
             }
         }
-        let vertices = Arc::new(skin::deform_with(asset, pose, mode, weights)?);
         match slot.as_mut() {
             Some(s) => {
+                let vertices = Arc::new(skin::deform_scratch(
+                    asset,
+                    pose,
+                    mode,
+                    weights,
+                    &mut s.scratch,
+                )?);
                 s.pose.clone_from(&pose.local);
                 s.morph_weights.clear();
                 s.morph_weights.extend_from_slice(weights);
                 s.vertices = vertices.clone();
+                Ok(vertices)
             }
             None => {
+                let mut scratch = skin::Scratch::default();
+                let vertices = Arc::new(skin::deform_scratch(
+                    asset,
+                    pose,
+                    mode,
+                    weights,
+                    &mut scratch,
+                )?);
                 *slot = Some(SkinnedSnapshot {
                     pose: pose.local.clone(),
                     morph_weights: weights.to_vec(),
                     vertices: vertices.clone(),
-                })
+                    scratch,
+                });
+                Ok(vertices)
             }
         }
-        Ok(vertices)
     }
 }
 #[derive(Clone)]
@@ -251,7 +275,8 @@ impl Controller {
             let parts = asset.parts(group);
             ensure!(
                 parts != [0; 4],
-                "hidden/{i}: no primitive named {group} (parts: {})",
+                "hidden/{i}: no primitive named {} (parts: {})",
+                clipped(group, 64),
                 part_names(&asset)
             );
             for (h, p) in hidden.iter_mut().zip(parts) {
@@ -565,6 +590,18 @@ impl Controller {
         self.fault = None;
         Ok(())
     }
+    /// The clip playing now and the seconds into it: the primary clip of the controller state
+    /// when a controller drives the player, else the clip playback. `inspect`, `observe` and
+    /// the gameplay bindings all report this.
+    fn playhead(&self) -> (Option<&str>, f32) {
+        match &self.animator {
+            Some(a) => match a.compiled.primary(&a.state) {
+                Some((clip, duration, _)) => (Some(clip), a.state.current.frac * duration),
+                None => (None, 0.0),
+            },
+            None => (self.active.as_deref(), self.time),
+        }
+    }
     /// Every bone `animation.inspect` names resolves (the batch pre-check and the command share
     /// this resolution).
     fn check_bones(&self, bones: &[String]) -> Result<()> {
@@ -581,7 +618,8 @@ impl Controller {
             let i = self.asset.skeleton.bone(id)?;
             values.insert(id.clone(),json!({"local":self.pose.local[i],"position":globals[i].w_axis.truncate(),"rotation":globals[i].to_scale_rotation_translation().1}));
         }
-        let mut out = json!({"asset":self.config.asset,"clip":self.active,"time":self.time,"playing":self.playing,"speed":self.speed,"ramp":self.ramp.map(|(_, to, elapsed, duration)| json!({"to":to,"remaining":duration - elapsed})),"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values});
+        let (clip, time) = self.playhead();
+        let mut out = json!({"asset":self.config.asset,"clip":clip,"time":time,"playing":self.playing,"speed":self.speed,"ramp":self.ramp.map(|(_, to, elapsed, duration)| json!({"to":to,"remaining":duration - elapsed})),"looping":self.looping,"bone_count":self.pose.local.len(),"vertices":self.asset.vertices.len(),"clips":self.clips.keys().collect::<Vec<_>>(),"retargeted":self.retarget.is_some(),"ik":self.ik_results,"fault":self.fault,"bones":values});
         if let (Some(a), Some(map)) = (&self.animator, out.as_object_mut()) {
             map.insert("controller".into(), a.describe());
         }
@@ -1195,11 +1233,16 @@ impl RuntimeSystem for AnimationSystem {
                 let args: InspectArgs = serde_json::from_value(args.clone())?;
                 return old.inspect_command(&args);
             }
-            let (entity, p) = self.prepare(state, action, args)?;
+            let (entity, mut p) = self.prepare(state, action, args)?;
             if action == "play" {
                 state.animation_cues.finished.remove(&entity);
             }
             let response = p.inspect(&[], false)?;
+            // A command never changes the asset or skinning mode: the committed copy keeps
+            // the skinned snapshot, reused if its pose and morph weights are unchanged.
+            if let Some(old) = self.players.get(&entity) {
+                p.skinned.take_from(&old.skinned);
+            }
             self.players.insert(entity, p);
             self.publish(state);
             Ok(response)
@@ -1257,13 +1300,13 @@ impl RuntimeSystem for AnimationSystem {
                 if p.config.asset == previous.config.asset
                     && p.config.retarget == previous.config.retarget
                 {
-                    if active_kept {
-                        p.time = previous.time;
-                        // The same playback continues: markers already passed do not fire
-                        // again.
-                        p.marker_fresh = previous.marker_fresh;
-                    }
+                    // The same playback continues only while its clip exists and the authored
+                    // clip is unchanged; a newly authored clip starts as authored (time 0,
+                    // markers fresh) instead of inheriting the old clip's time.
                     if active_kept && p.config.clip == previous.config.clip {
+                        p.time = previous.time;
+                        // Markers already passed do not fire again.
+                        p.marker_fresh = previous.marker_fresh;
                         p.active = previous.active.clone();
                         // An edited `playing` applies, like `speed` and `looping`.
                         if p.config.playing == previous.config.playing {
@@ -1369,7 +1412,7 @@ impl RuntimeSystem for AnimationSystem {
         }
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let mut v=json!({"clip":p.active,"time":p.time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}p.describe_extras(&mut v);
+        let mut out = json!({"players":self.players.iter().map(|(id,p)|{let (clip,time)=p.playhead();let mut v=json!({"clip":clip,"time":time,"playing":p.playing,"bones":p.pose.local.len(),"vertices":p.asset.vertices.len(),"retargeted":p.retarget.is_some(),"ik":p.ik_results,"fault":p.fault});if let Some(a)=&p.animator{v["controller"]=a.describe();}p.describe_extras(&mut v);
             if let Some(r)=&p.rig{v["rig"]=r.metrics();}(id.clone(),v)}).collect::<BTreeMap<_,_>>()});
         // Only when used, so worlds without markers keep their observation (and state_hash).
         if self.fired > 0 {
@@ -1472,7 +1515,7 @@ impl AnimationSystem {
                 ensure!(
                     parts != [0; 4],
                     "no primitive named {} (parts: {})",
-                    a.group,
+                    clipped(&a.group, 64),
                     part_names(&p.asset)
                 );
                 for (h, x) in p.hidden.iter_mut().zip(parts) {
@@ -1686,11 +1729,13 @@ fn crossings(
         }
         return;
     }
-    // Cycles count from the one holding `prev` (shifted to start at 0), so a long time over a
-    // short clip neither saturates nor overflows the cycle index.
-    let shift = (prev.max(0.0) / duration).floor() * duration;
-    let (prev, end) = if shift > 0.0 {
-        ((prev - shift).max(0.0), end - shift)
+    // Cycles count from the one holding `prev`: its position in that cycle (an exact remainder)
+    // plus this step's length, so a long time over a short clip neither saturates nor
+    // overflows the cycle index, and `prev / duration` overflowing to infinity (an unnormalized
+    // checkpoint time over a tiny clip) cannot drop the step.
+    let (prev, end) = if prev > 0.0 {
+        let at = prev.rem_euclid(duration);
+        (at, at + (end - prev))
     } else {
         (prev, end)
     };
@@ -2252,22 +2297,40 @@ const PART_NAMES_SHOWN: usize = 16;
 const PART_NAMES_BYTES: usize = 1024;
 /// The primitives of `asset` for error messages: material IDs with their group names, bounded
 /// (the rest are counted and `animation.inspect` with `parts:true` lists all).
+/// The whole list, the "+N more" hint included, stays within [`PART_NAMES_BYTES`]: entries
+/// are measured before anything is formatted, and the hint's room is reserved.
 fn part_names(asset: &Asset) -> String {
+    use std::fmt::Write;
+    const MORE: &str = " more (animation.inspect with parts:true lists all)";
+    // "; +" and up to 20 digits.
+    let budget = PART_NAMES_BYTES - (MORE.len() + 23);
     let mut out = String::new();
     let mut shown = 0;
     for m in &asset.materials {
-        let name = if m.groups.is_empty() {
-            m.id.clone()
-        } else {
-            format!("{} ({})", m.id, m.groups.join(", "))
-        };
-        if shown == PART_NAMES_SHOWN || out.len() + name.len() + 2 > PART_NAMES_BYTES {
+        let groups = m
+            .groups
+            .iter()
+            .fold(0usize, |n, g| n.saturating_add(g.len()).saturating_add(2));
+        // `id (a, b)`: the id, " (" + ")" and the groups with ", " between them.
+        let len = m.id.len().saturating_add(groups.saturating_add(1));
+        let sep = if shown > 0 { 2 } else { 0 };
+        if shown == PART_NAMES_SHOWN || out.len().saturating_add(sep).saturating_add(len) > budget {
             break;
         }
         if shown > 0 {
             out.push_str("; ");
         }
-        out.push_str(&name);
+        out.push_str(&m.id);
+        if !m.groups.is_empty() {
+            out.push_str(" (");
+            for (i, g) in m.groups.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(g);
+            }
+            out.push(')');
+        }
         shown += 1;
     }
     let more = asset.materials.len() - shown;
@@ -2275,11 +2338,22 @@ fn part_names(asset: &Asset) -> String {
         if shown > 0 {
             out.push_str("; ");
         }
-        out.push_str(&format!(
-            "+{more} more (animation.inspect with parts:true lists all)"
-        ));
+        let _ = write!(out, "+{more}{MORE}");
     }
     out
+}
+
+/// At most `max` bytes of `text` (cut at a character boundary, marked with "…") for echoing
+/// caller input in an error.
+fn clipped(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    if text.len() <= max {
+        return text.into();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end]).into()
 }
 
 #[cfg(test)]
@@ -2324,6 +2398,92 @@ mod review_tests {
             }
         });
         assert_eq!((ends, markers), (1, 1));
+    }
+
+    #[test]
+    fn part_lists_in_errors_stay_within_their_byte_budget() {
+        // Review R4 F14 (round 2): huge group names and the "+N more" hint stay inside 1 KiB,
+        // and an invalid selector is echoed clipped.
+        let world = axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/character-lab"),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world;
+        let mut r = crate::world::WorldRuntime::new(world, 1, crate::installed_registry()).unwrap();
+        let system = r.system_mut::<AnimationSystem>().unwrap();
+        let mut asset = (*system.players["face"].asset).clone();
+        let template = asset.materials[0].clone();
+        asset.materials = (0..40)
+            .map(|i| {
+                let mut m = template.clone();
+                m.id = format!("m{i}");
+                m.groups = vec!["g".repeat(300), "h".repeat(300)];
+                m
+            })
+            .collect();
+        let names = part_names(&asset);
+        assert!(names.len() <= PART_NAMES_BYTES, "{}", names.len());
+        assert!(names.ends_with("parts:true lists all)"), "{names}");
+        // Entries that nearly fill the budget: the hint must still fit.
+        for m in &mut asset.materials {
+            m.groups = vec!["g".repeat(118)];
+        }
+        let names = part_names(&asset);
+        assert!(names.len() <= PART_NAMES_BYTES, "{}", names.len());
+        assert!(names.ends_with("parts:true lists all)"), "{names}");
+        // Short names: 16 shown, the rest counted, still within budget.
+        for m in &mut asset.materials {
+            m.groups = vec!["g".repeat(30)];
+        }
+        let names = part_names(&asset);
+        assert!(names.len() <= PART_NAMES_BYTES, "{}", names.len());
+        assert!(names.contains("+24 more"), "{names}");
+        // One entry larger than the whole budget.
+        asset.materials.truncate(1);
+        asset.materials[0].groups = vec!["g".repeat(5000)];
+        let names = part_names(&asset);
+        assert!(
+            names.len() <= PART_NAMES_BYTES && names.starts_with("+1 more"),
+            "{names}"
+        );
+        // An invalid selector through the command.
+        // The action schema already caps the selector at 256 characters.
+        let long = "x".repeat(250);
+        let e = r
+            .command(&RuntimeCommand::Call {
+                capability: "animation".into(),
+                action: "visibility".into(),
+                args: json!({"entity":"face","group":long,"visible":false}),
+            })
+            .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(
+            e.contains("no primitive named xxx") && e.contains("x…"),
+            "{e}"
+        );
+        assert!(e.len() <= PART_NAMES_BYTES + 256, "{}", e.len());
+    }
+
+    #[test]
+    fn an_unnormalized_checkpoint_time_over_a_tiny_loop_still_fires_its_first_step() {
+        // Review R4 F3 (round 2): an old checkpoint may hold time = 86400 for a 1e-35 s loop;
+        // `prev / duration` is infinite there, which used to drop the whole step.
+        let list = [CMarker {
+            at: 0.0,
+            event: None,
+            cue: None,
+        }];
+        let (mut ends, mut markers) = (0, 0);
+        crossings(&list, 1e-35, true, 86400.0, 86400.0 + 1.0 / 60.0, |m| {
+            if m.is_some() {
+                markers += 1
+            } else {
+                ends += 1
+            }
+        });
+        assert!(ends > 0 && markers > 0, "{ends} {markers}");
+        assert!(ends <= 8 && markers <= 9, "{ends} {markers}");
     }
 
     #[test]

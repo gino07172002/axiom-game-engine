@@ -39,6 +39,142 @@ fn a_gltf_image_view_whose_end_overflows_is_an_error() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A one-triangle glTF whose POSITION accessor is `accessor` (JSON object members), over a
+/// 36-byte buffer holding three `f32` vec3 positions (view 0) and a second 36-byte view 1.
+fn triangle(dir: &Path, accessor: &str, extra: &str) -> PathBuf {
+    use base64::Engine;
+    let mut bytes = vec![];
+    for f in [0.0f32, 0., 0., 1., 0., 0., 0., 1., 0.].repeat(2) {
+        bytes.extend(f.to_le_bytes());
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let path = dir.join("tri.gltf");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"asset":{{"version":"2.0"}},
+            "buffers":[{{"byteLength":72,"uri":"data:application/octet-stream;base64,{data}"}}],
+            "bufferViews":[{{"buffer":0,"byteLength":36}},{{"buffer":0,"byteOffset":36,"byteLength":36}}],
+            "accessors":[{{"min":[0,0,0],"max":[1,1,0],{accessor}}}],
+            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}{extra}}}]}}],
+            "nodes":[{{"mesh":0}}]}}"#
+        ),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn malformed_gltf_accessors_are_errors_not_panics() {
+    let dir = scratch("gltf-accessor");
+    let ok = r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC3""#;
+    // The well-formed triangle imports.
+    import::load(&triangle(&dir, ok, ""), &Default::default()).unwrap();
+    for (accessor, extra, expected) in [
+        // count = 0: the crate computes `count - 1` before any range check.
+        (
+            r#""bufferView":0,"componentType":5126,"count":0,"type":"VEC3""#,
+            "",
+            "accessor 0: count must be at least 1",
+        ),
+        // A count whose byte size overflows `usize` arithmetic.
+        (
+            r#""bufferView":0,"componentType":5126,"count":4611686018427387904,"type":"VEC3""#,
+            "",
+            "accessor 0: exceeds 256 MiB",
+        ),
+        // Four elements in a 36-byte view.
+        (
+            r#""bufferView":0,"componentType":5126,"count":4,"type":"VEC3""#,
+            "",
+            "accessor 0: range exceeds buffer view 0",
+        ),
+        // An offset near usize::MAX.
+        (
+            r#""bufferView":0,"byteOffset":18446744073709551600,"componentType":5126,"count":3,"type":"VEC3""#,
+            "",
+            "accessor 0: range exceeds buffer view 0",
+        ),
+        // POSITION declared as VEC2 (the reader assumes VEC3 f32).
+        (
+            r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC2""#,
+            "",
+            "accessor 0 (POSITION/NORMAL) must be Vec3",
+        ),
+        // Float indices (the crate's index reader is `unreachable!` for them).
+        (ok, r#","indices":0"#, "accessor 0 (indices) must be Scalar"),
+        // A sparse accessor with zero sparse elements.
+        (
+            r#""componentType":5126,"count":3,"type":"VEC3","sparse":{"count":0,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":1}}"#,
+            "",
+            "accessor 0: sparse count must be in 1..=3",
+        ),
+        // Sparse values that run past their view.
+        (
+            r#""componentType":5126,"count":3,"type":"VEC3","sparse":{"count":3,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":1,"byteOffset":12}}"#,
+            "",
+            "accessor 0: sparse values range exceeds buffer view 1",
+        ),
+    ] {
+        let e = load_err(&triangle(&dir, accessor, extra));
+        assert!(e.contains(expected), "expected {expected:?}, got {e}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_import_fills_the_clip_index_the_validator_reads() {
+    // Review R4 F5 (round 2): once this process imported an asset (the runtime's build), the
+    // authoring check finds its clips without reading the file again. Proven by replacing the
+    // file with unparsable bytes of the same length and modification time.
+    let dir = scratch("clip-index");
+    let ok = r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC3""#;
+    let path = triangle(&dir, ok, "");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    import::load(&path, &Default::default()).unwrap();
+    let len = std::fs::metadata(&path).unwrap().len() as usize;
+    std::fs::write(&path, vec![b'!'; len]).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let ids = import::clip_ids(&path).unwrap().unwrap();
+    assert!(ids.is_empty(), "{ids:?}");
+    // A real change (new modification time) is read again.
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified + std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(import::clip_ids(&path).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_gltf_view_stride_shorter_than_its_element_is_an_error() {
+    let dir = scratch("gltf-stride");
+    let path = triangle(
+        &dir,
+        r#""bufferView":2,"componentType":5126,"count":3,"type":"VEC3""#,
+        "",
+    );
+    // Add view 2 with byteStride 4 over the same bytes.
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        r#"{"buffer":0,"byteOffset":36,"byteLength":36}]"#,
+        r#"{"buffer":0,"byteOffset":36,"byteLength":36},{"buffer":0,"byteLength":36,"byteStride":4}]"#,
+    );
+    std::fs::write(&path, text).unwrap();
+    let e = load_err(&path);
+    assert!(
+        e.contains("accessor 0: byteStride 4 is smaller than its 12-byte element"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A PMX 2.0 file (UTF-8, 1-byte indices) with no vertices, `textures` texture paths and one
 /// material per texture, ending after the materials (the bone block is never reached when a
 /// texture fails).
@@ -100,15 +236,40 @@ fn an_oversize_pmx_texture_is_refused_with_its_path() {
 }
 
 #[test]
+fn an_oversize_texture_stream_is_read_only_to_the_limit() {
+    /// 64 MiB of zeros that counts what was read.
+    struct Counting<'a>(&'a std::cell::Cell<usize>);
+    impl std::io::Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min((64 << 20) - self.0.get());
+            buf[..n].fill(0);
+            self.0.set(self.0.get() + n);
+            Ok(n)
+        }
+    }
+    let read = std::cell::Cell::new(0);
+    let e = import::read_texture(Counting(&read))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("exceeds 32 MiB"), "{e}");
+    assert_eq!(read.get(), import::MAX_ENCODED_TEXTURE + 1);
+}
+
+#[test]
 fn pmx_textures_share_the_decoded_texture_budget() {
     let dir = scratch("pmx-many");
     // Five distinct 4096 x 4000 images decode to 62.5 MiB each: the fifth passes 256 MiB.
     let image = image::RgbaImage::new(4096, 4000);
     image.save(dir.join("t0.png")).unwrap();
     let names = ["t0.png", "t1.png", "t2.png", "t3.png", "t4.png"];
-    for n in &names[1..] {
+    for n in &names[1..4] {
         std::fs::copy(dir.join("t0.png"), dir.join(n)).unwrap();
     }
+    // The fifth is cut 64 bytes into its first IDAT chunk: its header declares 4096 x 4000 but
+    // it cannot be decoded, so the budget error proves the size was checked before decoding.
+    let png = std::fs::read(dir.join("t0.png")).unwrap();
+    let idat = png.windows(4).position(|w| w == b"IDAT").unwrap();
+    std::fs::write(dir.join("t4.png"), &png[..idat + 68]).unwrap();
     let path = dir.join("model.pmx");
     std::fs::write(&path, pmx(&names)).unwrap();
     let e = load_err(&path);

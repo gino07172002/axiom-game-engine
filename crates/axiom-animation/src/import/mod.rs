@@ -18,10 +18,8 @@ pub const FORMATS: [(&str, &str); 4] = [
     ("axrig", "Unity export bridge bundle (.axrig v1)"),
 ];
 pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
-    ensure!(
-        std::fs::metadata(path)?.len() <= 134_217_728,
-        "asset file exceeds 128 MiB"
-    );
+    let meta = std::fs::metadata(path)?;
+    ensure!(meta.len() <= 134_217_728, "asset file exceeds 128 MiB");
     let extension = path
         .extension()
         .and_then(|s| s.to_str())
@@ -77,19 +75,36 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
             asset.diagnostics.join("; ")
         );
     }
+    // A successful import also fills the clip index, so validating a revision that uses an
+    // asset this process already imported (the runtime's build) parses nothing.
+    remember_clip_ids(
+        path,
+        &meta,
+        Arc::new(asset.clips.iter().map(|c| c.id.clone()).collect()),
+    );
     Ok(asset)
+}
+use std::sync::{Arc, Mutex};
+type ClipIndexEntry = (u64, Option<std::time::SystemTime>, Arc<Vec<String>>);
+/// Clip IDs per asset path with the length and modification time they were read at.
+static CLIP_INDEX: Mutex<BTreeMap<PathBuf, ClipIndexEntry>> = Mutex::new(BTreeMap::new());
+fn remember_clip_ids(path: &Path, meta: &std::fs::Metadata, ids: Arc<Vec<String>>) {
+    if let Ok(mut cache) = CLIP_INDEX.lock() {
+        if cache.len() >= 64 && !cache.contains_key(path) {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), (meta.len(), meta.modified().ok(), ids));
+    }
 }
 /// The clip IDs importing `path` yields (glTF animations, `.axrig` clips; PMX has none),
 /// without importing it: only the glTF JSON / the bundle's clip IDs are parsed. Cached per
-/// process by path, length and modification time. `Ok(None)` for an unknown extension.
-pub fn clip_ids(path: &Path) -> Result<Option<std::sync::Arc<Vec<String>>>> {
-    use std::sync::{Arc, Mutex};
-    type Entry = (u64, Option<std::time::SystemTime>, Arc<Vec<String>>);
-    static CACHE: Mutex<BTreeMap<PathBuf, Entry>> = Mutex::new(BTreeMap::new());
+/// process by path, length and modification time (an import of the same file fills the cache
+/// too). `Ok(None)` for an unknown extension.
+pub fn clip_ids(path: &Path) -> Result<Option<Arc<Vec<String>>>> {
     let meta = std::fs::metadata(path)?;
     ensure!(meta.len() <= 134_217_728, "asset file exceeds 128 MiB");
     let modified = meta.modified().ok();
-    if let Some((len, time, ids)) = CACHE.lock().ok().and_then(|c| c.get(path).cloned()) {
+    if let Some((len, time, ids)) = CLIP_INDEX.lock().ok().and_then(|c| c.get(path).cloned()) {
         if len == meta.len() && time == modified {
             return Ok(Some(ids));
         }
@@ -153,12 +168,7 @@ pub fn clip_ids(path: &Path) -> Result<Option<std::sync::Arc<Vec<String>>>> {
         _ => return Ok(None),
     };
     let ids = Arc::new(ids);
-    if let Ok(mut cache) = CACHE.lock() {
-        if cache.len() >= 64 {
-            cache.clear();
-        }
-        cache.insert(path.to_path_buf(), (meta.len(), modified, ids.clone()));
-    }
+    remember_clip_ids(path, &meta, ids.clone());
     Ok(Some(ids))
 }
 pub fn confined(root: &Path, uri: &str) -> Result<PathBuf> {
@@ -181,9 +191,13 @@ pub const MAX_DECODED_TEXTURES: usize = 268_435_456;
 /// Reads an image file, never more than [`MAX_ENCODED_TEXTURE`] + 1 bytes (a larger file is
 /// refused without reading it whole).
 pub fn read_texture_file(path: &Path) -> Result<Vec<u8>> {
+    read_texture(std::fs::File::open(path)?)
+}
+/// Reads an encoded image from `input`, consuming at most [`MAX_ENCODED_TEXTURE`] + 1 bytes.
+pub fn read_texture(input: impl std::io::Read) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = vec![];
-    std::fs::File::open(path)?
+    input
         .take(MAX_ENCODED_TEXTURE as u64 + 1)
         .read_to_end(&mut bytes)?;
     ensure!(
@@ -192,8 +206,25 @@ pub fn read_texture_file(path: &Path) -> Result<Vec<u8>> {
     );
     Ok(bytes)
 }
-/// Appends a decoded texture, keeping the asset's total within [`MAX_DECODED_TEXTURES`].
-pub fn push_texture(textures: &mut Vec<Texture>, decoded: &mut usize, t: Texture) -> Result<usize> {
+/// Decodes an encoded image and appends it, keeping the asset's total within
+/// [`MAX_DECODED_TEXTURES`]. The RGBA size is checked from the image header before decoding,
+/// so an image that would exceed the remaining budget is never decoded.
+pub fn push_texture(
+    textures: &mut Vec<Texture>,
+    decoded: &mut usize,
+    bytes: &[u8],
+) -> Result<usize> {
+    let (width, height) = image_reader(bytes)?.into_dimensions()?;
+    let total = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+        .and_then(|n| n.checked_add(*decoded));
+    ensure!(
+        total.is_some_and(|t| t <= MAX_DECODED_TEXTURES),
+        "decoded textures exceed 256 MiB"
+    );
+    let t = texture(bytes)?;
+    // The decoder may disagree with the header; the budget holds for what was decoded.
     let total = decoded.saturating_add(t.rgba.len());
     ensure!(
         total <= MAX_DECODED_TEXTURES,
@@ -203,7 +234,7 @@ pub fn push_texture(textures: &mut Vec<Texture>, decoded: &mut usize, t: Texture
     textures.push(t);
     Ok(textures.len() - 1)
 }
-pub fn texture(bytes: &[u8]) -> Result<Texture> {
+fn image_reader(bytes: &[u8]) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>> {
     ensure!(
         bytes.len() <= MAX_ENCODED_TEXTURE,
         "encoded image exceeds 32 MiB"
@@ -215,7 +246,10 @@ pub fn texture(bytes: &[u8]) -> Result<Texture> {
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(67_108_864);
     reader.limits(limits);
-    let image = reader.decode()?.to_rgba8();
+    Ok(reader)
+}
+pub fn texture(bytes: &[u8]) -> Result<Texture> {
+    let image = image_reader(bytes)?.decode()?.to_rgba8();
     Ok(Texture {
         width: image.width(),
         height: image.height(),

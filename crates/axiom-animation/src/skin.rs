@@ -18,6 +18,24 @@ pub fn deform_with(
     mode: Skinning,
     weights: &[f32],
 ) -> Result<Vec<SkinnedVertex>> {
+    deform_scratch(asset, pose, mode, weights, &mut Scratch::default())
+}
+/// Per-bone skinning matrices kept between [`deform_scratch`] calls so repeated skinning of
+/// one player does not reallocate them.
+#[derive(Clone, Debug, Default)]
+pub struct Scratch {
+    matrices: Vec<Mat4>,
+    normals: Vec<Mat4>,
+    rotations: Vec<Quat>,
+}
+/// [`deform_with`] reusing `scratch` for the per-bone matrices.
+pub fn deform_scratch(
+    asset: &Asset,
+    pose: &Pose,
+    mode: Skinning,
+    weights: &[f32],
+    scratch: &mut Scratch,
+) -> Result<Vec<SkinnedVertex>> {
     let morphs = &asset.morphs;
     let morphed = !morphs.is_empty() && weights.iter().any(|w| *w != 0.);
     ensure!(
@@ -25,19 +43,26 @@ pub fn deform_with(
         "morph weight count mismatch"
     );
     let globals = asset.skeleton.globals(pose)?;
-    let matrices = globals
-        .iter()
-        .zip(&asset.skeleton.source.bones)
-        .map(|(g, b)| *g * b.inverse_bind)
-        .collect::<Vec<_>>();
-    let normals = matrices
-        .iter()
-        .map(|m| m.inverse().transpose())
-        .collect::<Vec<_>>();
-    let rotations = matrices
-        .iter()
-        .map(|m| m.to_scale_rotation_translation().1.normalize())
-        .collect::<Vec<_>>();
+    let Scratch {
+        matrices,
+        normals,
+        rotations,
+    } = scratch;
+    matrices.clear();
+    matrices.extend(
+        globals
+            .iter()
+            .zip(&asset.skeleton.source.bones)
+            .map(|(g, b)| *g * b.inverse_bind),
+    );
+    normals.clear();
+    normals.extend(matrices.iter().map(|m| m.inverse().transpose()));
+    rotations.clear();
+    rotations.extend(
+        matrices
+            .iter()
+            .map(|m| m.to_scale_rotation_translation().1.normalize()),
+    );
     let rigid = matrices.iter().all(|m| {
         m.to_scale_rotation_translation()
             .0
