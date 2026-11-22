@@ -42,6 +42,16 @@ pub(crate) struct Built {
     build_ms: f64,
 }
 
+/// A reload that ended because cancellation or the watchdog asked it to.
+#[derive(Debug)]
+struct Stopped(crate::jobs::Stop);
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "asset reload {}", self.0.name())
+    }
+}
+impl std::error::Error for Stopped {}
+
 /// The main thread's decision about a finished job.
 pub(crate) enum Decision {
     /// Adopt this runtime (the caller prepares GPU state and swaps it in), then call
@@ -59,8 +69,12 @@ pub(crate) struct Reload {
     /// poll. Kept across revisions so a change made while a revision activates still counts.
     stamps: BTreeMap<PathBuf, Vec<(PathBuf, u64, Option<SystemTime>)>>,
     last_poll: Option<Instant>,
-    /// Slowest `watch` poll on the main thread (milliseconds).
+    /// The running `watch` file scan (off the main thread).
+    scanning: Option<Job<Vec<Scanned>>>,
+    /// Slowest `watch` poll on the main thread (milliseconds; the scan itself is not).
     watch_poll_ms: f64,
+    /// Slowest `watch` scan on its worker (milliseconds).
+    watch_scan_ms: f64,
     /// Content hashes of the last accepted reload.
     hashes: BTreeMap<String, u64>,
     /// The pending adoption's report (filled by `decide`, completed by `adopted`).
@@ -99,6 +113,15 @@ fn companions(source: &Source) -> Result<Vec<(PathBuf, u64, Option<SystemTime>)>
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
+    folder_files(root, Some(&source.path))
+}
+
+/// Files under `root` (recursively, bounded by [`FOLDER_FILES`]) except `exclude`: path,
+/// size and modification time, sorted.
+fn folder_files(
+    root: PathBuf,
+    exclude: Option<&std::path::Path>,
+) -> Result<Vec<(PathBuf, u64, Option<SystemTime>)>> {
     let mut pending = vec![root];
     let mut files = vec![];
     while let Some(dir) = pending.pop() {
@@ -107,7 +130,7 @@ fn companions(source: &Source) -> Result<Vec<(PathBuf, u64, Option<SystemTime>)>
             let meta = entry.metadata()?;
             if meta.is_dir() {
                 pending.push(entry.path());
-            } else if entry.path() != source.path {
+            } else if exclude != Some(entry.path().as_path()) {
                 files.push((entry.path(), meta.len(), meta.modified().ok()));
             }
             anyhow::ensure!(
@@ -153,13 +176,52 @@ fn content_hash(source: &Source) -> Result<u64> {
     Ok(hash)
 }
 
-/// What `watch` compares between polls: the model file's and its folder's sizes and times.
-fn stamp(source: &Source) -> Option<Vec<(PathBuf, u64, Option<SystemTime>)>> {
-    let meta = std::fs::metadata(&source.path).ok()?;
-    let mut files = companions(source).ok()?;
-    files.push((source.path.clone(), meta.len(), meta.modified().ok()));
-    Some(files)
+type Stamp = Vec<(PathBuf, u64, Option<SystemTime>)>;
+/// One model file and its stamp (None when unreadable).
+type Scanned = (PathBuf, Option<Stamp>);
+
+/// What `watch` compares between polls, per model file: its own and its folder's files'
+/// sizes and times (None when unreadable). Runs on a worker; each folder is listed once
+/// however many models share it, and cancellation is checked between folders.
+fn scan(paths: Vec<PathBuf>, p: &crate::jobs::Progress) -> Vec<Scanned> {
+    let folder = |path: &PathBuf| {
+        path.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf()
+    };
+    let folders: std::collections::BTreeSet<PathBuf> = paths.iter().map(folder).collect();
+    p.set_total(folders.len() as u64);
+    let mut listed: BTreeMap<PathBuf, Option<Stamp>> = BTreeMap::new();
+    for (i, dir) in folders.into_iter().enumerate() {
+        if p.cancelled() {
+            return vec![];
+        }
+        let files = folder_files(dir.clone(), None).ok();
+        listed.insert(dir, files);
+        p.set_done(i as u64 + 1);
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let stamp = (|| {
+                let meta = std::fs::metadata(&path).ok()?;
+                let mut files: Stamp = listed
+                    .get(&folder(&path))?
+                    .as_ref()?
+                    .iter()
+                    .filter(|(f, ..)| *f != path)
+                    .cloned()
+                    .collect();
+                files.push((path.clone(), meta.len(), meta.modified().ok()));
+                Some(files)
+            })();
+            (path, stamp)
+        })
+        .collect()
 }
+
+/// Watchdog of one `watch` scan (at most 64 folders of at most 512 files each).
+const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Why `next` may not replace `current`: an animated entity's skeleton changed. `Ok(changed)`
 /// lists `entity: asset` whose model content key changed.
@@ -291,32 +353,63 @@ impl Reload {
 
     /// `watch`: whether a model file (or a file in its folder) changed since the last poll, at
     /// most once per second. A file seen for the first time does not count as a change.
+    /// The directory scan runs as a background job (one at a time); this only starts it and
+    /// compares a finished one's stamps, so the answer comes on a later frame.
     pub(crate) fn watch_due(&mut self, runtime: &WorldRuntime) -> bool {
-        if !self.watch || self.job.is_some() {
-            return false;
-        }
-        if self.last_poll.is_some_and(|t| t.elapsed() < WATCH_INTERVAL) {
+        if !self.watch {
             return false;
         }
         let started = Instant::now();
+        if let Some(job) = &mut self.scanning {
+            let Some(outcome) = job.poll() else {
+                return false;
+            };
+            self.watch_scan_ms = self.watch_scan_ms.max(job.elapsed().as_secs_f64() * 1000.0);
+            self.scanning = None;
+            let Outcome::Done {
+                value: stamps,
+                stop: None,
+            } = outcome
+            else {
+                // Cancelled or over its watchdog: nothing is compared this round.
+                return false;
+            };
+            if self.job.is_some() {
+                // A reload started meanwhile; compare after it (as before the scan job).
+                return false;
+            }
+            let mut changed = false;
+            for (path, stamp) in stamps {
+                let Some(stamp) = stamp else {
+                    continue;
+                };
+                match self.stamps.insert(path.clone(), stamp) {
+                    Some(old) if Some(&old) != self.stamps.get(&path) => changed = true,
+                    _ => {}
+                }
+            }
+            self.watch_poll_ms = self
+                .watch_poll_ms
+                .max(started.elapsed().as_secs_f64() * 1000.0);
+            return changed;
+        }
+        if self.job.is_some() || self.last_poll.is_some_and(|t| t.elapsed() < WATCH_INTERVAL) {
+            return false;
+        }
         self.last_poll = Some(started);
         let Ok(sources) = sources(runtime) else {
             return false;
         };
-        let mut changed = false;
-        for source in sources.values() {
-            let Some(stamp) = stamp(source) else {
-                continue;
-            };
-            match self.stamps.insert(source.path.clone(), stamp) {
-                Some(old) if Some(&old) != self.stamps.get(&source.path) => changed = true,
-                _ => {}
-            }
+        let paths: Vec<PathBuf> = sources.values().map(|s| s.path.clone()).collect();
+        if let Ok(job) = Job::spawn("asset_watch", "model files", SCAN_TIMEOUT, move |p| {
+            scan(paths, p)
+        }) {
+            self.scanning = Some(job);
         }
         self.watch_poll_ms = self
             .watch_poll_ms
             .max(started.elapsed().as_secs_f64() * 1000.0);
-        changed
+        false
     }
 
     /// Turns watching on (checking that the world's models can be watched) or off.
@@ -324,6 +417,9 @@ impl Reload {
         if on {
             let sources = sources(runtime)?;
             anyhow::ensure!(!sources.is_empty(), "the world has no model assets");
+        } else if let Some(job) = self.scanning.take() {
+            // Never waited for: the worker stops at its next folder.
+            job.detach();
         }
         self.watch = on;
         Ok(())
@@ -336,11 +432,14 @@ impl Reload {
         self.job = None;
         Some((
             match outcome {
-                Outcome::Done { value, .. } => value,
-                Outcome::Abandoned { stop } => Err(anyhow::anyhow!(
-                    "asset reload worker did not stop ({}); detached",
-                    stop.name()
-                )),
+                Outcome::Done { value, stop: None } => value,
+                // Cancelled (the reply said so) or timed out: never adopted, even when the
+                // build finished after the stop request.
+                Outcome::Done {
+                    stop: Some(stop), ..
+                } => Err(anyhow::Error::new(Stopped(stop))),
+                Outcome::Abandoned { stop } => Err(anyhow::Error::new(Stopped(stop))
+                    .context("asset reload worker did not stop; detached")),
             },
             elapsed,
         ))
@@ -359,7 +458,10 @@ impl Reload {
         let built = match result {
             Ok(built) => built,
             Err(error) => {
-                report["state"] = json!("failed");
+                // `cancelled` / `timed_out` when a stop was requested, else `failed`.
+                report["state"] = json!(error
+                    .downcast_ref::<Stopped>()
+                    .map_or("failed", |s| s.0.name()));
                 report["error"] = json!(format!("{error:#}"));
                 self.finish(report);
                 return Decision::Discard(None);
@@ -456,6 +558,8 @@ impl Reload {
         json!({
             "watch":self.watch,
             "watch_poll_ms_max":self.watch_poll_ms,
+            "watch_scan_ms_max":self.watch_scan_ms,
+            "watch_scan":self.scanning.as_ref().map(|j| j.observation()),
             "running":self.job.as_ref().map(|(_, j)| j.observation()),
             "last":self.last,
             "reloads":self.reloads,
@@ -516,6 +620,101 @@ mod tests {
             assert!(Instant::now() < deadline, "reload never finished");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// Polls `watch_due` like the frame loop until the scan it started (if any) reported.
+    fn watch_scan(reload: &mut Reload, runtime: &WorldRuntime) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut due = reload.watch_due(runtime);
+        while reload.scanning.is_some() {
+            assert!(Instant::now() < deadline, "watch scan never finished");
+            std::thread::sleep(Duration::from_millis(2));
+            due = reload.watch_due(runtime);
+        }
+        due
+    }
+
+    #[test]
+    fn watch_scan_lists_each_folder_once_and_matches_the_per_model_stamp() {
+        let dir = std::env::temp_dir().join(format!("axiom-reload-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("textures")).unwrap();
+        for (name, bytes) in [
+            ("a.glb", &b"a"[..]),
+            ("b.glb", b"bb"),
+            ("textures/t.png", b"t"),
+        ] {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        let source = |name: &str| -> Source {
+            serde_json::from_value(json!({"path":dir.join(name)})).unwrap()
+        };
+        let progress = crate::jobs::Progress::default();
+        let paths = vec![dir.join("a.glb"), dir.join("b.glb")];
+        let stamps = scan(paths, &progress);
+        // Two models in one folder: one listing.
+        assert_eq!(progress.total(), 1);
+        for (path, stamp) in stamps {
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            // Same stamp as the per-model companions + own file the watch compared before.
+            let mut expected = companions(&source(&name)).unwrap();
+            let meta = std::fs::metadata(&path).unwrap();
+            expected.push((path.clone(), meta.len(), meta.modified().ok()));
+            assert_eq!(stamp.unwrap(), expected, "{name}");
+        }
+        // Cancelled before the first folder: nothing is listed.
+        progress.cancel();
+        assert!(scan(vec![dir.join("a.glb")], &progress).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reload_cancelled_after_its_build_finished_is_not_adopted() {
+        let mut reload = Reload::default();
+        let (built, finish) = std::sync::mpsc::channel::<()>();
+        reload.job = Some((
+            "command",
+            Job::spawn("asset_reload", "test", RELOAD_TIMEOUT, move |_| {
+                // The build is past its last cancellation check and finishes anyway.
+                let _ = finish.recv_timeout(Duration::from_secs(20));
+                Ok(Built {
+                    rev: 1,
+                    session: "s".into(),
+                    hashes: BTreeMap::from([("m".into(), 7)]),
+                    files_changed: vec!["m".into()],
+                    first: false,
+                    runtime: None,
+                    hash_ms: 0.0,
+                    build_ms: 0.0,
+                })
+            })
+            .unwrap(),
+        ));
+        // The protocol replied `cancelled: true`.
+        assert!(reload.cancel());
+        drop(built);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let (result, ms) = loop {
+            if let Some(done) = reload.poll() {
+                break done;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let runtime = WorldRuntime::new(
+            axiom_core::World::empty("w"),
+            1,
+            crate::installed_registry(),
+        )
+        .unwrap();
+        assert!(matches!(
+            reload.decide(result, ms, &runtime, false),
+            Decision::Discard(None)
+        ));
+        let last = reload.last.clone().unwrap();
+        assert_eq!(last["state"], "cancelled", "{last}");
+        // Its hashes were not accepted as the new baseline.
+        assert!(reload.hashes.is_empty());
     }
 
     #[test]
@@ -583,13 +782,20 @@ mod tests {
         assert_eq!(after["clip"], "idle");
         // Watch: the first poll only records; a file added next to the model is a change.
         reload.set_watch(&runtime, true).unwrap();
-        assert!(!reload.watch_due(&runtime), "first sight is not a change");
+        assert!(
+            !watch_scan(&mut reload, &runtime),
+            "first sight is not a change"
+        );
         reload.last_poll = None;
-        assert!(!reload.watch_due(&runtime));
+        assert!(!watch_scan(&mut reload, &runtime));
         std::fs::write(dir.join("model.bin"), b"buffer").unwrap();
         assert!(!reload.watch_due(&runtime), "at most once per second");
+        assert!(reload.scanning.is_none(), "no scan before the interval");
         reload.last_poll = None;
-        assert!(reload.watch_due(&runtime));
+        // The scan is a job: the poll that starts it answers at once, a later one reports.
+        assert!(!reload.watch_due(&runtime));
+        assert!(reload.scanning.is_some());
+        assert!(watch_scan(&mut reload, &runtime));
         reload.set_watch(&runtime, false).unwrap();
         assert!(!reload.watch_due(&runtime));
         // A different skeleton (the render-lab fighter): refused, the runtime keeps running.

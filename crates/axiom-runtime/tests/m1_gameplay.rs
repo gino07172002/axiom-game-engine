@@ -571,11 +571,13 @@ fn missing_assets_fail_activation_and_package_paths_cannot_escape() {
 
 #[test]
 fn newly_activated_gameplay_rebases_initial_timers_and_node_end_saves() {
-    let mut r = WorldRuntime::new(World::empty("empty"), 1, RuntimeRegistry::core()).unwrap();
+    // Gameplay newly enabled in the same world (same `world.id`): simulation state carries
+    // over, so initial timers are rebased onto the running tick. (Another world starts fresh.)
+    let mut w = world();
+    let mut r = WorldRuntime::new(World::empty(&w.id), 1, RuntimeRegistry::core()).unwrap();
     for _ in 0..100 {
         r.step(&ActionMap::default());
     }
-    let mut w = world();
     w.resources.get_mut("narrative.graph").unwrap()["nodes"][0]["on_enter"] =
         json!([{"kind":"delay","ticks":6,"event":"signal"},{"kind":"end","ending":"intro"}]);
     r.reconcile(w, 2).unwrap();

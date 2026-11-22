@@ -31,7 +31,11 @@ pub struct Checkpoint {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub systems: BTreeMap<String, Value>,
 }
-fn column_value(column: &Column, row: usize, state: &crate::world::RuntimeState) -> Option<Value> {
+pub(crate) fn column_value(
+    column: &Column,
+    row: usize,
+    state: &crate::world::RuntimeState,
+) -> Option<Value> {
     match column {
         Column::Bool(v) => v[row].map(|v| json!(v)),
         Column::Int(v) => v[row].map(|v| json!(v)),

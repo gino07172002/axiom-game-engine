@@ -231,7 +231,13 @@ impl Harness {
                     session == self.runtime.runtime_session,
                     "runtime session mismatch"
                 );
-                let mut value = self.dispatch(*request.clone())?;
+                let mut value = match self.dispatch(*request.clone()) {
+                    Ok(value) => value,
+                    Err(error) => match crate::world::PartialBatch::of(&error) {
+                        Some(partial) => partial.response(&error),
+                        None => return Err(error),
+                    },
+                };
                 value["request_id"] = json!(request_id);
                 value["durability"] = json!("runtime_session");
                 self.receipts
@@ -299,24 +305,55 @@ struct Cost {
     adapter_input_bytes: u64,
     adapter_output_bytes: u64,
 }
+/// Replay plans per task.
+pub const MAX_PLANS: usize = 8;
+/// Serialized request + response bytes the whole suite keeps in transcripts; later
+/// exchanges are still measured (cost) but their bodies are not kept.
+pub const TRANSCRIPT_BUDGET: u64 = 16 * 1024 * 1024;
+
+/// Transcript entries of one run, drawing on the suite-wide byte budget.
+struct Transcript<'a> {
+    entries: Vec<Value>,
+    budget: &'a mut u64,
+    dropped: u64,
+}
+impl Transcript<'_> {
+    fn into_value(self) -> (Value, Value) {
+        let truncated = self.dropped > 0;
+        (
+            Value::Array(self.entries),
+            json!({"truncated":truncated,"dropped_exchanges":self.dropped}),
+        )
+    }
+}
+
 fn exchange(
     h: &mut Harness,
     request: Request,
     cost: &mut Cost,
-    transcript: &mut Vec<Value>,
+    transcript: &mut Transcript<'_>,
 ) -> Value {
     let bytes = serde_json::to_vec(&request).unwrap().len();
     let start = Instant::now();
     let response = h
         .dispatch(request.clone())
         .unwrap_or_else(|e| error_response(&e));
+    let response_bytes = serde_json::to_vec(&response).unwrap().len();
     cost.tool_calls += 1;
     cost.request_bytes += bytes as u64;
-    cost.response_bytes += serde_json::to_vec(&response).unwrap().len() as u64;
+    cost.response_bytes += response_bytes as u64;
     if response.get("ok").and_then(Value::as_bool) == Some(false) {
         cost.failed_requests += 1;
     }
-    transcript.push(json!({"request":request,"response":response,"wall_ms":start.elapsed().as_secs_f64()*1000.0}));
+    let size = (bytes + response_bytes) as u64;
+    if size <= *transcript.budget {
+        *transcript.budget -= size;
+        transcript.entries.push(json!({"request":request,"response":response,"wall_ms":start.elapsed().as_secs_f64()*1000.0}));
+    } else {
+        // Over the suite budget: measured above, body not kept (reported as truncated).
+        *transcript.budget = 0;
+        transcript.dropped += 1;
+    }
     response
 }
 pub fn run(
@@ -329,11 +366,26 @@ pub fn run(
         !suite.tasks.is_empty() && suite.tasks.len() <= 32,
         "benchmark task budget must be 1..32"
     );
+    run_budgeted(suite, root, registry, agent, TRANSCRIPT_BUDGET)
+}
+
+/// `run` with an explicit transcript byte budget for the whole suite.
+fn run_budgeted(
+    suite: Suite,
+    root: &Path,
+    registry: RuntimeRegistry,
+    agent: Option<AgentOptions>,
+    mut budget: u64,
+) -> Result<Value> {
     let mut results = vec![];
     for task in &suite.tasks {
         ensure!(
             task.instruction.len() <= 8192 && !task.checks.is_empty() && task.checks.len() <= 32,
             "benchmark definition exceeds budget"
+        );
+        ensure!(
+            task.plans.len() <= MAX_PLANS,
+            "benchmark task has more than {MAX_PLANS} replay plans"
         );
         let world = ContentPackage::load(root.join(&task.pack), &registry.authoring)?.world;
         let modes = if agent.is_some() {
@@ -348,7 +400,11 @@ pub fn run(
         for mode in modes {
             let mut h = Harness::new(world.clone(), registry.clone())?;
             let mut cost = Cost::default();
-            let mut transcript = vec![];
+            let mut transcript = Transcript {
+                entries: vec![],
+                budget: &mut budget,
+                dropped: 0,
+            };
             let mut usages = vec![];
             let started = Instant::now();
             let mut done = agent.is_none();
@@ -420,7 +476,8 @@ pub fn run(
             } else {
                 None
             };
-            results.push(json!({"task":task.id,"mode":mode,"success":success,"checks":checks,"failure":failure,"cost":cost,"model_usage":tokens,"usage_complete":complete,"usage_records":usages,"wall_ms":started.elapsed().as_secs_f64()*1000.0,"transcript":transcript}));
+            let (transcript, transcript_status) = transcript.into_value();
+            results.push(json!({"task":task.id,"mode":mode,"success":success,"checks":checks,"failure":failure,"cost":cost,"model_usage":tokens,"usage_complete":complete,"usage_records":usages,"wall_ms":started.elapsed().as_secs_f64()*1000.0,"transcript":transcript,"transcript_status":transcript_status}));
         }
     }
     let mut groups = serde_json::Map::new();
@@ -456,4 +513,123 @@ pub fn run(
     Ok(
         json!({"ok":results.iter().all(|r|r["success"]==true),"benchmark_version":1,"suite":suite.id,"engine":env!("CARGO_PKG_VERSION"),"measurement":if agent.is_some(){"agent_adapter"}else{"protocol_replay"},"token_note":"Bytes are transport measurements, never token estimates. Model usage is optional adapter-reported provider metadata; missing or non-provider records keep totals null. All failed attempts count toward cost.","summary":groups,"results":results}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn suite() -> Suite {
+        serde_json::from_str(&std::fs::read_to_string(root().join("benchmarks/m15.json")).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn transcripts_share_one_byte_budget_and_say_when_truncated() {
+        let registry = crate::installed_registry();
+        let full =
+            run_budgeted(suite(), &root(), registry.clone(), None, TRANSCRIPT_BUDGET).unwrap();
+        let small = run_budgeted(suite(), &root(), registry, None, 2048).unwrap();
+        let kept = |report: &Value| -> usize {
+            report["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["transcript"].as_array().unwrap().len())
+                .sum()
+        };
+        assert!(full["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["transcript_status"]["truncated"] == false));
+        assert!(kept(&small) < kept(&full));
+        let last = small["results"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["transcript_status"]["truncated"], true, "{last}");
+        // Statistics still count every exchange.
+        for mode in ["legacy", "local"] {
+            for key in ["tool_calls", "failed_requests", "successes"] {
+                assert_eq!(
+                    small["summary"][mode][key], full["summary"][mode][key],
+                    "{mode}.{key}"
+                );
+            }
+        }
+        assert_eq!(small["ok"], full["ok"]);
+    }
+
+    #[test]
+    fn a_task_with_too_many_replay_plans_is_refused() {
+        let mut suite = suite();
+        let plan = suite.tasks[0].plans.values().next().unwrap().clone();
+        for i in 0..=MAX_PLANS {
+            suite.tasks[0]
+                .plans
+                .insert(format!("copy{i}"), plan.clone());
+        }
+        let error = run(suite, &root(), crate::installed_registry(), None).unwrap_err();
+        assert!(format!("{error:#}").contains("replay plans"), "{error:#}");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use axiom_core::gameplay::RuntimeCommand;
+
+    /// A batch that passes the dry run, applies its first item and then fails: the failure
+    /// is the receipt, so retrying the same `request_id` never applies the prefix again.
+    #[test]
+    fn a_partly_applied_batch_gets_a_receipt_with_its_applied_count() {
+        let registry = crate::installed_registry();
+        let world = axiom_core::ContentPackage::load(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/m4"),
+            &registry.authoring,
+        )
+        .unwrap()
+        .world;
+        let mut h = Harness::new(world, registry).unwrap();
+        let session = h.runtime.runtime_session.clone();
+        let batch = Request::Command {
+            command: RuntimeCommand::Batch {
+                commands: vec![
+                    RuntimeCommand::Call {
+                        capability: "input".into(),
+                        action: "activate".into(),
+                        args: json!({"context":"hero"}),
+                    },
+                    // Schema-valid; refused only when it runs (no dry-run hook in rts).
+                    RuntimeCommand::Call {
+                        capability: "rts".into(),
+                        action: "train".into(),
+                        args: json!({"building":"nowhere","recipe":"worker","count":1}),
+                    },
+                ],
+            },
+            expected_rev: None,
+        };
+        let execute = || Request::Execute {
+            request_id: "retry-1".into(),
+            runtime_session: Some(session.clone()),
+            request: Box::new(batch.clone()),
+        };
+        let first = h.dispatch(execute()).unwrap();
+        assert_eq!(first["ok"], false, "{first}");
+        assert_eq!(first["applied_count"], 1, "{first}");
+        assert_eq!(first["failed_index"], 1);
+        assert_eq!(first["diagnostics"][0]["code"], "batch_partial");
+        assert_eq!(first["request_id"], "retry-1");
+        let tick = h.runtime.state.tick;
+        // The retry answers from the receipt.
+        let again = h.dispatch(execute()).unwrap();
+        assert_eq!(again, first);
+        assert_eq!(h.runtime.state.tick, tick);
+        // A plain command reports the same typed failure (no receipt without execute).
+        let plain = h.dispatch(batch.clone()).unwrap_err();
+        assert_eq!(crate::world::PartialBatch::of(&plain).unwrap().applied, 1);
+    }
 }

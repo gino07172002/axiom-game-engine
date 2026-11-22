@@ -98,13 +98,17 @@ impl Contexts {
             })
             .transpose()
     }
-    pub fn activate(&mut self, args: &Value) -> Result<()> {
+    /// `activate`'s validation without changing anything (batch dry run).
+    pub fn check_activate(&self, args: &Value) -> Result<String> {
         let a: Activate = serde_json::from_value(args.clone())?;
         ensure!(
             self.config.contexts.contains_key(&a.context),
             "unknown input context"
         );
-        self.active = a.context;
+        Ok(a.context)
+    }
+    pub fn activate(&mut self, args: &Value) -> Result<()> {
+        self.active = self.check_activate(args)?;
         Ok(())
     }
     pub fn step(&mut self, pressed: bool) {

@@ -359,13 +359,34 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
             .indices
             .get(entity)
             .with_context(|| format!("assertion entity {entity} missing"))?;
+        // Custom components read their live typed columns (as checkpoints save them), not
+        // the authored values the runtime was compiled from.
+        let mut components = runtime.state.compiled.entities[i].components.clone();
+        for (name, table) in &runtime.state.columns {
+            let Some(row) = table.entities.iter().position(|slot| *slot == i) else {
+                continue;
+            };
+            let Some(Value::Object(component)) = components.get_mut(name) else {
+                continue;
+            };
+            for (field, column) in &table.fields {
+                match crate::checkpoint::column_value(column, row, &runtime.state) {
+                    Some(value) => {
+                        component.insert(field.clone(), value);
+                    }
+                    None => {
+                        component.remove(field);
+                    }
+                }
+            }
+        }
         let record = json!({
             "position":runtime.state.transforms[i].as_ref().map(|t|t.position),
             "rotation":runtime.state.transforms[i].as_ref().map(|t|t.rotation),
             "scale":runtime.state.transforms[i].as_ref().map(|t|t.scale),
             "health":runtime.state.health[i].as_ref().map(|h|h.value),
             "enabled":runtime.state.compiled.enabled[i],
-            "components":runtime.state.compiled.entities[i].components,
+            "components":components,
         });
         let pointer = axiom_core::local::pointer(field);
         let actual = record
@@ -513,6 +534,39 @@ mod tests {
         )?
         .world;
         run(world, 1, registry, serde_json::from_str(text)?)
+    }
+
+    #[test]
+    fn field_assertions_read_live_custom_columns_not_authored_values() {
+        let mut w = axiom_core::World::empty("flags");
+        w.component_schemas.insert(
+            "game.flags".into(),
+            serde_json::from_value(json!({"fields":{"flag":{"ty":"bool"}}})).unwrap(),
+        );
+        let mut a = axiom_core::Entity::new("a");
+        a.set("game.flags", json!({"flag":false})).unwrap();
+        w.entities = vec![a];
+        let mut runtime = WorldRuntime::new(w, 1, crate::world::RuntimeRegistry::core()).unwrap();
+        // The simulation (or a loaded checkpoint) set the flag; the authored value is false.
+        if let axiom_core::Column::Bool(v) = runtime
+            .state
+            .columns
+            .get_mut("game.flags")
+            .unwrap()
+            .fields
+            .get_mut("flag")
+            .unwrap()
+        {
+            v[0] = Some(true);
+        }
+        let assertion = |value: bool| -> Assertion {
+            serde_json::from_value(json!({"kind":"field","entity":"a",
+                "field":"/components/game.flags/flag","op":"eq","value":value}))
+            .unwrap()
+        };
+        let passed = check(&mut runtime, &assertion(true)).unwrap();
+        assert_eq!(passed["actual"], true);
+        assert!(check(&mut runtime, &assertion(false)).is_err());
     }
 
     #[test]
