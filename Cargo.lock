@@ -294,6 +294,7 @@ dependencies = [
  "axiom-combat",
  "axiom-core",
  "glam",
+ "rusqlite",
  "serde",
  "serde_json",
 ]
@@ -320,6 +321,7 @@ dependencies = [
  "png 0.17.16",
  "pollster",
  "rapier3d",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

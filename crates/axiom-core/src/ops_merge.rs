@@ -508,6 +508,37 @@ pub fn apply_edits(base: &World, edits: &[Edit], registry: &Registry) -> Result<
     Ok(next)
 }
 
+/// `set_where` expansion bytes a review of a stored batch of `edits` may draw: each edit's
+/// own `MAX_SET_WHERE_BYTES`, the limit proposals were stored under before batches shared
+/// one budget. Only read-only review (`proposal_diff`, `conflicts`) uses it; committing a
+/// batch always draws from the shared budget.
+pub fn review_budget(edits: usize) -> usize {
+    crate::local::MAX_SET_WHERE_BYTES.saturating_mul(edits.max(1))
+}
+
+/// `apply_edits` for reviewing a stored proposal: the batch draws from `review_budget`, so a
+/// proposal stored before the shared budget stays reviewable. Returns the world and the
+/// expansion bytes each edit used.
+pub fn review_edits(
+    base: &World,
+    edits: &[Edit],
+    registry: &Registry,
+) -> Result<(World, Vec<usize>)> {
+    let mut next = base.clone();
+    let mut budget = review_budget(edits.len());
+    let mut used = Vec::with_capacity(edits.len());
+    for (i, edit) in edits.iter().enumerate() {
+        let before = budget;
+        crate::local::at(
+            &format!("/edits/{i}"),
+            edit.clone()
+                .apply_budgeted(&mut next, registry, &mut budget),
+        )?;
+        used.push(before - budget);
+    }
+    Ok((next, used))
+}
+
 /// The edit batch that commits the merge on `theirs` as one revision (empty when the merge
 /// leaves `theirs` unchanged).
 pub fn merge(

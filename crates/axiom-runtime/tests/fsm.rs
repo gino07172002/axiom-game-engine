@@ -239,15 +239,24 @@ fn invalid_agent_references_fail_preview_and_apply_before_a_revision_is_written(
     no_transform.entities[agent]
         .components
         .remove("core.transform");
-    let error = format!(
-        "{:#}",
-        no_transform.compile(&registry.authoring).unwrap_err()
-    );
+    let error = format!("{:#}", {
+        no_transform.compile(&registry.authoring).unwrap();
+        registry
+            .authoring
+            .validate_write(&no_transform, None)
+            .unwrap_err()
+    });
     assert!(error.contains("needs core.transform"), "{error}");
     let mut undeclared = skirmish();
     undeclared.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"]["states"]["dead"]
         ["emit"] = json!("ghost_event");
-    let error = format!("{:#}", undeclared.compile(&registry.authoring).unwrap_err());
+    let error = format!(
+        "{:#}",
+        registry
+            .authoring
+            .validate_write(&undeclared, None)
+            .unwrap_err()
+    );
     assert!(error.contains("does not declare"), "{error}");
 }
 
@@ -345,4 +354,114 @@ fn fps_inspect_reports_sentinel_state_and_transition_verdicts() {
         args: json!({"id":"nobody"}),
     });
     assert!(format!("{:#}", missing.unwrap_err()).contains("not a sentinel"));
+}
+
+/// One FSM rule added after content was stored: how an older build stored a violation, the
+/// pointer and value of a repair, and what a new write of the violation reports.
+struct Legacy {
+    name: &'static str,
+    break_world: fn(&mut World),
+    repair: (&'static str, fn(&World) -> Value),
+    error: &'static str,
+}
+
+fn legacy_cases() -> Vec<Legacy> {
+    vec![
+        Legacy {
+            name: "unknown-machine",
+            break_world: |w| {
+                w.prefabs
+                    .get_mut("enemy.basic")
+                    .unwrap()
+                    .components
+                    .insert("fsm.agent".into(), json!({"machine":"ghost"}));
+            },
+            repair: ("/prefabs/enemy.basic/components/fsm.agent", |w| {
+                w.prefabs["enemy.basic"].components["fsm.agent"].clone()
+            }),
+            error: "unknown fsm machine ghost",
+        },
+        Legacy {
+            name: "undeclared-emit",
+            break_world: |w| {
+                w.resources.get_mut("fsm.machines").unwrap()["machines"]["enemy.basic"]["states"]
+                    ["chase"]["emit"] = json!("ghost_event");
+            },
+            repair: ("/resources/fsm.machines", |w| {
+                w.resources["fsm.machines"].clone()
+            }),
+            error: "ghost_event",
+        },
+        Legacy {
+            name: "radius",
+            break_world: |w| {
+                w.prefabs
+                    .get_mut("enemy.basic")
+                    .unwrap()
+                    .components
+                    .get_mut("fsm.agent")
+                    .unwrap()["radius"] = json!(9.0);
+            },
+            repair: ("/prefabs/enemy.basic/components/fsm.agent", |w| {
+                w.prefabs["enemy.basic"].components["fsm.agent"].clone()
+            }),
+            error: "radius must be 0.05..5",
+        },
+    ]
+}
+
+#[test]
+fn fsm_worlds_stored_before_the_fsm_rules_open_repair_and_undo() {
+    use axiom_core::{Edit, Request, Store};
+    let registry = axiom_runtime::installed_registry().authoring;
+    for case in legacy_cases() {
+        let dir = std::env::temp_dir().join(format!(
+            "axiom-fsm-legacy-{}-{}",
+            case.name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("world.sqlite");
+        let open = || Store::open_with(&path, registry.clone(), lab());
+        drop(open().unwrap());
+        let mut legacy = lab();
+        (case.break_world)(&mut legacy);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO revisions(world,reason) VALUES (?1,'legacy')",
+                [json!(legacy).to_string()],
+            )
+            .unwrap();
+        let name = case.name;
+        let mut s = open().unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        let verify = s.execute(Request::Verify {}).unwrap();
+        assert!(
+            verify["ok"] == true && verify.to_string().contains(case.error),
+            "{name}: the old violation is reported, not enforced: {verify}"
+        );
+        // An unrelated edit commits on the old world; the repair commits too.
+        let unrelated = s.apply(Some(2), vec![Edit::set("title", json!("Renamed"))]);
+        assert_eq!(unrelated.unwrap()["rev"], 3, "{name}");
+        let (pointer, value) = case.repair;
+        let repair = Edit::set(pointer, value(&lab()));
+        assert_eq!(s.apply(Some(3), vec![repair]).unwrap()["rev"], 4, "{name}");
+        // Writing the violation again is refused once the world is clean.
+        let again = Edit::set(pointer, (case.repair.1)(&legacy));
+        let e = format!("{:#}", s.apply(Some(4), vec![again]).unwrap_err());
+        assert!(e.contains(case.error), "{name}: {e}");
+        let undone = s
+            .execute(Request::Undo {
+                rev: 2,
+                expected_rev: Some(4),
+            })
+            .unwrap();
+        assert_eq!(undone["rev"], 5, "{name}: {undone}");
+        drop(s);
+        let reopened = open().unwrap();
+        assert_eq!(reopened.current().unwrap().1, legacy, "{name}");
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

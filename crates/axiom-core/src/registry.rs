@@ -41,6 +41,10 @@ pub fn error_response(e: &anyhow::Error) -> Value {
 }
 pub type ValueValidator = fn(&Value) -> Result<()>;
 pub type WorldValidator = fn(&World) -> Result<()>;
+/// A rule only new content must satisfy: `next` is the world a write would commit and
+/// `previous` the revision it edits (`None` when there is none, e.g. a new database). See
+/// [`Registry::validate_write`].
+pub type WriteValidator = fn(&World, Option<&World>) -> Result<()>;
 pub type Migrator = fn(Value) -> Result<World>;
 pub type EditHandler = fn(&mut World, &str, &Value) -> Result<bool>;
 pub type SummaryProvider = fn(&World) -> Value;
@@ -61,16 +65,87 @@ pub struct TypeDescriptor {
     /// already current or cannot be read), applied by `Registry::decode`.
     pub normalize: Option<ValueNormalizer>,
 }
-pub type ValueNormalizer = fn(&Value) -> Option<Value>;
+/// `(stored value, inherited)`: `inherited` is the (normalized) prefab value an entity
+/// override merges into, passed only when the stored pair relied on the legacy
+/// whole-replacement merge (see [`Registry::normalize`]).
+pub type ValueNormalizer = fn(&Value, Option<&Value>) -> Option<Value>;
 /// The object form of a struct type `T` stored as a JSON array (serde reads a struct from its
 /// fields in order). Older revisions could store e.g. `audio.library: []`; validation now
 /// refuses that form for new writes, and reading an old revision rewrites it with this.
-fn object_form<T: serde::de::DeserializeOwned + Serialize>(v: &Value) -> Option<Value> {
-    if !v.is_array() {
-        return None;
-    }
+///
+/// With `inherited`, `v` is an entity override that replaced its prefab value whole when it
+/// was stored (`merge_json` replaces anything that is not object-on-object). The object form
+/// is merged per field instead, so every inherited field the object form leaves out is
+/// written explicitly with a value that reads as `T`'s default (`null` for an `Option`,
+/// `false`, `""`, ...). Each fill is checked by decoding, and the whole rewrite must decode
+/// to exactly the old replacement; when no such override exists the plain object form is
+/// returned.
+fn object_form<T: serde::de::DeserializeOwned + Serialize>(
+    v: &Value,
+    inherited: Option<&Value>,
+) -> Option<Value> {
     let t: T = serde_json::from_value(v.clone()).ok()?;
-    serde_json::to_value(&t).ok().filter(Value::is_object)
+    let want = serde_json::to_value(&t).ok().filter(Value::is_object)?;
+    match inherited.filter(|b| b.is_object()) {
+        Some(base) => Some(replacing_override::<T>(&want, base).unwrap_or(want)),
+        None => v.is_array().then_some(want),
+    }
+}
+/// An override that, merged into `base` with `merge_json`, decodes to the same `T` as `want`
+/// (an object form). `None` when some inherited field has no fill that reads as the default.
+fn replacing_override<T: serde::de::DeserializeOwned + Serialize>(
+    want: &Value,
+    base: &Value,
+) -> Option<Value> {
+    fn omitted(over: &Value, base: &Value, at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        let (Some(over), Some(base)) = (over.as_object(), base.as_object()) else {
+            return;
+        };
+        for (k, b) in base {
+            at.push(k.clone());
+            match over.get(k) {
+                None => out.push(at.clone()),
+                Some(o) => omitted(o, b, at, out),
+            }
+            at.pop();
+        }
+    }
+    fn get<'a>(v: &'a Value, path: &[String]) -> Option<&'a Value> {
+        path.iter().try_fold(v, |v, k| v.get(k))
+    }
+    fn put(v: &mut Value, path: &[String], value: Value) {
+        let Some((last, parents)) = path.split_last() else {
+            return;
+        };
+        let parent = parents
+            .iter()
+            .try_fold(v, |v, k| v.get_mut(k))
+            .and_then(Value::as_object_mut);
+        if let Some(parent) = parent {
+            parent.insert(last.clone(), value);
+        }
+    }
+    let decoded = |over: &Value| -> Option<Value> {
+        let mut merged = base.clone();
+        crate::merge_json(&mut merged, over);
+        let t: T = serde_json::from_value(merged).ok()?;
+        serde_json::to_value(&t).ok()
+    };
+    let mut paths = vec![];
+    omitted(want, base, &mut vec![], &mut paths);
+    let mut over = want.clone();
+    for path in &paths {
+        // Fields decode independently: try each fill alone, inheriting the others.
+        let fill = [json!(null), json!(false), json!(""), json!([]), json!(0)]
+            .into_iter()
+            .find(|candidate| {
+                let mut probe = want.clone();
+                put(&mut probe, path, candidate.clone());
+                decoded(&probe).is_some_and(|got| get(&got, path) == get(want, path))
+            })?;
+        put(&mut over, path, fill);
+    }
+    (decoded(&over)? == *want).then_some(over)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SystemDescriptor {
@@ -94,6 +169,13 @@ pub struct Registry {
     pub topics: BTreeMap<String, Value>,
     pub migrations: BTreeMap<u32, Migrator>,
     pub world_validators: Vec<WorldValidator>,
+    /// Whole-world rules added after content was already stored ("strict on write"):
+    /// checked by `validate_write`, never when a stored revision is read. A write is refused
+    /// only when it introduces a violation: `next` fails while `previous` passed.
+    pub strict_world_validators: Vec<WorldValidator>,
+    /// Write rules that compare `next` with `previous` themselves (e.g. check only the
+    /// entries an edit changed). Checked by `validate_write`, never on read.
+    pub write_validators: Vec<WriteValidator>,
     pub package_resolvers: Vec<fn(&std::path::Path, &mut World) -> Result<()>>,
     pub edit_handlers: Vec<EditHandler>,
     pub summaries: Vec<SummaryProvider>,
@@ -324,7 +406,10 @@ impl Registry {
             crate::ops::LAYOUT_RESOURCE,
             "core",
             json!({"graphs":"graph key (fsm/MACHINE) -> node name -> [x,y] canvas position; editor metadata, never read by the runtime"}), crate::ops::EditorLayout));
-        r.resource("input.bindings","core",json!({"axes":"action -> positive/negative key names","buttons":"action -> key name","capture_pointer":"bool","gamepad":"optional {buttons: action -> pad input, axes: action -> {positive, negative} pad inputs, deadzone: 0..0.9 (0.24)}: a second (XInput) input of actions already in buttons / axes; pad inputs: PadA PadB PadX PadY PadLB PadRB PadBack PadStart PadLS PadRS PadDpadUp/Down/Left/Right PadLT PadRT PadLStickUp/Down/Left/Right PadRStickUp/Down/Left/Right (0..1 levels)"}),|v|{let b:InputBindings=serde_json::from_value(v.clone())?;ensure!(b.axes.len()+b.buttons.len()<=64,"input binding budget exceeded");ensure!(b.buttons.iter().all(|(k,v)|k.len()<=64&&v.len()<=64)&&b.axes.iter().all(|(k,v)|k.len()<=64&&v.positive.len()<=64&&v.negative.len()<=64),"invalid input binding");b.validate_keys()?;b.validate_gamepad()?;Ok(())});
+        r.resource("input.bindings","core",json!({"axes":"action -> positive/negative key names","buttons":"action -> key name","capture_pointer":"bool","gamepad":"optional {buttons: action -> pad input, axes: action -> {positive, negative} pad inputs, deadzone: 0..0.9 (0.24)}: a second (XInput) input of actions already in buttons / axes; pad inputs: PadA PadB PadX PadY PadLB PadRB PadBack PadStart PadLS PadRS PadDpadUp/Down/Left/Right PadLT PadRT PadLStickUp/Down/Left/Right PadRStickUp/Down/Left/Right (0..1 levels)"}),|v|{let b:InputBindings=serde_json::from_value(v.clone())?;ensure!(b.axes.len()+b.buttons.len()<=64,"input binding budget exceeded");ensure!(b.buttons.iter().all(|(k,v)|k.len()<=64&&v.len()<=64)&&b.axes.iter().all(|(k,v)|k.len()<=64&&v.positive.len()<=64&&v.negative.len()<=64),"invalid input binding");b.validate_gamepad()?;Ok(())});
+        // Key names and the button-or-axis rule came after bindings were already stored:
+        // strict on write, and only for the actions an edit changes.
+        r.write_validators.push(InputBindings::validate_written);
         r.systems.insert(
             "motion.integrate".into(),
             SystemDescriptor {
@@ -614,31 +699,82 @@ impl Registry {
         self.normalize(&mut w);
         Ok(w)
     }
+    /// A world sent as new content (`replace_world`, `import`): `decode` without rewriting
+    /// legacy forms, so validation refuses the array form of object types exactly as it does
+    /// for `set_component` / `set_resource`. Stored revisions are read with `decode`.
+    pub fn decode_new(&self, v: Value) -> Result<World> {
+        let version = v
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .context("missing numeric schema_version")?;
+        if version == 2 {
+            Ok(serde_json::from_value(v)?)
+        } else if let Some(m) = self.migrations.get(&(version as u32)) {
+            m(v)
+        } else {
+            bail!("unsupported world schema version {version}; no migration installed")
+        }
+    }
     /// Rewrites legacy forms of registered component and resource values in place.
+    ///
+    /// `World::compile` merges an entity override into its prefab value per field only when
+    /// both are objects; an older revision whose override or prefab value was an array relied
+    /// on the override replacing the prefab value whole. Such an override is rewritten so
+    /// the per-field merge of the normalized pair still reads as that replacement.
     pub fn normalize(&self, w: &mut World) {
-        fn fix(types: &BTreeMap<String, TypeDescriptor>, id: &str, v: &mut Value) {
-            // Only array values can be legacy forms: everything else costs one type check.
-            if !v.is_array() {
+        fn fix(
+            types: &BTreeMap<String, TypeDescriptor>,
+            id: &str,
+            v: &mut Value,
+            inherited: Option<&Value>,
+        ) {
+            // Only array values (or overrides of one) can be legacy forms: everything else
+            // costs one type check.
+            if !v.is_array() && inherited.is_none() {
                 return;
             }
             if let Some(n) = types.get(id).and_then(|d| d.normalize) {
-                if let Some(current) = n(v) {
+                if let Some(current) = n(v, inherited) {
                     *v = current;
                 }
             }
         }
-        let components = w
-            .entities
-            .iter_mut()
-            .map(|e| &mut e.components)
-            .chain(w.prefabs.values_mut().map(|p| &mut p.components));
-        for values in components {
-            for (id, v) in values.iter_mut() {
-                fix(&self.components, id, v);
+        // Prefab values stored as arrays: an override of one replaced it whole.
+        let array_prefabs: BTreeSet<(String, String)> = w
+            .prefabs
+            .iter()
+            .flat_map(|(p, prefab)| {
+                prefab
+                    .components
+                    .iter()
+                    .filter(|(_, v)| v.is_array())
+                    .map(move |(id, _)| (p.clone(), id.clone()))
+            })
+            .collect();
+        for prefab in w.prefabs.values_mut() {
+            for (id, v) in prefab.components.iter_mut() {
+                fix(&self.components, id, v, None);
+            }
+        }
+        let prefabs = &w.prefabs;
+        for e in w.entities.iter_mut() {
+            let prefab = e
+                .prefab
+                .as_ref()
+                .and_then(|p| prefabs.get(p).map(|v| (p, v)));
+            for (id, v) in e.components.iter_mut() {
+                let inherited = prefab.and_then(|(p, prefab)| {
+                    let base = prefab.components.get(id)?;
+                    let legacy = v.is_array()
+                        || (!array_prefabs.is_empty()
+                            && array_prefabs.contains(&(p.clone(), id.clone())));
+                    legacy.then_some(base)
+                });
+                fix(&self.components, id, v, inherited);
             }
         }
         for (id, v) in w.resources.iter_mut() {
-            fix(&self.resources, id, v);
+            fix(&self.resources, id, v, None);
         }
     }
     pub fn validate_capabilities(&self, w: &World) -> Result<()> {
@@ -723,6 +859,46 @@ impl Registry {
             crate::local::at(&format!("{path}/args"), (descriptor.validate)(&call.args))?;
         }
         Ok(())
+    }
+    /// Rules for new writes only, run after `next.compile` succeeded: preview, apply,
+    /// proposals (propose and approve), editor staging, `replace_world` and the first
+    /// revision of a new database. Reading a stored revision (open, the previous revision
+    /// of an edit, undo, review of a stored proposal) never runs them, so content committed
+    /// before a rule existed still opens, edits and undoes, and an edit that repairs or
+    /// leaves alone the old violation commits.
+    pub fn validate_write(&self, next: &World, previous: Option<&World>) -> Result<()> {
+        for f in &self.strict_world_validators {
+            if let Err(e) = f(next) {
+                // Only a violation this write introduces is refused.
+                if previous.is_none_or(|p| f(p).is_ok()) {
+                    return Err(e);
+                }
+            }
+        }
+        for f in &self.write_validators {
+            f(next, previous)?;
+        }
+        Ok(())
+    }
+    /// Strict-on-write rules `w` breaks, as `verify` warnings (never an error: the revision
+    /// is stored and stays readable; the next write that touches the data must fix it).
+    pub fn write_warnings(&self, w: &World) -> Vec<Value> {
+        let warn = |e: anyhow::Error| {
+            let mut d = error_response(&e)["diagnostics"][0].clone();
+            d["severity"] = json!("warning");
+            d
+        };
+        let mut out: Vec<Value> = self
+            .strict_world_validators
+            .iter()
+            .filter_map(|f| f(w).err().map(warn))
+            .collect();
+        out.extend(
+            self.write_validators
+                .iter()
+                .filter_map(|f| f(w, None).err().map(warn)),
+        );
+        out
     }
     pub fn schedule(&self, w: &World) -> Result<Vec<SystemDescriptor>> {
         let mut pending = BTreeMap::new();

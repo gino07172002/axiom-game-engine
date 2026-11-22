@@ -1,7 +1,7 @@
 //! Databases written before validation refused the array form of object types (e.g.
 //! `audio.library: []`) still open, edit and undo: reading a revision rewrites the legacy
 //! form, while new writes of it stay refused.
-use axiom_core::{ops, CoreEdit, Edit, Registry, Request, Store, World};
+use axiom_core::{ops, CoreEdit, Edit, Registry, RenderLight, Request, Store, World};
 use serde_json::{json, Value};
 
 /// A world as an older build stored it: an array-form resource, component and prefab component.
@@ -18,6 +18,11 @@ fn legacy_world() -> Value {
 /// A database in a fresh temp directory whose newest revision is `legacy_world()`, written the
 /// way an older build did (straight JSON, no validation by this build).
 fn legacy_database(name: &str) -> std::path::PathBuf {
+    legacy_database_with(name, legacy_world())
+}
+
+/// `legacy_database` whose newest revision is `world`.
+fn legacy_database_with(name: &str, world: Value) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("axiom-legacy-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -27,10 +32,111 @@ fn legacy_database(name: &str) -> std::path::PathBuf {
     connection
         .execute(
             "INSERT INTO revisions(world,reason) VALUES (?1,'legacy')",
-            [legacy_world().to_string()],
+            [world.to_string()],
         )
         .unwrap();
     path
+}
+
+/// Stored before validation refused arrays: a prefab point light with a range, overridden by
+/// an entity's array-form `render.light` (which replaced the prefab value whole), and the
+/// other way round (an array prefab value replaced whole by an object override).
+fn legacy_light_world() -> Value {
+    let mut w = json!(World::empty("lights"));
+    w["capabilities"]["render"] = json!(1);
+    w["prefabs"] = json!({
+        "lamp":{"components":{"render.light":{"kind":"point","range":10.0,"shadows":true}}},
+        "old_lamp":{"components":{"render.light":["point",[1.0,0.5,0.5],2.0,6.0]}}
+    });
+    w["entities"] = json!([
+        {"id":"sun","prefab":"lamp","components":{"core.transform":{},"render.light":["directional"]}},
+        {"id":"moon","prefab":"old_lamp","components":{"core.transform":{},"render.light":{"kind":"directional"}}}
+    ]);
+    w
+}
+
+/// The `render.light` an entity of `world` compiles to.
+fn compiled_light(world: &World, id: &str) -> RenderLight {
+    let c = world.compile(&Registry::core()).unwrap();
+    let e = &c.entities[c.indices[id]];
+    serde_json::from_value(e.components["render.light"].clone()).unwrap()
+}
+
+#[test]
+fn a_legacy_array_override_still_replaces_its_prefab_value_whole() {
+    let path = legacy_database_with("override", legacy_light_world());
+    let mut store = Store::open(&path).expect("a legacy override must not block opening");
+    let (_, world) = store.current().unwrap();
+    let sun = RenderLight::directional([1.0; 3], 1.0, false);
+    assert_eq!(
+        compiled_light(&world, "sun"),
+        sun,
+        "no range or shadows inherited"
+    );
+    assert_eq!(
+        compiled_light(&world, "moon"),
+        sun,
+        "no point fields inherited"
+    );
+    assert_eq!(store.execute(Request::Verify {}).unwrap()["ok"], true);
+    // A repair edit to an unrelated component commits, and the committed (normalized)
+    // revision reads the same light.
+    let applied = store
+        .execute(Request::Apply {
+            expected_rev: Some(2),
+            edits: vec![Edit::Core(CoreEdit::SetComponent {
+                entity: "sun".into(),
+                component: "core.transform".into(),
+                value: json!({"position":[1.0,2.0,3.0]}),
+            })],
+        })
+        .unwrap();
+    assert_eq!(applied["rev"], 3, "{applied}");
+    let (_, edited) = store.current().unwrap();
+    assert_eq!(compiled_light(&edited, "sun"), sun);
+    assert_eq!(compiled_light(&edited, "moon"), sun);
+    // Undo restores the legacy revision; a fresh connection opens it.
+    let undone = store
+        .execute(Request::Undo {
+            rev: 2,
+            expected_rev: Some(3),
+        })
+        .unwrap();
+    assert_eq!(undone["rev"], 4, "{undone}");
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    let (rev, restored) = reopened.current().unwrap();
+    assert_eq!(rev, 4);
+    assert_eq!(compiled_light(&restored, "sun"), sun);
+    assert_eq!(compiled_light(&restored, "moon"), sun);
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn replace_world_refuses_array_forms_like_set_component() {
+    let mut store = Store::memory_with(Registry::core(), World::empty("clean")).unwrap();
+    for world in [legacy_light_world(), legacy_world()] {
+        let error = store
+            .execute(Request::Apply {
+                expected_rev: Some(1),
+                edits: vec![Edit::Core(CoreEdit::ReplaceWorld { world })],
+            })
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("not an array"), "{error:#}");
+    }
+    assert_eq!(store.revision().unwrap(), 1);
+    // The object form of the same world is accepted.
+    let path = legacy_database_with("replace", legacy_light_world());
+    let current = Store::open(&path).unwrap().current().unwrap().1;
+    let applied = store
+        .execute(Request::Apply {
+            expected_rev: Some(1),
+            edits: vec![Edit::replace(current)],
+        })
+        .unwrap();
+    assert_eq!(applied["rev"], 2, "{applied}");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[test]

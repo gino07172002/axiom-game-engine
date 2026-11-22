@@ -428,6 +428,8 @@ pub fn register(r: &mut Registry) {
     );
     r.action("rts.inspect","rts",json!({"ids":"up to 128 unit IDs","fields":"id/position/faction/role/health/order/carried; omitted selects metadata"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.ids.len()<=128&&a.fields.len()<=16,"inspection budget exceeded");Ok(())});
     r.world_validators.push(validate_world);
+    // Added after RTS worlds were stored: strict on write, never when a revision is read.
+    r.strict_world_validators.push(validate_balance);
     r.topics.insert("rts".into(),json!({"actions":["select","select_rect","move","gather","attack","train","stop","camera","inspect"],"opponent":"rts.session.opponent drives the other faction (gather, train, defend within defend_radius, attack waves of wave_size + n*wave_growth after first_wave_tick); summary.opponent reports wave state","ui_metrics":"minerals units workers soldiers enemy_units selected queued delivered produced wave base_health enemy_base_health (percent) victory defeated alert","victory":"all enemy depot buildings destroyed","call":{"kind":"call","capability":"rts","action":"move","args":{"destination":[8,0]}},"navigation":"4-neighbor A*, bounded queue/cache/search; command replacement invalidates stale jobs","economy":"cost reserved at queue time; delivery credits the owner; depleted resources complete when carried minerals are delivered","stress":"64-unit functional world; 128/256 independent measured runs; no predetermined frame-rate claim"}));
 }
 fn validate_world(w: &World) -> Result<()> {
@@ -462,7 +464,6 @@ fn validate_world(w: &World) -> Result<()> {
     let grid = nav::Grid::new(session.grid.clone())?;
     let mut count = 0;
     let mut positions = vec![];
-    let mut minerals = 0u64;
     for e in &w.entities {
         ensure!(
             !e.id.starts_with("produced/"),
@@ -510,9 +511,6 @@ fn validate_world(w: &World) -> Result<()> {
                 }
                 positions.push(([t.position[0], t.position[2]], d.radius));
             }
-            if let Some(v) = c.get("rts.resource") {
-                minerals += u64::from(serde_json::from_value::<ResourceDef>(v.clone())?.amount);
-            }
             if let Some(v) = c.get("rts.building") {
                 let d: BuildingDef = serde_json::from_value(v.clone())?;
                 ensure!(
@@ -526,19 +524,6 @@ fn validate_world(w: &World) -> Result<()> {
                     );
                 }
             }
-        }
-    }
-    // Either faction may mine every node, so each balance must hold its start plus all of them.
-    for (faction, balance) in session.initial_balance.iter().enumerate() {
-        if u64::from(*balance) + minerals > u64::from(u32::MAX) {
-            return Err(axiom_core::Diagnostic::error(
-                "invalid_value",
-                format!("/resources/rts.session/initial_balance/{faction}"),
-                format!(
-                    "initial balance {balance} plus {minerals} world minerals exceeds {}",
-                    u32::MAX
-                ),
-            ));
         }
     }
     ensure!(
@@ -568,6 +553,34 @@ fn validate_world(w: &World) -> Result<()> {
                 && !prefab.components.contains_key("core.motion"),
             "production prefabs cannot install another camera or motion controller"
         );
+    }
+    Ok(())
+}
+/// Either faction may mine every node, so each balance must hold its start plus all of them.
+/// Strict on write (`Registry::validate_write`): a stored revision over the limit still opens
+/// and undoes; a write may not push a world over it.
+fn validate_balance(w: &World) -> Result<()> {
+    if !w.capabilities.contains_key("rts") {
+        return Ok(());
+    }
+    let session: Session = w.resource("rts.session")?;
+    let mut minerals = 0u64;
+    for e in &w.entities {
+        if let Some(v) = resolved(w, e).get("rts.resource") {
+            minerals += u64::from(serde_json::from_value::<ResourceDef>(v.clone())?.amount);
+        }
+    }
+    for (faction, balance) in session.initial_balance.iter().enumerate() {
+        if u64::from(*balance) + minerals > u64::from(u32::MAX) {
+            return Err(axiom_core::Diagnostic::error(
+                "invalid_value",
+                format!("/resources/rts.session/initial_balance/{faction}"),
+                format!(
+                    "initial balance {balance} plus {minerals} world minerals exceeds {}",
+                    u32::MAX
+                ),
+            ));
+        }
     }
     Ok(())
 }

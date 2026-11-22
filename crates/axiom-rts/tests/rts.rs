@@ -284,7 +284,9 @@ fn starting_balance_plus_world_minerals_must_fit_and_delivery_never_wraps() {
     let mut registry = Registry::core();
     register(&mut registry);
     w.resources.get_mut("rts.session").unwrap()["initial_balance"] = json!([u32::MAX, 0]);
-    let e = format!("{:#}", registry.validate_world(&w).unwrap_err());
+    // Strict on write: checked for new content, not when a stored revision is read.
+    w.compile(&registry).unwrap();
+    let e = format!("{:#}", registry.validate_write(&w, None).unwrap_err());
     assert!(e.contains("initial_balance"), "{e}");
     // A balance raised to the limit (e.g. by a reload) stops delivery instead of wrapping.
     let (mut s, templates) = setup();
@@ -342,4 +344,61 @@ fn hot_reload_adjusts_the_conservation_baseline_for_added_and_removed_nodes() {
         next.step(&templates);
         next.validate().unwrap();
     }
+}
+#[test]
+fn a_stored_world_over_the_balance_limit_opens_repairs_and_undoes() {
+    let mut registry = Registry::core();
+    register(&mut registry);
+    let world = content::demo_world(64).unwrap();
+    let dir = std::env::temp_dir().join(format!("axiom-rts-balance-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("world.sqlite");
+    let open = || Store::open_with(&path, registry.clone(), world.clone());
+    drop(open().unwrap());
+    // Stored before the balance limit existed.
+    let mut legacy = json!(world);
+    legacy["resources"]["rts.session"]["initial_balance"] = json!([u32::MAX, 0]);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO revisions(world,reason) VALUES (?1,'legacy')",
+            [legacy.to_string()],
+        )
+        .unwrap();
+    let mut s = open().expect("a stored world over the limit must not block opening");
+    let verify = s.execute(Request::Verify {}).unwrap();
+    assert_eq!(verify["ok"], true, "{verify}");
+    assert_eq!(
+        verify["diagnostics"][0]["path"], "/resources/rts.session/initial_balance/0",
+        "{verify}"
+    );
+    // An edit that leaves the old violation alone commits; so does the repair.
+    assert_eq!(
+        s.apply(Some(2), vec![Edit::set("title", json!("Renamed"))])
+            .unwrap()["rev"],
+        3
+    );
+    let repair = Edit::set("/resources/rts.session/initial_balance/0", json!(150));
+    assert_eq!(s.apply(Some(3), vec![repair]).unwrap()["rev"], 4);
+    // A repaired world cannot be pushed over the limit again.
+    let over = Edit::set("/resources/rts.session/initial_balance/1", json!(u32::MAX));
+    let e = format!("{:#}", s.apply(Some(4), vec![over]).unwrap_err());
+    assert!(e.contains("initial_balance/1"), "{e}");
+    // Undo back to the stored revision, then reopen.
+    let undone = s
+        .execute(Request::Undo {
+            rev: 2,
+            expected_rev: Some(4),
+        })
+        .unwrap();
+    assert_eq!(undone["rev"], 5, "{undone}");
+    drop(s);
+    let reopened = open().unwrap();
+    assert_eq!(
+        reopened.current().unwrap().1.resources["rts.session"]["initial_balance"],
+        json!([u32::MAX, 0])
+    );
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(&dir);
 }
