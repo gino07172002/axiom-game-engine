@@ -63,20 +63,26 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         buffers.push(data);
     }
     let mut textures = vec![];
+    let mut decoded = 0;
     for image in doc.images() {
         let data = match image.source() {
-            ::gltf::image::Source::View { view, .. } => buffers
-                .get(view.buffer().index())
-                .and_then(|b| b.get(view.offset()..view.offset() + view.length()))
-                .context("invalid image buffer view")?
+            ::gltf::image::Source::View { view, .. } => view
+                .offset()
+                .checked_add(view.length())
+                .and_then(|end| buffers.get(view.buffer().index())?.get(view.offset()..end))
+                .with_context(|| {
+                    format!(
+                        "image {}: invalid image buffer view {}",
+                        image.index(),
+                        view.index()
+                    )
+                })?
                 .to_vec(),
             ::gltf::image::Source::Uri { uri: value, .. } => uri(root, value)?,
         };
-        textures.push(super::texture(&data)?);
-        ensure!(
-            textures.iter().map(|t| t.rgba.len()).sum::<usize>() <= 268_435_456,
-            "decoded textures exceed 256 MiB"
-        );
+        let texture =
+            super::texture(&data).with_context(|| format!("glTF image {}", image.index()))?;
+        super::push_texture(&mut textures, &mut decoded, texture)?;
     }
     let n = doc.nodes().count();
     ensure!(n > 0, "glTF has no nodes");

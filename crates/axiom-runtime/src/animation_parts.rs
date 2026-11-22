@@ -350,37 +350,51 @@ impl Parts {
     }
 }
 
-/// Distance along the ray to a capsule (segment `a`-`b`, radius `r`), if it hits.
+/// Distance along the ray (`d` normalized) to where it enters a capsule (segment `a`-`b`,
+/// radius `r`), if it hits; 0 from inside. The entry is the nearest of the side of the finite
+/// cylinder and the two end spheres (its end disks lie inside the spheres).
 fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
-    // Closest points between the ray o + t d (t >= 0) and the segment a + s (b - a).
+    let d = d.try_normalize()?;
     let u = b - a;
-    let w = o - a;
-    let (uu, ud, uw, dw) = (u.dot(u), u.dot(d), u.dot(w), d.dot(w));
-    let denom = uu - ud * ud;
-    let (t, mut s) = if uu < 1e-12 {
-        (-dw, 0.0)
-    } else if denom.abs() < 1e-9 {
-        (0.0, (uw / uu).clamp(0.0, 1.0))
+    let uu = u.dot(u);
+    // Inside: the origin is within r of the segment.
+    let s = if uu < 1e-12 {
+        0.0
     } else {
-        let s = ((uw - ud * dw) / denom).clamp(0.0, 1.0);
-        (ud * s - dw, s)
+        ((o - a).dot(u) / uu).clamp(0.0, 1.0)
     };
-    if t < 0.0 {
-        // The ray starts past the closest approach: the segment point nearest the origin.
-        s = if uu < 1e-12 {
-            0.0
-        } else {
-            (uw / uu).clamp(0.0, 1.0)
-        };
+    if (o - (a + u * s)).length_squared() <= r * r {
+        return Some(0.0);
     }
-    // With the segment point fixed, the best t again.
-    let p = a + u * s;
-    let t = (p - o).dot(d).max(0.0);
-    let gap = (o + d * t - p).length();
-    if gap > r {
-        return None;
+    let sphere = |c: Vec3| -> Option<f32> {
+        let oc = o - c;
+        let b = oc.dot(d);
+        let h = b * b - (oc.length_squared() - r * r);
+        (h >= 0.0).then(|| -b - h.sqrt()).filter(|t| *t >= 0.0)
+    };
+    let mut best = sphere(a);
+    if uu >= 1e-12 {
+        if let Some(t) = sphere(b) {
+            best = Some(best.map_or(t, |x| x.min(t)));
+        }
+        // Side: |(o + t d - a) x u|^2 = r^2 |u|^2 with the hit's axis coordinate in (0, |u|^2).
+        let w = o - a;
+        let (ud, uw) = (u.dot(d), u.dot(w));
+        let k2 = uu - ud * ud;
+        if k2 > 1e-9 * uu {
+            let k1 = uu * w.dot(d) - uw * ud;
+            let k0 = uu * w.length_squared() - uw * uw - r * r * uu;
+            let h = k1 * k1 - k2 * k0;
+            if h >= 0.0 {
+                let t = (-k1 - h.sqrt()) / k2;
+                let y = uw + t * ud;
+                if t >= 0.0 && y > 0.0 && y < uu {
+                    best = Some(best.map_or(t, |x| x.min(t)));
+                }
+            }
+        }
     }
-    Some((t - (r * r - gap * gap).sqrt()).max(0.0))
+    best
 }
 
 impl AnimationSystem {
@@ -517,5 +531,35 @@ mod tests {
         )
         .unwrap();
         assert!(t > 2.8 && t < 3.0, "{t}");
+    }
+
+    #[test]
+    fn oblique_rays_enter_the_capsule_side_and_rank_overlapping_parts() {
+        // A 45-degree ray through the axis of a vertical capsule (radius 0.5) enters its side
+        // at x = 0.5: 4.5 * sqrt(2) m along the ray (not the axis crossing minus r).
+        let o = Vec3::new(5.0, 6.0, 0.0);
+        let d = Vec3::new(-1.0, -1.0, 0.0).normalize();
+        let side = ray_capsule(o, d, Vec3::ZERO, Vec3::Y * 2.0, 0.5).unwrap();
+        let expected = 4.5 * 2f32.sqrt();
+        assert!((side - expected).abs() < 1e-4, "{side} vs {expected}");
+        // A small part overlapping it, centered on the ray just past the side: truly farther,
+        // so the capsule must rank first.
+        let center = o + d * (expected + 0.19);
+        let small = ray_capsule(o, d, center, center, 0.1).unwrap();
+        assert!((small - (expected + 0.09)).abs() < 1e-4, "{small}");
+        assert!(
+            side < small,
+            "capsule {side} must be nearer than part {small}"
+        );
+        // A sloped capsule hit side-on agrees with the analytic cylinder entry.
+        let t = ray_capsule(
+            Vec3::new(0.0, 1.0, 5.0),
+            Vec3::NEG_Z,
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            0.2,
+        )
+        .unwrap();
+        assert!((t - (5.0 - 0.2)).abs() < 1e-4, "{t}");
     }
 }

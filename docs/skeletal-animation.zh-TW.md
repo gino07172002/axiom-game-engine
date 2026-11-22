@@ -107,7 +107,7 @@ ACL:`animctl C create|remove`、`animctl C state add|remove|rename|set ..`、`an
 - **執行期命令** `animation.morph {entity, target | index, weight, ramp_seconds?}` 覆寫一個 target 的權重(-2..2,通常 0..1),可線性漸變,不改變播放時間;`{"clear":true}` 立即交回片段或預設值(不能與漸變同用)。`inspect` 與 `observe` 的 `players.ID.morphs` 回報目前權重(只有有 target 的播放器才有這個欄位,其他世界的 `state_hash` 不變)。
 - **存檔**:覆寫值與漸變(以 target 名稱)、淡入起點的權重都存在 checkpoint;讀檔後逐步相同。
 
-**部位顯示(換裝)。** 每個 primitive 可以用材質 ID(`node/mesh/primitive`)或 glTF 的 mesh、材質、節點名稱選取(一個名稱可選多個 primitive)。`animation.player.hidden: [PART..]` 是編寫的預設(最多 64 個),`animation.visibility {entity, group, visible}` 在執行期切換;不存在的名稱在建置 / 命令時報錯並列出可用的部位。隱藏的 primitive 不畫也不投影(`MeshFrame.hidden` 位元遮罩,材質上限 256)。`animation.inspect` 回傳 `parts:[{id,groups,visible}]`。執行期狀態與編寫值不同時存進 checkpoint。放在動畫系統(不是 render 命令)的原因:primitive 屬於播放器的資產、狀態要進 checkpoint 與 `state_hash`,render 端沒有模擬狀態。編輯:ACL `meshpart SEL hide|show PART`、編輯器 `object.mesh_part hide|show PART`(同一個 `ops::mesh_part`)。
+**部位顯示(換裝)。** 每個 primitive 可以用材質 ID(`node/mesh/primitive`)或 glTF 的 mesh、材質、節點名稱選取(一個名稱可選多個 primitive)。`animation.player.hidden: [PART..]` 是編寫的預設(最多 64 個),`animation.visibility {entity, group, visible}` 在執行期切換;不存在的名稱在建置 / 命令時報錯並列出可用的部位(最多 16 個、約 1 KiB,其餘只報數量)。隱藏的 primitive 不畫也不投影(`MeshFrame.hidden` 位元遮罩,材質上限 256)。`animation.inspect` 預設只回傳 `part_count`,加 `parts:true` 才回傳 `parts:[{id,groups,visible}]`。執行期狀態與編寫值不同時存進 checkpoint。放在動畫系統(不是 render 命令)的原因:primitive 屬於播放器的資產、狀態要進 checkpoint 與 `state_hash`,render 端沒有模擬狀態。編輯:ACL `meshpart SEL hide|show PART`、編輯器 `object.mesh_part hide|show PART`(同一個 `ops::mesh_part`)。
 
 **動畫圖層(A5)。** 控制器可以有最多 4 個 `layers`,依序套在狀態機的姿勢之上:
 

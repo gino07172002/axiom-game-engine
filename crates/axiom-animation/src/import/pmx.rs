@@ -196,6 +196,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         texture_paths.push(r.text()?)
     }
     let mut textures = vec![];
+    let mut decoded = 0;
     let mut loaded = BTreeMap::new();
     let mut materials = vec![];
     let mut offset = 0;
@@ -231,11 +232,11 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
             if let Some(i) = loaded.get(source) {
                 Some(*i)
             } else {
-                let file = confined(path.parent().unwrap_or(Path::new(".")), source)?;
-                let image = super::texture(&std::fs::read(file)?)
-                    .with_context(|| format!("PMX texture {source}"))?;
-                let i = textures.len();
-                textures.push(image);
+                let image = confined(path.parent().unwrap_or(Path::new(".")), source)
+                    .and_then(|file| super::read_texture_file(&file))
+                    .and_then(|bytes| super::texture(&bytes))
+                    .and_then(|image| super::push_texture(&mut textures, &mut decoded, image));
+                let i = image.with_context(|| format!("PMX texture {source}"))?;
                 loaded.insert(source.clone(), i);
                 Some(i)
             }
