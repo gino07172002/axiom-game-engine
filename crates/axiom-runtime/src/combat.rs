@@ -12,12 +12,18 @@ use std::{
     collections::{BTreeMap, VecDeque},
 };
 
+/// Combat events waiting for room on the cross-package event bus (bounded FIFO).
+/// Two full 4096-hit batches' worth: one batch always fits once the backlog drains.
+pub const MAX_OUTBOX: usize = 8192;
+type Queued = (&'static str, u64, BTreeMap<String, Scalar>);
 #[derive(Clone)]
 pub struct Combat {
     pub scene: Scene,
     pub pending: Vec<Hit>,
     pub receipts: Vec<Receipt>,
     history: VecDeque<Value>,
+    outbox: VecDeque<Queued>,
+    error: Option<String>,
     hits: u64,
     deaths: u64,
     evaded: u64,
@@ -35,6 +41,8 @@ impl Combat {
                     pending: vec![],
                     receipts: vec![],
                     history: VecDeque::new(),
+                    outbox: VecDeque::new(),
+                    error: None,
                     hits: 0,
                     deaths: 0,
                     evaded: 0,
@@ -66,10 +74,13 @@ impl Combat {
     pub fn observation(&self) -> Value {
         json!({"bodies":self.scene.bodies.len(),"alive":self.scene.bodies.values().filter(|b|b.alive()).count(),
             "hits":self.hits,"deaths":self.deaths,"evaded":self.evaded,"rejected":self.rejected,
-            "pending":self.pending.len(),"sequence":self.sequence,"recent":self.history.iter().rev().take(12).collect::<Vec<_>>()})
+            "pending":self.pending.len(),"queued_events":self.outbox.len(),"error":self.error,
+            "sequence":self.sequence,"recent":self.history.iter().rev().take(12).collect::<Vec<_>>()})
     }
     pub fn inherit(&mut self, old: &Self) {
         self.history = old.history.clone();
+        self.outbox = old.outbox.clone();
+        self.error = old.error.clone();
         self.sequence = old.sequence;
         self.hits = old.hits;
         self.deaths = old.deaths;
@@ -92,41 +103,69 @@ pub fn snapshot(state: &mut RuntimeState, bodies: Vec<Body>) {
         }
     }
 }
+/// Delivers queued combat events in FIFO order, as many as the event bus accepts this tick.
+fn flush(combat: &mut Combat, events: &mut crate::events::Events) {
+    let room = events.room().min(combat.outbox.len());
+    for (event, tick, fields) in combat.outbox.drain(..room) {
+        events.publish("combat.resolve", event, tick, fields);
+    }
+}
 pub fn resolve(state: &mut RuntimeState) {
     let Some(combat) = &mut state.combat else {
         return;
     };
-    combat.receipts = combat.scene.resolve(std::mem::take(&mut combat.pending));
+    // Events left from an earlier burst go first, keeping their tick and order.
+    flush(combat, &mut state.events);
+    let hits = std::mem::take(&mut combat.pending);
+    // Worst case every hit publishes `combat.hit` and `combat.defeated`; reserve that
+    // room before any health changes so damage never commits without its events.
+    let per_hit = usize::from(state.events.owns("combat.hit"))
+        + usize::from(state.events.owns("combat.defeated"));
+    if combat.outbox.len() + per_hit * hits.len() > MAX_OUTBOX {
+        combat.rejected += hits.len() as u64;
+        combat.error = Some(format!(
+            "combat event backlog exceeded ({} queued + {} possible > {MAX_OUTBOX}); {} hits rejected at tick {} before damage",
+            combat.outbox.len(),
+            per_hit * hits.len(),
+            hits.len(),
+            state.tick
+        ));
+        combat.receipts.clear();
+        return;
+    }
+    combat.receipts = combat.scene.resolve(hits);
     for receipt in &combat.receipts {
         combat.sequence += 1;
         match receipt.outcome {
             Outcome::Hit => {
                 combat.hits += 1;
-                state.events.publish(
-                    "combat.resolve",
-                    "combat.hit",
-                    state.tick,
-                    [
-                        ("source".into(), Scalar::Text(receipt.source.clone())),
-                        ("target".into(), Scalar::Text(receipt.target.clone())),
-                        ("amount".into(), Scalar::Number(f64::from(receipt.amount))),
-                    ]
-                    .into(),
-                );
+                if state.events.owns("combat.hit") {
+                    combat.outbox.push_back((
+                        "combat.hit",
+                        state.tick,
+                        [
+                            ("source".into(), Scalar::Text(receipt.source.clone())),
+                            ("target".into(), Scalar::Text(receipt.target.clone())),
+                            ("amount".into(), Scalar::Number(f64::from(receipt.amount))),
+                        ]
+                        .into(),
+                    ));
+                }
                 if receipt.killed {
                     combat.deaths += 1;
                     let faction = combat.scene.bodies[&receipt.target].faction;
-                    state.events.publish(
-                        "combat.resolve",
-                        "combat.defeated",
-                        state.tick,
-                        [
-                            ("entity".into(), Scalar::Text(receipt.target.clone())),
-                            ("source".into(), Scalar::Text(receipt.source.clone())),
-                            ("faction".into(), Scalar::Int(i64::from(faction))),
-                        ]
-                        .into(),
-                    );
+                    if state.events.owns("combat.defeated") {
+                        combat.outbox.push_back((
+                            "combat.defeated",
+                            state.tick,
+                            [
+                                ("entity".into(), Scalar::Text(receipt.target.clone())),
+                                ("source".into(), Scalar::Text(receipt.source.clone())),
+                                ("faction".into(), Scalar::Int(i64::from(faction))),
+                            ]
+                            .into(),
+                        ));
+                    }
                 }
             }
             Outcome::Evaded => combat.evaded += 1,
@@ -139,6 +178,7 @@ pub fn resolve(state: &mut RuntimeState) {
             combat.history.pop_front();
         }
     }
+    flush(combat, &mut state.events);
 }
 pub fn submit(state: &mut RuntimeState, hits: Vec<Hit>) {
     if let Some(combat) = &mut state.combat {

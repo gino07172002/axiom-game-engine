@@ -57,8 +57,11 @@ struct Follower {
     distance: f32,
     forward: bool,
     speed: f32,
-    /// `speed` was set by `path.set_speed` (kept across hot reload).
+    /// `speed` was set by `path.set_speed` (kept across hot reload while the authored speed
+    /// is unchanged).
     speed_set: bool,
+    /// Authored `path.follow` speed: a revision that edits it replaces a runtime override.
+    authored_speed: f32,
     /// Start distance after wrapping / folding / clamping, and the travel direction there.
     start: (f32, bool),
     /// Authored start, end mode and paused flag: hot reload keeps progress only when they and
@@ -353,6 +356,7 @@ impl PathSystem {
                 forward: true,
                 speed: def.speed,
                 speed_set: false,
+                authored_speed: def.speed,
                 start,
                 authored: (def.start, def.start_fraction, def.end, def.paused),
                 end: def.end,
@@ -636,7 +640,8 @@ impl RuntimeSystem for PathSystem {
     ) -> Result<()> {
         // Hot reload keeps progress per follower entity ID when the follower still follows
         // the same path ID with the same spline and the same start / end mode / paused flag;
-        // otherwise the follower restarts. Runtime speed overrides are kept with the progress.
+        // otherwise the follower restarts. Runtime speed overrides are kept with the progress
+        // unless the authored speed changed.
         let Some(old) = old.as_any().downcast_ref::<Self>() else {
             return Ok(());
         };
@@ -663,7 +668,9 @@ impl RuntimeSystem for PathSystem {
             f.paused = of.paused;
             f.arrived = of.arrived;
             f.yaw = of.yaw;
-            if of.speed_set {
+            // A runtime override survives only while the authored speed it overrode does; an
+            // edited speed is the newer intent (progress, direction and pause are kept).
+            if of.speed_set && of.authored_speed == f.authored_speed {
                 f.speed = of.speed;
                 f.speed_set = true;
             }
@@ -772,7 +779,7 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.action(
         "path.set_speed",
         "path",
-        json!({"id":follower,"speed":"m/s 0..100 (kept across hot reload while the path is unchanged)"}),
+        json!({"id":follower,"speed":"m/s 0..100 (kept across hot reload while the path and the authored speed are unchanged)"}),
         |v| {
             id_arg(v)?;
             ensure!(

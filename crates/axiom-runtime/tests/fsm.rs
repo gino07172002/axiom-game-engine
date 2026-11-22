@@ -202,6 +202,116 @@ fn invalid_machines_and_unknown_agents_fail_validation() {
 }
 
 #[test]
+fn invalid_agent_references_fail_preview_and_apply_before_a_revision_is_written() {
+    // R5 F2: the CLI and the editor both submit requests to the store, which compiles the
+    // edited world; the fsm world validator must reject what fsm.step could not start.
+    use axiom_core::{Edit, Request, Store};
+    let registry = axiom_runtime::installed_registry();
+    let mut store = Store::memory_with(registry.authoring.clone(), lab()).unwrap();
+    let rev = store.revision().unwrap();
+    let bad = Edit::set(
+        "/prefabs/enemy.basic/components/fsm.agent/machine",
+        json!("missing"),
+    );
+    let preview = store.execute(Request::Preview {
+        expected_rev: Some(rev),
+        edits: vec![bad.clone()],
+    });
+    let error = format!("{:#}", preview.unwrap_err());
+    assert!(error.contains("unknown fsm machine missing"), "{error}");
+    assert!(store.apply(Some(rev), vec![bad]).is_err());
+    assert_eq!(store.revision().unwrap(), rev);
+    // An agent without core.transform and an undeclared emit fail compile the same way.
+    let mut no_transform = lab();
+    let agent = no_transform
+        .entities
+        .iter()
+        .position(|e| {
+            no_transform
+                .resolved_components(e)
+                .contains_key("fsm.agent")
+        })
+        .unwrap();
+    no_transform.entities[agent]
+        .components
+        .insert("fsm.agent".into(), json!({"machine":"enemy.basic"}));
+    no_transform.entities[agent].prefab = None;
+    no_transform.entities[agent]
+        .components
+        .remove("core.transform");
+    let error = format!(
+        "{:#}",
+        no_transform.compile(&registry.authoring).unwrap_err()
+    );
+    assert!(error.contains("needs core.transform"), "{error}");
+    let mut undeclared = skirmish();
+    undeclared.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"]["states"]["dead"]
+        ["emit"] = json!("ghost_event");
+    let error = format!("{:#}", undeclared.compile(&registry.authoring).unwrap_err());
+    assert!(error.contains("does not declare"), "{error}");
+}
+
+#[test]
+fn defeated_attacker_deals_no_damage() {
+    // R5 F6: a grunt with 0 health stuck in `attack` next to the hero must not hit.
+    let mut w = skirmish();
+    let hero = w.entities.iter().position(|e| e.id == "hero").unwrap();
+    w.entities[hero].components.remove("fsm.agent");
+    let grunt = &mut w.resources.get_mut("fsm.machines").unwrap()["machines"]["grunt"];
+    grunt["initial"] = json!("attack");
+    grunt["transitions"] = json!([]);
+    let e = w.entities.iter_mut().find(|e| e.id == "enemy/0").unwrap();
+    e.components
+        .insert("core.health".into(), json!({"value":0.0,"max":60.0}));
+    e.components
+        .insert("core.transform".into(), json!({"position":[-11.0,0.5,0.0]}));
+    let mut r = WorldRuntime::new(w.clone(), 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 300);
+    let hero_hp = |r: &WorldRuntime| {
+        r.state.health[r.state.compiled.indices["hero"]]
+            .as_ref()
+            .unwrap()
+            .value
+    };
+    assert_eq!(hero_hp(&r), 100.0);
+    assert_eq!(call(&mut r, "summary", json!({}))["hits"], 0);
+    // Control: the same grunt alive does hit.
+    w.entities
+        .iter_mut()
+        .find(|e| e.id == "enemy/0")
+        .unwrap()
+        .components
+        .insert("core.health".into(), json!({"value":60.0,"max":60.0}));
+    let mut r = WorldRuntime::new(w, 1, axiom_runtime::installed_registry()).unwrap();
+    run(&mut r, 300);
+    assert!(hero_hp(&r) < 100.0);
+}
+
+#[test]
+fn public_schema_lists_the_editor_kinds_and_state_fields() {
+    // R5 F15: one source for the editor forms and `schema fsm.machines`.
+    let registry = axiom_runtime::installed_registry();
+    let schema = registry.authoring.resources["fsm.machines"].schema["machines"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for condition in [false, true] {
+        for (kind, _, _) in axiom_runtime::fsm::editor_kinds(condition) {
+            assert!(schema.contains(kind), "{kind} missing from {schema}");
+        }
+    }
+    for field in ["clip", "clip_loop", "emit", "radius", "stop_within"] {
+        let agent = registry.authoring.components["fsm.agent"]
+            .schema
+            .to_string();
+        assert!(
+            schema.contains(field) || agent.contains(field),
+            "{field} missing"
+        );
+    }
+}
+
+#[test]
 fn checkpoints_fail_explicitly_for_fsm_worlds() {
     let mut w = lab();
     w.capabilities.insert("save".into(), 1);

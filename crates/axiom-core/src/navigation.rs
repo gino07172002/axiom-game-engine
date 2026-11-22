@@ -895,7 +895,8 @@ pub struct Leg<'a> {
 /// Straightens a cell path into waypoints; the last waypoint is the goal itself. Corners of
 /// the cell path are kept unless the previous waypoint sees past them. At most `max_work` line-of-sight cells are walked;
 /// past that the remaining corners are kept as they are (still a valid path). Returns the
-/// work spent, or `None` when more than `MAX_WAYPOINTS` waypoints remain.
+/// work spent: `Ok`, or `Err` when more than `MAX_WAYPOINTS` waypoints remain (the work
+/// was spent either way and belongs in the caller's budget).
 pub fn straighten(
     grid: &NavGrid,
     leg: Leg,
@@ -903,7 +904,7 @@ pub fn straighten(
     max_work: usize,
     corners: &mut Vec<Vec2>,
     out: &mut Vec<Vec2>,
-) -> Option<usize> {
+) -> Result<usize, usize> {
     let Leg { start, cells, goal } = leg;
     corners.clear();
     out.clear();
@@ -935,13 +936,13 @@ pub fn straighten(
             }
         }
         if out.len() == MAX_WAYPOINTS {
-            return None;
+            return Err(work);
         }
         out.push(corners[last]);
         anchor = corners[last];
         i = last + 1;
     }
-    Some(work)
+    Ok(work)
 }
 
 #[cfg(test)]

@@ -335,6 +335,26 @@ pub fn editor_kinds(condition: bool) -> Vec<(&'static str, Value, Value)> {
     }
 }
 
+/// Public schema text for the action (`condition == false`) or condition kinds, generated
+/// from [`editor_kinds`] so the schema and the editor forms list the same kinds and fields.
+pub fn schema_kinds(condition: bool) -> String {
+    editor_kinds(condition)
+        .iter()
+        .map(|(kind, _, schema)| {
+            let fields = schema["properties"]
+                .as_object()
+                .map(|p| p.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            if fields.is_empty() {
+                (*kind).to_owned()
+            } else {
+                format!("{kind}{{{fields}}}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 struct Compiled {
     id: String,
     states: Vec<(String, ActionDef)>,
@@ -450,6 +470,103 @@ fn nearest(state: &RuntimeState, me: usize, tag: &str) -> Option<(f32, Vec3)> {
     nearest_slot(state, me, tag).map(|(d, dir, _)| (d, dir))
 }
 
+/// Every emitted event must exist in behavior.program and need at most a text `agent`
+/// field. Returns event -> whether the payload declares `agent`. Shared by authoring
+/// validation (preview/apply) and system construction, so both fail the same way.
+fn emitted_events(w: &World, defs: &Machines) -> Result<BTreeMap<String, bool>> {
+    let mut events = BTreeMap::new();
+    let program = w.resources.get("behavior.program");
+    for (id, m) in &defs.machines {
+        for (name, event) in m
+            .states
+            .iter()
+            .filter_map(|(n, s)| s.emit.as_ref().map(|e| (n, e)))
+        {
+            let pointer = || {
+                format!(
+                    "/resources/fsm.machines/machines/{}/states/{}/emit",
+                    axiom_core::local::escape(id),
+                    axiom_core::local::escape(name)
+                )
+            };
+            let fields = program
+                .and_then(|p| {
+                    p.pointer(&format!(
+                        "/events/{}/fields",
+                        axiom_core::local::escape(event)
+                    ))
+                })
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    Diagnostic::error(
+                        "unknown_event",
+                        pointer(),
+                        format!("fsm emits {event}, which behavior.program does not declare"),
+                    )
+                })?;
+            if !(fields.keys().all(|k| k == "agent")
+                && fields.get("agent").is_none_or(|t| t == "text"))
+            {
+                return Err(Diagnostic::error(
+                    "invalid_event",
+                    pointer(),
+                    format!("fsm event {event} may only declare a text `agent` field"),
+                ));
+            }
+            if !w.systems.iter().any(|s| s == "behavior.execute") {
+                return Err(Diagnostic::error(
+                    "missing_system",
+                    pointer(),
+                    format!("fsm emits {event}; enable the behavior.execute system"),
+                ));
+            }
+            events.insert(event.clone(), fields.contains_key("agent"));
+        }
+    }
+    Ok(events)
+}
+
+/// Cross-object checks `fsm.step` needs to start, run by `World::compile` (preview, apply,
+/// editor commits) so an invalid reference never reaches a committed revision.
+fn validate_world(w: &World) -> Result<()> {
+    if !w.systems.iter().any(|s| s == "fsm.step") {
+        return Ok(());
+    }
+    let defs: Machines = if w.resources.contains_key("fsm.machines") {
+        w.resource("fsm.machines")?
+    } else {
+        Machines::default()
+    };
+    for e in &w.entities {
+        let c = w.resolved_components(e);
+        let Some(raw) = c.get("fsm.agent") else {
+            continue;
+        };
+        let agent: Agent = serde_json::from_value(raw.clone())?;
+        let at = |field: &str| {
+            format!(
+                "/entities/@{}/components/fsm.agent{field}",
+                axiom_core::local::escape(&e.id)
+            )
+        };
+        if !defs.machines.contains_key(&agent.machine) {
+            return Err(Diagnostic::error(
+                "not_found",
+                at("/machine"),
+                format!("entity {} uses unknown fsm machine {}", e.id, agent.machine),
+            ));
+        }
+        if !c.contains_key("core.transform") {
+            return Err(Diagnostic::error(
+                "missing_component",
+                at(""),
+                format!("fsm agent {} needs core.transform", e.id),
+            ));
+        }
+    }
+    emitted_events(w, &defs).map(|_| ())
+}
+
 impl FsmSystem {
     pub fn new(state: &RuntimeState) -> Result<Self> {
         let defs: Machines = if state.compiled.source.resources.contains_key("fsm.machines") {
@@ -511,39 +628,7 @@ impl FsmSystem {
             }
         }
         let blockers = axiom_core::blocker::blockers(&state.compiled.entities)?;
-        // Every emitted event must exist in behavior.program and need at most an `agent` field.
-        let mut events = BTreeMap::new();
-        let program = state.compiled.source.resources.get("behavior.program");
-        for m in defs.machines.values() {
-            for event in m.states.values().filter_map(|s| s.emit.as_ref()) {
-                let fields = program
-                    .and_then(|p| {
-                        p.pointer(&format!(
-                            "/events/{}/fields",
-                            axiom_core::local::escape(event)
-                        ))
-                    })
-                    .and_then(Value::as_object)
-                    .with_context(|| {
-                        format!("fsm emits {event}, which behavior.program does not declare")
-                    })?;
-                ensure!(
-                    fields.keys().all(|k| k == "agent")
-                        && fields.get("agent").is_none_or(|t| t == "text"),
-                    "fsm event {event} may only declare a text `agent` field"
-                );
-                ensure!(
-                    state
-                        .compiled
-                        .source
-                        .systems
-                        .iter()
-                        .any(|s| s == "behavior.execute"),
-                    "fsm emits {event}; enable the behavior.execute system"
-                );
-                events.insert(event.clone(), fields.contains_key("agent"));
-            }
-        }
+        let events = emitted_events(&state.compiled.source, &defs)?;
         Ok(Self {
             machines,
             agents,
@@ -733,12 +818,18 @@ impl RuntimeSystem for FsmSystem {
                 self.agents.ticks[a] = self.agents.ticks[a].saturating_add(1);
             }
             let s = self.agents.state[a];
-            if let ActionDef::Attack {
-                tag,
-                range,
-                damage,
-                interval_ticks,
-            } = &self.machines[mi].states[s].1
+            // A defeated agent (health 0) still transitions, emits and cues clips, but
+            // deals no damage. Agents without core.health are never defeated.
+            let alive = state.health[slot].as_ref().is_none_or(|h| h.value > 0.0);
+            if let (
+                true,
+                ActionDef::Attack {
+                    tag,
+                    range,
+                    damage,
+                    interval_ticks,
+                },
+            ) = (alive, &self.machines[mi].states[s].1)
             {
                 self.agents.cooldown[a] = self.agents.cooldown[a].saturating_sub(1);
                 if self.agents.cooldown[a] == 0 {
@@ -955,18 +1046,24 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.resource(
         "fsm.machines",
         "fsm",
-        json!({"machines":"id -> {initial, states:{name:{action:{kind:stop|move_toward{tag,speed,stop_within?}|move_away{tag,speed}|attack{tag,range,damage,interval_ticks}}, emit?: behavior.program event on enter (text field `agent` receives the agent ID)}}, transitions:[{from:state|*, to, when:{kind:near{tag,within}|far{tag,beyond}|health_below{value}|in_state_ticks{ticks}|chance{per_tick}|always}}]}; first passing transition per tick wins"}),
+        json!({"machines":format!("id -> {{initial, states:{{name:{{action:{{kind:{}}}, emit?: behavior.program event on enter (text field `agent` receives the agent ID), clip?: animation.player clip played on enter, clip_loop?: bool (default true; false plays once and holds)}}}}, transitions:[{{from:state|*, to, when:{{kind:{}}}}}]}}; first passing transition per tick wins", schema_kinds(false), schema_kinds(true))}),
         |v| serde_json::from_value::<Machines>(v.clone())?.validate(),
     );
     r.authoring.component(
         "fsm.agent",
         "fsm",
-        json!({"machine":"fsm.machines ID"}),
+        json!({"machine":"fsm.machines ID (must exist when fsm.step runs; the entity needs core.transform)","radius":"body radius in meters for separation and blockers, 0.05..5 (default 0.3)"}),
         |v| {
             let a: Agent = serde_json::from_value(v.clone())?;
-            valid_id(&a.machine)
+            valid_id(&a.machine)?;
+            ensure!(
+                a.radius.is_finite() && (0.05..=5.0).contains(&a.radius),
+                "fsm.agent radius must be 0.05..5"
+            );
+            Ok(())
         },
     );
+    r.authoring.world_validators.push(validate_world);
     r.authoring
         .movers
         .insert("fsm.agent".into(), "fsm.step".into());

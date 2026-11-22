@@ -586,6 +586,47 @@ fn many_finishes_wait_for_the_event_budget() {
 }
 
 #[test]
+fn replay_while_the_previous_finish_is_queued_is_a_retryable_error() {
+    // R5 F14: a player whose on_finish waits in the backlog cannot start a new run (whose
+    // finish would be merged into the queued one); after delivery the same call succeeds
+    // and both finishes are delivered.
+    let n = axiom_core::tween::MAX_TWEEN_EVENTS_PER_STEP + 6;
+    let many: Vec<Value> = (0..n)
+        .map(|i| {
+            tweened(
+                &format!("t/{i}"),
+                json!({"a":yaw_clip(json!({"autoplay":true,"on_finish":"door_moved","speed":100.0}))}),
+            )
+        })
+        .collect();
+    let mut r = runtime(world(Value::Array(many)));
+    while var(&r, "moves") == 0 {
+        steps(&mut r, 1);
+    }
+    assert_eq!(summary(&r)["queued"], 6);
+    let last = format!("t/{}", n - 1);
+    let play = json!({"id":last,"clip":"a","restart":true});
+    let error = format!("{:#}", call(&mut r, "play", play.clone()).unwrap_err());
+    assert!(
+        error.contains("previous on_finish is still queued"),
+        "{error}"
+    );
+    // The first player's event was delivered: it may play again.
+    call(
+        &mut r,
+        "play",
+        json!({"id":"t/0","clip":"a","restart":true}),
+    )
+    .unwrap();
+    steps(&mut r, 1);
+    assert_eq!(var(&r, "moves"), n as i64);
+    call(&mut r, "play", play).unwrap();
+    // speed 100: the 1 s clip finishes within the next step.
+    steps(&mut r, 2);
+    assert_eq!(var(&r, "moves"), n as i64 + 2);
+}
+
+#[test]
 fn scenario_uses_the_door_and_asserts_its_rotation() {
     let scenario: axiom_runtime::scenario::Scenario = serde_json::from_value(json!({
         "ticks":200,

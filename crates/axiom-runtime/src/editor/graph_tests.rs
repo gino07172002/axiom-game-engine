@@ -44,11 +44,12 @@ impl Harness {
     fn new(world: World) -> Self {
         Self::with_runtime(world.clone(), world)
     }
-    /// `world` in the editor and store; the runtime is built from `running` (a world the
-    /// runtime refuses still opens in the editor).
+    /// `world` in the editor; the runtime and the store are built from `running` (a world
+    /// the runtime and the store refuse, such as an fsm state emitting an undeclared event,
+    /// still opens in the editor and shows its graph checks).
     fn with_runtime(world: World, running: World) -> Self {
         let registry = crate::installed_registry();
-        let runtime = WorldRuntime::new(running, 1, crate::installed_registry()).unwrap();
+        let runtime = WorldRuntime::new(running.clone(), 1, crate::installed_registry()).unwrap();
         let mut editor = Editor::new(world.clone(), 1, None);
         editor.set_component_hints(&registry.authoring);
         // Graphs and Inspector side by side, Problems and Hierarchy below: no tiny panes.
@@ -65,7 +66,7 @@ impl Harness {
             ctx: egui::Context::default(),
             editor,
             runtime,
-            store: Store::memory_with(registry.authoring, world.clone()).unwrap(),
+            store: Store::memory_with(registry.authoring, running).unwrap(),
             expected: world,
         }
     }

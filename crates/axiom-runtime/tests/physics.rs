@@ -276,6 +276,41 @@ fn identical_runs_and_checkpoints_are_deterministic() {
 }
 
 #[test]
+fn a_fast_light_body_checkpoint_round_trips() {
+    // R5 F4: 2 N·s on a 0.001 kg body is a legal impulse (inputs within ±1000) that yields
+    // 2000 m/s. The save succeeded but the load refused anything above 1000 m/s.
+    let scene = || {
+        let mut w = world(json!([{"id":"pebble","components":{
+            "core.transform":{"position":[0,50,0]},
+            "physics.collider":{"shape":{"shape":"sphere","radius":0.1}},
+            "physics.body":{"mass":0.001}}}]));
+        w.capabilities.insert("save".into(), 1);
+        w
+    };
+    let mut a = runtime(scene());
+    call(
+        &mut a,
+        "impulse",
+        json!({"id":"pebble","impulse":[2.0,0.0,0.0]}),
+    )
+    .unwrap();
+    let speed = call(&mut a, "inspect", json!({"id":"pebble"})).unwrap()["velocity"][0]
+        .as_f64()
+        .unwrap();
+    assert!(speed > 1000.0, "{speed}");
+    let saved = a.checkpoint().unwrap();
+    let mut b = runtime(scene());
+    b.restore_checkpoint(&saved).unwrap();
+    assert_eq!(
+        call(&mut b, "inspect", json!({"id":"pebble"})).unwrap()["velocity"],
+        call(&mut a, "inspect", json!({"id":"pebble"})).unwrap()["velocity"]
+    );
+    steps(&mut a, 10);
+    steps(&mut b, 10);
+    assert_eq!(a.state.transforms, b.state.transforms);
+}
+
+#[test]
 fn hot_reload_keeps_moving_bodies_and_restarts_edited_ones() {
     let start = world(json!([
         floor(),

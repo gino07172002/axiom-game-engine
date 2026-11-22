@@ -14,6 +14,8 @@ pub struct Envelope {
     pub publisher: String,
     pub fields: BTreeMap<String, Scalar>,
 }
+/// Cross-package envelopes one fixed tick may publish; the next publish sets `fault`.
+pub const MAX_PENDING: usize = 128;
 #[derive(Clone, Default)]
 pub struct Events {
     specs: BTreeMap<String, NativeEvent>,
@@ -47,6 +49,10 @@ impl Events {
     }
     pub fn owns(&self, event: &str) -> bool {
         self.specs.contains_key(event)
+    }
+    /// Envelopes that can still be published this tick without a queue fault.
+    pub fn room(&self) -> usize {
+        MAX_PENDING.saturating_sub(self.pending.len())
     }
     pub fn publish(
         &mut self,
@@ -86,7 +92,7 @@ impl Events {
                 );
             }
             ensure!(
-                self.pending.len() < 128,
+                self.pending.len() < MAX_PENDING,
                 "cross-package event queue exceeds 128 per tick"
             );
             Ok(())
