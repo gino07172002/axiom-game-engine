@@ -65,4 +65,6 @@
 
 觸及他人區域:`crates/axiom-runtime/src/events.rs`(常數與 `room()`)、`crates/axiom-core/src/navigation.rs`(`straighten` 回傳型別)、`crates/axiom-runtime/src/editor/viewport.rs`(預覽重繪一處)。
 
-Gate:見 commit 訊息與 R5 hand-back(fmt / clippy / workspace test / editor-smoke / 兩個 parity / street parity / m0 smoke)。
+連帶修改:`editor/graph_tests.rs` 的 `Harness::with_runtime` 改用可執行的世界建 store(store 現在會拒絕含未宣告 `emit` 的世界;編輯器仍開啟該草稿並顯示 graph checks)。注意:既有資料庫若最新修訂含這類無效 FSM 參照,開啟時 `World::compile` 會拒絕(與 trigger / nav 事件檢查同一政策);這類世界原本就無法啟用 runtime。
+
+Gate(R5 worktree,debug):`cargo fmt --all --check` 通過;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` 除兩個計時測試外全過 — `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(500 ms 門檻)與 `m15::agent_timeout_is_a_failed_task_and_never_a_zero_token_success`(10 s 門檻)在其他 agent 平行負載下失敗,單獨重跑皆通過;`axiom-runtime --lib` 全部重跑 342/343 通過(唯一失敗為同一計時測試,單獨重跑通過)。`editor-smoke-test`(port 4552)ok;`editor-world-parity`(4566)identical,rev 13/13;`street-editor-parity`(4562)identical,rev 16/16;`m0-smoke-test`(4362)PASS。無渲染管線改動,未做截圖 A/B。
