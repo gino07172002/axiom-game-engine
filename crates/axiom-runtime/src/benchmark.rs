@@ -335,9 +335,10 @@ fn exchange(
 ) -> Value {
     let bytes = serde_json::to_vec(&request).unwrap().len();
     let start = Instant::now();
+    // The same failure reply as the live bridge (`batch_partial` keeps its counts).
     let response = h
         .dispatch(request.clone())
-        .unwrap_or_else(|e| error_response(&e));
+        .unwrap_or_else(|e| crate::world::request_error_response(&e));
     let response_bytes = serde_json::to_vec(&response).unwrap().len();
     cost.tool_calls += 1;
     cost.request_bytes += bytes as u64;
@@ -594,13 +595,17 @@ mod retry_tests {
         .world;
         let mut h = Harness::new(world, registry).unwrap();
         let session = h.runtime.runtime_session.clone();
+        let spent = |h: &Harness| {
+            h.runtime.observation().metrics["rts"]["summary"]["stats"]["spent"].clone()
+        };
         let batch = Request::Command {
             command: RuntimeCommand::Batch {
                 commands: vec![
+                    // Accumulates: every application queues a soldier and spends 60.
                     RuntimeCommand::Call {
-                        capability: "input".into(),
-                        action: "activate".into(),
-                        args: json!({"context":"hero"}),
+                        capability: "rts".into(),
+                        action: "train".into(),
+                        args: json!({"building":"squad/base","recipe":"soldier","count":1}),
                     },
                     // Schema-valid; refused only when it runs (no dry-run hook in rts).
                     RuntimeCommand::Call {
@@ -623,13 +628,47 @@ mod retry_tests {
         assert_eq!(first["failed_index"], 1);
         assert_eq!(first["diagnostics"][0]["code"], "batch_partial");
         assert_eq!(first["request_id"], "retry-1");
-        let tick = h.runtime.state.tick;
-        // The retry answers from the receipt.
+        assert_eq!(spent(&h), 60, "the prefix applied once");
+        // The retry answers from the receipt and applies nothing again.
         let again = h.dispatch(execute()).unwrap();
         assert_eq!(again, first);
-        assert_eq!(h.runtime.state.tick, tick);
-        // A plain command reports the same typed failure (no receipt without execute).
+        assert_eq!(spent(&h), 60, "a retry never applies the prefix twice");
+        // A plain command reports the same typed failure (no receipt without execute)...
         let plain = h.dispatch(batch.clone()).unwrap_err();
         assert_eq!(crate::world::PartialBatch::of(&plain).unwrap().applied, 1);
+        assert_eq!(spent(&h), 120);
+        // ...and the benchmark's exchange answers it as the live bridge does.
+        let mut budget = TRANSCRIPT_BUDGET;
+        let mut transcript = Transcript {
+            entries: vec![],
+            budget: &mut budget,
+            dropped: 0,
+        };
+        let switch_then_fail = Request::Command {
+            command: RuntimeCommand::Batch {
+                commands: vec![
+                    RuntimeCommand::Call {
+                        capability: "input".into(),
+                        action: "activate".into(),
+                        args: json!({"context":"hero"}),
+                    },
+                    RuntimeCommand::Call {
+                        capability: "rts".into(),
+                        action: "train".into(),
+                        args: json!({"building":"nowhere","recipe":"worker","count":1}),
+                    },
+                ],
+            },
+            expected_rev: None,
+        };
+        let reply = exchange(
+            &mut h,
+            switch_then_fail,
+            &mut Cost::default(),
+            &mut transcript,
+        );
+        assert_eq!(reply["diagnostics"][0]["code"], "batch_partial", "{reply}");
+        assert_eq!(reply["applied_count"], 1, "{reply}");
+        assert_eq!(reply["failed_index"], 1, "{reply}");
     }
 }

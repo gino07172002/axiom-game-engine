@@ -126,6 +126,32 @@ Gate(worktree r2,debug):`cargo fmt --all -- --check` 通過;`cargo clippy --work
 
 未驗證:新測試「修正前會失敗」是依程式碼推理確認(每個測試都直接重現報告描述的序列),沒有逐一 revert 實跑;F2 / F3 / F9 沒有額外做主執行緒時間的 A/B 量測(改動是移除等待,不宣稱效能數字)。
 
+#### R2 第二輪(複審)
+
+輸入:`R2.recheck.md`(A 段 9 項「有問題」、C 段 N1/N2)。每項先讀程式碼再判定;全部 CONFIRMED 並修正。worktree `r2b`(基於 `integ`)。
+
+| ID | 判定 | 改動 | 測試 |
+|---|---|---|---|
+| A-F2 | CONFIRMED(兩點都成立) | (1)啟用失敗後 `requested_rev != rev`:`runtime_request` 的 `Command` 若未帶 `expected_rev` 回 `activation_failed`(附 `requested_rev`/`live_rev`)且不執行;帶 `expected_rev = live_rev` 表示刻意操作執行中的版本,照常執行。(2)Bridge 等待改為 deadline + `RUNTIME_REPLY_GRACE`(1 s),讓主執行緒的 `runtime_timeout`(含兩個版本欄位)送達;主執行緒連 grace 都沒回時,Bridge 自己回同一 code,版本取自 observation。`frame` 的請求迴圈抽成 `handle_commands` 供測試共用 | `app::tests::a_bridge_command_never_runs_on_the_older_revision_after_a_failed_or_slow_activation`(真實 loopback Bridge + `bridge::call`,m4 的 `rts.train` 以 `spent` 觀察副作用;涵蓋建置失敗、逾時、之後在新版本執行) |
+| A-F5 | CONFIRMED | `WorldRuntime::new_replacing(.., first_generation)`:handle generation 在 factory 執行前就從替換起點開始。同步 `reconcile` 用舊 runtime 的 `next_generation`;背景啟用用 `next_generation + 2^32`(建置期間舊 runtime 仍可 spawn)。`adopt` 跨 `world.id` 時只有在 generation 會撞到舊值(用 `new` 建的,或 spawn 超過 headroom)才重新編號(保底,舊 handle 永不解析)。同一世界的 `transfer_state` 不變 | `generic_runtime::a_handle_a_system_factory_keeps_resolves_after_switching_to_another_world`(公開 `Plugin` 的 factory 保存 `state.ids[0]`)、`world::generation_tests::a_replacement_built_off_thread_keeps_its_factory_handles_across_worlds` |
+| A-F9 | CONFIRMED(兩點) | (1)`writer.rs`:開庫失敗不再永久保存;每個請求前重試開庫,仍失敗回 `writer_unavailable`(暫不可寫,可重試)。(2)watchdog 換 writer 失敗時設 `writer_required`,之後的編輯先重試起 writer,失敗回 `writer_unavailable`,不再退回主執行緒同步提交。`axiom-runtime` 新增 dev-dependency `rusqlite`(與 axiom-core 相同版本與 features,不增加建置的 crate) | `writer::tests::a_writer_that_could_not_open_the_database_retries_on_the_next_request`(另一連線 `BEGIN IMMEDIATE` 持鎖超過 busy timeout)、`app::tests::an_edit_after_a_failed_writer_restart_starts_a_writer_again`;thread spawn 失敗分支靠閱讀 |
+| A-F10 | CONFIRMED(兩點) | (1)`Reload::poll` 對 stop 後完成的 `Ok(Built)` 標記 `stopped`,由 `decide` 回 `Discard(Some(runtime))` 交給 `retire`,不在畫幀執行緒釋放。(2)`Job` 的 worker 連同完成時間送出結果;`poll` 領取時若完成時間超過 deadline 一律回 `TimedOut`(準時完成但晚被 poll 的不算) | `asset_reload::tests::a_reload_cancelled_after_its_build_finished_is_not_adopted`(改為帶實際 `WorldRuntime`,並加逾時後才被領取的情況)、`jobs::tests::a_result_finished_past_the_deadline_is_timed_out_even_when_already_queued` |
+| A-F12 | CONFIRMED | `reload_assets {cancel}` 也取消它自己啟動的 activation 重試(`retry_rev`;取消後不採用,runtime 留在 live 版本)與等待中的編輯器 reload。GUI `asset.reload` 在 activation 進行中改為等待(`reload_waiting`)完成後再跑,與 RPC 延後執行一致,不再對即將被取代的舊版本重建 | `app::tests::reload_assets_start_and_cancel_agree_while_an_activation_is_involved` |
+| A-F6 | CONFIRMED | 新增 `world::request_error_response`(`batch_partial` 帶 `applied_count`/`failed_index`),`handle_command` 與 benchmark `exchange` 共用。receipt 測試改用會累加的前綴(`rts.train` 扣 60 minerals) | `app::tests::a_partly_applied_live_execute_batch_applies_its_prefix_once`(live `execute` 經 `handle_command`);`benchmark::retry_tests::a_partly_applied_batch_gets_a_receipt_with_its_applied_count`(改為累加前綴並檢查 `exchange` 回覆) |
+| A-F8 | CONFIRMED | `scan` 的資料夾上限改為 `FOLDER_FILES + 1`(清單含模型本身),每個模型扣掉自己後仍須 ≤ 512,與 `companions` 同語意。無法讀取時不再轉成 `None`:記在 `watch_error`(observe `assets_reload.watch_error`),新錯誤時寫到 console 與編輯器狀態列一次;掃描逾時也回報。`job_observation` 在沒有 reload job 時顯示執行中的 `asset_watch` 掃描(狀態列 jobs) | `asset_reload::tests::a_flat_folder_with_512_companions_is_watched_and_one_more_is_reported` |
+| A-F14 | CONFIRMED | `Assertion::Field` 指向 `float`/`vec3` typed column 時,期望值先轉成 `f32` 精度再比較(數字與陣列) | `scenario::tests::float_field_assertions_compare_at_the_columns_precision`(`eq 0.1`、`le`、`vec3` 元素與整個陣列;`eq 0.11`、`gt 0.1` 仍失敗) |
+| A-F11 | CONFIRMED(測試缺口) | 程式不變;補正式入口測試 | `app::tests::an_editor_asset_reload_is_cancelled_and_watched_over_the_loopback`(含模型的 edit session:GUI `asset.reload` 啟動、loopback `cancel`、loopback `watch` 開關與 observe) |
+| N1 | CONFIRMED | `Editor::check_remote`(無副作用):未存草稿、`select` ID、`dock` 名稱、`open` 目標(與 `remote_open` 相同的 not_found 診斷)、未知 `command` ID,在 `editor_play` 之前檢查。gizmo 拖曳條件與指令的狀態相依可用性仍由原本的地方檢查(Play 會結束拖曳)。未動 capture 處理 | `app::tests::a_refused_editor_view_never_starts_play` |
+| N2 | CONFIRMED | `App::record_command`:三個記錄點(bridge/RPC、元件 ▶、遊戲 UI)共用;`PartialBatch` 呼叫 `recorder.mark_inexact`,錄製不寫 `state_hash` 斷言 | `app::tests::a_partly_applied_batch_makes_a_play_recording_inexact`(m4 錄製,摘要 `exact:false`,檔案可重播) |
+
+行為變更:未帶 `expected_rev` 的 runtime `command` 在最新版本啟用失敗時被拒(`activation_failed`);Bridge runtime 請求最長多等 1 s(仍在 `call` 的 5 s 讀取期限內);`Job` 在 deadline 後才完成的結果標為 `timed_out`(scenario job 也適用);背景啟用切換到另一個 `world.id` 後 handle generation 數值會大(起點 +2^32)。
+
+範圍外觸碰:`editor/graph.rs`(`graph_world` 改 `pub(super)` 供 `check_remote` 使用)、`axiom-runtime/Cargo.toml`(dev-dependency)。
+
+Gate(worktree r2b,debug):`cargo fmt --all` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` 958 passed / 4 failed / 6 ignored,4 個失敗都是負載下的計時測試(其他 agent 同時在編譯):`app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`、`editor_scenario_watchdog_stops_a_long_run`、`bridge::tests::fragmented_tcp_request_and_atomic_round_trip`(連線逾時 10060)、`m15::agent_timeout_is_a_failed_task_and_never_a_zero_token_success`,單獨重跑全部通過。新增的 17 個測試(含改寫的)單獨跑全過。`editor-smoke-test -Port 4752` PASS;`editor-world-parity -Port 4766` identical(rev 13);`street-editor-parity -Port 4762` identical(rev 16);`m0-smoke-test -Port 4772` PASS。無渲染改動,不做截圖 A/B。
+
+未驗證:新測試在修正前會失敗是依程式碼推理(每個測試重現複審描述的序列),沒有逐一 revert 實跑;F9 的 thread spawn 失敗分支無法在測試中觸發,靠閱讀;未做 A/B 量測,不宣稱效能數字。
+
 ### R4 動畫
 
 範圍:`crates/axiom-animation`、`axiom-runtime/src/animation*.rs`。15 項 finding:14 項 CONFIRMED 並修改,1 項延後(F9)。沒有改 axiom-core、CLI、app.rs 或渲染檔案。測試輸入都在程式碼裡產生,沒有加入任何第三方資產。

@@ -128,6 +128,16 @@ struct App {
     changes_job: Option<(i64, crate::jobs::Job<serde_json::Value>)>,
     /// Model hot reload by content hash (`reload_assets`, editor `asset.reload|watch`).
     asset_reload: crate::asset_reload::Reload,
+    /// Revision of the in-flight activation when `reload_assets` started it as a retry
+    /// (its `cancel` stops it like an asset reload job).
+    retry_rev: Option<i64>,
+    /// The editor asked `asset.reload` while a revision activation was in flight: it runs
+    /// once that activation is done (as a protocol `reload_assets` waits for it).
+    reload_waiting: bool,
+    /// Editor edits need the background writer (file database) but the last one stalled
+    /// and a replacement could not start: edits are refused (and the writer retried), never
+    /// committed on the main thread.
+    writer_required: bool,
     /// Frames over the 16 ms budget and the phases of the last one (`observe` -> `frame`).
     slow_frames: u64,
     last_slow_frame: Option<serde_json::Value>,
@@ -475,6 +485,9 @@ struct Activation {
 
 /// Watchdog for one background runtime build.
 const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Entity handle generations left to the running runtime (spawns) while its replacement is
+/// built on a worker; the replacement's handles start above them (`new_replacing`).
+const GENERATION_HEADROOM: u64 = 1 << 32;
 
 /// Main-thread wall-clock phases of applying one new authoring revision (milliseconds).
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -813,6 +826,9 @@ impl App {
             activation: None,
             changes_job: None,
             asset_reload: Default::default(),
+            retry_rev: None,
+            reload_waiting: false,
+            writer_required: false,
             slow_frames: 0,
             last_slow_frame: None,
             writes: None,
@@ -1302,7 +1318,10 @@ impl App {
                 // closing: shutdown reports the stall instead.)
                 if !self.closing {
                     if let Err(error) = self.enable_writer(None) {
+                        // Never fall back to commits on this thread: the next edit is
+                        // refused as not writable and retries starting a writer.
                         eprintln!("editor writer could not be restarted: {error:#}");
+                        self.writer_required = true;
                     }
                 }
                 if let Some(next) = &mut self.writes {
@@ -1756,6 +1775,30 @@ impl App {
         }
     }
 
+    /// Records a runtime command that ran during a recorded Play. A batch that failed after
+    /// applying a prefix changed state the recording cannot reproduce (only successful
+    /// commands are written), so the recording becomes inexact (no `state_hash` assertion).
+    fn record_command(
+        &mut self,
+        command: &axiom_core::gameplay::RuntimeCommand,
+        result: &Result<serde_json::Value>,
+    ) {
+        let Some(recorder) = self.recorder() else {
+            return;
+        };
+        match result {
+            Ok(_) => recorder.command(command),
+            Err(error) => {
+                if let Some(partial) = crate::world::PartialBatch::of(error) {
+                    recorder.mark_inexact(format!(
+                        "a batch command failed during Play after applying {} of its commands",
+                        partial.applied
+                    ));
+                }
+            }
+        }
+    }
+
     /// Raw mouse motion while the pointer is captured (mouse-look), recorded as it applies.
     fn mouse_look(&mut self, dx: f32, dy: f32) {
         self.runtime.pointer(dx, dy);
@@ -1799,6 +1842,14 @@ impl App {
                 None => None,
             };
             anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
+            // Select / dock / open targets and the command ID are checked before Play
+            // starts: a refused request leaves the editor in the mode it was in.
+            self.editor.as_ref().unwrap().check_remote(
+                &select,
+                dock.as_deref(),
+                open.as_deref(),
+                command.as_deref(),
+            )?;
             if let Some(play) = play {
                 self.editor_play(play)?;
             }
@@ -1902,10 +1953,20 @@ impl App {
                     expected_rev.is_none_or(|rev| rev == self.runtime.rev),
                     "runtime revision conflict"
                 );
-                let result = self.runtime.command(&command);
-                if let (Ok(_), Some(recorder)) = (&result, self.recorder()) {
-                    recorder.command(&command);
+                if expected_rev.is_none() && self.runtime.requested_rev != self.runtime.rev {
+                    // The newest revision failed to activate: a command meant for "the
+                    // current revision" must not silently run on the older live one.
+                    return Err(axiom_core::Diagnostic::error(
+                        "activation_failed",
+                        "/expected_rev",
+                        format!(
+                            "not executed: revision {} failed to activate and the runtime still runs revision {}; fix the revision (reload_assets retries it) or pass expected_rev {} to command the running one",
+                            self.runtime.requested_rev, self.runtime.rev, self.runtime.rev
+                        ),
+                    ));
                 }
+                let result = self.runtime.command(&command);
+                self.record_command(&command, &result);
                 result
             }
             Request::Save { slot } => {
@@ -2070,11 +2131,13 @@ impl App {
         started: Instant,
     ) -> Result<()> {
         let registry = self.runtime.registry_clone();
+        // Handles start above any the running runtime can issue while this builds.
+        let generation = self.runtime.replacement_generation(GENERATION_HEADROOM);
         let job = crate::jobs::Job::spawn(
             "activation",
             format!("revision {rev}"),
             ACTIVATION_TIMEOUT,
-            move |_| WorldRuntime::new(&*world, rev, registry),
+            move |_| WorldRuntime::new_replacing(&*world, rev, registry, generation),
         )?;
         timings.request_ms = ms(started);
         self.activation = Some(Activation { rev, job, timings });
@@ -2101,6 +2164,7 @@ impl App {
             mut timings,
             job,
         } = self.activation.take().unwrap();
+        self.retry_rev = None;
         timings.build_ms = job.elapsed().as_secs_f64() * 1000.0;
         drop(job);
         let built = match outcome {
@@ -2165,7 +2229,18 @@ impl App {
     /// `reload_assets` / editor `asset.reload|watch`.
     fn reload_assets(&mut self, watch: Option<bool>, cancel: bool) -> Result<serde_json::Value> {
         if cancel {
-            return Ok(serde_json::json!({"ok":true,"cancelled":self.asset_reload.cancel()}));
+            // Whatever an earlier `reload_assets` / `asset.reload` started: the asset reload
+            // job, the retry of a failed activation (never adopted once cancelled; the
+            // runtime stays on its live revision), or an editor reload still waiting.
+            let mut cancelled = self.asset_reload.cancel();
+            if let Some(rev) = self.retry_rev.take() {
+                if self.activation.as_ref().is_some_and(|a| a.rev == rev) {
+                    self.activation.take().unwrap().job.detach();
+                    cancelled = true;
+                }
+            }
+            cancelled |= std::mem::take(&mut self.reload_waiting);
+            return Ok(serde_json::json!({"ok":true,"cancelled":cancelled}));
         }
         if let Some(watch) = watch {
             self.asset_reload.set_watch(&self.runtime, watch)?;
@@ -2207,6 +2282,7 @@ impl App {
         if self.background_activation {
             timings.background = true;
             self.start_activation(world, rev, timings, started)?;
+            self.retry_rev = Some(rev);
             return Ok(Some(rev));
         }
         let renderer = &mut self.renderer;
@@ -2238,10 +2314,23 @@ impl App {
         if let Some(ask) = self.editor.as_mut().and_then(|e| e.take_asset_reload()) {
             // The same host handler as the protocol's `reload_assets`.
             let result = match ask {
+                crate::editor::AssetReloadAsk::Now if self.activation.is_some() => {
+                    // Like a protocol request, a reload waits for the revision activation
+                    // in flight (it reloads that revision, not the one being replaced).
+                    self.reload_waiting = true;
+                    Ok(serde_json::Value::Null)
+                }
                 crate::editor::AssetReloadAsk::Now => self.reload_assets(None, false),
                 crate::editor::AssetReloadAsk::Watch(on) => self.reload_assets(Some(on), false),
             };
             if let (Err(error), Some(editor)) = (result, &mut self.editor) {
+                editor.set_error(format!("Asset reload: {error:#}"));
+            }
+        }
+        if self.reload_waiting && self.activation.is_none() {
+            self.reload_waiting = false;
+            if let (Err(error), Some(editor)) = (self.reload_assets(None, false), &mut self.editor)
+            {
                 editor.set_error(format!("Asset reload: {error:#}"));
             }
         }
@@ -2250,10 +2339,18 @@ impl App {
                 self.ui.output.push(format!("asset reload: {error:#}"));
             }
         }
+        if let Some(line) = self.asset_reload.take_watch_error() {
+            self.ui.output.push(line.clone());
+            if let Some(editor) = &mut self.editor {
+                editor.set_error(line);
+            }
+        }
         if let Some(editor) = &mut self.editor {
             editor.reload_watching = self.asset_reload.watch;
-            if self.asset_reload.running() || editor.host_job.is_some() {
-                editor.host_job = self.asset_reload.job_observation();
+            // The reload job, else a running watch scan (both are host jobs).
+            let job = self.asset_reload.job_observation();
+            if job.is_some() || editor.host_job.is_some() {
+                editor.host_job = job;
             }
         }
         let Some((result, elapsed)) = self.asset_reload.poll() else {
@@ -2367,6 +2464,18 @@ impl App {
                 "the editor is read-only during Play; stop Play to edit (agents can still apply revisions)",
             ));
         }
+        if write && self.writes.is_none() && self.writer_required {
+            // The stalled writer could not be replaced: try again now, and refuse the edit
+            // (recoverably) rather than commit it on this thread.
+            if let Err(error) = self.enable_writer(None) {
+                return Err(axiom_core::Diagnostic::error(
+                    "writer_unavailable",
+                    "/",
+                    format!("the editor cannot save right now ({error:#}); this edit was not saved, try again"),
+                ));
+            }
+            self.writer_required = false;
+        }
         if self.writes.is_some() {
             // Every editor commit goes to the background writer, in order.
             let kind = match action {
@@ -2451,14 +2560,11 @@ impl App {
                     action,
                     args,
                 };
-                match self.runtime.command(&command) {
-                    Ok(_) => {
-                        // ▶ on a component during a recorded Play is part of the session.
-                        if let Some(recorder) = self.recorder() {
-                            recorder.command(&command);
-                        }
-                    }
-                    Err(error) => self.editor.as_mut().unwrap().problem(&error),
+                // ▶ on a component during a recorded Play is part of the session.
+                let result = self.runtime.command(&command);
+                self.record_command(&command, &result);
+                if let Err(error) = result {
+                    self.editor.as_mut().unwrap().problem(&error);
                 }
                 Ok(())
             }
@@ -2640,6 +2746,7 @@ impl App {
         if let Some(pending) = self.activation.take() {
             // Preview and stop build their runtimes from the current revision themselves.
             pending.job.detach();
+            self.retry_rev = None;
         }
         let (rev, world) = self.store.current()?;
         self.editor
@@ -2793,20 +2900,19 @@ impl App {
                 }
             }
             Err(error) => {
-                let response = match crate::world::PartialBatch::of(&error) {
-                    Some(partial) => partial.response(&error),
-                    None => axiom_core::error_response(&error),
-                };
+                let mut response = crate::world::request_error_response(&error);
+                if response["diagnostics"][0]["code"] == "activation_failed" {
+                    response["requested_rev"] = serde_json::json!(self.runtime.requested_rev);
+                    response["live_rev"] = serde_json::json!(self.runtime.rev);
+                }
                 let _ = command.reply.send(response);
             }
         }
         None
     }
 
-    fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        // The frame profile includes write results and bridge requests handled here.
-        let mut phases = FramePhases::start(Instant::now());
-        self.poll_writes(std::time::Duration::ZERO)?;
+    /// This frame's bridge requests (at most 32): a postponed one first, in arrival order.
+    fn handle_commands(&mut self) {
         for _ in 0..32 {
             let command = match self.deferred_command.take() {
                 Some(command) => command,
@@ -2820,6 +2926,13 @@ impl App {
                 break;
             }
         }
+    }
+
+    fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        // The frame profile includes write results and bridge requests handled here.
+        let mut phases = FramePhases::start(Instant::now());
+        self.poll_writes(std::time::Duration::ZERO)?;
+        self.handle_commands();
         let now = Instant::now();
         let elapsed = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
@@ -3116,14 +3229,13 @@ impl App {
         }
         for action in actions {
             match action {
-                Action::Gameplay(command) => match self.runtime.command(&command) {
-                    Ok(_) => {
-                        if let Some(recorder) = self.recorder() {
-                            recorder.command(&command);
-                        }
+                Action::Gameplay(command) => {
+                    let result = self.runtime.command(&command);
+                    self.record_command(&command, &result);
+                    if let Err(e) = result {
+                        self.ui.output.push(format!("ERROR {e:#}"));
                     }
-                    Err(e) => self.ui.output.push(format!("ERROR {e:#}")),
-                },
+                }
                 Action::Save | Action::Load => {
                     let request = if matches!(action, Action::Save) {
                         Request::Save {
@@ -5215,5 +5327,465 @@ mod tests {
             .filter(|c| c["operation"]["kind"] == "move")
             .count();
         assert_eq!(moves, 12, "two moves per tick coalesce: {raw}");
+    }
+
+    // ---- Round-2 review regressions (R2 recheck) ----
+
+    fn m4_world() -> World {
+        axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/m4"),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world
+    }
+
+    /// Minerals the RTS player spent so far (each `rts.train` of a soldier spends 60).
+    fn spent(app: &App) -> Value {
+        json!(app.runtime.observation())["rts"]["summary"]["stats"]["spent"].clone()
+    }
+
+    fn train(building: &str) -> axiom_core::gameplay::RuntimeCommand {
+        axiom_core::gameplay::RuntimeCommand::Call {
+            capability: "rts".into(),
+            action: "train".into(),
+            args: json!({"building":building,"recipe":"soldier","count":1}),
+        }
+    }
+
+    /// One bridge request handled the way `App::frame` handles it.
+    fn bridge_request(app: &mut App, request: Request) -> Value {
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        let mut waiting = Some(crate::bridge::RuntimeRequest {
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            request,
+            reply,
+        });
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while let Some(request) = waiting.take() {
+            waiting = app.handle_command(request);
+            if waiting.is_some() {
+                app.poll_activation().unwrap();
+                assert!(Instant::now() < deadline, "request never handled");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        if app.writes.is_some() {
+            drain(app);
+        }
+        response.recv().unwrap()
+    }
+
+    /// `axiom play` (no editor) on a file database with a real loopback bridge whose
+    /// requests this test's frame loop answers.
+    fn bridged_play_app(name: &str, world: World) -> (App, String) {
+        let dir = std::env::temp_dir().join(format!("axiom-r2b-bridge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join(name);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+        }
+        let registry = crate::installed_registry();
+        let store = Store::open_with(&db, registry.authoring.clone(), world).unwrap();
+        let mut app = App::new(
+            RunOptions {
+                mode: RunMode::Play { player: None },
+                load_slot: None,
+                replace_world: false,
+                db: db.clone(),
+                port: 0,
+                smoke_frames: None,
+                screenshot: None,
+                start_play: true,
+            },
+            registry.clone(),
+            store,
+        )
+        .unwrap();
+        let (sender, commands) = std::sync::mpsc::sync_channel(32);
+        let bridge = Bridge::start_with_runtime(
+            db,
+            0,
+            app.observation.clone(),
+            registry.authoring,
+            Some(sender),
+            None,
+        )
+        .unwrap();
+        let address = bridge.address().to_string();
+        app.commands = commands;
+        app._bridge = Some(bridge);
+        (app, address)
+    }
+
+    /// Sends `request` over the bridge from another thread while this thread runs the
+    /// frame loop's request handling until the reply arrives.
+    fn call_through_bridge(app: &mut App, address: &str, request: Request) -> Value {
+        let address = address.to_owned();
+        let client = std::thread::spawn(move || crate::bridge::call(&address, &request));
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while !client.is_finished() {
+            app.handle_commands();
+            assert!(Instant::now() < deadline, "bridge call never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        client.join().unwrap().unwrap()
+    }
+
+    /// F2: a command sent over the bridge never runs on an older revision without saying
+    /// so: not after the newest revision failed to activate, and not after its deadline
+    /// while the newest revision is still building (the caller gets `runtime_timeout` with
+    /// both revisions, not a bare transport timeout).
+    #[test]
+    fn a_bridge_command_never_runs_on_the_older_revision_after_a_failed_or_slow_activation() {
+        let (mut app, address) = bridged_play_app("activation.sqlite", m4_world());
+        app.background_activation = true;
+        let rev = app.store.revision().unwrap();
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("Next"))])
+            .unwrap();
+        // The build of rev + 1 fails.
+        app.runtime.requested_rev = rev + 1;
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "failing", ACTIVATION_TIMEOUT, |_| {
+                Err(anyhow::anyhow!("model file missing"))
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        app.finish_activation().unwrap();
+        assert_eq!((app.runtime.rev, app.runtime.requested_rev), (rev, rev + 1));
+        let command = |expected_rev| Request::Command {
+            command: train("squad/base"),
+            expected_rev,
+        };
+        let reply = call_through_bridge(&mut app, &address, command(None));
+        assert_eq!(
+            reply["diagnostics"][0]["code"], "activation_failed",
+            "{reply}"
+        );
+        assert_eq!(reply["requested_rev"], rev + 1);
+        assert_eq!(reply["live_rev"], rev);
+        assert_eq!(spent(&app), 0, "not executed");
+        // Naming the running revision commands it on purpose.
+        let reply = call_through_bridge(&mut app, &address, command(Some(rev)));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(spent(&app), 60);
+
+        // A build that does not finish before the request's 3 s deadline.
+        let (release, built) = std::sync::mpsc::channel::<()>();
+        let world = app.store.current().unwrap().1;
+        let registry = app.runtime.registry_clone();
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "slow", ACTIVATION_TIMEOUT, move |_| {
+                let _ = built.recv_timeout(std::time::Duration::from_secs(30));
+                WorldRuntime::new(&world, rev + 1, registry)
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        let started = Instant::now();
+        let reply = call_through_bridge(&mut app, &address, command(None));
+        assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+        assert_eq!(
+            reply["diagnostics"][0]["code"], "runtime_timeout",
+            "{reply}"
+        );
+        assert_eq!(reply["requested_rev"], rev + 1, "{reply}");
+        assert_eq!(reply["live_rev"], rev, "{reply}");
+        assert_eq!(spent(&app), 60, "not executed");
+        drop(release);
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+        // On the newest revision the same command runs.
+        let reply = call_through_bridge(&mut app, &address, command(None));
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+
+    /// F6: a partly applied batch over the live `execute` gets a receipt; the retry answers
+    /// from it and never applies the (accumulating) prefix again. A plain `command` reports
+    /// the same counts.
+    #[test]
+    fn a_partly_applied_live_execute_batch_applies_its_prefix_once() {
+        let mut app = editor_app_with(m4_world());
+        app.editor_play(true).unwrap();
+        let session = app.runtime.runtime_session.clone();
+        let batch = Request::Command {
+            command: axiom_core::gameplay::RuntimeCommand::Batch {
+                commands: vec![train("squad/base"), train("nowhere")],
+            },
+            expected_rev: None,
+        };
+        let execute = || Request::Execute {
+            request_id: "live-1".into(),
+            runtime_session: Some(session.clone()),
+            request: Box::new(batch.clone()),
+        };
+        let first = bridge_request(&mut app, execute());
+        assert_eq!(first["diagnostics"][0]["code"], "batch_partial", "{first}");
+        assert_eq!(first["applied_count"], 1, "{first}");
+        assert_eq!(spent(&app), 60);
+        let again = bridge_request(&mut app, execute());
+        assert_eq!(again, first);
+        assert_eq!(spent(&app), 60, "the retry applied nothing");
+        let plain = bridge_request(&mut app, batch.clone());
+        assert_eq!(plain["applied_count"], 1, "{plain}");
+        assert_eq!(plain["failed_index"], 1, "{plain}");
+        assert_eq!(spent(&app), 120);
+    }
+
+    /// N2: a batch that fails after applying a prefix during a recorded Play makes the
+    /// recording inexact (no `state_hash` assertion that its replay would fail).
+    #[test]
+    fn a_partly_applied_batch_makes_a_play_recording_inexact() {
+        let mut app = editor_app_with(m4_world());
+        let dir = std::env::temp_dir().join(format!("axiom-r2b-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        app.editor.as_mut().unwrap().debug.record_dir = dir.clone();
+        command(&mut app, "play.record", Some("partial")).unwrap();
+        frames(&mut app, &[], 10);
+        let error = app
+            .runtime_request(Request::Command {
+                command: axiom_core::gameplay::RuntimeCommand::Batch {
+                    commands: vec![
+                        axiom_core::gameplay::RuntimeCommand::Call {
+                            capability: "input".into(),
+                            action: "activate".into(),
+                            args: json!({"context":"hero"}),
+                        },
+                        train("nowhere"),
+                    ],
+                },
+                expected_rev: None,
+            })
+            .unwrap_err();
+        assert!(crate::world::PartialBatch::of(&error).is_some());
+        frames(&mut app, &[], 10);
+        command(&mut app, "play.stop", None).unwrap();
+        let summary = app
+            .editor
+            .as_ref()
+            .unwrap()
+            .debug
+            .last_recording
+            .clone()
+            .expect("recording saved");
+        assert_eq!(summary["exact"], false, "{summary}");
+        assert!(
+            summary["inexact"].as_str().unwrap().contains("batch"),
+            "{summary}"
+        );
+        // Without the state-hash assertion the file still replays.
+        let raw = std::fs::read_to_string(dir.join("partial.scenario.json")).unwrap();
+        assert!(!raw.contains("state_hash"), "{raw}");
+        let (rev, world) = app.store.current().unwrap();
+        let replay = crate::scenario::run(
+            world,
+            rev,
+            crate::installed_registry(),
+            serde_json::from_str(&raw).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay["ok"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N1: `editor_view` checks select / open / command before switching to Play, so a
+    /// refused request leaves the editor (and its runtime) in edit mode.
+    #[test]
+    fn a_refused_editor_view_never_starts_play() {
+        let mut app = editor_app();
+        let session = app.runtime.runtime_session.clone();
+        let view =
+            |select: Vec<String>, open: Option<&str>, command: Option<&str>| Request::EditorView {
+                select,
+                focus: false,
+                dock: None,
+                capture: None,
+                play: Some(true),
+                open: open.map(Into::into),
+                command: command.map(Into::into),
+                arg: None,
+            };
+        for (request, code) in [
+            (view(vec!["nope".into()], None, None), Some("not_found")),
+            (view(vec![], Some("material:nope"), None), Some("not_found")),
+            (view(vec![], Some("resource:nope"), None), Some("not_found")),
+            (view(vec![], Some("graph:nope"), None), Some("not_found")),
+            (view(vec![], None, Some("no.such.command")), None),
+        ] {
+            let reply = bridge_request(&mut app, request);
+            assert_eq!(reply["ok"], false, "{reply}");
+            if let Some(code) = code {
+                assert_eq!(reply["diagnostics"][0]["code"], code, "{reply}");
+            }
+            assert!(!app.editor.as_ref().unwrap().previewing, "{reply}");
+            assert!(app.editing());
+            assert_eq!(app.runtime.runtime_session, session);
+        }
+        // A valid request still starts Play.
+        let reply = bridge_request(&mut app, view(vec!["box".into()], None, None));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(app.editor.as_ref().unwrap().previewing);
+    }
+
+    /// F9: when the stalled writer could not be replaced, the next edit starts a writer
+    /// again (it is queued, never committed on the main thread).
+    #[test]
+    fn an_edit_after_a_failed_writer_restart_starts_a_writer_again() {
+        let mut app = writer_app("restart.sqlite", None);
+        let base = app.editor.as_ref().unwrap().rev;
+        // The state the watchdog leaves when `enable_writer` failed.
+        let writes = app.writes.take().unwrap();
+        retire(writes);
+        app.writer_required = true;
+        let action = move_box(&app, 4.0);
+        app.editor_action(action).unwrap();
+        assert!(app.writes.is_some(), "a writer was started for the edit");
+        assert_eq!(
+            app.writes_pending(),
+            1,
+            "queued, not committed on this thread"
+        );
+        assert!(!app.writer_required);
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+        assert_eq!(box_x(&app.store.current().unwrap().1), 4.0);
+    }
+
+    /// A small package with one animated model (a copy of the mascot), for asset reloads.
+    fn model_world(name: &str) -> World {
+        let content = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
+        let dir = std::env::temp_dir().join(format!("axiom-r2b-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            format!("{content}/mascot/axiom-short.glb"),
+            dir.join("model.glb"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"id":"reload.test","version":1,"world":"world.json","capabilities":{"animation":1,"core":1,"render":1}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("world.json"),
+            json!({"schema_version":2,"id":"reload-test","title":"Reload test","capabilities":{"animation":1,"core":1,"render":1},
+                "systems":["animation.evaluate"],
+                "entities":[{"id":"hero","components":{"core.transform":{},"animation.player":{"asset":"m","clip":"idle"}}}],
+                "scenes":[{"id":"s","active":true,"entities":["hero"]}],
+                "resources":{"animation.library":{"assets":{"m":{"path":"model.glb"}}}}})
+            .to_string(),
+        )
+        .unwrap();
+        axiom_core::ContentPackage::load(&dir, &crate::installed_registry().authoring)
+            .unwrap()
+            .world
+    }
+
+    fn reload_request(watch: Option<bool>, cancel: bool) -> Request {
+        Request::ReloadAssets { watch, cancel }
+    }
+
+    /// F11: in an edit session with models, a reload the person started in the editor is
+    /// cancelled over the loopback, and the watch toggles made there show in `observe`.
+    #[test]
+    fn an_editor_asset_reload_is_cancelled_and_watched_over_the_loopback() {
+        let mut app = editor_app_with(model_world("f11"));
+        assert!(app.editing());
+        command(&mut app, "asset.reload", None).unwrap();
+        app.poll_asset_reload();
+        assert!(app.asset_reload.running(), "started by the editor");
+        let reply = bridge_request(&mut app, reload_request(None, true));
+        assert_eq!(reply["cancelled"], true, "{reply}");
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while app.asset_reload.running() {
+            app.poll_asset_reload();
+            assert!(Instant::now() < deadline, "reload never ended");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let observed = app.observation().metrics["assets_reload"].clone();
+        assert_eq!(observed["last"]["state"], "cancelled", "{observed}");
+        let reply = bridge_request(&mut app, reload_request(Some(true), false));
+        assert_eq!(reply["watch"], true, "{reply}");
+        app.poll_asset_reload();
+        assert!(app.editor.as_ref().unwrap().reload_watching);
+        assert_eq!(app.observation().metrics["assets_reload"]["watch"], true);
+        let reply = bridge_request(&mut app, reload_request(Some(false), false));
+        assert_eq!(reply["watch"], false, "{reply}");
+        app.poll_asset_reload();
+        assert!(!app.editor.as_ref().unwrap().reload_watching);
+        assert_eq!(app.observation().metrics["assets_reload"]["watch"], false);
+    }
+
+    /// F12: `reload_assets` behaves the same from the protocol and the editor while a
+    /// revision activation is involved: `cancel` stops the retry it started, and the
+    /// editor's `asset.reload` waits for an activation in flight instead of reloading the
+    /// revision being replaced.
+    #[test]
+    fn reload_assets_start_and_cancel_agree_while_an_activation_is_involved() {
+        let mut app = editor_app_with(model_world("f12"));
+        app.background_activation = true;
+        let rev = app.store.revision().unwrap();
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("Retried"))])
+            .unwrap();
+        app.runtime.requested_rev = rev + 1;
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "failing", ACTIVATION_TIMEOUT, |_| {
+                Err(anyhow::anyhow!("model file missing"))
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        app.finish_activation().unwrap();
+        // Protocol: the retry starts, and the same API's cancel stops it.
+        let reply = bridge_request(&mut app, reload_request(None, false));
+        assert_eq!(reply["retry"], "activation", "{reply}");
+        assert!(app.activation.is_some());
+        let reply = bridge_request(&mut app, reload_request(None, true));
+        assert_eq!(reply["cancelled"], true, "{reply}");
+        assert!(app.activation.is_none());
+        app.poll_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev, "a cancelled retry is never adopted");
+        // Editor: with an activation in flight, asset.reload waits for it.
+        let (release, built) = std::sync::mpsc::channel::<()>();
+        let world = app.store.current().unwrap().1;
+        let registry = app.runtime.registry_clone();
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "slow", ACTIVATION_TIMEOUT, move |_| {
+                let _ = built.recv_timeout(std::time::Duration::from_secs(30));
+                WorldRuntime::new(&world, rev + 1, registry)
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        command(&mut app, "asset.reload", None).unwrap();
+        app.poll_asset_reload();
+        assert!(
+            !app.asset_reload.running(),
+            "not started on the replaced revision"
+        );
+        // The same cancel withdraws the waiting editor reload.
+        let reply = bridge_request(&mut app, reload_request(None, true));
+        assert_eq!(reply["cancelled"], true, "{reply}");
+        command(&mut app, "asset.reload", None).unwrap();
+        app.poll_asset_reload();
+        assert!(!app.asset_reload.running());
+        drop(release);
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+        app.poll_asset_reload();
+        assert!(
+            app.asset_reload.running(),
+            "runs once the activation is done"
+        );
+        let reply = bridge_request(&mut app, reload_request(None, true));
+        assert_eq!(reply["cancelled"], true);
     }
 }

@@ -73,15 +73,16 @@ impl Writer {
         let handle = std::thread::Builder::new()
             .name("axiom-editor-writer".into())
             .spawn(move || {
-                let store = Store::open_with(&db, registry, World::empty("world")).map(|mut s| {
-                    s.share_latest_cache(latest);
+                // Opening takes the write lock briefly (schema setup); a writer that was
+                // replaced after a stall may still hold it. A failed open is retried before
+                // each later request instead of being kept for good.
+                let open = || -> Result<Store> {
+                    let mut s = Store::open_with(&db, registry.clone(), World::empty("world"))?;
+                    s.share_latest_cache(latest.clone());
                     *shared_interrupt.lock().unwrap() = Some(s.interrupt_handle());
-                    s
-                });
-                let mut store = match store {
-                    Ok(store) => Ok(store),
-                    Err(error) => Err(format!("{error:#}")),
+                    Ok(s)
                 };
+                let mut store = open().ok();
                 while let Ok(op) = inbox.recv() {
                     let _held = gate.as_ref().map(|g| g.lock());
                     let started = Instant::now();
@@ -90,13 +91,22 @@ impl Writer {
                             "editor writer was stopped before this edit started; it was not saved"
                         ))
                     } else {
+                        if store.is_none() {
+                            store = open()
+                                .map_err(|error| {
+                                    eprintln!("editor writer: database not writable: {error:#}")
+                                })
+                                .ok();
+                        }
                         match &mut store {
-                            Ok(store) => {
+                            Some(store) => {
                                 store.set_author(Some(op.author));
                                 store.execute(op.request)
                             }
-                            Err(error) => Err(anyhow::anyhow!(
-                                "editor writer could not open the database: {error}"
+                            None => Err(axiom_core::Diagnostic::error(
+                                "writer_unavailable",
+                                "/",
+                                "the database is not writable right now (another writer holds it); this edit was not saved, try again",
                             )),
                         }
                     };
@@ -272,6 +282,37 @@ mod tests {
             .collect();
         assert_eq!(authors, ["human", "agent", "human"]);
         assert!(writer.shutdown(Duration::from_secs(5)));
+    }
+
+    /// A replacement writer that opens while another connection (e.g. the stalled writer)
+    /// still holds the write lock past SQLite's busy wait: the edit is refused as not
+    /// writable right now, and once the lock is released the next edit opens and commits
+    /// (the open error is not kept for the writer's lifetime).
+    #[test]
+    fn a_writer_that_could_not_open_the_database_retries_on_the_next_request() {
+        let path = temp_db("reopen.sqlite");
+        let main = Store::open_with(&path, Registry::core(), World::empty("w")).unwrap();
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let writer =
+            Writer::spawn(path.clone(), Registry::core(), main.latest_cache(), None).unwrap();
+        let apply = |title: &str| Request::Apply {
+            expected_rev: Some(1),
+            edits: vec![Edit::set("title", json!(title))],
+        };
+        writer.send(1, apply("held"), Author::Human).unwrap();
+        let done = writer.finished(Duration::from_secs(30)).unwrap();
+        let error = done.result.unwrap_err();
+        assert_eq!(
+            axiom_core::error_response(&error)["diagnostics"][0]["code"],
+            "writer_unavailable",
+            "{error:#}"
+        );
+        lock.execute_batch("COMMIT").unwrap();
+        writer.send(2, apply("after"), Author::Human).unwrap();
+        let done = writer.finished(Duration::from_secs(30)).unwrap();
+        assert_eq!(done.result.unwrap()["rev"], 2);
+        assert_eq!(main.current_shared().unwrap().1.title, "after");
     }
 
     #[test]

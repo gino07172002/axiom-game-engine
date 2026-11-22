@@ -286,3 +286,67 @@ fn switching_to_another_fps_world_starts_a_fresh_round() {
     r.reconcile(other, 3).unwrap();
     assert_eq!(r.observation().metrics["shots"], 0);
 }
+
+/// A system that keeps the handle of the first entity it was built with (as a public
+/// `SystemFactory` may) and reports whether it still resolves.
+struct Holder {
+    handle: axiom_runtime::world::RuntimeEntityId,
+}
+impl axiom_runtime::world::RuntimeSystem for Holder {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn step(&mut self, _state: &mut axiom_runtime::world::RuntimeState, _input: &ActionMap) {}
+}
+struct HolderPlugin;
+impl axiom_runtime::world::Plugin for HolderPlugin {
+    fn id(&self) -> &str {
+        "test.holder"
+    }
+    fn register(&self, r: &mut RuntimeRegistry) {
+        r.authoring.capabilities.insert("holder".into(), 1);
+        r.authoring.systems.insert(
+            "holder.keep".into(),
+            SystemDescriptor {
+                id: "holder.keep".into(),
+                capability: "holder".into(),
+                phase: 9,
+                reads: vec![],
+                writes: vec![],
+                after: vec![],
+            },
+        );
+        r.factories.insert("holder.keep".into(), |state| {
+            Ok(Box::new(Holder {
+                handle: state.ids[0],
+            })
+                as Box<dyn axiom_runtime::world::RuntimeSystem>)
+        });
+    }
+}
+
+#[test]
+fn a_handle_a_system_factory_keeps_resolves_after_switching_to_another_world() {
+    let registry = RuntimeRegistry::core().with(HolderPlugin);
+    let holder_world = |id: &str| {
+        let mut w = motion_world();
+        w.id = id.into();
+        w.capabilities.insert("holder".into(), 1);
+        w.systems.push("holder.keep".into());
+        w
+    };
+    let mut r = WorldRuntime::new(holder_world("world-a"), 1, registry).unwrap();
+    let kept = |r: &WorldRuntime| r.system::<Holder>().unwrap().handle;
+    assert!(r.state.resolve(kept(&r)).is_some());
+    let old = r.state.ids[0];
+    r.reconcile(holder_world("world-b"), 2).unwrap();
+    // The new world's system kept a handle that is valid in the new world...
+    assert_eq!(
+        r.state.resolve(kept(&r)),
+        Some(0),
+        "factory handle resolves"
+    );
+    // ...and the old world's handle still never resolves there.
+    assert!(r.state.resolve(old).is_none());
+    assert_ne!(kept(&r), old);
+}

@@ -108,9 +108,14 @@ impl Bridge {
                                             "runtime command queue full or disconnected"
                                         )
                                     })?;
-                                result.recv_timeout(wait).map_err(|_| {
-                                    anyhow::anyhow!("runtime command response timed out")
-                                })
+                                // The main thread answers a request it did not run by its
+                                // deadline itself (`runtime_timeout` with both revisions);
+                                // the grace lets that reply arrive. Only a main thread that
+                                // does not answer even then gets this fallback.
+                                match result.recv_timeout(wait + RUNTIME_REPLY_GRACE) {
+                                    Ok(reply) => Ok(reply),
+                                    Err(_) => Ok(runtime_timeout_fallback(&observation)),
+                                }
                             } else if let Request::ObserveDelta {
                                 cursor,
                                 fields,
@@ -244,6 +249,27 @@ fn read_request_line(stream: &mut TcpStream, stop: &AtomicBool) -> Result<String
         }
     }
     Ok(String::from_utf8(bytes)?)
+}
+
+/// How long past a runtime request's deadline the bridge still waits for the main thread's
+/// own reply (it answers an expired request on its next frame). Below `call`'s 5 s read
+/// timeout together with the 3 s request deadline.
+pub const RUNTIME_REPLY_GRACE: Duration = Duration::from_secs(1);
+
+/// Reply when the main thread did not answer a runtime request within its deadline plus
+/// [`RUNTIME_REPLY_GRACE`]: the same code as its own expiry reply, with the revisions last
+/// published in the observation.
+fn runtime_timeout_fallback(observation: &RwLock<Observation>) -> Value {
+    let mut reply = axiom_core::error_response(&axiom_core::Diagnostic::error(
+        "runtime_timeout",
+        "/",
+        "the runtime did not answer within the request deadline (main thread busy); observe before retrying",
+    ));
+    if let Ok(observation) = observation.read() {
+        reply["requested_rev"] = json!(observation.requested_rev);
+        reply["live_rev"] = json!(observation.rev);
+    }
+    reply
 }
 
 /// How long the bridge waits for a `screenshot` reply: a frame to pick it up
