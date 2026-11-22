@@ -81,6 +81,23 @@ struct SavedBody {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     out: bool,
 }
+impl SavedBody {
+    /// One rule for saving and loading: any finite simulated velocity. `MAX_SPEED` bounds
+    /// authored and commanded inputs only; an impulse on a light body, gravity or contacts
+    /// legitimately produce faster bodies (and authored angular speed goes up to 3600).
+    fn check(&self, id: &str) -> Result<()> {
+        ensure!(
+            self.velocity
+                .iter()
+                .chain(&self.angular_velocity)
+                .all(|v| v.is_finite())
+                && self.still.is_finite()
+                && self.still >= 0.0,
+            "invalid checkpoint physics state for {id}"
+        );
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -1144,18 +1161,22 @@ impl RuntimeSystem for PhysicsSystem {
             .filter(|e| e.role.simulated())
             .map(|e| {
                 let body = &self.bodies[e.body.expect("simulated entries have a body")];
-                (
-                    state.compiled.entities[e.slot].id.clone(),
-                    SavedBody {
-                        velocity: vec3(body.linvel()),
-                        angular_velocity: vec3(body.angvel()),
-                        sleeping: body.is_sleeping(),
-                        still: body.activation().time_since_can_sleep,
-                        out: e.out,
-                    },
-                )
+                let id = &state.compiled.entities[e.slot].id;
+                let saved = SavedBody {
+                    velocity: vec3(body.linvel()),
+                    angular_velocity: vec3(body.angvel()),
+                    sleeping: body.is_sleeping(),
+                    still: body.activation().time_since_can_sleep,
+                    out: e.out,
+                };
+                // Never write a checkpoint that `load_state` would refuse.
+                saved.check(id).map(|()| (id.clone(), saved))
             })
-            .collect();
+            .collect::<Result<BTreeMap<_, _>>>();
+        let bodies = match bodies {
+            Ok(b) => b,
+            Err(e) => return Some(Err(e)),
+        };
         let motors = self
             .joints
             .iter()
@@ -1259,15 +1280,7 @@ impl RuntimeSystem for PhysicsSystem {
                 .bodies
                 .get(id)
                 .with_context(|| format!("checkpoint physics state lacks body {id}"))?;
-            ensure!(
-                s.velocity
-                    .iter()
-                    .chain(&s.angular_velocity)
-                    .all(|v| v.is_finite() && v.abs() <= MAX_SPEED)
-                    && s.still.is_finite()
-                    && s.still >= 0.0,
-                "invalid checkpoint physics state for {id}"
-            );
+            s.check(id)?;
             let body = &mut self.bodies[entry.body.expect("simulated entries have a body")];
             let [vx, vy, vz] = s.velocity;
             let [wx, wy, wz] = s.angular_velocity;

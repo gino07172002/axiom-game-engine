@@ -377,6 +377,139 @@ fn searches_are_budgeted_per_step_and_queued() {
     assert_eq!(s["budget"]["max"].as_u64().unwrap(), most);
 }
 
+/// A serpentine of 150 walls 0.5 m thick, 1.5 m apart, gaps alternating left/right: any
+/// path needs more than `MAX_WAYPOINTS` (128) corners.
+fn serpentine() -> Vec<Value> {
+    (0..150)
+        .map(|k| {
+            // Each wall reaches past the grid edge on one side (x -8..4 or -4..8).
+            let x = if k % 2 == 0 { -2.0 } else { 2.0 };
+            wall(&format!("w/{k}"), x, k as f32 * 1.5, 6.0, 0.25)
+        })
+        .collect()
+}
+
+#[test]
+fn failed_straightening_counts_against_the_step_budget() {
+    // R5 F7: the search finds the serpentine path, straightening spends line-of-sight work
+    // and then fails with path_too_long. That work must be in this step's budget.
+    let mut entities = serpentine();
+    entities.push(agent(
+        "bob",
+        [0.0, 0.0, -1.0],
+        json!({"radius":0.2,"target":{"point":[0,0,224.5]},"on_fail":"failed"}),
+    ));
+    let mut r = runtime(world_with(
+        Value::Array(entities),
+        json!({"expansions_per_step":64,"bounds":{"min":[-7,-2],"max":[7,226]}}),
+    ));
+    until(&mut r, "bob", "failed", 40_000);
+    assert_eq!(var(&r, "reason"), "path_too_long");
+    let budget = summary(&r)["budget"].clone();
+    // Before the fix the failing step reported only its expansions (<= 64 plus a few
+    // nearest-walkable cells); the straightening work is now included.
+    assert!(budget["last"].as_u64().unwrap() > 128, "{budget}");
+    assert_eq!(budget["max"], budget["last"], "{budget}");
+}
+
+#[test]
+fn stop_and_go_requeue_at_the_back_of_the_fifo() {
+    // R5 F8: a, then b, ask for a search; a is stopped and sent again. The new request of a
+    // queues behind b instead of reusing a's old queue entry, and repeating stop/go does
+    // not pile up entries.
+    let mut r = runtime(world_with(
+        json!([
+            wall("wall", 0.0, 0.0, 14.0, 0.3),
+            agent("a", [-10.0, 0.0, -4.0], json!({"avoidance":false})),
+            agent("b", [10.0, 0.0, -4.0], json!({"avoidance":false})),
+        ]),
+        json!({"expansions_per_step":64}),
+    ));
+    steps(&mut r, 1);
+    call(&mut r, "go", json!({"id":"a","point":[-10,0,4]})).unwrap();
+    call(&mut r, "go", json!({"id":"b","point":[10,0,4]})).unwrap();
+    for _ in 0..50 {
+        call(&mut r, "stop", json!({"id":"a"})).unwrap();
+        call(&mut r, "go", json!({"id":"a","point":[-10,0,4]})).unwrap();
+    }
+    assert_eq!(summary(&r)["queue"], 2);
+    steps(&mut r, 1);
+    assert_eq!(summary(&r)["searching"], "b", "{}", summary(&r));
+    until(&mut r, "a", "moving", 4000);
+    until(&mut r, "b", "moving", 4000);
+    // Exactly one search each (no stale entries replayed).
+    assert_eq!(summary(&r)["budget"]["searches"], 2, "{}", summary(&r));
+}
+
+#[test]
+fn unrelated_hot_reload_keeps_a_snapped_entity_goal() {
+    // R5 F12: bob's target `crate` stands inside a wall, so the path ends at the nearest
+    // walkable cell (goal_snapped). An unrelated edit keeps the path and must keep the flag,
+    // or the last leg steers into the wall toward the crate itself.
+    let w = world(json!([
+        wall("wall", 4.0, 0.0, 1.0, 1.0),
+        marker("crate", [4.0, 0.0, 0.0]),
+        agent(
+            "bob",
+            [-4.0, 0.0, 0.0],
+            json!({"target":{"entity":"crate"},"on_arrive":"arrived"})
+        ),
+    ]));
+    let mut r = runtime(w.clone());
+    until(&mut r, "bob", "moving", 600);
+    steps(&mut r, 60);
+    let inspect = |r: &mut WorldRuntime| call(r, "inspect", json!({"id":"bob"})).unwrap();
+    let before = inspect(&mut r);
+    assert_eq!(before["state"], "moving", "{before}");
+    assert_eq!(before["goal_snapped"], true, "{before}");
+    let mut edited = w;
+    edited.entities.push(
+        serde_json::from_value(
+            json!({"id":"lamp","components":{"core.transform":{"position":[0,0,0.5]}}}),
+        )
+        .unwrap(),
+    );
+    r.reconcile(edited, 2).unwrap();
+    let after = inspect(&mut r);
+    assert_eq!(after["state"], "moving", "{after}");
+    assert_eq!(after["goal_snapped"], true, "{after}");
+    until(&mut r, "bob", "arrived", 2400);
+    assert_eq!(var(&r, "arrivals"), 1);
+}
+
+#[test]
+fn editor_path_preview_is_spread_over_frames() {
+    // R5 F9: a search of more than one frame's work returns None (pending) and resumes on
+    // the next call with the same inputs instead of running to the end at once.
+    let mut r = runtime(world_with(
+        json!([
+            wall("wall", 0.0, 0.0, 40.0, 0.3),
+            agent("bob", [0.0, 0.0, -4.0], json!({"target":{"point":[0,0,4]}})),
+        ]),
+        json!({"bounds":{"min":[-45,-20],"max":[45,20]}}),
+    ));
+    steps(&mut r, 1);
+    let slot = r.state.compiled.indices["bob"];
+    let system = r.system::<axiom_runtime::nav_agent::NavSystem>().unwrap();
+    let mut calls = 0;
+    let route = loop {
+        calls += 1;
+        assert!(
+            calls <= 16,
+            "preview never finished (65536 expansions = 16 frames)"
+        );
+        if let Some(route) = system.preview_path(&r.state, slot) {
+            break route;
+        }
+        assert!(system.preview_pending());
+    };
+    assert!(calls > 1, "the search needs more than one frame");
+    assert!(!system.preview_pending());
+    assert!(route.iter().any(|w| w.x.abs() > 39.0), "{route:?}");
+    // Cached: the next call answers at once.
+    assert_eq!(system.preview_path(&r.state, slot).unwrap(), route);
+}
+
 #[test]
 fn authoring_errors_are_explicit() {
     // Two movers on one entity.

@@ -1454,11 +1454,18 @@ fn draw_component_gizmos(
                 pen.line(goal - Vec3::X * 0.2, goal + Vec3::X * 0.2, color);
                 pen.line(goal - Vec3::Z * 0.2, goal + Vec3::Z * 0.2, color);
             }
-            // The selected agent previews the path it would walk (bounded, cached search).
+            // The selected agent previews the path it would walk (cached search, a bounded
+            // slice per frame; repaint until it finishes).
             let route = (selected == Some(i))
                 .then(|| runtime.system::<crate::nav_agent::NavSystem>())
                 .flatten()
-                .and_then(|s| s.preview_path(&runtime.state, i));
+                .and_then(|s| {
+                    let route = s.preview_path(&runtime.state, i);
+                    if s.preview_pending() {
+                        painter.ctx().request_repaint();
+                    }
+                    route
+                });
             if let Some(route) = route {
                 let mut from = ground;
                 for w in route {

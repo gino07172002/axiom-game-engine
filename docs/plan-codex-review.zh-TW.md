@@ -187,3 +187,33 @@ Gate(debug,worktree `r4`):`cargo fmt --all` 無差異;`cargo clippy --workspace 
 - `effects-smoke-test.ps1`:36 站擷取、material local edit / receipt、budget rejection、vertex 拒絕(新斷言)、observe_delta 都通過,停在第 112 行最後的 900 幀 / 60 s native helper 等待(MX150 上已知會逾時,未放寬)。
 - `shader-smoke-test.ps1 -SkipEarlier`:新斷言(第 57–59 行)通過,停在第 61 行 480 幀 live 程序的 60 s 等待;手動量同一命令 base exe 165 s、new exe 95 s(兩者 exit 0;只說明這台機器目前跑不進 60 s,不是效能宣稱),shader-lab 的 480 幀截圖 base / new 逐位元相同。
 - 未驗證:F12 沒有自動測試(要讓 HDR 建置逾時的 GPU 環境);F9 的「每次最多一份矩陣」沒有配置次數的測試;F4 / F9 沒有幀時間 A/B,也沒有宣稱加速。
+
+### R5 物理、戰鬥、導航與通用 gameplay 系統
+
+15 項 finding,逐條讀 code 後 15 項 CONFIRMED,全部以有界修改處理(F9 採「每幀分段」而非背景執行緒,見下)。每項都有回歸測試;測試在修正前會失敗(依 code 推理確認,F7/F12 的測試幾何經實跑調整)。
+
+| ID | 判定 | 修改 | 測試 |
+|---|---|---|---|
+| F1 | CONFIRMED | `combat::resolve` 不再直接 `publish`:`combat.hit` / `combat.defeated` 先進有界 FIFO `outbox`(`MAX_OUTBOX` 8192 = 兩批 4096 hit 的最壞事件數),每 tick 依 `Events::room()` 分批交付,保留原 tick 與順序。HP 提交前先預留最壞容量,不足時整批拒絕(不改 HP、計入 `rejected`、`/combat/error` 說明哪個上限),不再讓事件佇列 `fault` 凍結模擬。`events.rs` 只加 `MAX_PENDING` 常數與 `room()`。observe 新增 `queued_events`、`error`;hot reload 一併繼承 outbox。combat 世界本來就不支援 checkpoint,outbox 不需存檔。 | `shared_combat::hit_burst_beyond_the_event_queue_defers_events_instead_of_freezing` |
+| F2 | CONFIRMED | 新增 `fsm::validate_world`(註冊為 registry world validator,`World::compile` 執行,CLI preview/apply 與編輯器共用同一 store 請求路徑):`fsm.step` 啟用時檢查 agent 的 machine 存在、有 `core.transform`、`emit` 事件在 `behavior.program` 宣告且只含 text `agent`、`behavior.execute` 已啟用,回傳指向 `/entities/@id/components/fsm.agent/machine` 或 `/resources/fsm.machines/.../emit` 的 `Diagnostic`。`emitted_events` 由 validator 與 `FsmSystem::new` 共用;`radius` 範圍移到 component validator。 | `fsm::invalid_agent_references_fail_preview_and_apply_before_a_revision_is_written` |
+| F3 | CONFIRMED | 預檢以每 zone、每方向的「本步已計」旗標套用與發送相同的 `once` 規則。 | `triggers::once_zone_counts_many_simultaneous_enters_as_one_event` |
+| F4 | CONFIRMED | `SavedBody::check` 為存檔與讀檔共用:任何有限速度都合法(`MAX_SPEED` 只限制作者輸入與指令;另外原讀檔對角速度也用 1000,比作者上限 3600 還嚴)。存檔時同樣檢查,不會寫出讀不回的 checkpoint。 | `physics::a_fast_light_body_checkpoint_round_trips`(0.001 kg、2 N·s → 2000 m/s,存、讀、各走 10 步 transform 相同) |
+| F5 | CONFIRMED | `interact` 的 `apply` 改回傳 `Result`,先發事件(gameplay 指令本身是 transactional),成功後才提交 `uses`/冷卻/`recent`。`interact.use` 回傳含 interactor、target、事件名的 `interact_event` 錯誤;按鍵路徑寫入 `fault`。 | `interaction::failed_use_event_keeps_a_once_target_unused_and_returns_an_error` |
+| F6 | CONFIRMED | `Attack` 前檢查施術者 HP(無 `core.health` 視為存活);轉移、事件、clip 不受影響。 | `fsm::defeated_attacker_deals_no_damage`(含存活對照) |
+| F7 | CONFIRMED | `navigation::straighten` 改回傳 `Result<usize, usize>`(失敗也帶出已用工作量,`axiom-core/src/navigation.rs`);`service` 先計帳再判斷結果,`budget.last/max` 不再低報,失敗後同一步不再繼續開新搜尋。超支仍以既有 `MIN_STRAIGHTEN_WORK` 為上限。 | `navigation::failed_straightening_counts_against_the_step_budget`(150 道蛇形牆) |
+| F8 | CONFIRMED | `cancel` 同時移除該代理的 FIFO 項目(每代理最多一項);`track` 的重規劃改用只取消執行中搜尋的 `cancel_search`,保留原排隊位置(與修正前實際行為相同)。`transfer` 改用 `cancel`,不再留下重複項。 | `navigation::stop_and_go_requeue_at_the_back_of_the_fifo` |
+| F9 | CONFIRMED,有界修正 | 編輯器路徑預覽改為跨幀分段:每次呼叫最多 `PREVIEW_FRAME_WORK` 4096 單位(A* 展開,之後直線化),同一輸入下一幀續跑,總上限仍為 65,536;輸入改變即放棄舊搜尋;`preview_pending()` 讓 viewport `request_repaint`(`editor/viewport.rs` 一處)。未做背景執行緒:搜尋狀態已在 `Mutex<Preview>` 內,分段即可滿足每幀有界,不需新的 job/watchdog。**耗時未量測**,只宣稱工作量上限由 65,536 降到每幀 4,096。快取命中仍 clone 至多 128 點的 `Vec`。 | `navigation::editor_path_preview_is_spread_over_frames`;既有 `viewport::nav_gizmo_previews_the_route_and_the_grid_overlay_toggles` |
+| F10 | CONFIRMED | `Follower.authored_speed` 另存作者速度;只有新舊作者速度相同時才延續 `path.set_speed` 覆寫,位置/方向/暫停仍保留。 | `paths::an_edited_authored_speed_replaces_a_runtime_override` |
+| F11 | CONFIRMED | 抽出 `target_problem`,`camera.follow.set` 與 hot reload 共用;runtime 目標在新修訂不合格(或已刪除)時回到作者目標,`camera.inspect` 的 `target_reset` 說明原因,下一次 `follow.set` 清除。 | `camera_follow::hot_reload_drops_a_runtime_target_that_became_invalid` |
+| F12 | CONFIRMED | 同格網保留 waypoint 時一併保留 `goal_snapped`;`nav.inspect` 新增 `goal_snapped` 欄位。 | `navigation::unrelated_hot_reload_keeps_a_snapped_entity_goal` |
+| F13 | CONFIRMED | `Shape::reach(grow)`:box 用 `(half + margin).length()`,sphere `r + margin`。 | `triggers::rotated_box_keeps_an_occupant_in_the_grown_corner_of_another_cell`(45° box,4.9 m 在舊粗篩外的格子) |
+| F14 | CONFIRMED | 播放器的 `on_finish` 仍在積壓中且新 clip 有 `on_finish` 時,`tween.play` 回傳可重試錯誤(含前方事件數)。 | `tweens::replay_while_the_previous_finish_is_queued_is_a_retryable_error` |
+| F15 | CONFIRMED | `fsm.machines` 的公開 schema 文字由 `editor_kinds` 產生(`schema_kinds`),補上 `clip`、`clip_loop`;`fsm.agent` schema 補 `radius`。 | `fsm::public_schema_lists_the_editor_kinds_and_state_fields` |
+
+決定性:所有既有 replay / `state_hash` 測試未改仍通過。行為只在 finding 描述的情境改變(事件積壓、once 多重進入、旋轉 box 擴張角、零血攻擊者、stop/go 重排、失敗直線化);F8 的 hot reload 重規劃順序在「同時有新代理與承接代理重排」時會略有不同(承接代理改排在新 build 的請求之後)。
+
+觸及他人區域:`crates/axiom-runtime/src/events.rs`(常數與 `room()`)、`crates/axiom-core/src/navigation.rs`(`straighten` 回傳型別)、`crates/axiom-runtime/src/editor/viewport.rs`(預覽重繪一處)。
+
+連帶修改:`editor/graph_tests.rs` 的 `Harness::with_runtime` 改用可執行的世界建 store(store 現在會拒絕含未宣告 `emit` 的世界;編輯器仍開啟該草稿並顯示 graph checks)。注意:既有資料庫若最新修訂含這類無效 FSM 參照,開啟時 `World::compile` 會拒絕(與 trigger / nav 事件檢查同一政策);這類世界原本就無法啟用 runtime。
+
+Gate(R5 worktree,debug):`cargo fmt --all --check` 通過;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` 除兩個計時測試外全過 — `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(500 ms 門檻)與 `m15::agent_timeout_is_a_failed_task_and_never_a_zero_token_success`(10 s 門檻)在其他 agent 平行負載下失敗,單獨重跑皆通過;`axiom-runtime --lib` 全部重跑 342/343 通過(唯一失敗為同一計時測試,單獨重跑通過)。`editor-smoke-test`(port 4552)ok;`editor-world-parity`(4566)identical,rev 13/13;`street-editor-parity`(4562)identical,rev 16/16;`m0-smoke-test`(4362)PASS。無渲染管線改動,未做截圖 A/B。

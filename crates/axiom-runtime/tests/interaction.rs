@@ -130,6 +130,56 @@ fn key_press_uses_the_focus_and_reaches_rules_and_bindings() {
 }
 
 #[test]
+fn failed_use_event_keeps_a_once_target_unused_and_returns_an_error() {
+    // R5 F5: the `bare` rule re-emits itself until the gameplay budget fails. The use must
+    // not count, start a cooldown or report success, so a fixed program can retry it.
+    let mut w = world(json!([
+        target(
+            "door",
+            [0.0; 3],
+            json!({"range":2.0,"event":"bare","once":true})
+        ),
+        mover("hero", [1.0, 0.0, 0.0], &["player"]),
+    ]));
+    let fixed = w.clone();
+    w.resources.get_mut("behavior.program").unwrap()["rules"][1]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"emit","event":"bare"}));
+    let mut r = runtime(w);
+    step(&mut r);
+    let error = format!(
+        "{:#}",
+        call(&mut r, "use", json!({"target":"door"})).unwrap_err()
+    );
+    assert!(
+        error.contains("hero using door: emit bare failed"),
+        "{error}"
+    );
+    assert_eq!(
+        call(&mut r, "inspect", json!({"id":"door"})).unwrap()["uses"],
+        0
+    );
+    assert_eq!(summary(&r)["used"], 0);
+    assert_eq!(var(&r, "bares"), 0);
+    // The key path keeps running and surfaces the same error through observe.
+    step(&mut r);
+    press(&mut r, "interact");
+    let s = summary(&r);
+    assert!(
+        s["fault"].as_str().unwrap().contains("emit bare failed"),
+        "{s}"
+    );
+    assert_eq!(s["used"], 0);
+    // Once the program is fixed, the once target is still usable.
+    r.reconcile(fixed, 2).unwrap();
+    step(&mut r);
+    call(&mut r, "use", json!({"target":"door"})).unwrap();
+    assert_eq!(var(&r, "bares"), 1);
+    assert!(call(&mut r, "use", json!({"target":"door"})).is_err());
+}
+
+#[test]
 fn range_uses_world_pivots_and_exit_margin_holds_focus() {
     let mut r = runtime(world(json!([
         {"id":"base","components":{"core.transform":{"position":[10.0,0.0,0.0]}}},

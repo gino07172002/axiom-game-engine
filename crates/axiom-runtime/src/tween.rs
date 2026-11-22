@@ -738,6 +738,16 @@ impl RuntimeSystem for TweenSystem {
                         .and_then(Value::as_str)
                         .context("tween.play needs {\"id\":..,\"clip\":NAME}")?;
                     let c = self.clip_index(p, name)?;
+                    // One queued on_finish per player: a new run that could finish before the
+                    // backlog delivers the last one would lose its event. Refuse (retryable).
+                    if self.players[p].queued && self.clips[c].on_finish.is_some() {
+                        let ahead = self.queue.iter().position(|&(q, _)| q == p).unwrap_or(0);
+                        bail!(
+                            "{}: the previous on_finish is still queued ({} event(s) ahead, {MAX_TWEEN_EVENTS_PER_STEP} delivered per step); retry tween.play on a later step",
+                            self.ids[p],
+                            ahead
+                        );
+                    }
                     let reverse = args.get("reverse").and_then(Value::as_bool) == Some(true);
                     let restart = args.get("restart").and_then(Value::as_bool) == Some(true);
                     let length = self.clips[c].length;

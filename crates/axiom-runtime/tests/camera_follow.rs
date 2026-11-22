@@ -504,6 +504,47 @@ fn activate_follow_set_and_inspect_are_recoverable_actions() {
 }
 
 #[test]
+fn hot_reload_drops_a_runtime_target_that_became_invalid() {
+    // R5 F11: follow.set moves the camera to `dog`; a revision then parents `dog` under the
+    // camera. follow.set would refuse that target, so the reload returns to the authored
+    // target `hero` and inspect says why.
+    let w = world(json!([
+        hero([0.0, 0.0, 0.0]),
+        {"id":"dog","components":{"core.transform":{"position":[10,0,0]}}},
+        camera("cam", json!({"target":"hero","position_smoothing":0,"rotation_smoothing":0})),
+    ]));
+    let mut r = runtime(w.clone());
+    steps(&mut r, 1);
+    call(&mut r, "follow.set", json!({"id":"cam","target":"dog"})).unwrap();
+    // Unrelated edit: the runtime target is kept.
+    let mut edited = w.clone();
+    edited.entities.push(
+        serde_json::from_value(json!({"id":"lamp","components":{"core.transform":{}}})).unwrap(),
+    );
+    r.reconcile(edited.clone(), 2).unwrap();
+    assert_eq!(inspect(&mut r, "cam")["target"], "dog");
+    assert!(inspect(&mut r, "cam")["target_reset"].is_null());
+    let mut adopted = edited;
+    adopted.relations.push(
+        serde_json::from_value(json!({"kind":"parent","source":"dog","target":"cam"})).unwrap(),
+    );
+    r.reconcile(adopted, 3).unwrap();
+    let cam = inspect(&mut r, "cam");
+    assert_eq!(cam["target"], "hero", "{cam}");
+    assert!(
+        cam["target_reset"]
+            .as_str()
+            .unwrap()
+            .contains("camera itself or one of its descendants"),
+        "{cam}"
+    );
+    steps(&mut r, 2);
+    // A new follow.set clears the note.
+    call(&mut r, "follow.set", json!({"id":"cam","target":"hero"})).unwrap();
+    assert!(inspect(&mut r, "cam")["target_reset"].is_null());
+}
+
+#[test]
 fn hot_reload_keeps_the_camera_state() {
     let w = world(json!([
         hero([0.0, 0.0, 0.0]),

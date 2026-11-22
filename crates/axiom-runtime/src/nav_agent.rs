@@ -40,8 +40,11 @@ const MAX_REPATHS: u8 = 3;
 const MIN_STRAIGHTEN_WORK: usize = 1024;
 /// Separation bucket grid side (buckets grow to keep at most this many per side).
 const MAX_BUCKET_SIDE: u32 = 128;
-/// Synchronous node budget of an editor path preview.
+/// Total node budget of an editor path preview, and the work (A* expansions, then
+/// line-of-sight cells) one editor frame may spend on it; a longer search resumes on the
+/// next frame (the viewport requests a repaint while `preview_pending`).
 const PREVIEW_EXPANSIONS: usize = 65_536;
+const PREVIEW_FRAME_WORK: usize = 4_096;
 const GRID_CACHE_ENTRIES: usize = 8;
 
 static GRID_CACHE: Mutex<BTreeMap<Vec<u32>, Arc<NavGrid>>> = Mutex::new(BTreeMap::new());
@@ -235,12 +238,17 @@ impl Buckets {
 /// Agent slot, start and goal cells, threshold and the exact goal point (bits).
 type PreviewKey = (usize, [i32; 2], [i32; 2], u16, [u32; 2]);
 
-/// Editor path preview, cached by its inputs.
+/// Editor path preview, cached by its inputs. The search is spread over editor frames:
+/// each call spends at most `PREVIEW_FRAME_WORK` units and resumes the same search.
 #[derive(Default)]
 struct Preview {
     search: Option<GridSearch>,
+    /// Inputs of the finished preview in `path`.
     key: Option<PreviewKey>,
     path: Option<Vec<Vec2>>,
+    /// Inputs of the search in progress, its goal point and the expansions spent so far.
+    running: Option<(PreviewKey, Vec2)>,
+    spent: usize,
     cells: Vec<[i32; 2]>,
     corners: Vec<Vec2>,
 }
@@ -550,13 +558,23 @@ impl NavSystem {
         }
     }
 
-    /// Drops the agent's queued or running path request (a stale result must not reopen an
-    /// arrived, failed or stopped agent).
-    fn cancel(&mut self, a: usize) {
+    /// Drops the agent's running search (a queued request keeps its place in the FIFO).
+    fn cancel_search(&mut self, a: usize) {
         if self.active.as_ref().is_some_and(|x| x.agent == a) {
             self.active = None;
         }
-        self.agents[a].queued = false;
+    }
+
+    /// Drops the agent's queued or running path request (a stale result must not reopen an
+    /// arrived, failed or stopped agent). The queue entry is removed too, so each agent has
+    /// at most one FIFO entry and a later request queues at the back.
+    fn cancel(&mut self, a: usize) {
+        self.cancel_search(a);
+        if std::mem::take(&mut self.agents[a].queued) {
+            if let Some(i) = self.queue.iter().position(|&x| x == a) {
+                self.queue.remove(i);
+            }
+        }
     }
 
     fn stop(&mut self, a: usize) {
@@ -696,7 +714,7 @@ impl NavSystem {
                     };
                     let work = budget.saturating_sub(self.used).max(MIN_STRAIGHTEN_WORK);
                     let agent = &mut self.agents[a];
-                    let spent = straighten(
+                    let result = straighten(
                         &grid,
                         leg,
                         threshold,
@@ -704,11 +722,13 @@ impl NavSystem {
                         &mut self.corners,
                         &mut agent.waypoints,
                     );
+                    // The line-of-sight work counts whether or not the path fits.
+                    let (Ok(spent) | Err(spent)) = result;
+                    self.used += spent;
                     let room =
                         active.snapped_start.is_none() || agent.waypoints.len() < MAX_WAYPOINTS;
-                    match spent {
-                        Some(spent) if room => {
-                            self.used += spent;
+                    match result {
+                        Ok(_) if room => {
                             if let Some(s) = active.snapped_start {
                                 agent.waypoints.insert(0, s);
                             }
@@ -752,8 +772,9 @@ impl NavSystem {
                     self.agents[a].planned_for = target;
                 }
                 State::Moving if is_entity && target.distance(planned) > repath => {
-                    // A search still running for the old position is restarted.
-                    self.cancel(a);
+                    // A search still running for the old position is restarted; a request
+                    // already queued keeps its place and plans for the new position.
+                    self.cancel_search(a);
                     self.agents[a].planned_for = target;
                     self.enqueue(a);
                 }
@@ -1027,6 +1048,7 @@ impl NavSystem {
             "waypoints":waypoints,
             "remaining":agent.waypoints.len().saturating_sub(agent.next),
             "queued":agent.queued,
+            "goal_snapped":agent.goal_snapped,
             "searching":self.active.as_ref().is_some_and(|x| x.agent == a),
             "repaths":agent.repaths,
             "radius":agent.radius,
@@ -1111,20 +1133,39 @@ impl NavSystem {
             .collect()
     }
 
+    /// Whether an editor path preview search is unfinished (call `preview_path` again on a
+    /// later frame to continue it).
+    pub fn preview_pending(&self) -> bool {
+        self.preview.lock().is_ok_and(|p| p.running.is_some())
+    }
+
     /// Editor preview: the path the agent on `slot` would walk to its authored target from
-    /// where it stands, as world XZ waypoints. Synchronous but bounded
-    /// (`PREVIEW_EXPANSIONS`) and cached by its inputs; `None` when there is no target or no
+    /// where it stands, as world XZ waypoints. Each call spends at most
+    /// `PREVIEW_FRAME_WORK` units (the search resumes on the next call with the same
+    /// inputs, at most `PREVIEW_EXPANSIONS` in total) and the result is cached by its
+    /// inputs; `None` while searching (`preview_pending`), or when there is no target or no
     /// path within the bound.
     pub fn preview_path(&self, state: &RuntimeState, slot: usize) -> Option<Vec<Vec2>> {
         let grid = self.grid.as_ref()?;
-        let agent = self.agents.iter().find(|a| a.slot == slot)?;
-        let target = match agent.authored_target.as_ref()? {
-            NavTarget::Point(p) => Vec2::new(p[0], p[2]),
-            NavTarget::Entity(id) => xz(world_position(state, *state.compiled.indices.get(id)?)),
+        let mut preview = self.preview.lock().ok()?;
+        let inputs = (|| {
+            let agent = self.agents.iter().find(|a| a.slot == slot)?;
+            let target = match agent.authored_target.as_ref()? {
+                NavTarget::Point(p) => Vec2::new(p[0], p[2]),
+                NavTarget::Entity(id) => {
+                    xz(world_position(state, *state.compiled.indices.get(id)?))
+                }
+            };
+            let start = xz(world_position(state, slot));
+            let from = grid.nearest_walkable(start, agent.threshold)?;
+            let to = grid.nearest_walkable(target, agent.threshold)?;
+            Some((agent, target, from, to))
+        })();
+        let Some((agent, target, from, to)) = inputs else {
+            // Nothing to preview: an unfinished search for other inputs is abandoned.
+            preview.running = None;
+            return None;
         };
-        let start = xz(world_position(state, slot));
-        let from = grid.nearest_walkable(start, agent.threshold)?;
-        let to = grid.nearest_walkable(target, agent.threshold)?;
         let key = (
             slot,
             from,
@@ -1132,22 +1173,37 @@ impl NavSystem {
             agent.threshold,
             [target.x.to_bits(), target.y.to_bits()],
         );
-        let mut preview = self.preview.lock().ok()?;
         if preview.key == Some(key) {
+            preview.running = None;
             return preview.path.clone();
         }
         let p = &mut *preview;
         let search = p
             .search
             .get_or_insert_with(|| GridSearch::new(grid.spec.width, grid.spec.height));
-        search.begin(from, to, Neighbourhood::Eight);
         let threshold = agent.threshold;
-        let goal = if grid.spec.cell_of(target) == Some(to) {
-            target
-        } else {
-            grid.spec.center(to)
+        let goal = match p.running {
+            Some((running, goal)) if running == key => goal,
+            // New inputs: drop the old search (if any) and start this one.
+            _ => {
+                search.begin(from, to, Neighbourhood::Eight);
+                let goal = if grid.spec.cell_of(target) == Some(to) {
+                    target
+                } else {
+                    grid.spec.center(to)
+                };
+                p.running = Some((key, goal));
+                p.spent = 0;
+                goal
+            }
         };
-        p.path = match search.run(PREVIEW_EXPANSIONS, |i| grid.walkable(i, threshold)) {
+        let before = search.expanded();
+        let budget = PREVIEW_FRAME_WORK.min(PREVIEW_EXPANSIONS - p.spent);
+        let progress = search.run(budget, |i| grid.walkable(i, threshold));
+        let used = search.expanded() - before;
+        p.spent += used;
+        let path = match progress {
+            Progress::Pending if p.spent < PREVIEW_EXPANSIONS => return None,
             Progress::Found => {
                 search.path(&mut p.cells);
                 let mut out = vec![];
@@ -1156,19 +1212,25 @@ impl NavSystem {
                     cells: &p.cells,
                     goal,
                 };
+                // Bounded like the search; past the bound corners stay (still a valid path).
                 straighten(
                     grid,
                     leg,
                     threshold,
-                    PREVIEW_EXPANSIONS,
+                    PREVIEW_FRAME_WORK
+                        .saturating_sub(used)
+                        .max(MIN_STRAIGHTEN_WORK),
                     &mut p.corners,
                     &mut out,
                 )
+                .ok()
                 .map(|_| out)
             }
             _ => None,
         };
+        p.running = None;
         p.key = Some(key);
+        p.path = path;
         p.path.clone()
     }
 }
@@ -1265,9 +1327,9 @@ impl RuntimeSystem for NavSystem {
                 || (matches!(was.state, State::Moving) && !same_grid)
                 || was.queued
                 || old.active.as_ref().is_some_and(|x| x.agent == o);
-            if self.queue.contains(&a) {
-                self.agents[a].queued = false;
-            }
+            // The fresh request of the new build is replaced by the carried state (and its
+            // queue entry removed, so a re-plan below queues exactly once).
+            self.cancel(a);
             let agent = &mut self.agents[a];
             agent.goal = goal;
             agent.state = was.state;
@@ -1281,6 +1343,9 @@ impl RuntimeSystem for NavSystem {
             if same_grid && !replan {
                 agent.waypoints.extend_from_slice(&was.waypoints);
                 agent.next = was.next;
+                // The kept path ends at a snapped goal: keep steering to it, not into the
+                // blocked entity position.
+                agent.goal_snapped = was.goal_snapped;
             }
             if replan && agent.goal.is_some() {
                 agent.state = State::Pending;

@@ -63,6 +63,30 @@ struct Rig {
     focus_hit: Option<usize>,
     tests: usize,
     over_budget: u64,
+    /// Why a hot reload dropped the `camera.follow.set` target (for `camera.inspect`).
+    target_reset: Option<String>,
+}
+
+/// Why the camera on slot `camera` cannot follow entity `t` (`id`): the rules
+/// `camera.follow.set` checks, also applied when a hot reload carries a runtime target.
+fn target_problem(state: &RuntimeState, camera: usize, t: usize, id: &str) -> Result<()> {
+    let mut cursor = Some(t);
+    while let Some(c) = cursor {
+        ensure!(
+            c != camera,
+            "target {id} is the camera itself or one of its descendants"
+        );
+        cursor = state.compiled.parents[c];
+    }
+    ensure!(
+        state.transforms[t].is_some(),
+        "target {id} has no core.transform"
+    );
+    ensure!(
+        state.compiled.entities[t].camera_follow.is_none(),
+        "target {id} is itself a follow camera; follow its target instead"
+    );
+    Ok(())
 }
 
 impl Rig {
@@ -101,6 +125,7 @@ impl Rig {
             focus_hit: None,
             tests: 0,
             over_budget: 0,
+            target_reset: None,
         };
         rig.reset_goals();
         rig.exclude(state);
@@ -163,6 +188,7 @@ impl Rig {
             "tests": self.tests,
             "over_budget": self.over_budget,
             "blockers": grid.len(),
+            "target_reset": self.target_reset,
         })
     }
 }
@@ -349,6 +375,7 @@ impl CameraRigSystem {
             r.target = t;
             r.target_id = target_id.clone();
             r.target_set = true;
+            r.target_reset = None;
             r.exclude(state);
             if bone.is_none() {
                 r.socket = None;
@@ -386,22 +413,7 @@ impl CameraRigSystem {
                         format!("target {id} does not exist"),
                     )
                 })?;
-                let mut cursor = Some(t);
-                while let Some(c) = cursor {
-                    ensure!(
-                        c != r.slot,
-                        "target {id} is the camera itself or one of its descendants"
-                    );
-                    cursor = state.compiled.parents[c];
-                }
-                ensure!(
-                    state.transforms[t].is_some(),
-                    "target {id} has no core.transform"
-                );
-                ensure!(
-                    state.compiled.entities[t].camera_follow.is_none(),
-                    "target {id} is itself a follow camera; follow its target instead"
-                );
+                target_problem(state, r.slot, t, id)?;
                 Some(t)
             }
             None => None,
@@ -717,13 +729,28 @@ impl RuntimeSystem for CameraRigSystem {
                 r.distance_goal = o.distance_goal;
                 r.goals_set = true;
             }
+            r.target_reset = o.target_reset.clone();
             if o.target_set {
+                // The runtime target stays only while camera.follow.set would still accept
+                // it; otherwise the camera returns to its authored target and says why.
                 let id = &previous.compiled.entities[o.target].id;
-                if let Some(&t) = next.compiled.indices.get(id) {
-                    r.target = t;
-                    r.target_id = id.clone();
-                    r.target_set = true;
-                    r.exclude(next);
+                let valid = match next.compiled.indices.get(id) {
+                    Some(&t) => target_problem(next, r.slot, t, id).map(|()| t),
+                    None => Err(anyhow::anyhow!("target {id} no longer exists")),
+                };
+                match valid {
+                    Ok(t) => {
+                        r.target = t;
+                        r.target_id = id.clone();
+                        r.target_set = true;
+                        r.exclude(next);
+                    }
+                    Err(e) => {
+                        r.target_reset = Some(format!(
+                            "runtime target dropped on reload: {e}; following authored target {}",
+                            r.target_id
+                        ));
+                    }
                 }
             }
             // A bone chosen by camera.follow.set stays while its target and bone exist.

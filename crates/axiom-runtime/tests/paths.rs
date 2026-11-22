@@ -554,6 +554,33 @@ fn hot_reload_keeps_progress_unless_the_path_changes() {
 }
 
 #[test]
+fn an_edited_authored_speed_replaces_a_runtime_override() {
+    // R5 F10: the runtime sets 3 m/s, then a revision changes the authored speed to
+    // 0.5 m/s. The newer authored speed wins; progress is kept.
+    let w = world(json!([
+        line("road", 100.0),
+        follower("bus", json!({"path":"road","speed":1.0})),
+    ]));
+    let mut r = runtime(w.clone());
+    steps(&mut r, 120);
+    call(&mut r, "set_speed", json!({"id":"bus","speed":3.0})).unwrap();
+    let mut slower = w;
+    slower
+        .entity_mut("bus")
+        .unwrap()
+        .components
+        .get_mut("path.follow")
+        .unwrap()["speed"] = json!(0.5);
+    r.reconcile(slower, 2).unwrap();
+    steps(&mut r, 120);
+    assert!(
+        near(position(&r, "bus"), Vec3::new(1.5, 0.0, 0.0)),
+        "{}",
+        position(&r, "bus")
+    );
+}
+
+#[test]
 fn spawned_followers_halt_and_checkpoints_refuse_explicitly() {
     let mut r = runtime(world(json!([
         line("road", 10.0),

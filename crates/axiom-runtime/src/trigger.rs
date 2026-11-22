@@ -58,11 +58,12 @@ enum Shape {
 }
 
 impl Shape {
-    /// Bounding-sphere radius around the zone center.
-    fn reach(self) -> f32 {
+    /// Bounding-sphere radius around the zone center of the shape grown by `grow` meters
+    /// (as `contains` grows it: per box half-axis, so the grown corner is reached).
+    fn reach(self, grow: f32) -> f32 {
         match self {
-            Shape::Sphere(r) => r,
-            Shape::Box(half) => half.length(),
+            Shape::Sphere(r) => r + grow,
+            Shape::Box(half) => (half + Vec3::splat(grow)).length(),
         }
     }
 }
@@ -531,7 +532,7 @@ impl RuntimeSystem for TriggerSystem {
                     next.push(s);
                 }
             };
-            let reach = zone.shape.reach() + zone.margin;
+            let reach = zone.shape.reach(zone.margin);
             let (x0, x1) = (cell(center.x - reach), cell(center.x + reach));
             let (z0, z1) = (cell(center.z - reach), cell(center.z + reach));
             let cells = (i64::from(x1) - i64::from(x0) + 1) * (i64::from(z1) - i64::from(z0) + 1);
@@ -580,17 +581,27 @@ impl RuntimeSystem for TriggerSystem {
         if self.changes.is_empty() {
             return;
         }
-        // Which changes emit an event (respecting `once`), counted before anything is emitted.
+        // Which changes emit an event (respecting `once`), counted before anything is emitted
+        // with the same rule as the emit loop below: a `once` direction fires at most once,
+        // also when several entities cross it in this step. Changes are grouped per zone.
         let mut events = 0;
+        let mut seen: Option<u16> = None;
+        let mut counted = [false; 2];
         for c in &self.changes {
+            if seen != Some(c.zone) {
+                seen = Some(c.zone);
+                counted = [false; 2];
+            }
             let z = &self.zones[c.zone as usize];
             let (event, fired) = if c.enter {
                 (z.on_enter, z.enters)
             } else {
                 (z.on_exit, z.exits)
             };
-            if event.is_some() && !(z.once && fired > 0) {
+            let already = &mut counted[usize::from(c.enter)];
+            if event.is_some() && !(z.once && (fired > 0 || *already)) {
                 events += 1;
+                *already = true;
             }
         }
         if events > MAX_TRIGGER_EVENTS_PER_STEP {

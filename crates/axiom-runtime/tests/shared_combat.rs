@@ -126,6 +126,49 @@ fn hero_and_squad_share_guard_health_and_death_without_duplicate_events() {
     assert_eq!(r.observation().metrics["combat"]["sequence"], seq);
 }
 #[test]
+fn hit_burst_beyond_the_event_queue_defers_events_instead_of_freezing() {
+    // R5 F1: 200 valid hits in one tick publish 200 `combat.hit` events, more than the
+    // 128 per-tick cross-package queue. Damage commits once; the events are delivered in
+    // order over the next ticks with their original tick, and the simulation keeps running.
+    let mut r = WorldRuntime::new(stage(), 1, installed_registry()).unwrap();
+    step(&mut r, 1);
+    let before = hp(&r, "enemy/guard");
+    let published = |r: &WorldRuntime| {
+        r.observation().metrics["events"]["published"]
+            .as_u64()
+            .unwrap()
+    };
+    let start = published(&r);
+    let burst_tick = r.state.tick + 1;
+    let combat = r.state.combat.as_mut().unwrap();
+    let hit = combat
+        .scene
+        .attempt("hero", "enemy/guard", 0.1, 5.0, None)
+        .unwrap();
+    combat.submit(vec![hit; 200]).unwrap();
+    step(&mut r, 1);
+    let after = hp(&r, "enemy/guard");
+    assert!((before - after - 20.0).abs() < 0.01, "{before} -> {after}");
+    assert_eq!(published(&r) - start, 128);
+    assert_eq!(r.observation().metrics["combat"]["queued_events"], 72);
+    step(&mut r, 1);
+    assert_eq!(published(&r) - start, 200);
+    assert_eq!(r.observation().metrics["combat"]["queued_events"], 0);
+    let recent = r.observation().metrics["events"]["recent"].clone();
+    assert!(
+        recent
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["event"] == "combat.hit" && e["tick"] == burst_tick),
+        "{recent}"
+    );
+    // Damage was applied once, not again on delivery.
+    assert_eq!(hp(&r, "enemy/guard"), after);
+    assert!(r.observation().metrics["combat"]["error"].is_null());
+}
+
+#[test]
 fn checked_in_support_scenario_finishes_with_squad_kill_and_hero_damage() {
     let scenario =
         serde_json::from_str(include_str!("../../../examples/m4-support.scenario.json")).unwrap();

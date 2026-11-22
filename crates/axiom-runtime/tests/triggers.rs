@@ -340,6 +340,61 @@ fn zone_pair_and_event_budgets_fail_explicitly() {
 }
 
 #[test]
+fn once_zone_counts_many_simultaneous_enters_as_one_event() {
+    // R5 F3: 65 matching movers entering a `once` zone in one step emit exactly one enter;
+    // the budget precheck must not count the 64 suppressed ones and halt detection.
+    let mut once = sphere(1.0);
+    once["once"] = json!(true);
+    let mut entities = vec![zone("z", [0.0; 3], once)];
+    entities.extend((0..65).map(|i| mover(&format!("m/{i}"), [5.0, 0.0, 0.0], &["player"])));
+    let mut r = runtime(world(Value::Array(entities)));
+    step(&mut r);
+    for i in 0..65 {
+        r.state.set_position(&format!("m/{i}"), [0.0; 3]);
+    }
+    step(&mut r);
+    let s = summary(&r);
+    assert!(s["halted"].is_null(), "{s}");
+    assert_eq!(var(&r, "ins"), 1);
+    assert_eq!(s["emitted"], 1);
+    for i in 0..65 {
+        r.state.set_position(&format!("m/{i}"), [5.0, 0.0, 0.0]);
+    }
+    step(&mut r);
+    assert!(summary(&r)["halted"].is_null());
+    assert_eq!(var(&r, "outs"), 1);
+}
+
+#[test]
+fn rotated_box_keeps_an_occupant_in_the_grown_corner_of_another_cell() {
+    // R5 F13: box half 0.5 yawed 45 degrees with exit_margin 3. World (4.9, 0, 0) is local
+    // (3.46, 0, 3.46): inside the grown box (half 3.5), but 4.9 m from the center, beyond
+    // the old coarse reach |half| + margin = 3.87 m and in grid cell x = 1 the old query
+    // never visited.
+    let yaw = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4).to_array();
+    let mut r = runtime(world(json!([
+        {"id":"z","components":{"core.transform":{"position":[0,0,0],"rotation":yaw},
+            "trigger.zone":{"shape":"box","half_extents":[0.5,0.5,0.5],"exit_margin":3.0,
+                "filter":{"tags":["player"]},"on_enter":"in","on_exit":"out"}}},
+        mover("hero", [0.0; 3], &["player"]),
+    ])));
+    step(&mut r);
+    assert_eq!(summary(&r)["inside"]["z"], json!(["hero"]));
+    r.state.set_position("hero", [4.9, 0.0, 0.0]);
+    step(&mut r);
+    assert_eq!(
+        summary(&r)["inside"]["z"],
+        json!(["hero"]),
+        "within the margin"
+    );
+    assert_eq!(var(&r, "outs"), 0);
+    r.state.set_position("hero", [5.2, 0.0, 0.0]);
+    step(&mut r);
+    assert_eq!(summary(&r)["occupied"], 0);
+    assert_eq!(var(&r, "outs"), 1);
+}
+
+#[test]
 fn spawned_zones_halt_and_checkpoints_refuse_explicitly() {
     let mut r = runtime(world(json!([
         zone("z", [0.0; 3], sphere(1.0)),

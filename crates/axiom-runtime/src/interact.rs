@@ -503,9 +503,45 @@ impl InteractSystem {
         });
     }
 
-    /// Uses target `t` on behalf of union member `u`: counters, cooldown, event.
-    fn apply(&mut self, state: &mut RuntimeState, u: usize, t: usize, by_key: bool) {
+    /// Uses target `t` on behalf of union member `u`: event first, then counters, cooldown
+    /// and the use record. The gameplay command is transactional, so a failed event leaves
+    /// the target unused (a retry can succeed) and nothing is reported as used.
+    fn apply(&mut self, state: &mut RuntimeState, u: usize, t: usize, by_key: bool) -> Result<()> {
         let tick = state.tick;
+        if let Some(event) = self.targets[t].event {
+            let info = &self.events[event];
+            let mut fields = BTreeMap::new();
+            if info.interactor_field {
+                fields.insert("interactor".to_owned(), Scalar::Text(self.names[u].clone()));
+            }
+            if info.target_field {
+                fields.insert(
+                    "target".to_owned(),
+                    Scalar::Text(self.target_ids[t].clone()),
+                );
+            }
+            let result = match state.gameplay.as_mut() {
+                Some(g) => g.command(
+                    &RuntimeCommand::Emit {
+                        event: info.name.clone(),
+                        fields,
+                    },
+                    tick,
+                ),
+                None => Err(anyhow::anyhow!("behavior.execute is not running")),
+            };
+            if let Err(e) = result {
+                return Err(axiom_core::Diagnostic::error(
+                    "interact_event",
+                    "/args/target",
+                    format!(
+                        "{} using {}: emit {} failed: {e:#}",
+                        self.names[u], self.target_ids[t], info.name
+                    ),
+                ));
+            }
+            state.sync_scenes();
+        }
         let target = &mut self.targets[t];
         target.uses = target.uses.saturating_add(1);
         target.ready_at = tick.saturating_add(target.cooldown_ticks);
@@ -519,39 +555,7 @@ impl InteractSystem {
             target: t as u16,
             by_key,
         });
-        let Some(event) = self.targets[t].event else {
-            return;
-        };
-        let info = &self.events[event];
-        let mut fields = BTreeMap::new();
-        if info.interactor_field {
-            fields.insert("interactor".to_owned(), Scalar::Text(self.names[u].clone()));
-        }
-        if info.target_field {
-            fields.insert(
-                "target".to_owned(),
-                Scalar::Text(self.target_ids[t].clone()),
-            );
-        }
-        let result = match state.gameplay.as_mut() {
-            Some(g) => g.command(
-                &RuntimeCommand::Emit {
-                    event: info.name.clone(),
-                    fields,
-                },
-                tick,
-            ),
-            None => Err(anyhow::anyhow!("behavior.execute is not running")),
-        };
-        match result {
-            Ok(()) => state.sync_scenes(),
-            // Keep running; surface the first failure through observe.
-            Err(e) => {
-                let name = &self.events[event].name;
-                self.fault
-                    .get_or_insert_with(|| format!("emit {name}: {e:#}"));
-            }
-        }
+        Ok(())
     }
 
     fn target_index(&self, id: &str) -> Option<usize> {
@@ -630,7 +634,7 @@ impl InteractSystem {
                 t
             }
         };
-        self.apply(state, u, t, false);
+        self.apply(state, u, t, false)?;
         Ok(json!({
             "interactor":self.names[u],
             "target":self.target_ids[t],
@@ -807,7 +811,10 @@ impl RuntimeSystem for InteractSystem {
                 continue;
             };
             if self.targets[t].action == Some(a) && self.ready(state, t).is_ok() {
-                self.apply(state, u, t, true);
+                // Keep running; surface the first failure through observe.
+                if let Err(e) = self.apply(state, u, t, true) {
+                    self.fault.get_or_insert_with(|| format!("{e:#}"));
+                }
             }
         }
         self.refocus(state);
