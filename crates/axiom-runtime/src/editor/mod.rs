@@ -2108,10 +2108,7 @@ impl Editor {
             self.remote_draft_guard()?;
         }
         let graph_open = open.is_some_and(|t| {
-            matches!(
-                t.split_once(':'),
-                Some(("graph" | "rules" | "animator", _))
-            )
+            matches!(t.split_once(':'), Some(("graph" | "rules" | "animator", _)))
         });
         let graph_command = command.is_some_and(|id| {
             (id.starts_with("graph.") || id.starts_with("behavior."))
