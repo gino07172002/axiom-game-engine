@@ -133,11 +133,14 @@ impl Contexts {
     pub fn capture(&self) -> bool {
         self.config.contexts[&self.active].capture_pointer
     }
+    /// Hot reload keeps the player's context while its ID still exists (labels, routes and
+    /// cameras come from the new definition); only a removed context falls back to `initial`.
+    /// `held` follows the physical switch button either way.
     pub fn transfer(&mut self, old: &Self) {
-        if self.config == old.config {
-            self.active = old.active.clone();
-            self.held = old.held;
+        if self.config.contexts.contains_key(&old.active) {
+            self.active.clone_from(&old.active);
         }
+        self.held = old.held;
     }
     pub fn observation(&self) -> Value {
         json!({"context":self.active,"capture_pointer":self.capture()})
@@ -166,5 +169,44 @@ impl Contexts {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contexts(label: &str, with_squad: bool) -> Contexts {
+        let mut contexts = json!({
+            "hero":{"label":"Hero","systems":["a"],"cameras":["c1"],"capture_pointer":true},
+        });
+        if with_squad {
+            contexts["squad"] =
+                json!({"label":label,"systems":["b"],"cameras":["c2"],"capture_pointer":false});
+        }
+        let config: Config =
+            serde_json::from_value(json!({"initial":"hero","contexts":contexts})).unwrap();
+        Contexts {
+            active: config.initial.clone(),
+            config,
+            held: false,
+        }
+    }
+
+    #[test]
+    fn a_label_edit_keeps_the_players_context_and_a_removed_one_falls_back() {
+        let mut old = contexts("Squad", true);
+        old.activate(&json!({"context":"squad"})).unwrap();
+        old.step(true);
+        assert_eq!(old.active, "hero", "the held switch cycled once");
+        old.activate(&json!({"context":"squad"})).unwrap();
+        let mut next = contexts("Squad (renamed)", true);
+        next.transfer(&old);
+        assert_eq!((next.active.as_str(), next.held), ("squad", true));
+        assert!(!next.capture() && next.camera("c2"));
+        // The squad context is removed: back to initial, the held button stays held.
+        let mut gone = contexts("", false);
+        gone.transfer(&next);
+        assert_eq!((gone.active.as_str(), gone.held), ("hero", true));
     }
 }

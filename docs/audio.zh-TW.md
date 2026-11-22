@@ -189,7 +189,7 @@
 | Object ▸ Make Audio Listener(`object.audio_listener`,主選取) | `audio ID listener`(其他聽者在同一個 revision 設為 inactive) |
 | Inspector ▸ Audio source ▸ Clip 下拉選單 | `set ID audio.source/clip "CLIP"`(片段不存在 = `missing_clip`) |
 | Inspector ▸ Audio source ▸ New clip ▸ 預設片段(名稱 = 預設名,重複時 `engine2`…) | `audio clip ID tone\|engine\|fountain\|creak\|footstep` |
-| Inspector ▸ Audio source ▸ New clip ▸ File 欄位(填了就忽略 Preset);選到檔案片段時 Inspector 顯示檔名、長度、聲道、取樣率與解碼耗時(本程序解碼過之後;否則「not decoded yet」) | `audio clip ID file=PATH [gain=G]`(`ops::add_audio_file_clip`;路徑照寫入) |
+| Inspector ▸ Audio source ▸ New clip ▸ File 欄位(填了就忽略 Preset);選到檔案片段時 Inspector 顯示檔名、長度、聲道、取樣率與解碼耗時(取自目前作用中的 runtime 並標示其 revision;該 runtime 尚未以同一路徑載入時顯示「not loaded by the running world yet」) | `audio clip ID file=PATH [gain=G]`(`ops::add_audio_file_clip`;路徑照寫入) |
 | Inspector ▸ Components ▸ `audio.source` / `audio.listener` 表單 | `set ID audio.source/FIELD V` |
 
 注意:Add Audio Source / Make Audio Listener 會**取代**物件上既有的同名元件(和 Make Interactable 相同),沒給的欄位回到預設值;只想改片段或欄位請用 Clip 下拉選單或表單(`set`)。

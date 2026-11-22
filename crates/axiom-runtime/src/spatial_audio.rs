@@ -34,6 +34,12 @@ use std::{
 pub const CLIP_CACHE_BYTES: usize = 32 << 20;
 /// Gain below which a playing source is inaudible (-80 dB) and takes no voice.
 const MIN_AUDIBLE: f32 = 1e-4;
+/// One-shots at most this long (clip seconds / pitch) that end while voiced are also handed to
+/// the output whole ([`AudioSpatialSystem::shots`]): they can start and end between two frames'
+/// voice blocks (or two mixer reads), so the voice block alone might never sound them.
+pub const SHOT_SECONDS: f32 = 0.25;
+/// Ended one-shots kept for the output (oldest dropped first, counted).
+const SHOTS: usize = 32;
 
 /// What a decoded file clip held (`observe`, the editor's Inspector).
 #[derive(Clone, Debug)]
@@ -100,12 +106,55 @@ fn file_key(file: &ClipFile) -> Result<(String, Vec<u8>)> {
     ))
 }
 
+/// What a file looked like when its cache text was computed: path, size, modification time
+/// and gain bits.
+type FileStamp = (String, u64, std::time::SystemTime, u32);
+/// Cache texts of files by stamp (bounded), so a runtime build whose files are unchanged since
+/// they were decoded costs one `metadata` call per file instead of reading and hashing it.
+/// A changed file has a new size or modification time and is read and hashed again.
+static FILE_TEXTS: Mutex<BTreeMap<FileStamp, String>> = Mutex::new(BTreeMap::new());
+const FILE_TEXTS_MAX: usize = 256;
+
+fn file_stamp(file: &ClipFile) -> Option<FileStamp> {
+    let meta = std::fs::metadata(&file.path).ok()?;
+    Some((
+        file.path.clone(),
+        meta.len(),
+        meta.modified().ok()?,
+        file.gain.to_bits(),
+    ))
+}
+
 /// PCM of `clip` by content hash: synthesised or decoded on a miss (outside the lock), shared
 /// afterwards. Entries no runtime references are evicted when the cache would exceed its
 /// budget; a clip that still does not fit is an error, not a silent drop. File clips also
 /// return what the file held.
 pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>, Option<FileInfo>)> {
     clip.validate()?;
+    fn poisoned<T>(_: T) -> anyhow::Error {
+        anyhow::anyhow!("audio clip cache lock poisoned")
+    }
+    // Unchanged file already decoded: no read, no hash. Stamped before reading, so a file
+    // replaced during the read is read again next time.
+    let stamp = clip.file.as_ref().and_then(file_stamp);
+    if let Some(stamp) = &stamp {
+        let known = FILE_TEXTS.lock().map_err(poisoned)?.get(stamp).cloned();
+        if let Some(text) = known {
+            let key = fnv1a(&text);
+            if let Some(e) = CLIP_CACHE
+                .lock()
+                .map_err(poisoned)?
+                .get(&key)
+                .filter(|e| e.text == text)
+            {
+                let mut file = e.file.clone();
+                if let (Some(info), Some(f)) = (file.as_mut(), &clip.file) {
+                    info.path.clone_from(&f.path);
+                }
+                return Ok((key, e.pcm.clone(), file));
+            }
+        }
+    }
     let (text, bytes) = match &clip.file {
         Some(file) => {
             let (text, bytes) = file_key(file)?;
@@ -113,8 +162,14 @@ pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>, Option<F
         }
         None => (serde_json::to_string(clip)?, None),
     };
+    if let Some(stamp) = stamp {
+        let mut texts = FILE_TEXTS.lock().map_err(poisoned)?;
+        if texts.len() >= FILE_TEXTS_MAX {
+            texts.clear();
+        }
+        texts.insert(stamp, text.clone());
+    }
     let key = fnv1a(&text);
-    let poisoned = |_| anyhow::anyhow!("audio clip cache lock poisoned");
     let found = |e: &CacheEntry| {
         let file = e.file.clone().map(|mut info| {
             // Same content under another path: report the path this clip names.
@@ -184,17 +239,6 @@ pub fn clip_cache_bytes() -> usize {
         .unwrap_or(0)
 }
 
-/// What the cache knows about the file at `path` (decoded by an earlier runtime build or pack
-/// load in this process), without touching the file.
-pub fn file_info(path: &str) -> Option<FileInfo> {
-    CLIP_CACHE.lock().ok().and_then(|c| {
-        c.values()
-            .filter_map(|e| e.file.as_ref())
-            .find(|f| f.path == path)
-            .cloned()
-    })
-}
-
 /// Package resolver: every file clip's pack-relative path becomes the absolute path inside
 /// the pack, and the file is decoded now (through the cache, so the runtime build that
 /// follows reuses it): a missing, corrupt, over-budget or escaping file fails the import with
@@ -208,6 +252,18 @@ pub fn resolve_files(root: &std::path::Path, world: &mut axiom_core::World) -> R
     else {
         return Ok(());
     };
+    // The clip budget before any file is opened (the composed world is checked again).
+    if clips.len() > axiom_core::audio::MAX_LIBRARY_CLIPS {
+        return Err(axiom_core::Diagnostic::error(
+            "audio_budget",
+            "/resources/audio.library/clips",
+            format!(
+                "audio clip budget exceeded ({} > {} clips)",
+                clips.len(),
+                axiom_core::audio::MAX_LIBRARY_CLIPS
+            ),
+        ));
+    }
     for (id, value) in clips.iter_mut() {
         let Some(raw) = value
             .pointer("/file/path")
@@ -269,6 +325,8 @@ struct Source {
     /// Seconds into the clip (the simulation's play position).
     time: f32,
     token: u32,
+    /// Play position when `token` was assigned (where its voice starts).
+    from: f32,
     /// Started since the last step: that step plays from `time` without advancing it, so the
     /// first published offset is the clip start.
     fresh: bool,
@@ -306,6 +364,13 @@ pub struct AudioSpatialSystem {
     starts: u64,
     scanned: usize,
     halted: Option<String>,
+    /// Short one-shots that ended while voiced, by serial (see [`SHOT_SECONDS`]); capacity
+    /// [`SHOTS`], reserved once.
+    shots: std::collections::VecDeque<(u64, VoiceParams)>,
+    shot_serial: u64,
+    shots_dropped: u64,
+    /// Identity of the shot serials (new system = new stream, kept by hot reload).
+    stream: u64,
 }
 
 fn round(v: f32) -> f64 {
@@ -343,6 +408,10 @@ impl AudioSpatialSystem {
             starts: 0,
             scanned: compiled.len(),
             halted: None,
+            shots: std::collections::VecDeque::with_capacity(SHOTS),
+            shot_serial: 0,
+            shots_dropped: 0,
+            stream: crate::audio::next_stream(),
         };
         let mut pcm = vec![];
         for (slot, e) in compiled.entities.iter().enumerate() {
@@ -389,6 +458,7 @@ impl AudioSpatialSystem {
                 playing,
                 time: 0.0,
                 token: if playing { next_token() } else { 0 },
+                from: 0.0,
                 fresh: playing,
                 voice: None,
                 selected: false,
@@ -418,6 +488,26 @@ impl AudioSpatialSystem {
     /// Voice block of the last step (the host publishes it to the audio thread).
     pub fn voices(&self) -> &[VoiceParams; MAX_VOICES] {
         &self.params
+    }
+
+    /// Short one-shots that ended while voiced, with serial > `after` (oldest first): the
+    /// output starts each once even when no voice block it published held it.
+    pub fn shots(&self, after: u64) -> impl Iterator<Item = (u64, &VoiceParams)> + '_ {
+        self.shots
+            .iter()
+            .filter(move |(serial, _)| *serial > after)
+            .map(|(serial, p)| (*serial, p))
+    }
+
+    /// What this runtime decoded for file clip `clip` (`None`: procedural, or no source uses
+    /// it). Read from this runtime, not the process-wide cache, so it matches `observe`.
+    pub fn clip_file(&self, clip: &str) -> Option<&FileInfo> {
+        self.clips.iter().find(|c| c.name == clip)?.file.as_ref()
+    }
+
+    /// Identity of the [`Self::shots`] serials (a new system restarts them).
+    pub fn stream(&self) -> u64 {
+        self.stream
     }
 
     /// PCM of every clip the sources use (shared with the clip cache).
@@ -491,6 +581,8 @@ impl AudioSpatialSystem {
             "steals": self.steals,
             "finished": self.finished,
             "starts": self.starts,
+            "shots": self.shot_serial,
+            "shots_dropped": self.shots_dropped,
             "listener": self.listener_json(),
             "voices": voices.iter().map(|&(v, i)| {
                 let s = &self.sources[i];
@@ -519,6 +611,7 @@ impl AudioSpatialSystem {
         s.playing = true;
         s.time = 0.0;
         s.token = next_token();
+        s.from = 0.0;
         s.fresh = true;
         self.starts += 1;
     }
@@ -602,6 +695,27 @@ impl RuntimeSystem for AudioSpatialSystem {
                     if s.def.looping {
                         s.time %= length;
                     } else {
+                        // A short one-shot that held a voice: hand its whole start to the
+                        // output (this frame's voice block may never have held it).
+                        if s.voice.is_some() && length <= SHOT_SECONDS * s.def.pitch {
+                            if self.shots.len() == SHOTS {
+                                self.shots.pop_front();
+                                self.shots_dropped += 1;
+                            }
+                            self.shot_serial += 1;
+                            self.shots.push_back((
+                                self.shot_serial,
+                                VoiceParams {
+                                    clip: self.clips[s.clip].hash,
+                                    token: s.token,
+                                    offset: s.from,
+                                    pitch: s.def.pitch,
+                                    left: s.left,
+                                    right: s.right,
+                                    looping: false,
+                                },
+                            ));
+                        }
                         s.playing = false;
                         s.time = length;
                         self.finished += 1;
@@ -719,6 +833,7 @@ impl RuntimeSystem for AudioSpatialSystem {
             s.playing = was.playing;
             s.time = was.time;
             s.token = was.token;
+            s.from = was.from;
             s.fresh = was.fresh;
             // Keep the voice slot too, so the audio thread continues the same voice.
             if let Some(v) = was.voice.filter(|&v| self.voices[usize::from(v)].is_none()) {
@@ -729,6 +844,11 @@ impl RuntimeSystem for AudioSpatialSystem {
         self.steals = old.steals;
         self.finished = old.finished;
         self.starts = old.starts;
+        // The output's shot cursor follows this stream across hot reloads.
+        self.shots.clone_from(&old.shots);
+        self.shot_serial = old.shot_serial;
+        self.shots_dropped = old.shots_dropped;
+        self.stream = old.stream;
         Ok(())
     }
     fn command(

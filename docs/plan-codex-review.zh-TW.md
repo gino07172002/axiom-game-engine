@@ -217,3 +217,29 @@ Gate(debug,worktree `r4`):`cargo fmt --all` 無差異;`cargo clippy --workspace 
 連帶修改:`editor/graph_tests.rs` 的 `Harness::with_runtime` 改用可執行的世界建 store(store 現在會拒絕含未宣告 `emit` 的世界;編輯器仍開啟該草稿並顯示 graph checks)。注意:既有資料庫若最新修訂含這類無效 FSM 參照,開啟時 `World::compile` 會拒絕(與 trigger / nav 事件檢查同一政策);這類世界原本就無法啟用 runtime。
 
 Gate(R5 worktree,debug):`cargo fmt --all --check` 通過;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` 除兩個計時測試外全過 — `app::tests::editor_scenario_runs_in_background_with_progress_cancel_and_result`(500 ms 門檻)與 `m15::agent_timeout_is_a_failed_task_and_never_a_zero_token_success`(10 s 門檻)在其他 agent 平行負載下失敗,單獨重跑皆通過;`axiom-runtime --lib` 全部重跑 342/343 通過(唯一失敗為同一計時測試,單獨重跑通過)。`editor-smoke-test`(port 4552)ok;`editor-world-parity`(4566)identical,rev 13/13;`street-editor-parity`(4562)identical,rev 16/16;`m0-smoke-test`(4362)PASS。無渲染管線改動,未做截圖 A/B。
+
+### R6 音效與輸入
+
+報告 `R6.md`(F1–F13)。逐條讀過引用的程式碼才下結論:13 條全部確認;F1 已由 R1 修好,本輪修 10 條(F6 為部分修正),延後 2 條(F2、F3)。
+
+| ID | 判定 | 修改 / 理由 | 測試 |
+|---|---|---|---|
+| F1 | CONFIRMED,R1 已修 | `audio::validate_world` 已是 `or_else(listeners.first())`(44d3a81);本輪只複查 | `axiom-core` `audio::tests::a_source_without_listener_or_spatial_system_is_a_diagnostic_not_a_panic` |
+| F2 | DEFERRED | 確認:`ClipFile::validate` 只檢查路徑形狀,`preview`/`apply`/`verify` 不讀檔,缺檔要到 runtime 建置才失敗(`tests/audio_files.rs` 已記錄此行為)。正解是交易外的有界背景檢查(讀檔+解碼在 runtime、要回報進度與取消),並讓提交沿用已驗證的摘要與 `expected_rev`;跨 core 協定、store 與編輯器背景 job,不在本輪範圍。同步在驗證器裡讀檔會違反 16 ms 與「不隱式觸發重工作」規則,所以沒有做半套 | — |
+| F3 | DEFERRED | 確認:authoring 只存路徑,`undo` 無法還原被覆寫的檔案內容。修正要在 `ClipFile` 加內容摘要欄位、匯入 op/ACL/編輯器 parity、pack resolver 比對、`asset_changed` 診斷與舊資料遷移,屬 authoring 格式變更 | — |
+| F4 | CONFIRMED,已修 | `AudioSpatialSystem` 在短 one-shot(片段長度/pitch ≤ `SHOT_SECONDS` 0.25 s)持有 voice 而自然結束時,記錄一筆 shot(有界 32 筆、序號 + stream ID,超量計數 `shots_dropped`);`Output::update` 依游標把新 shot 以 `Message::Shot` 送到音訊執行緒;`Mixer::play_shot` 以固定增益從起點播到 PCM 結尾。兩個 64 格 token 環避免重複:voice block 已起播的 token 不再當 shot 播,已當 shot 播的 token 之後出現在 voice block 也不再起播。`stop` 不會產生 shot(只有自然結束才記錄),保留取消語意。observe 新增 `audio.shots`/`shots_dropped` 與 output `shots_played`。無配置:佇列容量預留,mixer 為固定陣列 | `tests/audio.rs::a_one_shot_that_ends_within_one_frame_still_reaches_the_mixer`(一次輸出前跑兩個固定步進,再檢查混音樣本非零)、`audio_mix::tests::a_one_shot_sounds_once_through_either_path` |
+| F5 | CONFIRMED,已修 | `Events` 加 `stream`(`audio.events` factory 指派新的程序唯一 ID,同世界熱重載沿用);`Output` 在 session 或 stream 改變時把游標歸零。涵蓋換世界與移除後重新排入 `audio.events` | `audio::tests::a_new_cue_stream_on_the_same_session_is_not_skipped` |
+| F6 | CONFIRMED,部分修正 | 快取命中不再讀檔+SHA-256:`cached_clip` 先以 (path, size, mtime, gain) 查有界(256)的 stamp→cache text 表,命中且 PCM 仍在快取就只花一次 `metadata`。檔案大小或 mtime 改變就重讀重雜湊(stamp 在讀檔前取,讀檔中被換掉的檔下次會重讀)。限制:同大小且 mtime 不變的覆寫不會被發現(NTFS mtime 每次寫入都會更新)。**未修的部分**:首次解碼與整個 Play runtime 建置仍在主執行緒同步執行;改成背景 runtime 建置屬 R2/R8 的編輯器/host 重設計。A/B(debug,4 個各 11 MB、已快取的檔案片段,`WorldRuntime::new` 8 次):修前 median 704.7 / 401.9 ms,修後 18.5 / 12.5 ms(兩輪,順序對調;機器同時有其他 agent 編譯) | `tests/audio_files.rs::an_unchanged_decoded_file_is_not_read_again_by_the_next_build`(Windows:以 share_mode 0 鎖住檔案後再建置仍成功) |
+| F7 | CONFIRMED,已修 | `resolve_files` 在開第一個檔案前檢查 `clips.len() ≤ MAX_LIBRARY_CLIPS`,在 `/resources/audio.library/clips` 回 `audio_budget`;合成後的預算檢查保留 | `tests/audio_files.rs::an_over_budget_clip_count_fails_before_any_file_is_read` |
+| F8 | CONFIRMED,已修 | 新增 `InputBindings::validate_keys`(`input.bindings` 驗證器呼叫):同名 button/axis 回 `action_kind`,路徑指向 `buttons/ACTION`,訊息附 `axes/ACTION`。`edit_input` 的 `Remove` 不再短路,同一筆編輯清掉兩邊 | `tests/tuning_ops.rs::duplicate_actions_and_unmatchable_keys_fail_validation_with_their_path` |
+| F9 | CONFIRMED,已修 | `Contexts::transfer`:舊 `active` ID 仍存在就保留(路由、相機、指標捕捉取新定義),被移除才回 `initial`;`held` 一律沿用(實體按鍵狀態) | `input::tests::a_label_edit_keeps_the_players_context_and_a_removed_one_falls_back` |
+| F10 | CONFIRMED,已修 | mixer 循環越界改 `pos %= len`(抽出共用 `mix_voice`) | `audio_mix::tests::a_one_sample_loop_at_high_pitch_keeps_playing` |
+| F11 | CONFIRMED,已修(降頻分散) | `Gamepads::poll` 每次最多探測一個到期的空槽(round robin),已連接槽每幀照讀;observe 新增 `probes`。沒有新增執行緒或 crate。實測(本機無手把,debug):單一空槽 `XInputGetState` 41–176 µs,修前首幀/每秒一幀四槽合計約 250–390 µs,修後每幀最多一次(首次 poll 41–86 µs);兩者都遠低於 16 ms,此修正是把尖峰攤平 | `gamepad::tests::empty_slots_are_probed_one_per_poll_and_connected_ones_every_poll`(注入假 reader,驗證每次 poll 叫了哪些槽) |
+| F12 | CONFIRMED,已修 | `ops::KEY_NAMES`:winit 0.30 全部具名 `KeyCode` 的 Debug 名稱 + `MouseLeft`/`WheelUp`/`WheelDown`;`valid_key_name` 與 `check_key_name` 用它,資源驗證器(`validate_keys`)與 `edit_input` 共用,診斷帶欄位路徑,`PadA` 這類值提示 `input pad` | `editor::input_map::tests::core_key_names_match_winit_and_captured_keys`(以 winit 本身逐一核對清單,並確認 Input Map 能擷取的鍵都在清單內)、上面的 `duplicate_actions_…` |
+| F13 | CONFIRMED,已修 | 移除程序全域 `spatial_audio::file_info(path)`;Inspector 改從目前 runtime 的 `AudioSpatialSystem::clip_file(clip)` 讀,並比對路徑、標示 runtime revision,尚未載入顯示 not loaded。`docs/audio.zh-TW.md` 同步 | `tests/audio_files.rs::changed_file_content_restarts_and_old_paths_still_work_after_reload` 新增 `clip_file` 斷言(同路徑換檔前後 1.0 → 2.0 s) |
+
+範圍外的觸碰:`axiom-core/src/ir.rs`(`InputBindings` 驗證)、`registry.rs` 一行、`editor/ui.rs` 一行、`docs/audio.zh-TW.md`。行為變更:`input.bindings` 內同名 button/axis、或 host 產生不了的鍵名,現在驗證失敗(既有 content/examples 都通過)。每個新測試都在暫時還原對應修正時確認會失敗(8/8 FAILED),之後已還原修正。
+
+未驗證:實際聽感(無法聆聽;以 mixer 樣本與 observe 計數驗證);實體手把熱插拔(本機無手把,只量到空槽探測);WinMM 裝置下 `Message::Shot` 的端到端路徑只靠單元測試 + 閱讀(無裝置時 `send` 直接計入 `dropped`)。
+
+Gate(R6 worktree,debug):`cargo fmt --all` 乾淨;`cargo clippy --workspace --all-targets -D warnings` 通過;`cargo test --workspace --no-fail-fast` 929 passed / 0 failed / 6 ignored;`editor-smoke-test` PASS(port 4652);`editor-world-parity` identical(rev 13,port 4666);`street-editor-parity` identical(rev 16,port 4662);`m0-smoke-test` PASS(port 4672)。沒有改渲染,未做截圖 A/B。

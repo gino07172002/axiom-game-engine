@@ -15,8 +15,37 @@ use std::sync::{
 pub const MAX_VOICES: usize = 32;
 /// Simultaneous `audio.events` tone cues; a new cue replaces the oldest when all are busy.
 pub const CUE_VOICES: usize = 8;
+/// Simultaneous short one-shots started whole (`play_shot`); a new one replaces the oldest.
+pub const SHOT_VOICES: usize = 8;
 /// Largest `render` request in frames (stereo pairs).
 pub const MAX_FRAMES: usize = 1024;
+/// Recently started tokens remembered per path, so a one-shot sounds once whether its start
+/// arrives through the voice block, `play_shot`, or both.
+const TOKEN_RING: usize = 64;
+
+/// Fixed ring of recent tokens (no allocation).
+#[derive(Clone, Copy)]
+struct Tokens {
+    ring: [u32; TOKEN_RING],
+    at: usize,
+}
+impl Default for Tokens {
+    fn default() -> Self {
+        Self {
+            ring: [0; TOKEN_RING],
+            at: 0,
+        }
+    }
+}
+impl Tokens {
+    fn push(&mut self, token: u32) {
+        self.ring[self.at] = token;
+        self.at = (self.at + 1) % TOKEN_RING;
+    }
+    fn contains(&self, token: u32) -> bool {
+        token != 0 && self.ring.contains(&token)
+    }
+}
 const RATE: f64 = axiom_core::audio::SAMPLE_RATE as f64;
 
 /// What one voice should play, computed by the simulation each fixed step.
@@ -162,6 +191,10 @@ pub struct MixStats {
     pub voices: u32,
     pub clipped_samples: u64,
     pub cues_started: u64,
+    /// One-shots started whole by `play_shot`.
+    pub shots_started: u64,
+    /// `play_shot` calls for a token the voice block had already started (played once).
+    pub shots_skipped: u64,
 }
 
 pub struct Mixer {
@@ -170,6 +203,10 @@ pub struct Mixer {
     voices: [MixVoice; MAX_VOICES],
     cues: [(Option<Arc<[i16]>>, usize); CUE_VOICES],
     next_cue: usize,
+    shots: [MixVoice; SHOT_VOICES],
+    next_shot: usize,
+    voiced_tokens: Tokens,
+    shot_tokens: Tokens,
     scratch: Box<[f32; 2 * MAX_FRAMES]>,
     pub stats: MixStats,
 }
@@ -182,10 +219,55 @@ impl Default for Mixer {
             voices: [MixVoice::default(); MAX_VOICES],
             cues: std::array::from_fn(|_| (None, 0)),
             next_cue: 0,
+            shots: [MixVoice::default(); SHOT_VOICES],
+            next_shot: 0,
+            voiced_tokens: Tokens::default(),
+            shot_tokens: Tokens::default(),
             scratch: Box::new([0.0; 2 * MAX_FRAMES]),
             stats: MixStats::default(),
         }
     }
+}
+
+/// Adds `v` (ramping its gains to `target` across the buffer) into `mix`; ends it at the clip
+/// end unless it loops.
+fn mix_voice(v: &mut MixVoice, pcm: &[i16], mix: &mut [f32], target: (f32, f32)) {
+    let frames = mix.len() / 2;
+    let len = pcm.len();
+    let step = f64::from(v.pitch.max(0.0));
+    let (dl, dr) = (
+        (target.0 - v.left) / frames.max(1) as f32,
+        (target.1 - v.right) / frames.max(1) as f32,
+    );
+    let (mut gl, mut gr) = (v.left, v.right);
+    for frame in mix.as_chunks_mut::<2>().0.iter_mut() {
+        gl += dl;
+        gr += dr;
+        let i = v.pos as usize;
+        if i >= len {
+            v.live = false;
+            break;
+        }
+        let frac = (v.pos - i as f64) as f32;
+        let next = if i + 1 < len {
+            pcm[i + 1]
+        } else if v.looping {
+            pcm[0]
+        } else {
+            0
+        };
+        let s =
+            (f32::from(pcm[i]) + (f32::from(next) - f32::from(pcm[i])) * frac) * (1.0 / 32768.0);
+        frame[0] += s * gl;
+        frame[1] += s * gr;
+        v.pos += step;
+        if v.pos >= len as f64 && v.looping {
+            // Modulo, not one subtraction: a clip shorter than the step (a one-frame WAV at
+            // pitch 4) would otherwise stay past the end and fall silent.
+            v.pos %= len as f64;
+        }
+    }
+    (v.left, v.right) = target;
 }
 
 impl Mixer {
@@ -213,6 +295,36 @@ impl Mixer {
         let old = self.cues[slot].0.replace(pcm);
         self.cues[slot].1 = 0;
         old
+    }
+    /// Starts a short one-shot whole (at its offset, fixed gains, to the clip end) unless the
+    /// voice block already started that token; a later voice block holding the token does not
+    /// start it again. With every shot voice busy the oldest is replaced.
+    pub fn play_shot(&mut self, p: &VoiceParams) {
+        if !p.active()
+            || p.looping
+            || self.voiced_tokens.contains(p.token)
+            || self.shot_tokens.contains(p.token)
+        {
+            self.stats.shots_skipped += 1;
+            return;
+        }
+        let slot = (0..SHOT_VOICES)
+            .map(|k| (self.next_shot + k) % SHOT_VOICES)
+            .find(|&k| !self.shots[k].live)
+            .unwrap_or(self.next_shot);
+        self.next_shot = (slot + 1) % SHOT_VOICES;
+        self.shot_tokens.push(p.token);
+        self.stats.shots_started += 1;
+        self.shots[slot] = MixVoice {
+            token: p.token,
+            clip: p.clip,
+            pitch: p.pitch,
+            looping: false,
+            pos: f64::from(p.offset.max(0.0)) * RATE,
+            left: p.left,
+            right: p.right,
+            live: true,
+        };
     }
     /// A finished cue buffer to drop off the audio thread (call until `None`).
     pub fn take_finished_cue(&mut self) -> Option<Arc<[i16]>> {
@@ -247,6 +359,11 @@ impl Mixer {
                     if p.looping {
                         pos %= len;
                     }
+                    // A one-shot `play_shot` already started whole is not started twice.
+                    let shot = !p.looping && self.shot_tokens.contains(p.token);
+                    if !shot {
+                        self.voiced_tokens.push(p.token);
+                    }
                     *v = MixVoice {
                         token: p.token,
                         clip: p.clip,
@@ -255,7 +372,7 @@ impl Mixer {
                         pos,
                         left: 0.0,
                         right: 0.0,
-                        live: pos < len,
+                        live: pos < len && !shot,
                     };
                     target = (p.left, p.right);
                 }
@@ -271,44 +388,18 @@ impl Mixer {
                 v.live = false;
                 continue;
             };
-            let len = pcm.len();
-            let step = f64::from(v.pitch.max(0.0));
-            let (dl, dr) = (
-                (target.0 - v.left) / frames.max(1) as f32,
-                (target.1 - v.right) / frames.max(1) as f32,
-            );
-            let (mut gl, mut gr) = (v.left, v.right);
-            for frame in mix.as_chunks_mut::<2>().0.iter_mut() {
-                gl += dl;
-                gr += dr;
-                let i = v.pos as usize;
-                if i >= len {
-                    v.live = false;
-                    break;
-                }
-                let frac = (v.pos - i as f64) as f32;
-                let next = if i + 1 < len {
-                    pcm[i + 1]
-                } else if v.looping {
-                    pcm[0]
-                } else {
-                    0
-                };
-                let s = (f32::from(pcm[i]) + (f32::from(next) - f32::from(pcm[i])) * frac)
-                    * (1.0 / 32768.0);
-                frame[0] += s * gl;
-                frame[1] += s * gr;
-                v.pos += step;
-                if v.pos >= len as f64 && v.looping {
-                    v.pos -= len as f64;
-                }
-            }
-            (v.left, v.right) = target;
+            mix_voice(v, pcm, mix, target);
             voiced += 1;
             if !wants {
                 // Faded out across this buffer.
                 v.live = false;
                 v.token = 0;
+            }
+        }
+        for v in self.shots.iter_mut().filter(|v| v.live) {
+            match table.and_then(|t| t.get(v.clip)) {
+                Some(pcm) => mix_voice(v, pcm, mix, (v.left, v.right)),
+                None => v.live = false,
             }
         }
         for (pcm, at) in &mut self.cues {
@@ -461,6 +552,55 @@ mod tests {
         m.set_params(&p);
         m.render(&mut out);
         assert!(out[254] > 9_900, "{}", out[254]);
+    }
+
+    #[test]
+    fn a_one_shot_sounds_once_through_either_path() {
+        let shot = VoiceParams {
+            looping: false,
+            ..voice(1.0, 1.0, 9)
+        };
+        let mut out = vec![0i16; 2 * 64];
+        // Shot first: a later voice block with the same token does not start it again.
+        let mut m = Mixer::default();
+        m.set_clips(table(vec![10_000; 100]));
+        m.play_shot(&shot);
+        let mut p = [VoiceParams::default(); MAX_VOICES];
+        p[0] = shot;
+        m.set_params(&p);
+        m.render(&mut out);
+        assert!(out.iter().all(|&s| s == 10_000), "single, not doubled");
+        assert_eq!((m.stats.shots_started, m.stats.voices), (1, 0));
+        m.render(&mut out);
+        assert!(out[..2 * 36].iter().all(|&s| s == 10_000) && out[2 * 36] == 0);
+        // Voice block first: the shot is skipped.
+        let mut m = Mixer::default();
+        m.set_clips(table(vec![10_000; 100]));
+        m.set_params(&p);
+        m.render(&mut out);
+        m.play_shot(&shot);
+        assert_eq!((m.stats.shots_started, m.stats.shots_skipped), (0, 1));
+    }
+
+    #[test]
+    fn a_one_sample_loop_at_high_pitch_keeps_playing() {
+        let mut m = Mixer::default();
+        m.set_clips(table(vec![10_000]));
+        let mut p = [VoiceParams::default(); MAX_VOICES];
+        p[0] = VoiceParams {
+            pitch: 4.0,
+            ..voice(1.0, 1.0, 1)
+        };
+        m.set_params(&p);
+        let mut out = vec![0i16; 2 * 128];
+        m.render(&mut out);
+        m.render(&mut out);
+        assert!(
+            out.iter().all(|&s| s > 9_900),
+            "the loop must keep sounding in the second buffer: {:?}",
+            &out[..8]
+        );
+        assert_eq!(m.stats.voices, 1);
     }
 
     #[test]

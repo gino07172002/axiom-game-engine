@@ -823,6 +823,42 @@ pub fn pad_input(name: &str) -> Option<usize> {
     PAD_INPUTS.iter().position(|n| *n == name)
 }
 impl InputBindings {
+    /// An action is either a button or an axis: the same name in both would make the button
+    /// overwrite the axis value every step. Key names must be keys the native host produces.
+    pub fn validate_keys(&self) -> Result<()> {
+        if let Some(action) = self.buttons.keys().find(|a| self.axes.contains_key(*a)) {
+            let escaped = crate::local::escape(action);
+            return Err(crate::Diagnostic::error(
+                "action_kind",
+                format!("/resources/input.bindings/buttons/{escaped}"),
+                format!(
+                    "{action} is both a button and an axis (/resources/input.bindings/axes/{escaped}); keep one (input remove {action} clears both)"
+                ),
+            )
+            );
+        }
+        let keys = self
+            .buttons
+            .iter()
+            .map(|(a, k)| (format!("buttons/{}", crate::local::escape(a)), k))
+            .chain(self.axes.iter().flat_map(|(a, axis)| {
+                let at = format!("axes/{}", crate::local::escape(a));
+                [
+                    (format!("{at}/positive"), &axis.positive),
+                    (format!("{at}/negative"), &axis.negative),
+                ]
+            }));
+        for (at, key) in keys {
+            if let Err(message) = crate::ops_tuning::check_key_name(key) {
+                return Err(crate::Diagnostic::error(
+                    "invalid_value",
+                    format!("/resources/input.bindings/{at}"),
+                    message,
+                ));
+            }
+        }
+        Ok(())
+    }
     /// Gamepad entries name known inputs and rebind existing actions of the same kind.
     pub fn validate_gamepad(&self) -> Result<()> {
         let pad = &self.gamepad;

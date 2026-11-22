@@ -1504,9 +1504,14 @@ impl Editor {
         self.op_write(result, None)
     }
 
-    /// Inspector caption of a file clip: its path and, once decoded in this process (pack
-    /// load or a runtime build), duration, channels and rate. `None` for procedural clips.
-    pub(super) fn audio_file_caption(&self, clip: &str) -> Option<String> {
+    /// Inspector caption of a file clip: its path and, when the active `runtime` decoded this
+    /// clip from the same path, duration, channels and rate with that runtime's revision.
+    /// `None` for procedural clips.
+    pub(super) fn audio_file_caption(
+        &self,
+        clip: &str,
+        runtime: &crate::WorldRuntime,
+    ) -> Option<String> {
         let path = self
             .world
             .resources
@@ -1519,12 +1524,19 @@ impl Editor {
         let name = std::path::Path::new(path)
             .file_name()
             .map_or(path.into(), |n| n.to_string_lossy());
-        Some(match crate::spatial_audio::file_info(path) {
+        let live = runtime
+            .system::<crate::spatial_audio::AudioSpatialSystem>()
+            .and_then(|s| s.clip_file(clip))
+            .filter(|f| f.path == path);
+        Some(match live {
             Some(f) => format!(
-                "File {name} · {:.2} s · {} ch · {} Hz {} (decoded {:.1} ms)",
-                f.seconds, f.channels, f.rate, f.format, f.decode_ms
+                "File {name} · {:.2} s · {} ch · {} Hz {} (decoded {:.1} ms, rev {})",
+                f.seconds, f.channels, f.rate, f.format, f.decode_ms, runtime.rev
             ),
-            None => format!("File {name} · not decoded yet (enter Play to load it)"),
+            None => format!(
+                "File {name} · not loaded by the running world yet (rev {}; a source must use it)",
+                runtime.rev
+            ),
         })
     }
 

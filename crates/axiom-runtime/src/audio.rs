@@ -31,6 +31,14 @@ pub(crate) struct Events {
     pub waves: BTreeMap<String, Arc<[i16]>>,
     pub recent: VecDeque<Event>,
     sequence: u64,
+    /// Identity of this cue stream: a new `audio.events` system (another world, or the system
+    /// scheduled again) restarts `sequence`, so the output resets its cursor when this changes.
+    stream: u64,
+}
+/// A process-unique stream identity (never 0) for cue and one-shot serials.
+pub(crate) fn next_stream() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 impl Events {
     pub fn emit(&mut self, tick: u64, cue: &str) {
@@ -72,6 +80,7 @@ pub(crate) fn register(registry: &mut RuntimeRegistry) {
             .iter()
             .map(|(id, t)| (id.clone(), wave(t).into()))
             .collect();
+        state.audio.stream = next_stream();
         Ok(Box::new(AudioSystem))
     });
 }
@@ -90,6 +99,7 @@ impl RuntimeSystem for AudioSystem {
         if previous.compiled.source.id == next.compiled.source.id {
             next.audio.recent = previous.audio.recent.clone();
             next.audio.sequence = previous.audio.sequence;
+            next.audio.stream = previous.audio.stream;
         }
         Ok(())
     }
@@ -113,6 +123,8 @@ fn wave(tone: &Tone) -> Vec<i16> {
 enum Message {
     Clips(Arc<ClipTable>),
     Cue(Arc<[i16]>),
+    /// A short one-shot that ended in the simulation, started whole (`Mixer::play_shot`).
+    Shot(VoiceParams),
 }
 
 /// Device buffers in flight and their size: 4 x 512 frames = 93 ms at 22,050 Hz.
@@ -139,6 +151,7 @@ struct Shared {
     clipped: AtomicU64,
     voices_mixed: AtomicU32,
     cues: AtomicU64,
+    shots: AtomicU64,
     late_frees: AtomicU64,
     write_errors: AtomicU64,
 }
@@ -149,7 +162,12 @@ pub(crate) struct Output {
     worker: Option<std::thread::JoinHandle<()>>,
     shared: Arc<Shared>,
     session: String,
+    /// Cue stream (`Events::stream`) and the last cue sequence taken from it.
+    stream: u64,
     last: u64,
+    /// One-shot stream (`AudioSpatialSystem::stream`) and the last shot serial taken from it.
+    shot_stream: u64,
+    shot_last: u64,
     table: Option<Arc<ClipTable>>,
     silent: [VoiceParams; MAX_VOICES],
     dropped: u64,
@@ -180,7 +198,10 @@ impl Output {
             worker,
             shared,
             session: String::new(),
+            stream: 0,
             last: 0,
+            shot_stream: 0,
+            shot_last: 0,
             table: None,
             silent: [VoiceParams::default(); MAX_VOICES],
             dropped: 0,
@@ -207,8 +228,11 @@ impl Output {
         if let Some(bin) = &self.garbage {
             while bin.try_recv().is_ok() {}
         }
-        if self.session != session {
+        // Cue sequences restart with every new stream (another world on the same host session,
+        // or `audio.events` scheduled again), not only with a new session.
+        if self.session != session || self.stream != events.stream {
             self.session = session.into();
+            self.stream = events.stream;
             self.last = 0;
         }
         let fresh: Vec<Arc<[i16]>> = events
@@ -223,6 +247,21 @@ impl Output {
         if enabled {
             for wave in fresh {
                 if !self.send(Message::Cue(wave)) {
+                    self.dropped += 1;
+                }
+            }
+        }
+        // Short one-shots that ended since the last frame: sent whole, since this frame's
+        // voice block (published below) no longer holds them. The mixer skips any whose
+        // start it already took from an earlier voice block.
+        if let Some(s) = spatial {
+            if self.shot_stream != s.stream() {
+                self.shot_stream = s.stream();
+                self.shot_last = 0;
+            }
+            for (serial, shot) in s.shots(self.shot_last) {
+                self.shot_last = serial;
+                if enabled && !self.send(Message::Shot(*shot)) {
                     self.dropped += 1;
                 }
             }
@@ -262,7 +301,7 @@ impl Output {
             "device":device,"rate":SAMPLE_RATE,"buffer_frames":BUFFER_FRAMES,"buffers":BUFFERS,
             "rendered":s.buffers.load(Ordering::Relaxed),"underruns":s.underruns.load(Ordering::Relaxed),
             "mix_us_max":s.mix_us_max.load(Ordering::Relaxed),"voices_mixed":s.voices_mixed.load(Ordering::Relaxed),
-            "clipped_samples":s.clipped.load(Ordering::Relaxed),"played":s.cues.load(Ordering::Relaxed),
+            "clipped_samples":s.clipped.load(Ordering::Relaxed),"played":s.cues.load(Ordering::Relaxed),"shots_played":s.shots.load(Ordering::Relaxed),
             "late_frees":s.late_frees.load(Ordering::Relaxed),"write_errors":s.write_errors.load(Ordering::Relaxed),"dropped":self.dropped})
     }
 }
@@ -308,6 +347,7 @@ fn accept(
                     give_back(Message::Cue(old));
                 }
             }
+            Message::Shot(shot) => mixer.play_shot(&shot),
         }
     }
     while let Some(done) = mixer.take_finished_cue() {
@@ -336,6 +376,9 @@ fn mix(shared: &Shared, mixer: &mut Mixer, out: &mut [i16]) {
     shared
         .cues
         .store(mixer.stats.cues_started, Ordering::Relaxed);
+    shared
+        .shots
+        .store(mixer.stats.shots_started, Ordering::Relaxed);
 }
 
 #[cfg(windows)]
@@ -523,5 +566,30 @@ mod tests {
         assert_eq!(o["rendered"], 0);
         assert_eq!(o["dropped"], 1, "the cue had nowhere to go");
         drop(out);
+    }
+
+    #[test]
+    fn a_new_cue_stream_on_the_same_session_is_not_skipped() {
+        // `dropped` counts every cue the output took (no device): it shows which were seen.
+        let mut out = Output::with_device(false);
+        let stream = |n: usize| {
+            let mut e = Events {
+                stream: next_stream(),
+                ..Events::default()
+            };
+            e.waves.insert("pop".into(), vec![1i16; 8].into());
+            for tick in 0..n {
+                e.emit(tick as u64, "pop");
+            }
+            e
+        };
+        out.update(&stream(3), "s1", true, None);
+        assert_eq!(out.observation()["dropped"], 3);
+        // Another world on the same host session: its sequence restarts at 1.
+        let b = stream(1);
+        out.update(&b, "s1", true, None);
+        assert_eq!(out.observation()["dropped"], 4, "world B's first cue");
+        out.update(&b, "s1", true, None);
+        assert_eq!(out.observation()["dropped"], 4, "taken once");
     }
 }
