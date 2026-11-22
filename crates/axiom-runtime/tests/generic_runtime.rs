@@ -226,3 +226,43 @@ fn scenario_rejects_unknown_actions_and_failed_assertions() {
     let scenario:scenario::Scenario=serde_json::from_value(json!({"ticks":1,"assertions":[{"kind":"position","entity":"box","axis":0,"min":9,"max":10}]})).unwrap();
     assert!(scenario::run(motion_world(), 1, RuntimeRegistry::core(), scenario).is_err());
 }
+#[test]
+fn replacing_the_world_with_another_world_id_starts_fresh_simulation_state() {
+    let mut a = motion_world();
+    a.id = "world-a".into();
+    let mut b = motion_world();
+    b.id = "world-b".into();
+    let mut r = WorldRuntime::new(a, 1, RuntimeRegistry::core()).unwrap();
+    for _ in 0..120 {
+        r.step(&ActionMap::default());
+    }
+    let old = r.state.ids[0];
+    let epoch = r.runtime_epoch;
+    let session = r.runtime_session.clone();
+    assert!(r.state.transforms[0].as_ref().unwrap().position[0] > 0.5);
+    // Same entity ID and authored transform in another world: nothing carries over.
+    r.reconcile(b, 2).unwrap();
+    assert_eq!(r.state.tick, 0);
+    assert_eq!(
+        r.state.transforms[0].as_ref().unwrap().position,
+        [0.0, 0.0, 0.0]
+    );
+    assert!(
+        r.state.resolve(old).is_none(),
+        "an old handle never resolves"
+    );
+    assert_eq!(r.runtime_epoch, epoch + 1);
+    assert_eq!(r.runtime_session, session, "same host session");
+    // The same world (by ID) still carries its state across a revision.
+    for _ in 0..120 {
+        r.step(&ActionMap::default());
+    }
+    let mut renamed = motion_world();
+    renamed.id = "world-b".into();
+    renamed.title = "Renamed".into();
+    let id = r.state.ids[0];
+    r.reconcile(renamed, 3).unwrap();
+    assert_eq!(r.state.tick, 120);
+    assert_eq!(r.state.ids[0], id);
+    assert!(r.state.transforms[0].as_ref().unwrap().position[0] > 0.5);
+}

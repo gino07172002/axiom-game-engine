@@ -17,7 +17,7 @@
 2. `emit` / `choose` / `locale`:依序套用在 gameplay 狀態的**副本**上。
 3. 任一項失敗 → 錯誤帶 `/command/commands/I` 路徑,**什麼都沒套用**。
 
-**限制(誠實申報)**:有乾跑 hook 的是 `animation.*`(含 `stage`)與 `camera.follow.set` / `camera.activate`;其他系統(physics、nav、tween、fsm、rts、vfx、`input.activate` 的情境名稱…)只檢查參數 schema。驗證通過但套用時才失敗時(那些系統在執行期拒絕,或前面的 `animation.*` 項目改變了後面 `emit` / `choose` 條件讀到的動畫狀態),錯誤會說「commands 0..I stay applied」—— 沒有跨系統的交易回滾(native 系統的狀態不可複製)。規則因 batch 中的 `emit` 排入的 `call` 在整個 batch 之後才分派(順序:batch 項目 → 規則的 call)。
+**限制(誠實申報)**:有乾跑 hook 的是 `animation.*`(含 `stage`)、`camera.follow.set` / `camera.activate` 與 `input.activate`(情境 ID 與正式套用同一個檢查);其他系統(physics、nav、tween、fsm、rts、vfx…)只檢查參數 schema。驗證通過但套用時才失敗時(那些系統在執行期拒絕,或前面的 `animation.*` 項目改變了後面 `emit` / `choose` 條件讀到的動畫狀態),錯誤碼是 `batch_partial`,回覆帶 `applied_count` / `failed_index`,訊息說「commands 0..I stay applied」—— 沒有跨系統的交易回滾(native 系統的狀態不可複製)。經 `execute` 送出時這個部分套用的結果會存成 receipt,同一 `request_id` 重送只回傳該結果,不會再套用一次前綴。規則因 batch 中的 `emit` 排入的 `call` 在整個 batch 之後才分派(順序:batch 項目 → 規則的 call)。
 
 編寫:ACL `ui button WIDGET batch [COMMANDS]`;編輯器 `ui.button WIDGET batch [..]`(同一個 `ops::set_ui_button_command`);UI Editor 的 Command 列顯示「N commands in one tick」,內容在 Fields 編輯。`validate_world` 檢查每個 batch 項目裡的 `call`(`unknown_action` / `missing_capability` / 參數,路徑到 `/commands/I`)。
 

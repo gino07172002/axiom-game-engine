@@ -13,6 +13,35 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 pub const FIXED_DT: f32 = 1.0 / 120.0;
+/// Error context of a `batch` command that failed after its first `applied` items applied
+/// (they stay applied; the error's diagnostic code is `batch_partial`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartialBatch {
+    pub applied: usize,
+}
+impl std::fmt::Display for PartialBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "batch partly applied: {} command(s) applied, command {} failed",
+            self.applied, self.applied
+        )
+    }
+}
+impl PartialBatch {
+    /// The partial-batch context of a command error, if it is one.
+    pub fn of(error: &anyhow::Error) -> Option<Self> {
+        error.downcast_ref::<Self>().copied()
+    }
+    /// Protocol reply of a partly applied batch: the diagnostic plus `applied_count` and
+    /// `failed_index`.
+    pub fn response(self, error: &anyhow::Error) -> Value {
+        let mut response = error_response(error);
+        response["applied_count"] = serde_json::json!(self.applied);
+        response["failed_index"] = serde_json::json!(self.applied);
+        response
+    }
+}
 #[derive(Default, Clone)]
 pub struct ActionMap(pub BTreeMap<String, f32>);
 impl ActionMap {
@@ -370,8 +399,14 @@ pub trait RuntimeSystem: Any + Send {
     }
     fn combat_commit(&mut self, _state: &mut RuntimeState) {}
     fn input_lost(&mut self) {}
+    /// Delivers this system's share of a pending cross-package event batch. Delivery is a
+    /// transaction over `state` only: every consumer works on one staging copy, which is
+    /// committed when all of them succeed and discarded when one fails (the batch stays
+    /// pending). The system itself is therefore read-only here (`&self`): private state
+    /// changed by a handler could not be rolled back, and a retried batch would apply it
+    /// twice. Keep event-driven state in `state` (columns, gameplay) instead.
     fn receive_events(
-        &mut self,
+        &self,
         _state: &mut RuntimeState,
         events: &[crate::events::Envelope],
     ) -> Result<()> {
@@ -743,8 +778,14 @@ impl WorldRuntime {
     fn check_call(&self, capability: &str, action: &str, args: &Value) -> Result<()> {
         self.check_call_schema(capability, action, args)?;
         if capability == "input" && action == "activate" {
-            ensure!(self.state.contexts.is_some(), "world has no input contexts");
-            return Ok(());
+            // The same context ID check as the real activation.
+            return self
+                .state
+                .contexts
+                .as_ref()
+                .context("world has no input contexts")?
+                .check_activate(args)
+                .map(drop);
         }
         for (_, system) in &self.systems {
             if let Some(result) = system.check_command(&self.state, capability, action, args) {
@@ -800,10 +841,22 @@ impl WorldRuntime {
                     Some(r) => r.take(),
                     None => serde_json::json!({"ok":true}),
                 }),
+                Err(e) if i == 0 => {
+                    return Err(e.context(
+                        "batch command 0 failed after passing validation (the state changed in between)",
+                    ))
+                }
                 Err(e) => {
-                    return Err(e.context(format!(
-                        "batch command {i} failed after passing validation (the state changed in between); commands 0..{i} stay applied"
-                    )))
+                    // Partly applied: a typed diagnostic (`batch_partial`) with the count, so
+                    // `execute` keeps a receipt and a retry never applies the prefix twice.
+                    return Err(Diagnostic::error(
+                        "batch_partial",
+                        format!("/command/commands/{i}"),
+                        format!(
+                            "batch command {i} failed after passing validation (the state changed in between); commands 0..{i} stay applied: {e:#}"
+                        ),
+                    )
+                    .context(PartialBatch { applied: i }))
                 }
             }
         }
@@ -1220,8 +1273,59 @@ impl WorldRuntime {
             let mut next = next?;
             let transfer = std::time::Instant::now();
             next.runtime_session = self.runtime_session.clone();
-            next.runtime_epoch = self.runtime_epoch
-                + u64::from(next.state.compiled.source.id != self.state.compiled.source.id);
+            // Simulation state only carries over within the same world. Another world (a
+            // different `world.id`, e.g. switching content) starts fresh even when entity
+            // IDs and authored values coincide; only handle generations stay monotonic so
+            // a handle from the old world never resolves in the new one.
+            let same_world = next.state.compiled.source.id == self.state.compiled.source.id;
+            next.runtime_epoch = self.runtime_epoch + u64::from(!same_world);
+            if !same_world {
+                next.state.next_generation =
+                    next.state.next_generation.max(self.state.next_generation);
+                for id in &mut next.state.ids {
+                    id.generation = next.state.next_generation;
+                    next.state.next_generation += 1;
+                }
+            } else {
+                self.transfer_state(&mut next)?;
+            }
+            if let Some(combat) = &mut next.state.combat {
+                combat.scene.bodies.clear();
+            }
+            if next.state.combat.is_some() {
+                for (_, system) in &next.systems {
+                    crate::combat::snapshot(&mut next.state, system.combat_bodies());
+                }
+            }
+            if let Some(combat) = &next.state.combat {
+                combat.scene.validate()?;
+            }
+            next.state.validate()?;
+            let transfer_ms = ms(transfer);
+            let phase = std::time::Instant::now();
+            prepare(&next)?;
+            next.reconcile_timings = Some(ReconcileTimings {
+                build: next.build_timings,
+                transfer_ms,
+                prepare_ms: ms(phase),
+                total_ms: ms(started),
+            });
+            Ok(next)
+        })();
+        match prepared {
+            Ok(next) => Ok(std::mem::replace(self, next)),
+            Err(e) => {
+                self.activation_error = Some(error_response(&e));
+                Err(e)
+            }
+        }
+    }
+    /// Carries simulation state from this runtime into `next`, a replacement for a new
+    /// revision of the same world: tick, random stream, pending events, entity handles and
+    /// live values (matched by entity ID), custom columns, native system state, combat,
+    /// event batches and input contexts.
+    fn transfer_state(&self, next: &mut Self) -> Result<()> {
+        {
             next.state.tick = self.state.tick;
             // Content edits continue the random stream; editing the seed restarts it.
             if next.state.compiled.source.resources.get("core.rng")
@@ -1315,47 +1419,17 @@ impl WorldRuntime {
                     system.transfer(old.as_ref(), &self.state, &mut next.state)?;
                 }
             }
-            if self.state.compiled.source.id == next.state.compiled.source.id {
-                if let (Some(old), Some(new)) = (&self.state.combat, &mut next.state.combat) {
-                    new.inherit(old);
-                }
-                next.state.events.transfer(&self.state.events)?;
-                if let (Some(previous), Some(contexts)) =
-                    (&self.state.contexts, &mut next.state.contexts)
-                {
-                    contexts.transfer(previous);
-                }
+            if let (Some(old), Some(new)) = (&self.state.combat, &mut next.state.combat) {
+                new.inherit(old);
             }
-            if let Some(combat) = &mut next.state.combat {
-                combat.scene.bodies.clear();
-            }
-            if next.state.combat.is_some() {
-                for (_, system) in &next.systems {
-                    crate::combat::snapshot(&mut next.state, system.combat_bodies());
-                }
-            }
-            if let Some(combat) = &next.state.combat {
-                combat.scene.validate()?;
-            }
-            next.state.validate()?;
-            let transfer_ms = ms(transfer);
-            let phase = std::time::Instant::now();
-            prepare(&next)?;
-            next.reconcile_timings = Some(ReconcileTimings {
-                build: next.build_timings,
-                transfer_ms,
-                prepare_ms: ms(phase),
-                total_ms: ms(started),
-            });
-            Ok(next)
-        })();
-        match prepared {
-            Ok(next) => Ok(std::mem::replace(self, next)),
-            Err(e) => {
-                self.activation_error = Some(error_response(&e));
-                Err(e)
+            next.state.events.transfer(&self.state.events)?;
+            if let (Some(previous), Some(contexts)) =
+                (&self.state.contexts, &mut next.state.contexts)
+            {
+                contexts.transfer(previous);
             }
         }
+        Ok(())
     }
     pub fn step(&mut self, input: &ActionMap) {
         if self.state.events.fault.is_some() {
@@ -1413,7 +1487,7 @@ impl WorldRuntime {
         }
         if self.state.events.fault.is_none() && !self.state.events.pending.is_empty() {
             let mut prepared = self.state.clone();
-            let result = self.systems.iter_mut().try_for_each(|(id, system)| {
+            let result = self.systems.iter().try_for_each(|(id, system)| {
                 let events = prepared.events.for_consumer(id);
                 system.receive_events(&mut prepared, &events)
             });

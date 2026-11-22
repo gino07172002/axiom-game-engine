@@ -717,7 +717,7 @@ impl Gameplay {
 pub struct BehaviorSystem;
 impl crate::world::RuntimeSystem for BehaviorSystem {
     fn receive_events(
-        &mut self,
+        &self,
         state: &mut crate::world::RuntimeState,
         events: &[crate::events::Envelope],
     ) -> Result<()> {

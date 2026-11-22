@@ -30,6 +30,18 @@ fn ms(since: Instant) -> f64 {
 
 /// Drops a replaced runtime on a short-lived thread: freeing thousands of entities is
 /// measurable main-thread work and nothing observes it.
+/// CAS revision of an editor proposal resolution: an approval without an explicit one is
+/// pinned to the revision the editor records it against (`base`), so a foreign commit in
+/// between is a conflict instead of a revision Undo would silently revert. Rejections write
+/// no revision and keep what they were given.
+fn approval_rev(approve: bool, expected_rev: Option<i64>, base: i64) -> Option<i64> {
+    if approve {
+        expected_rev.or(Some(base))
+    } else {
+        expected_rev
+    }
+}
+
 fn retire<T: Send + 'static>(value: T) {
     if std::thread::Builder::new()
         .name("axiom-retire".into())
@@ -401,6 +413,8 @@ struct Writes {
     recent_ms: std::collections::VecDeque<f64>,
     commit_timeout: std::time::Duration,
     commit_grace: std::time::Duration,
+    /// A previous writer stalled and was replaced by this one (its edit is unconfirmed).
+    stalled: Option<String>,
 }
 
 struct InFlight {
@@ -444,6 +458,7 @@ impl Writes {
             "last_commit_ms":self.last_commit.map(|c| c.1),
             "recent_ms":self.recent_ms,
             "timeout_ms":self.commit_timeout.as_millis() as u64,
+            "stalled":self.stalled,
             "scope":"background writer wall clock of each editor commit (main thread does not wait)",
         })
     }
@@ -843,6 +858,7 @@ impl App {
             recent_ms: Default::default(),
             commit_timeout: crate::writer::COMMIT_TIMEOUT,
             commit_grace: crate::writer::COMMIT_GRACE,
+            stalled: None,
         });
         self.sync_write_stats();
         Ok(())
@@ -984,7 +1000,10 @@ impl App {
                 approve: *approve,
                 rebase: *rebase,
                 keep: keep.clone(),
-                expected_rev: *expected_rev,
+                // An approval is recorded on the undo stack against `base`; without an
+                // explicit revision it must commit on exactly that one, or Undo would also
+                // revert a foreign commit that landed in between.
+                expected_rev: approval_rev(*approve, *expected_rev, base),
             }),
         };
         let (seq, author) = (item.seq, item.author);
@@ -1267,16 +1286,36 @@ impl App {
                     }
                 }
                 let message = format!(
-                    "Editor writer stalled: {what} did not finish within {:.1} s and was detached; it may still land (check History). {} queued edit(s) not confirmed. Further edits commit on the main thread.",
+                    "Editor writer stalled: {what} did not finish within {:.1} s and was detached; it may still land (check History). {} queued edit(s) not confirmed. Further edits go to a new background writer.",
                     elapsed.as_secs_f64(),
                     pending.saturating_sub(1)
                 );
                 eprintln!("{message}");
+                let (timeout, grace) = (writes.commit_timeout, writes.commit_grace);
+                let counters = (writes.committed, writes.failed, writes.discarded);
                 // Never wait for the stuck thread here.
                 retire(writes);
+                // A replacement writer (its own connection, opened on its thread) keeps
+                // editor commits off this thread and under the same watchdog. If even that
+                // cannot start, edits fall back to this thread as before. (Not while
+                // closing: shutdown reports the stall instead.)
+                if !self.closing {
+                    if let Err(error) = self.enable_writer(None) {
+                        eprintln!("editor writer could not be restarted: {error:#}");
+                    }
+                }
+                if let Some(next) = &mut self.writes {
+                    next.commit_timeout = timeout;
+                    next.commit_grace = grace;
+                    (next.committed, next.failed, next.discarded) = counters;
+                    next.stalled = Some(message.clone());
+                }
+                self.sync_write_stats();
                 if let Some(editor) = &mut self.editor {
                     editor.saving = 0;
-                    editor.writes = serde_json::json!({"state":"stalled","detail":message});
+                    if self.writes.is_none() {
+                        editor.writes = serde_json::json!({"state":"stalled","detail":message});
+                    }
                     if let Ok((latest, world)) = self.store.current_shared() {
                         if latest == editor.rev {
                             retire(editor.revert_staged(world));
@@ -1732,29 +1771,12 @@ impl App {
             arg,
         } = request
         {
-            if let Some(play) = play {
-                anyhow::ensure!(
-                    self.editor.is_some(),
-                    "editor_view requires a running editor"
-                );
-                self.editor_play(play)?;
-            }
-            let editor = self.editor.as_mut().ok_or_else(|| {
-                anyhow::anyhow!("editor_view requires a running editor (axiom editor)")
-            })?;
-            anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
-            editor.remote_view(&select, focus, dock.as_deref())?;
-            if let Some(target) = open.as_deref() {
-                editor.remote_open(target)?;
-            }
-            // Registered editor commands run exactly as from the menu bar or palette.
-            let commanded = match command.as_deref() {
-                Some(id) => Some(editor.run_command_with(id, arg.as_deref())?),
-                None => None,
-            };
-            for action in editor::coalesce(commanded.unwrap_or_default()) {
-                self.editor_action(action)?;
-            }
+            anyhow::ensure!(
+                self.editor.is_some(),
+                "editor_view requires a running editor (axiom editor)"
+            );
+            // Everything that can refuse the request without side effects runs first: a
+            // refusal must never leave a queued edit (or a started Play) behind it.
             let path = match capture {
                 Some(name) => {
                     anyhow::ensure!(
@@ -1768,15 +1790,40 @@ impl App {
                     );
                     let dir = std::env::current_dir()?.join("artifacts").join("captures");
                     std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!("{name}.png"));
-                    self.pending_capture = Some(path.clone());
-                    Some(path)
+                    Some(dir.join(format!("{name}.png")))
                 }
                 None => None,
             };
+            anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
+            if let Some(play) = play {
+                self.editor_play(play)?;
+            }
+            let editor = self.editor.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("editor_view requires a running editor (axiom editor)")
+            })?;
+            editor.remote_view(&select, focus, dock.as_deref())?;
+            if let Some(target) = open.as_deref() {
+                editor.remote_open(target)?;
+            }
+            // Registered editor commands run exactly as from the menu bar or palette.
+            let commanded = match command.as_deref() {
+                Some(id) => Some(editor.run_command_with(id, arg.as_deref())?),
+                None => None,
+            };
+            for action in editor::coalesce(commanded.unwrap_or_default()) {
+                self.editor_action(action)?;
+            }
+            if let Some(path) = &path {
+                self.pending_capture = Some(path.clone());
+            }
             return Ok(
                 serde_json::json!({"ok":true,"editor":self.editor.as_ref().unwrap().observation(),"capture":path,"capture_ready":"written on the next rendered frame"}),
             );
+        }
+        if let Request::ReloadAssets { watch, cancel } = request {
+            // Host-level job, also while editing: the same handler as the editor's
+            // asset.reload / asset.watch commands.
+            return self.reload_assets(watch, cancel);
         }
         anyhow::ensure!(
             !self.editing(),
@@ -1809,7 +1856,15 @@ impl App {
                 ),
                 "runtime execute only supports command/save/load"
             );
-            let mut response = self.runtime_request(*request.clone())?;
+            let mut response = match self.runtime_request(*request.clone()) {
+                Ok(response) => response,
+                // Partly applied: the failure is the result a retry must see, so it gets a
+                // receipt like a success (a retry never applies the prefix again).
+                Err(error) => match crate::world::PartialBatch::of(&error) {
+                    Some(partial) => partial.response(&error),
+                    None => return Err(error),
+                },
+            };
             response["request_id"] = serde_json::json!(request_id);
             response["durability"] = serde_json::json!("runtime_session");
             self.receipts
@@ -1854,7 +1909,6 @@ impl App {
                 }
                 result
             }
-            Request::ReloadAssets { watch, cancel } => self.reload_assets(watch, cancel),
             Request::Screenshot { .. } => anyhow::bail!(
                 "screenshot replies when its PNG is written; send it over the loopback bridge (axiom --connect ADDR rpc)"
             ),
@@ -2104,25 +2158,78 @@ impl App {
             self.asset_reload.set_watch(&self.runtime, watch)?;
             return Ok(serde_json::json!({"ok":true,"watch":watch}));
         }
+        if let Some(rev) = self.retry_activation()? {
+            // The newest revision failed to activate (e.g. a missing model file, since put
+            // back): its build is retried instead of rebuilding the older live runtime.
+            return Ok(serde_json::json!({
+                "ok":true,"started":true,"retry":"activation","rev":rev,
+                "live_rev":self.runtime.rev,
+                "job":self.activation.as_ref().map(|a| a.job.observation()),
+            }));
+        }
         self.asset_reload.start(&self.runtime, "command")
+    }
+
+    /// Explicit retry of a failed revision activation (`reload_assets` / `asset.reload`):
+    /// when the runtime is not on the requested revision and nothing is building, the
+    /// newest committed revision is built again. Returns the revision, or None when there is
+    /// nothing to retry.
+    fn retry_activation(&mut self) -> Result<Option<i64>> {
+        let previewing = self.editor.as_ref().is_some_and(|e| e.previewing);
+        if previewing
+            || self.activation.is_some()
+            || self.runtime.requested_rev == self.runtime.rev
+            || self.writes_pending() > 0
+        {
+            return Ok(None);
+        }
+        let started = Instant::now();
+        let (rev, world) = self.store.current_shared()?;
+        let mut timings = ReloadTimings {
+            rev,
+            read_ms: ms(started),
+            ..Default::default()
+        };
+        self.runtime.requested_rev = rev;
+        if self.background_activation {
+            timings.background = true;
+            self.start_activation(world, rev, timings, started)?;
+            return Ok(Some(rev));
+        }
+        let renderer = &mut self.renderer;
+        let result = self.runtime.reconcile_checked(&*world, rev, |next| {
+            if let Some(renderer) = renderer {
+                renderer.prepare_shaders(next.shaders())?;
+            }
+            Ok(())
+        });
+        timings.total_ms = ms(started);
+        match result {
+            Ok(()) => {
+                timings.reconcile = self.runtime.reconcile_timings;
+                self.record_reload(timings);
+                Ok(Some(rev))
+            }
+            Err(error) => {
+                timings.activation_failed = true;
+                self.record_reload(timings);
+                self.activation_failed(rev, &error);
+                Err(error.context(format!("revision {rev} still fails to activate")))
+            }
+        }
     }
 
     /// Non-blocking; once per frame. Starts a watched reload and adopts a finished one (the
     /// same main-thread swap as a revision activation).
     fn poll_asset_reload(&mut self) {
-        if let Some(editor) = &mut self.editor {
-            if let Some(ask) = editor.take_asset_reload() {
-                let result = match ask {
-                    crate::editor::AssetReloadAsk::Now => {
-                        self.asset_reload.start(&self.runtime, "command").map(drop)
-                    }
-                    crate::editor::AssetReloadAsk::Watch(on) => {
-                        self.asset_reload.set_watch(&self.runtime, on)
-                    }
-                };
-                if let (Err(error), Some(editor)) = (result, &mut self.editor) {
-                    editor.set_error(format!("Asset reload: {error:#}"));
-                }
+        if let Some(ask) = self.editor.as_mut().and_then(|e| e.take_asset_reload()) {
+            // The same host handler as the protocol's `reload_assets`.
+            let result = match ask {
+                crate::editor::AssetReloadAsk::Now => self.reload_assets(None, false),
+                crate::editor::AssetReloadAsk::Watch(on) => self.reload_assets(Some(on), false),
+            };
+            if let (Err(error), Some(editor)) = (result, &mut self.editor) {
+                editor.set_error(format!("Asset reload: {error:#}"));
             }
         }
         if self.asset_reload.watch_due(&self.runtime) {
@@ -2406,7 +2513,7 @@ impl App {
                     approve,
                     rebase,
                     keep,
-                    expected_rev,
+                    expected_rev: approval_rev(approve, expected_rev, editor.rev),
                 })?;
                 let editor = self.editor.as_mut().unwrap();
                 editor.proposal_signature = None;
@@ -2567,6 +2674,22 @@ impl App {
         self.capture();
         Ok(())
     }
+    /// Reply to a runtime request whose deadline passed before it could run (it did not run).
+    fn expired_reply(&self) -> serde_json::Value {
+        let mut reply = axiom_core::error_response(&axiom_core::Diagnostic::error(
+            "runtime_timeout",
+            "/",
+            if self.activation.is_some() {
+                "not executed: the runtime for the newest revision was still being built; observe and retry"
+            } else {
+                "not executed: the request waited past its deadline; observe and retry"
+            },
+        ));
+        reply["requested_rev"] = serde_json::json!(self.runtime.requested_rev);
+        reply["live_rev"] = serde_json::json!(self.runtime.rev);
+        reply
+    }
+
     /// One bridge runtime request. Returns it when it has to wait for the editor write queue
     /// (it is retried first on the next frame, keeping the order of later requests).
     fn handle_command(
@@ -2574,6 +2697,9 @@ impl App {
         command: crate::bridge::RuntimeRequest,
     ) -> Option<crate::bridge::RuntimeRequest> {
         if std::time::Instant::now() >= command.deadline {
+            // Never executed after the caller gave up (the bridge has answered "timed out");
+            // the reply says why in case it is still read.
+            let _ = command.reply.send(self.expired_reply());
             return None;
         }
         if let Request::EditorView {
@@ -2611,18 +2737,29 @@ impl App {
             return None;
         }
         let editor_view = matches!(command.request, Request::EditorView { .. });
+        // Cancelling or toggling a reload watch does not depend on the revision.
+        let host_only = matches!(
+            command.request,
+            Request::ReloadAssets { cancel: true, .. }
+                | Request::ReloadAssets { watch: Some(_), .. }
+        );
+        if !editor_view && !host_only {
+            // Runtime requests see the newest committed revision. Its background build is
+            // never waited for on this thread: the request is retried first on later frames
+            // (keeping the order of the ones behind it) and dropped with a diagnostic at its
+            // deadline, so it never runs after the caller gave up.
+            if let Err(error) = self.reload() {
+                let _ = command.reply.send(axiom_core::error_response(&error));
+                return None;
+            }
+            if self.activation.is_some() {
+                return Some(command);
+            }
+        }
         let before = self.writes.as_ref().map_or(0, |w| w.next_seq);
         // Editor writes this request makes (`editor_view {command}`) are an agent's.
         self.requester = Author::Agent;
-        let result = self
-            .reload()
-            .and_then(|_| {
-                if editor_view {
-                    Ok(())
-                } else {
-                    self.finish_activation()
-                }
-            })
+        let result = if editor_view { self.reload() } else { Ok(()) }
             .and_then(|_| self.runtime_request(command.request));
         self.requester = Author::Human;
         self.store.set_author(Some(Author::Human));
@@ -2642,7 +2779,11 @@ impl App {
                 }
             }
             Err(error) => {
-                let _ = command.reply.send(axiom_core::error_response(&error));
+                let response = match crate::world::PartialBatch::of(&error) {
+                    Some(partial) => partial.response(&error),
+                    None => axiom_core::error_response(&error),
+                };
+                let _ = command.reply.send(response);
             }
         }
         None
@@ -4515,7 +4656,7 @@ mod tests {
         let action = move_box(&app, 6.0);
         app.editor_action(action).unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        while app.writes.is_some() {
+        while app.writes.as_ref().is_some_and(|w| w.stalled.is_none()) {
             app.poll_writes(std::time::Duration::ZERO).unwrap();
             assert!(Instant::now() < deadline, "watchdog never fired");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -4524,14 +4665,259 @@ mod tests {
         assert_eq!(editor.problem_codes()[0], "writer_stalled");
         assert_eq!(editor.saving, 0);
         assert_eq!(box_x(&editor.world), 0.0, "optimistic world reverted");
+        // A replacement writer took over, under the same watchdog; the stall stays visible.
+        let writes = app.writes.as_ref().expect("replacement writer");
+        assert_eq!(writes.commit_timeout, std::time::Duration::from_millis(20));
+        assert!(app.observation().metrics["editor"]["writes"]["stalled"].is_string());
+        // The next edit goes to it: submitting returns at once, the commit lands later.
+        let action = move_box(&app, 2.0);
+        app.editor_action(action).unwrap();
+        assert_eq!(
+            app.writes_pending(),
+            1,
+            "queued, not committed on this thread"
+        );
+        {
+            let writes = app.writes.as_mut().unwrap();
+            writes.commit_timeout = crate::writer::COMMIT_TIMEOUT;
+            writes.commit_grace = crate::writer::COMMIT_GRACE;
+        }
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+        assert_eq!(box_x(&app.store.current().unwrap().1), 2.0);
         drop(held);
         std::thread::sleep(std::time::Duration::from_millis(200));
         // The detached writer refused the edit it had not started.
-        assert_eq!(app.store.revision().unwrap(), base);
-        // Editing continues on the main thread.
-        let action = move_box(&app, 2.0);
-        app.editor_action(action).unwrap();
         assert_eq!(app.store.revision().unwrap(), base + 1);
+    }
+
+    #[test]
+    fn approving_a_proposal_cannot_let_undo_revert_a_foreign_commit() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("approve-cas.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        app.store
+            .execute(Request::Propose {
+                expected_rev: None,
+                edits: vec![Edit::set("title", json!("Proposed"))],
+                note: "title".into(),
+            })
+            .unwrap();
+        let held = hold(&gate);
+        // The person approves with rebase (no explicit revision) while the editor is at base.
+        app.editor_action(editor::Action::ResolveProposal {
+            id: 1,
+            approve: true,
+            rebase: true,
+            keep: None,
+            expected_rev: None,
+        })
+        .unwrap();
+        // An agent commits through another connection before the approval runs.
+        let mut bridge = Store::open_with(
+            &app.options.db,
+            app.store.registry.clone(),
+            World::empty("x"),
+        )
+        .unwrap();
+        bridge
+            .apply(
+                Some(base),
+                vec![Edit::Core(axiom_core::CoreEdit::SetField {
+                    target: axiom_core::local::Target::Entity { id: "box".into() },
+                    field: "/components/core.transform/position".into(),
+                    value: json!([9.0, 1.0, 0.0]),
+                })],
+            )
+            .unwrap();
+        drop(held);
+        drain(&mut app);
+        // The approval was pinned to the revision the editor recorded it against.
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(
+            editor.problem_codes()[0],
+            "revision_conflict",
+            "{:?}",
+            editor.problem_codes()
+        );
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+        // Undo has nothing of the approval to revert, so the agent's edit cannot be lost.
+        assert_ne!(editor.restore_target(false), Some(base));
+        assert_eq!(box_x(&app.store.current().unwrap().1), 9.0);
+        // After adopting the agent's revision the approval succeeds and undoes cleanly.
+        app.editor_action(editor::Action::ResolveProposal {
+            id: 1,
+            approve: true,
+            rebase: true,
+            keep: None,
+            expected_rev: None,
+        })
+        .unwrap();
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 2);
+        assert_eq!(app.store.current().unwrap().1.title, "Proposed");
+        assert_eq!(
+            app.editor.as_ref().unwrap().restore_target(false),
+            Some(base + 1)
+        );
+    }
+
+    #[test]
+    fn invalid_editor_view_capture_leaves_no_queued_edit_behind() {
+        let mut app = writer_app("capture.sqlite", None);
+        let base = app.editor.as_ref().unwrap().rev;
+        let entities = app.editor.as_ref().unwrap().world.entities.len();
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        let request = crate::bridge::RuntimeRequest {
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            request: Request::EditorView {
+                select: vec![],
+                focus: false,
+                dock: None,
+                capture: Some("bad name!".into()),
+                play: None,
+                open: None,
+                command: Some("object.cube".into()),
+                arg: None,
+            },
+            reply,
+        };
+        assert!(app.handle_command(request).is_none());
+        let reply = response.recv().unwrap();
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(reply["error"].as_str().unwrap().contains("capture name"));
+        drain(&mut app);
+        assert_eq!(app.writes_pending(), 0);
+        assert_eq!(app.store.revision().unwrap(), base);
+        assert_eq!(app.store.current().unwrap().1.entities.len(), entities);
+    }
+
+    #[test]
+    fn runtime_requests_wait_for_activation_on_later_frames_never_past_their_deadline() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        app.editor_play(true).unwrap();
+        let rev = app.runtime.rev;
+        // A build that only finishes when released stands in for a slow activation.
+        let (release, built) = std::sync::mpsc::channel::<()>();
+        let world = app.store.current().unwrap().1;
+        let registry = app.runtime.registry_clone();
+        app.runtime.requested_rev = rev;
+        app.activation = Some(Activation {
+            rev,
+            job: crate::jobs::Job::spawn("activation", "slow", ACTIVATION_TIMEOUT, move |_| {
+                let _ = built.recv_timeout(std::time::Duration::from_secs(20));
+                WorldRuntime::new(&world, rev, registry)
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        let command = |deadline: std::time::Duration| {
+            let (reply, response) = std::sync::mpsc::sync_channel(1);
+            (
+                crate::bridge::RuntimeRequest {
+                    deadline: Instant::now() + deadline,
+                    request: Request::Command {
+                        command: axiom_core::gameplay::RuntimeCommand::Batch { commands: vec![] },
+                        expected_rev: None,
+                    },
+                    reply,
+                },
+                response,
+            )
+        };
+        // Returned for a later frame at once instead of waiting on this thread.
+        let (request, response) = command(std::time::Duration::from_millis(50));
+        let started = Instant::now();
+        let deferred = app.handle_command(request).expect("deferred");
+        assert!(started.elapsed() < std::time::Duration::from_millis(16));
+        assert!(response.try_recv().is_err());
+        // Past its deadline it is answered with a diagnostic and never executed.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(app.handle_command(deferred).is_none());
+        let reply = response.recv().unwrap();
+        assert_eq!(
+            reply["diagnostics"][0]["code"], "runtime_timeout",
+            "{reply}"
+        );
+        assert_eq!(reply["live_rev"], rev);
+        // Once the build is adopted, a waiting request runs.
+        let (request, response) = command(std::time::Duration::from_secs(30));
+        let mut waiting = app.handle_command(request).expect("deferred");
+        drop(release);
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            app.poll_activation().unwrap();
+            match app.handle_command(waiting) {
+                Some(again) => waiting = again,
+                None => break,
+            }
+            assert!(Instant::now() < deadline, "activation never adopted");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let reply = response.recv().unwrap();
+        // An empty batch is refused by the runtime: it ran (not a timeout).
+        assert_ne!(
+            reply["diagnostics"][0]["code"], "runtime_timeout",
+            "{reply}"
+        );
+    }
+
+    #[test]
+    fn reload_assets_is_a_host_request_in_edit_mode_too() {
+        let mut app = editor_app();
+        assert!(app.editing());
+        let cancelled = app
+            .runtime_request(Request::ReloadAssets {
+                watch: None,
+                cancel: true,
+            })
+            .unwrap();
+        assert_eq!(cancelled["cancelled"], false);
+        // Starting refuses for this world for its own reason, not because of Play.
+        let error = app
+            .runtime_request(Request::ReloadAssets {
+                watch: None,
+                cancel: false,
+            })
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("no model assets"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn reload_assets_retries_a_failed_activation_of_the_newest_revision() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        let rev = app.store.revision().unwrap();
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("Retried"))])
+            .unwrap();
+        // The build of rev + 1 fails (e.g. a model file was missing).
+        app.runtime.requested_rev = rev + 1;
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "failing", ACTIVATION_TIMEOUT, |_| {
+                Err(anyhow::anyhow!("model file missing"))
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+        });
+        app.finish_activation().unwrap();
+        assert_eq!((app.runtime.rev, app.runtime.requested_rev), (rev, rev + 1));
+        // Routine polling does not rebuild the same revision.
+        app.reload().unwrap();
+        assert!(app.activation.is_none());
+        // The file is back: an explicit reload retries that revision.
+        let reply = app.reload_assets(None, false).unwrap();
+        assert_eq!(reply["retry"], "activation", "{reply}");
+        assert_eq!(reply["rev"], rev + 1);
+        assert_eq!(reply["live_rev"], rev);
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 1);
+        assert_eq!(app.runtime.state.compiled.source.title, "Retried");
     }
 
     #[test]

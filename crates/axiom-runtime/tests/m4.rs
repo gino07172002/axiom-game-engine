@@ -372,3 +372,31 @@ fn compact_quest_choices_stay_visible_and_click_through_the_shared_command_path(
     r.command(&command).unwrap();
     assert_eq!(r.observation().metrics["gameplay"]["node"], "quest.active");
 }
+#[test]
+fn batch_preflight_checks_input_context_ids_like_the_real_activation() {
+    let mut r = runtime();
+    let before = r.state.contexts.as_ref().unwrap().observation()["context"].clone();
+    let batch = RuntimeCommand::Batch {
+        commands: vec![
+            RuntimeCommand::Call {
+                capability: "input".into(),
+                action: "activate".into(),
+                args: json!({"context":"hero"}),
+            },
+            RuntimeCommand::Call {
+                capability: "input".into(),
+                action: "activate".into(),
+                args: json!({"context":"nowhere"}),
+            },
+        ],
+    };
+    let error = format!("{:#}", r.command(&batch).unwrap_err());
+    assert!(error.contains("/command/commands/1"), "{error}");
+    assert!(error.contains("unknown input context"), "{error}");
+    // Refused before the first item applied: nothing to redo on a retry.
+    assert_ne!(before, json!("hero"));
+    assert_eq!(
+        r.state.contexts.as_ref().unwrap().observation()["context"],
+        before
+    );
+}

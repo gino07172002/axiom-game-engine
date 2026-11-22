@@ -81,10 +81,8 @@ impl Bridge {
                             // Accepted sockets inherit nonblocking mode on Windows.
                             // A JSON line may arrive in several packets; wait up to the budget.
                             stream.set_nonblocking(false)?;
-                            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
                             stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-                            let mut line = String::new();
-                            BufReader::new((&mut stream).take(1_048_577)).read_line(&mut line)?;
+                            let line = read_request_line(&mut stream, &stopped)?;
                             let request = parse_request(line.trim())?;
                             if request.is_runtime() {
                                 // A screenshot answers when its PNG is written (read-back and
@@ -179,9 +177,73 @@ impl Drop for Bridge {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
+            // Reads stop at the flag within one poll; a runtime request may still wait for
+            // its reply (up to SCREENSHOT_WAIT), so the join is bounded and the worker is
+            // otherwise detached.
+            let deadline = std::time::Instant::now() + SHUTDOWN_JOIN;
+            while !handle.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "bridge worker did not stop within {} ms; detached",
+                        SHUTDOWN_JOIN.as_millis()
+                    );
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
             let _ = handle.join();
         }
     }
+}
+
+/// Whole-request budget for reading one JSON line from a connection (not per read).
+pub const REQUEST_READ_LIMIT: Duration = Duration::from_secs(2);
+/// Largest request line in bytes.
+const MAX_REQUEST_BYTES: usize = 1_048_576;
+/// Bounded join of the listener worker when the bridge is dropped.
+const SHUTDOWN_JOIN: Duration = Duration::from_secs(2);
+/// Granularity at which a pending read checks its deadline and the stop flag.
+const READ_POLL: Duration = Duration::from_millis(50);
+
+/// Reads one `\n`-terminated request (several packets allowed) within
+/// [`REQUEST_READ_LIMIT`] in total, stopping early when `stop` is set, so one slow or
+/// silent connection cannot hold the single listener worker (and shutdown) indefinitely.
+fn read_request_line(stream: &mut TcpStream, stop: &AtomicBool) -> Result<String> {
+    let deadline = std::time::Instant::now() + REQUEST_READ_LIMIT;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        anyhow::ensure!(!stop.load(Ordering::Relaxed), "bridge is shutting down");
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        anyhow::ensure!(
+            !left.is_zero(),
+            "request not received within {} ms",
+            REQUEST_READ_LIMIT.as_millis()
+        );
+        stream.set_read_timeout(Some(left.min(READ_POLL)))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let end = chunk[..n].iter().position(|b| *b == b'\n');
+                bytes.extend_from_slice(&chunk[..end.map_or(n, |i| i + 1)]);
+                anyhow::ensure!(
+                    bytes.len() <= MAX_REQUEST_BYTES + 1,
+                    "request exceeds limit"
+                );
+                if end.is_some() {
+                    break;
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(String::from_utf8(bytes)?)
 }
 
 /// How long the bridge waits for a `screenshot` reply: a frame to pick it up
@@ -267,5 +329,64 @@ mod tests {
         assert_eq!(queried["enemies"], 12);
         drop(bridge);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A connection that trickles bytes of a never-terminated line must not hold the single
+    /// listener worker past the whole-request budget, nor the bridge's shutdown.
+    #[test]
+    fn a_trickling_unterminated_request_cannot_hold_the_bridge() {
+        let path = std::env::temp_dir().join(format!(
+            "axiom-bridge-slow-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let registry = crate::installed_registry();
+        let seed = axiom_core::World::empty("slow");
+        drop(Store::open_with(&path, registry.authoring.clone(), seed.clone()).unwrap());
+        let sim = crate::WorldRuntime::new(seed, 1, registry.clone()).unwrap();
+        let observation = Arc::new(RwLock::new(sim.observation()));
+        let bridge = Bridge::start(path.clone(), 0, observation, registry.authoring).unwrap();
+        let address = bridge.address();
+        let trickle = |seconds: u64| {
+            let mut slow = TcpStream::connect(address).unwrap();
+            std::thread::spawn(move || {
+                // One byte every 200 ms (each read waits far less than the old 2 s per-read
+                // timeout) for `seconds`, never a newline.
+                let until = std::time::Instant::now() + Duration::from_secs(seconds);
+                let _ = slow.write_all(b"{\"op\":");
+                while std::time::Instant::now() < until {
+                    if slow.write_all(b" ").is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            })
+        };
+        let slow = trickle(8);
+        std::thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let observed = call(&address.to_string(), &Request::Observe {}).unwrap();
+        assert_eq!(observed["ok"], true, "{observed}");
+        let waited = started.elapsed();
+        assert!(
+            waited < REQUEST_READ_LIMIT + Duration::from_millis(1500),
+            "a later request waited {waited:?} behind the trickling one"
+        );
+        slow.join().unwrap();
+        // Shutdown while a trickling connection is being read is bounded too.
+        let slow = trickle(8);
+        std::thread::sleep(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        drop(bridge);
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(1500),
+            "drop waited {waited:?}"
+        );
+        slow.join().unwrap();
+        let _ = std::fs::remove_file(path);
     }
 }
