@@ -66,6 +66,146 @@ fn discovery_lists_every_edit_action_and_command_variant() {
     );
 }
 
+/// The JSON Schema subset discovery uses (local `$ref`, `oneOf`, `type`, `const`, `enum`,
+/// object `properties`/`required`/`additionalProperties`, array `items`/`minItems`/`maxItems`,
+/// number `minimum`/`maximum`): whether `value` is valid against `schema`.
+fn conforms(root: &Value, schema: &Value, value: &Value) -> bool {
+    if let Some(r) = schema["$ref"].as_str() {
+        let target = root.pointer(r.trim_start_matches('#')).expect(r);
+        return conforms(root, target, value);
+    }
+    if let Some(options) = schema["oneOf"].as_array() {
+        return options.iter().filter(|o| conforms(root, o, value)).count() == 1;
+    }
+    if let Some(c) = schema.get("const") {
+        return c == value;
+    }
+    if let Some(options) = schema["enum"].as_array() {
+        return options.contains(value);
+    }
+    let types: Vec<&str> = match &schema["type"] {
+        Value::String(t) => vec![t.as_str()],
+        Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+        _ => vec![],
+    };
+    let type_ok = |t: &str| match t {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "null" => value.is_null(),
+        other => panic!("unsupported type {other}"),
+    };
+    if !types.is_empty() && !types.into_iter().any(type_ok) {
+        return false;
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema["properties"].as_object();
+        for name in schema["required"].as_array().into_iter().flatten() {
+            if !object.contains_key(name.as_str().unwrap()) {
+                return false;
+            }
+        }
+        for (k, v) in object {
+            match properties.and_then(|p| p.get(k)) {
+                Some(s) if !conforms(root, s, v) => return false,
+                Some(_) => {}
+                None => match &schema["additionalProperties"] {
+                    Value::Bool(false) => return false,
+                    s @ Value::Object(_) if !conforms(root, s, v) => return false,
+                    _ => {}
+                },
+            }
+        }
+    }
+    if let Some(items) = value.as_array() {
+        let n = items.len() as u64;
+        if schema["minItems"].as_u64().is_some_and(|m| n < m)
+            || schema["maxItems"].as_u64().is_some_and(|m| n > m)
+        {
+            return false;
+        }
+        if let Some(item) = schema.get("items") {
+            if !items.iter().all(|v| conforms(root, item, v)) {
+                return false;
+            }
+        }
+    }
+    if let Some(n) = value.as_f64() {
+        if schema["minimum"].as_f64().is_some_and(|m| n < m)
+            || schema["maximum"].as_f64().is_some_and(|m| n > m)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn gameplay_schema_accepts_and_refuses_the_same_samples_as_the_runtime() {
+    use axiom_core::gameplay::{validate_command, Operand, Program};
+    let schema = Registry::core().schema(Some("narrative.graph")).unwrap();
+    let operand = &schema["$defs"]["operand"];
+    for (sample, valid) in [
+        (
+            json!({"kind":"animation","entity":"hero","field":"param","param":"speed"}),
+            true,
+        ),
+        (
+            json!({"kind":"animation","entity":"hero","field":"finished"}),
+            true,
+        ),
+        (
+            json!({"kind":"animation","entity":"hero","field":"bogus"}),
+            false,
+        ),
+        (json!({"kind":"animation","field":"clip"}), false),
+        (json!({"kind":"variable","id":"score"}), true),
+    ] {
+        assert_eq!(
+            conforms(&schema, operand, &sample),
+            valid,
+            "schema on {sample}"
+        );
+        assert_eq!(
+            serde_json::from_value::<Operand>(sample.clone()).is_ok(),
+            valid,
+            "serde on {sample}"
+        );
+    }
+    let command = &schema["$defs"]["command"];
+    let call = json!({"kind":"call","capability":"fsm","action":"inspect","args":{}});
+    for (sample, valid) in [
+        (json!({"kind":"batch","commands":[call]}), true),
+        (call.clone(), true),
+        (
+            json!({"kind":"batch","commands":[{"kind":"batch","commands":[call]}]}),
+            false,
+        ),
+        (
+            json!({"kind":"batch","commands":[{"kind":"slide","widget":"w","value":1.0}]}),
+            false,
+        ),
+        (json!({"kind":"batch","commands":[]}), false),
+        (
+            json!({"kind":"batch","commands":vec![call.clone(); 17]}),
+            false,
+        ),
+    ] {
+        assert_eq!(
+            conforms(&schema, command, &sample),
+            valid,
+            "schema on {sample}"
+        );
+        let runtime = serde_json::from_value::<RuntimeCommand>(sample.clone())
+            .map_err(anyhow::Error::from)
+            .and_then(|c| validate_command(&c, &Program::default(), None, None));
+        assert_eq!(runtime.is_ok(), valid, "runtime on {sample}: {runtime:?}");
+    }
+}
+
 #[test]
 fn read_and_edit_selections_declare_the_limits_the_store_enforces() {
     let mut store = Store::memory_with(Registry::core(), {

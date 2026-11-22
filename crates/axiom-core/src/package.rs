@@ -395,12 +395,19 @@ impl ContentPackage {
 /// is an error naming `what` and the limit, before it can be buffered whole.
 pub fn read_bounded(path: &Path, limit: usize, what: &str) -> Result<Vec<u8>> {
     use std::io::Read;
+    // Checked before opening: opening a FIFO (or a device) can block until a writer appears.
+    // Checked again on the handle, in case the path was replaced in between.
+    let regular = |m: std::fs::Metadata| {
+        ensure!(
+            m.is_file(),
+            "{what} is not a regular file: {}",
+            path.display()
+        );
+        Ok(())
+    };
+    regular(std::fs::metadata(path).with_context(|| format!("{what}: {}", path.display()))?)?;
     let file = std::fs::File::open(path).with_context(|| format!("{what}: {}", path.display()))?;
-    ensure!(
-        file.metadata()?.is_file(),
-        "{what} is not a regular file: {}",
-        path.display()
-    );
+    regular(file.metadata()?)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= limit, "{what} exceeds {limit} bytes");

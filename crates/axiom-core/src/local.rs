@@ -364,16 +364,29 @@ pub struct Predicate {
     pub op: Op,
     pub value: Value,
 }
+/// Two integers compare exactly (`int` fields hold any `i64`, beyond f64's 2^53); anything
+/// else compares as f64.
+fn compare_numbers(a: &serde_json::Number, b: &serde_json::Number) -> Option<std::cmp::Ordering> {
+    let int = |n: &serde_json::Number| {
+        n.as_i64()
+            .map(i128::from)
+            .or_else(|| n.as_u64().map(i128::from))
+    };
+    match (int(a), int(b)) {
+        (Some(a), Some(b)) => Some(a.cmp(&b)),
+        _ => a
+            .as_f64()
+            .zip(b.as_f64())
+            .and_then(|(a, b)| a.partial_cmp(&b)),
+    }
+}
 impl Predicate {
     pub fn test(&self, record: &Value) -> bool {
         let Some(actual) = record.pointer(&pointer(&self.field)) else {
             return false;
         };
         let ordering = match (actual, &self.value) {
-            (Value::Number(a), Value::Number(b)) => a
-                .as_f64()
-                .zip(b.as_f64())
-                .and_then(|(a, b)| a.partial_cmp(&b)),
+            (Value::Number(a), Value::Number(b)) => compare_numbers(a, b),
             (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
             (a, b) if a == b => Some(std::cmp::Ordering::Equal),
             _ => None,
@@ -451,16 +464,6 @@ pub struct Selection {
     pub max_bytes: Option<usize>,
 }
 impl Selection {
-    /// Names its objects by explicit IDs only: evaluated on another revision it can match
-    /// the same objects or fewer, never new ones.
-    pub fn is_id_list(&self) -> bool {
-        !self.ids.is_empty()
-            && self.id_glob.is_none()
-            && self.filter.is_empty()
-            && self.tags.is_empty()
-            && self.components.is_empty()
-            && self.parent.is_none()
-    }
     pub fn all(from: Collection) -> Self {
         Self {
             from,

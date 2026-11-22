@@ -68,6 +68,15 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// Pages through every change a proposal makes to its base revision (the stored
+    /// `proposals` diff keeps the first 64). Read-only; works for any proposal status.
+    ProposalDiff {
+        id: i64,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     ObserveDelta {
         #[serde(default)]
         cursor: Option<String>,
@@ -354,7 +363,30 @@ impl Edit {
             world: json!(world),
         })
     }
+    /// Applies one edit on its own (a batch shares one expansion budget: `apply_all`).
     pub fn apply(self, w: &mut World, r: &Registry) -> Result<()> {
+        let mut budget = crate::local::MAX_SET_WHERE_BYTES;
+        self.apply_budgeted(w, r, &mut budget)
+    }
+    /// `edits` applied in order to `w`, errors located at `/edits/N`. Every `set_where` of the
+    /// batch draws its expansion from one `MAX_SET_WHERE_BYTES` budget, so many small edits
+    /// cannot together copy more than one large edit could.
+    pub fn apply_all(
+        edits: impl IntoIterator<Item = Edit>,
+        w: &mut World,
+        r: &Registry,
+    ) -> Result<()> {
+        let mut budget = crate::local::MAX_SET_WHERE_BYTES;
+        for (i, edit) in edits.into_iter().enumerate() {
+            crate::local::at(
+                &format!("/edits/{i}"),
+                edit.apply_budgeted(w, r, &mut budget),
+            )?;
+        }
+        Ok(())
+    }
+    /// `apply`, drawing `set_where` expansion bytes from `budget` (bytes still allowed).
+    pub fn apply_budgeted(self, w: &mut World, r: &Registry, budget: &mut usize) -> Result<()> {
         match self {
             Self::Core(CoreEdit::Reparent {
                 entity,
@@ -410,20 +442,23 @@ impl Edit {
                 }
                 // Bound what the expansion writes before copying anything: a small request
                 // must not grow into a huge intermediate world (one value copy per match).
+                // The budget is shared by the batch and drawn down before the copy.
                 let bytes = serde_json::to_vec(&value)?
                     .len()
                     .saturating_mul(targets.len());
-                if bytes > crate::local::MAX_SET_WHERE_BYTES {
+                if bytes > *budget {
                     return Err(crate::Diagnostic::error(
                         "budget_exceeded",
                         "/value",
                         format!(
-                            "set_where would write {bytes} bytes ({} matches x value); the budget is {} bytes: narrow the selector or use a smaller value",
+                            "set_where would write {bytes} bytes ({} matches x value); {} of the batch's {} bytes are left: narrow the selector, use a smaller value or split the batch",
                             targets.len(),
+                            *budget,
                             crate::local::MAX_SET_WHERE_BYTES
                         ),
                     ));
                 }
+                *budget -= bytes;
                 // One JSON conversion for the whole selection instead of one per object.
                 let mut doc = json!(&w);
                 for (target, _) in targets {

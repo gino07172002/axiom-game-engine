@@ -2366,6 +2366,8 @@ pub fn run(
     let mut warnings: Vec<String> = vec![];
     let mut taken = std::collections::BTreeSet::new();
     let mut scratch = world.clone();
+    // The whole script is one batch: its `set_where` expansions share one budget.
+    let mut budget = crate::local::MAX_SET_WHERE_BYTES;
     for (line, stmt) in statements {
         let wrap = |e: anyhow::Error| {
             if e.downcast_ref::<Diagnostic>().is_some() {
@@ -2548,7 +2550,9 @@ pub fn run(
         }
         .map_err(wrap)?;
         for edit in &compiled {
-            edit.clone().apply(&mut scratch, r).map_err(wrap)?;
+            edit.clone()
+                .apply_budgeted(&mut scratch, r, &mut budget)
+                .map_err(wrap)?;
         }
         edits.extend(compiled);
     }
