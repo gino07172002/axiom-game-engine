@@ -8,6 +8,12 @@ struct Settings {inverse:mat4x4<f32>,eye_time:vec4<f32>,viewport:vec4<f32>,info:
  let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.0,1.0);
 }
 fn position(uv:vec2<f32>,z:f32)->vec3<f32> {let p=s.inverse*vec4<f32>(uv.x*2.0-1.0,1.0-uv.y*2.0,z,1.0);return p.xyz/p.w;}
+// Offset samples stay inside this camera's viewport, half a texel in for linear filtering:
+// the scene target is shared by every camera, so outside the rectangle lie other views.
+fn in_view(uv:vec2<f32>,dimensions:vec2<f32>)->vec2<f32> {
+ let low=(s.viewport.xy+vec2<f32>(0.5))/dimensions;let high=(s.viewport.xy+s.viewport.zw-vec2<f32>(0.5))/dimensions;
+ return clamp(uv,low,max(low,high));
+}
 fn noise(p:vec3<f32>)->f32 {return 0.5+0.5*sin(p.x*3.1+sin(p.z*2.3))*sin(p.y*2.6+sin(p.x*1.7));}
 @fragment fn fragment(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
  let dimensions=vec2<f32>(textureDimensions(scene));let uv=p.xy/dimensions;let local=(p.xy-s.viewport.xy)/s.viewport.zw;
@@ -30,11 +36,11 @@ fn noise(p:vec3<f32>)->f32 {return 0.5+0.5*sin(p.x*3.1+sin(p.z*2.3))*sin(p.y*2.6
   let weight=clamp((t1-t0)*0.6,0.0,1.0);
   if v.center_kind.w<0.5 {
    let offset=vec2<f32>(0.012*v.half_strength.w*weight,0.0);
-   let aberration=vec3<f32>(textureSampleLevel(scene,linear_sampler,uv+offset,0.0).r,color.g,textureSampleLevel(scene,linear_sampler,uv-offset,0.0).b);
+   let aberration=vec3<f32>(textureSampleLevel(scene,linear_sampler,in_view(uv+offset,dimensions),0.0).r,color.g,textureSampleLevel(scene,linear_sampler,in_view(uv-offset,dimensions),0.0).b);
    color=mix(color,aberration*v.color.rgb,weight);
   }else if v.center_kind.w<1.5 {
    let offset=vec2<f32>(sin(local.y*57.0-s.eye_time.w*5.0),cos(local.x*43.0+s.eye_time.w*3.0))*0.014*v.half_strength.w*weight;
-   color=textureSampleLevel(scene,linear_sampler,clamp(uv+offset,vec2<f32>(0.0),vec2<f32>(1.0)),0.0).rgb;
+   color=textureSampleLevel(scene,linear_sampler,in_view(uv+offset,dimensions),0.0).rgb;
   }else {
    var density=0.0;for(var step=0u;step<12u;step=step+1u){let t=mix(t0,t1,(f32(step)+0.5)/12.0);density+=noise((start+direction*t)*1.3+vec3<f32>(0.0,-s.eye_time.w*0.18,0.0));}
    let opacity=1.0-exp(-density/12.0*(t1-t0)*v.half_strength.w);

@@ -223,8 +223,8 @@ impl PostGpu {
         tick: u64,
     ) {
         for (i, v) in views.iter().enumerate() {
-            let vp = v.camera.viewport;
-            let aspect = width as f32 * vp[2] / (height as f32 * vp[3]);
+            let (vp, _) = crate::render::pixel_rect(v.camera.viewport, width, height);
+            let aspect = vp[2] / vp[3];
             let projection = match v.camera.projection {
                 axiom_core::Projection::Perspective { fov_degrees } => Mat4::perspective_rh(
                     fov_degrees.to_radians(),
@@ -254,12 +254,7 @@ impl PostGpu {
                     .inverse()
                     .to_cols_array_2d(),
                 eye_time: [v.eye.x, v.eye.y, v.eye.z, tick as f32 / 120.0],
-                viewport: [
-                    vp[0] * width as f32,
-                    vp[1] * height as f32,
-                    vp[2] * width as f32,
-                    vp[3] * height as f32,
-                ],
+                viewport: vp,
                 info: [volumes.len().min(8) as f32, 0.0, 0.0, 0.0],
                 volumes: bank,
             };
@@ -293,17 +288,40 @@ impl PostGpu {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        let [x, y, w, h] = viewport;
-        pass.set_viewport(
-            x * width as f32,
-            y * height as f32,
-            w * width as f32,
-            h * height as f32,
-            0.0,
-            1.0,
-        );
+        let ([x, y, w, h], _) = crate::render::pixel_rect(viewport, width, height);
+        pass.set_viewport(x, y, w, h, 0.0, 1.0);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind, &[index * 512]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The volume shader validates, and every offset sample (chromatic aberration, heat
+    /// distortion) is clamped to the camera's own viewport: split screens share one scene
+    /// target, so an unclamped offset read the neighbouring camera (or black).
+    #[test]
+    fn offset_samples_stay_inside_the_camera_viewport() {
+        let source = include_str!("postfx.wgsl");
+        let module = naga::front::wgsl::parse_str(source).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap();
+        let samples: Vec<&str> = source
+            .split("textureSampleLevel(scene,linear_sampler,")
+            .skip(1)
+            .collect();
+        assert_eq!(samples.len(), 4, "centre + 2 aberration + 1 heat sample");
+        assert!(
+            samples[0].starts_with("uv,"),
+            "the centre sample is the pixel itself"
+        );
+        for sample in &samples[1..] {
+            assert!(sample.starts_with("in_view("), "{sample}");
+        }
     }
 }

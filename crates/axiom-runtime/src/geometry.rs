@@ -258,7 +258,51 @@ fn cached_build(geometry: &Geometry) -> Result<Arc<Asset>> {
     Ok(asset)
 }
 
+/// Why an entity whose (prefab-merged) components are `has` cannot own `render.geometry`:
+/// it needs a transform and must not also carry the mesh or animation player the procedural
+/// mesh replaces. Shared by authoring validation and the `geometry.prepare` factory.
+fn ownership_conflict(has: impl Fn(&str) -> bool) -> Option<&'static str> {
+    if !has("core.transform") {
+        Some("procedural geometry requires core.transform on the same entity")
+    } else if has("render.mesh") {
+        Some("procedural geometry owns the entity's mesh: remove render.mesh or move render.geometry to its own entity")
+    } else if has("animation.player") {
+        Some("procedural geometry cannot be animated by animation.player: remove animation.player or move render.geometry to its own entity")
+    } else {
+        None
+    }
+}
+
+/// Authoring check (`preview` / `apply`) of what `geometry.prepare` requires at activation, at
+/// `/entities/@ID/components/render.geometry`.
+fn validate_world(w: &axiom_core::World) -> Result<()> {
+    if !w.systems.iter().any(|s| s == "geometry.prepare") {
+        return Ok(());
+    }
+    for e in &w.entities {
+        let prefab = e.prefab.as_ref().and_then(|id| w.prefabs.get(id));
+        let has = |k: &str| {
+            e.components.contains_key(k) || prefab.is_some_and(|p| p.components.contains_key(k))
+        };
+        if !has("render.geometry") {
+            continue;
+        }
+        if let Some(problem) = ownership_conflict(has) {
+            return Err(axiom_core::Diagnostic::error(
+                "geometry_ownership",
+                format!(
+                    "/entities/@{}/components/render.geometry",
+                    axiom_core::local::escape(&e.id)
+                ),
+                problem,
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn register(r: &mut RuntimeRegistry) {
+    r.authoring.world_validators.push(validate_world);
     r.authoring.component("render.geometry","render",json!({"shape":"sphere|plane|torus","segments":"3..64","rings":"2..48","barycentric_uv":"bool; real triangle edges for wire shading","flat":"bool"}),|v|serde_json::from_value::<Geometry>(v.clone())?.validate());
     r.authoring.systems.insert(
         "geometry.prepare".into(),
@@ -276,12 +320,9 @@ pub fn register(r: &mut RuntimeRegistry) {
         let mut total = 0;
         for (i, e) in state.compiled.entities.iter().enumerate() {
             if let Some(v) = e.components.get("render.geometry") {
-                ensure!(
-                    e.transform.is_some()
-                        && e.mesh.is_none()
-                        && !e.components.contains_key("animation.player"),
-                    "procedural geometry requires one transform and exclusive mesh ownership"
-                );
+                if let Some(problem) = ownership_conflict(|k| e.components.contains_key(k)) {
+                    anyhow::bail!("{}: {problem}", e.id);
+                }
                 let asset = cached_build(&serde_json::from_value::<Geometry>(v.clone())?)?;
                 total += asset.vertices.len();
                 ensure!(

@@ -51,9 +51,13 @@ impl DisplayMode {
 
 /// A screenshot waiting for its frame: file and the crop in points (None = whole window).
 struct Pending {
+    /// `screenshot::next_id`: the read-back is handed only to this request.
+    id: u64,
     path: PathBuf,
     region: Option<egui::Rect>,
     asked: Instant,
+    /// A bare NAME under artifacts/captures is replaced; an explicit path never overwrites.
+    overwrite: bool,
 }
 
 #[derive(Default)]
@@ -137,10 +141,18 @@ impl Editor {
                     Some(path) => crate::screenshot::validate_path(path)?,
                     None => dir.join(format!("{name}.png")),
                 };
+                let overwrite = explicit.is_none();
+                anyhow::ensure!(
+                    overwrite || !path.exists(),
+                    "{} already exists; screenshots to an explicit path never overwrite a file, choose another name",
+                    path.display()
+                );
                 self.look.pending = Some(Pending {
+                    id: crate::screenshot::next_id(),
                     path,
                     region: self.capture_region(),
                     asked: Instant::now(),
+                    overwrite,
                 });
                 self.notice("Screenshot: capturing the next frame…");
             }
@@ -154,18 +166,23 @@ impl Editor {
         (self.look.display == DisplayMode::Unlit && !self.previewing).then_some(SCENE_VIEW)
     }
 
-    /// Host, before rendering: read this frame back for a screenshot.
-    pub(crate) fn wants_grab(&self) -> bool {
-        self.look.pending.is_some()
+    /// Host, before rendering: the id of the screenshot to read this frame back for.
+    pub(crate) fn pending_grab(&self) -> Option<u64> {
+        self.look.pending.as_ref().map(|p| p.id)
     }
 
     /// Host, after a rendered frame that was asked to grab: the frame (physical pixels) or
     /// `None` when the surface cannot be read back. Starts the encode job.
     pub(crate) fn grabbed(
         &mut self,
+        id: u64,
         frame: Result<crate::screenshot::Frame, String>,
         pixels_per_point: f32,
     ) {
+        // A frame grabbed for a request that already timed out is not this one's.
+        if self.look.pending.as_ref().is_none_or(|p| p.id != id) {
+            return;
+        }
         let Some(pending) = self.look.pending.take() else {
             return;
         };
@@ -179,7 +196,7 @@ impl Editor {
         let crop = pending
             .region
             .map(|r| crate::screenshot::physical(r, pixels_per_point, frame.width, frame.height));
-        match crate::screenshot::spawn(pending.path, frame, crop) {
+        match crate::screenshot::spawn(pending.path, frame, crop, pending.overwrite) {
             Ok(job) => self.look.job = Some(job),
             Err(e) => self.screenshot_done(Err(format!("could not start the job: {e}"))),
         }
@@ -363,7 +380,7 @@ mod tests {
             .run_command_with("view.screenshot", Some(&name))
             .unwrap()
             .is_empty());
-        assert!(e.wants_grab());
+        let id = e.pending_grab().unwrap();
         // A second request while one is pending is refused (and the command is greyed out).
         assert!(e.command_blocked("view.screenshot").is_some());
         assert!(e
@@ -380,8 +397,11 @@ mod tests {
             stride: 24,
             data: crate::screenshot::FrameData::Pixels(pixels),
         };
-        e.grabbed(Ok(frame), 1.5);
-        assert!(!e.wants_grab());
+        // A frame grabbed for another (earlier) request is not handed to this one.
+        e.grabbed(id + 1_000_000, Err("stale".into()), 1.5);
+        assert_eq!(e.pending_grab(), Some(id));
+        e.grabbed(id, Ok(frame), 1.5);
+        assert!(e.pending_grab().is_none());
         let started = Instant::now();
         while e.look.job.is_some() {
             assert!(
@@ -406,7 +426,8 @@ mod tests {
         assert_eq!(e.last_job.as_ref().unwrap()["kind"], "screenshot");
         // No read-back support: an error, not a hang.
         e.run_command("view.screenshot").unwrap();
-        e.grabbed(Err("no read-back".into()), 1.0);
+        let id = e.pending_grab().unwrap();
+        e.grabbed(id, Err("no read-back".into()), 1.0);
         assert_eq!(e.observation()["look"]["screenshot"]["last"]["ok"], false);
         assert!(!e.screenshot_running());
         // A request no frame picks up fails after the limit instead of blocking the command.

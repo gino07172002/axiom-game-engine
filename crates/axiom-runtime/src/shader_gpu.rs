@@ -20,7 +20,6 @@ pub struct PrepareStats {
     pub prepare_ms: f64,
     pub total_compiled: u64,
 }
-const MATERIAL_WGSL: &str = include_str!("surface_material.wgsl");
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -305,22 +304,13 @@ impl Compiler {
         mesh: bool,
         hdr: bool,
     ) -> Vec<wgpu::RenderPipeline> {
-        let (base, wrapper, vertex, layout) = if mesh {
-            (
-                crate::lighting::MESH_WGSL,
-                include_str!("mesh_surface.wgsl"),
-                "vertex_main",
-                &self.mesh,
-            )
+        let (vertex, layout) = if mesh {
+            ("vertex_main", &self.mesh)
         } else {
-            (
-                crate::lighting::SCENE_WGSL,
-                include_str!("cube_surface.wgsl"),
-                "vs_main",
-                &self.cube,
-            )
+            ("vs_main", &self.cube)
         };
-        let source = shader::fragment(base, hook, &format!("{MATERIAL_WGSL}\n{wrapper}"));
+        // The same assembly CPU validation checks (`shader::validate_hook`).
+        let source = shader::material_source(mesh, hook);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(id),
             source: wgpu::ShaderSource::Wgsl(source.into()),

@@ -114,6 +114,9 @@ pub struct Renderer {
     pub last_acquire: std::time::Duration,
     /// Counters of the last presented frame.
     pub stats: FrameStats,
+    /// Local lights of the last world frame: `(packed, dropped)` (authored lights first,
+    /// then VFX lights, `lighting::GPU_LOCAL_LIGHTS` slots).
+    local_lights: (usize, usize),
     /// The adapter offers `TIMESTAMP_QUERY`.
     pub timestamp_query_supported: bool,
     /// Pass-group GPU times (editor Profiler); writes timestamps only while enabled.
@@ -360,6 +363,7 @@ impl Renderer {
             hdr_scene: None,
             post_build: Default::default(),
             wait_post_build: false,
+            local_lights: (0, 0),
             device,
             queue,
             config,
@@ -607,6 +611,17 @@ impl Renderer {
             }
             if self.post_need(&requested, &snapshot.shaders).is_empty() {
                 post = requested;
+            } else if waiting {
+                // A smoke capture must show the requested post settings: fail with the build
+                // state instead of writing the fallback frame as if it were the result.
+                return Err(axiom_core::Diagnostic::error(
+                    "render_post_not_ready",
+                    "/resources/render.environment/post",
+                    format!(
+                        "the --screenshot frame needs post pipelines that are not built; no PNG written. build: {}",
+                        self.post_build.observation()
+                    ),
+                ));
             } else {
                 self.post_build.fallback_frames += 1;
             }
@@ -660,6 +675,9 @@ impl Renderer {
             );
         }
         let lighting = crate::lighting::pack(snapshot);
+        if snapshot.draw_world {
+            self.local_lights = (lighting.local_count, lighting.dropped);
+        }
         let light_vp = lighting.light_vp;
         let sky = lighting.sky_uniform();
         let mut uniforms = vec![0_u8; views.len() * GLOBALS_STRIDE as usize];
@@ -684,9 +702,9 @@ impl Renderer {
         }
         let mut ranges = vec![];
         for (i, v) in views.iter().enumerate() {
-            let viewport = v.camera.viewport;
-            let aspect = (self.config.width as f32 * viewport[2])
-                / (self.config.height as f32 * viewport[3]);
+            let (viewport, _) =
+                pixel_rect(v.camera.viewport, self.config.width, self.config.height);
+            let aspect = viewport[2] / viewport[3];
             let projection = match v.camera.projection {
                 axiom_core::Projection::Perspective { fov_degrees } => Mat4::perspective_rh(
                     fov_degrees.to_radians(),
@@ -733,12 +751,7 @@ impl Renderer {
                 fog: lighting.fog,
                 inv_view_proj: view_proj.inverse().to_cols_array_2d(),
                 sky,
-                sky_viewport: [
-                    viewport[0] * self.config.width as f32,
-                    viewport[1] * self.config.height as f32,
-                    viewport[2] * self.config.width as f32,
-                    viewport[3] * self.config.height as f32,
-                ],
+                sky_viewport: viewport,
             };
             if self.unlit_view == Some(v.id.as_str()) {
                 unlit_globals(&mut global);
@@ -944,18 +957,12 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let [x, y, w, h] = camera_view.camera.viewport;
-            let width = self.config.width as f32;
-            let height = self.config.height as f32;
-            let sx = (x * width).floor() as u32;
-            let sy = (y * height).floor() as u32;
-            let sw = ((w * width).ceil() as u32)
-                .max(1)
-                .min(self.config.width - sx);
-            let sh = ((h * height).ceil() as u32)
-                .max(1)
-                .min(self.config.height - sy);
-            pass.set_viewport(x * width, y * height, w * width, h * height, 0.0, 1.0);
+            let ([x, y, w, h], [sx, sy, sw, sh]) = pixel_rect(
+                camera_view.camera.viewport,
+                self.config.width,
+                self.config.height,
+            );
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_bind_group(0, &self.bind, &[i as u32 * GLOBALS_STRIDE]);
             let late_sky = lighting.sky.mode != crate::lighting::SKY_NONE;
@@ -1027,7 +1034,7 @@ impl Renderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                effects.set_viewport(x * width, y * height, w * width, h * height, 0.0, 1.0);
+                effects.set_viewport(x, y, w, h, 0.0, 1.0);
                 effects.set_scissor_rect(sx, sy, sw, sh);
                 let (calls, triangles) = self.vfx.draw(&mut effects, i as u32);
                 stats.add(calls, triangles);
@@ -1282,6 +1289,24 @@ impl Renderer {
     }
 }
 
+/// Pixel viewport `[x, y, w, h]` and scissor `[x, y, w, h]` of a camera's normalized
+/// `rect` on a `width` x `height` target. Both stay inside the target: authoring accepts
+/// `x + w <= 1.00001` and wgpu rejects (panics on) a viewport past the attachment. The world,
+/// VFX, HDR resolve and volume post passes, the projection aspect and the sky / post uniforms
+/// all use this one rectangle.
+pub(crate) fn pixel_rect(rect: [f32; 4], width: u32, height: u32) -> ([f32; 4], [u32; 4]) {
+    let v = crate::hdr::viewport(rect, [width, height]);
+    let sx = (v[0].floor() as u32).min(width.saturating_sub(1));
+    let sy = (v[1].floor() as u32).min(height.saturating_sub(1));
+    let sw = (((v[0] + v[2]).ceil() as u32).min(width))
+        .saturating_sub(sx)
+        .max(1);
+    let sh = (((v[1] + v[3]).ceil() as u32).min(height))
+        .saturating_sub(sy)
+        .max(1);
+    (v, [sx, sy, sw, sh])
+}
+
 /// The scene camera group: globals, sun shadow map + comparison sampler, local shadow maps.
 fn scene_bind(
     device: &wgpu::Device,
@@ -1323,6 +1348,13 @@ impl Renderer {
     /// `observe` → `metrics.local_shadows` (None without spot / point shadow casters).
     pub fn local_shadows_observation(&self) -> Option<serde_json::Value> {
         self.local_shadows.stats.observation()
+    }
+
+    /// `observe` -> `metrics.lighting`: local lights of the last world frame, when any were
+    /// submitted. `dropped` > 0 = lights beyond the GPU slots (VFX lights go last) that did
+    /// not light the frame.
+    pub fn lighting_observation(&self) -> Option<serde_json::Value> {
+        lighting_metrics(self.local_lights)
     }
 }
 
@@ -1540,5 +1572,84 @@ mod tests {
             };
             assert_eq!(u64::from(span), super::GLOBALS_SIZE);
         }
+    }
+
+    /// Every camera rectangle authoring accepts (`x + w <= 1.00001`) maps to a viewport and
+    /// a scissor inside the target (wgpu-core 24 rejects `x + w > width`, which panics),
+    /// also for odd sizes; ordinary rectangles keep the plain `rect * size` values.
+    #[test]
+    fn camera_rects_stay_inside_odd_and_even_targets() {
+        let rects = [
+            [0.5, 0.0, 0.500005, 1.0],
+            [0.0, 0.5, 1.00001, 0.500005],
+            [0.999, 0.999, 0.001005, 0.001005],
+            [0.3333333, 0.0, 0.6666767, 1.0],
+            [0.0, 0.0, 0.001, 0.001],
+            [0.998, 0.0, 0.002005, 1.0],
+            [0.1234567, 0.7654321, 0.8765533, 0.2345779],
+        ];
+        for (width, height) in [(1, 1), (7, 5), (961, 541), (1440, 900), (2881, 1621)] {
+            for rect in rects {
+                axiom_core::Camera {
+                    viewport: rect,
+                    ..axiom_core::Camera::perspective()
+                }
+                .validate()
+                .unwrap();
+                let ([x, y, w, h], [sx, sy, sw, sh]) = super::pixel_rect(rect, width, height);
+                let (fw, fh) = (width as f32, height as f32);
+                assert!(x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0, "{rect:?}");
+                assert!(x + w <= fw && y + h <= fh, "{rect:?} {width}x{height}");
+                assert!(sw >= 1 && sh >= 1, "{rect:?}");
+                assert!(sx + sw <= width && sy + sh <= height, "{rect:?}");
+                // The scissor covers the viewport.
+                assert!(sx as f32 <= x && (sx + sw) as f32 >= (x + w).min(fw));
+            }
+        }
+        let (full, scissor) = super::pixel_rect([0.0, 0.0, 1.0, 1.0], 1440, 900);
+        assert_eq!(
+            (full, scissor),
+            ([0.0, 0.0, 1440.0, 900.0], [0, 0, 1440, 900])
+        );
+        let (left, scissor) = super::pixel_rect([0.0, 0.0, 0.5, 1.0], 961, 541);
+        assert_eq!(
+            (left, scissor),
+            ([0.0, 0.0, 480.5, 541.0], [0, 0, 481, 541])
+        );
+    }
+
+    /// The authored sky is drawn after opaque geometry with `LessEqual`: at depth 1.0 it only
+    /// covers the cleared far depth. At 0.9999 it painted over opaque fragments whose depth
+    /// lies in (0.9999, 1.0), i.e. distant objects the camera still keeps.
+    #[test]
+    fn the_sky_triangle_sits_on_the_far_plane() {
+        let source = include_str!("scene.wgsl");
+        let start = source.find("@vertex fn vs_sky").unwrap();
+        let body = &source[start..start + source[start..].find('}').unwrap()];
+        assert!(body.contains("vec4<f32>(p[i],1.0,1.0)"), "{body}");
+    }
+}
+
+/// `metrics.lighting` of `(packed, dropped)` local lights (none submitted: no entry).
+fn lighting_metrics((local, dropped): (usize, usize)) -> Option<serde_json::Value> {
+    (local + dropped > 0).then(|| {
+        serde_json::json!({
+            "local_lights": local,
+            "dropped": dropped,
+            "capacity": crate::lighting::GPU_LOCAL_LIGHTS,
+        })
+    })
+}
+
+#[cfg(test)]
+mod lighting_metrics_tests {
+    /// Lights pushed out of the 32 GPU slots are visible to `observe` (they were only counted).
+    #[test]
+    fn dropped_local_lights_are_reported_with_the_capacity() {
+        assert_eq!(super::lighting_metrics((0, 0)), None);
+        let m = super::lighting_metrics((32, 8)).unwrap();
+        assert_eq!(m["local_lights"], 32);
+        assert_eq!(m["dropped"], 8);
+        assert_eq!(m["capacity"], 32);
     }
 }

@@ -49,7 +49,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) world: vec3<f3
     return vec4<f32>(lit,1.0);
 }
 @vertex fn vs_sky(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
-    let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],0.9999,1.0);
+    let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[i],1.0,1.0);
 }
 @fragment fn fs_sky(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
     if g.sky_zenith.w<0.5 {

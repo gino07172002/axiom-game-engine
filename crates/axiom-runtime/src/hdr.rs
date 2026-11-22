@@ -174,16 +174,26 @@ fn bytes(format: wgpu::TextureFormat, size: [u32; 2], mips: u32) -> u64 {
         .sum()
 }
 
-/// Viewport of normalized `rect` on a `size` target, kept inside it (wgpu validates bounds).
-fn viewport(rect: [f32; 4], size: [u32; 2]) -> [f32; 4] {
+/// Viewport of normalized `rect` on a `size` target, kept inside it (wgpu validates bounds:
+/// `x + w <= width` in f32). Shared by every pass that draws a camera view
+/// (`render::pixel_rect`).
+pub(crate) fn viewport(rect: [f32; 4], size: [u32; 2]) -> [f32; 4] {
     let (w, h) = (size[0] as f32, size[1] as f32);
     let x = (rect[0] * w).clamp(0.0, w - 1.0);
     let y = (rect[1] * h).clamp(0.0, h - 1.0);
+    // `x + (w - x)` can round above `w`: step the extent down until the sum fits.
+    let fit = |start: f32, extent: f32, limit: f32| {
+        let mut extent = extent;
+        while start + extent > limit && extent > 1.0 {
+            extent = f32::from_bits(extent.to_bits() - 1);
+        }
+        extent
+    };
     [
         x,
         y,
-        (rect[2] * w).clamp(1.0, w - x),
-        (rect[3] * h).clamp(1.0, h - y),
+        fit(x, (rect[2] * w).clamp(1.0, w - x), w),
+        fit(y, (rect[3] * h).clamp(1.0, h - y), h),
     ]
 }
 
