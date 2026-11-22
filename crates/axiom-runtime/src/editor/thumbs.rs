@@ -435,6 +435,23 @@ impl Thumbnails {
         }
     }
 
+    /// Model files were reloaded (`asset.reload`): model and prefab thumbnails are made again
+    /// when next drawn. The source hash (path, length, modified time) finds the new content;
+    /// items already handed to a running job stay with it.
+    pub fn invalidate_models(&mut self) {
+        let mut textures = 0;
+        self.states.retain(|key, state| {
+            let keep = !matches!(key.kind, AssetKind::Model | AssetKind::Prefab)
+                || matches!(state, State::Queued);
+            if !keep && matches!(state, State::Texture { .. }) {
+                textures += 1;
+            }
+            keep
+        });
+        self.textures -= textures;
+        self.lazy_paused = false;
+    }
+
     /// The world changed: lazy jobs may run again.
     pub fn resume_lazy(&mut self) {
         self.lazy_paused = false;

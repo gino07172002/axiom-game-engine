@@ -41,6 +41,9 @@ pub(crate) struct ShaderUi {
     pub shader: Option<String>,
     pub base: String,
     pub draft: String,
+    /// The source `shader.draft` last put in `draft` (an agent's, replaceable again while
+    /// nobody typed over it).
+    pub remote: Option<String>,
     pub job: Option<Job<(String, Vec<Issue>, f64)>>,
     pub checked: Option<Checked>,
     /// Line-number gutter text, rebuilt when the line count changes.
@@ -102,6 +105,17 @@ impl Editor {
         Some(id.to_owned())
     }
 
+    /// The open shader's source typed in the Inspector and not applied (not an agent's
+    /// `shader.draft`), named.
+    pub(super) fn shader_unsaved(&self) -> Option<String> {
+        let s = &self.tuning.shader;
+        let id = s.shader.as_ref()?;
+        (s.draft != s.base
+            && s.remote.as_ref() != Some(&s.draft)
+            && self.shader_under_edit().as_ref() == Some(id))
+        .then(|| format!("WGSL source of shader {id}"))
+    }
+
     /// Writes the shader source draft (`ACL: shader ID source ".."`).
     pub(super) fn apply_shader_source(&mut self, id: &str, wgsl: &str) -> Option<Action> {
         let result = ops::set_shader_source(&self.world, id, wgsl);
@@ -130,8 +144,9 @@ impl Editor {
         Ok(())
     }
 
-    /// `shader.draft "WGSL"` (view state): replaces the open shader's unsaved draft, as typing
-    /// in the source box would (Check / Apply then act on it).
+    /// `shader.draft "WGSL"` (view state): replaces the open shader's draft, as typing in the
+    /// source box would (Check / Apply then act on it). Source the person typed and did not
+    /// apply is never replaced (`editor_dirty`).
     pub(super) fn shader_draft_command(&mut self, arg: Option<&str>) -> anyhow::Result<()> {
         let id = self
             .shader_under_edit()
@@ -150,7 +165,13 @@ impl Editor {
             ops::MAX_SHADER_SOURCE
         );
         self.sync_shader_draft(&id);
-        self.tuning.shader.draft = source;
+        if let Some(draft) = self.shader_unsaved() {
+            // Typed in the Shader source box and not applied: never replaced remotely.
+            return Err(super::unsaved_draft(&draft));
+        }
+        let s = &mut self.tuning.shader;
+        s.draft = source.clone();
+        s.remote = Some(source);
         Ok(())
     }
 

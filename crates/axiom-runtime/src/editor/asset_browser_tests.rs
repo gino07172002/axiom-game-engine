@@ -629,6 +629,12 @@ fn model_thumbnails_without_a_gpu_fail_visibly_instead_of_hanging() {
     let observed = h.editor.observation()["thumbnails"].clone();
     assert_eq!(observed["gpu"], false);
     assert!(observed["failed"].as_u64().unwrap() >= 2, "{observed}");
+    // Reloaded model files (asset.reload adopted): their thumbnails are forgotten and made
+    // again from the new content when next drawn (R8 F12).
+    h.editor.models_reloaded();
+    let observed = h.editor.observation()["thumbnails"].clone();
+    assert_eq!(observed["failed"], 0, "{observed}");
+    assert!(!h.editor.assets.thumbs.lazy_paused);
 }
 
 /// Measurement, not a check (`cargo test --release -p axiom-runtime --lib -- --ignored

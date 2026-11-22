@@ -576,6 +576,7 @@ fn a_layout_saved_under_version_2_gets_the_console_and_is_kept_as_previous() {
     assert!(super::layout::is_open(state, Dock::Console));
     assert!(!super::layout::is_open(state, Dock::Profiler));
     h.frame();
+    h.editor.flush_prefs();
     let saved: super::commands::Prefs =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.layout_version, super::layout::LAYOUT_VERSION);

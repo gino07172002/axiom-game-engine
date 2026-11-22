@@ -77,7 +77,8 @@ pub(crate) struct UiEditorState {
     new_kind: Option<UiEffectKind>,
     /// Edited copy of the selected effect / widget (committed when nothing is held or typed).
     effect_draft: Option<UiEffect>,
-    widget_draft: Option<(String, Value)>,
+    /// Widget draft: (widget ID, its value when the form loaded, the edited value).
+    widget_draft: Option<(String, Value, Value)>,
     canvas: crate::ui::UiState,
     /// Times the preview was rebuilt (tests: not per frame).
     pub builds: usize,
@@ -431,7 +432,7 @@ impl Editor {
                 actions.extend(self.ui_set_effect(&draft));
             }
         }
-        if let Some((id, draft)) = st.widget_draft.take() {
+        if let Some((id, _, draft)) = st.widget_draft.take() {
             let mut changed = vec![];
             if let Some(i) = doc.widgets.iter().position(|w| w.id() == id) {
                 form::changes(
@@ -447,15 +448,72 @@ impl Editor {
         }
     }
 
+    /// The UI Editor's unsaved effect / widget draft, named (remote commands that would
+    /// drop it are refused).
+    pub(super) fn ui_unsaved(&self) -> Option<String> {
+        let st = &self.ui_editor;
+        if let Some((id, base, draft)) = &st.widget_draft {
+            if draft != base {
+                return Some(format!("UI Editor widget {id}"));
+            }
+        }
+        let draft = st.effect_draft.as_ref()?;
+        let doc = st.cache.as_ref()?.doc.as_ref()?;
+        doc.effects
+            .iter()
+            .any(|e| e.id == draft.id && e != draft)
+            .then(|| format!("UI Editor effect {}", draft.id))
+    }
+
+    /// A new world (any revision, e.g. an agent's unrelated edit) keeps the effect / widget
+    /// draft whose target did not change; a draft whose target changed is dropped, with its
+    /// unsaved content in the error so it can be recovered.
+    fn ui_keep_drafts(&mut self, st: &mut UiEditorState, old: Option<&UiDocument>) {
+        let new = st.cache.as_ref().and_then(|p| p.doc.as_ref());
+        let mut dropped = vec![];
+        if let Some(draft) = st.effect_draft.take() {
+            let find = |doc: Option<&UiDocument>| {
+                doc.and_then(|d| d.effects.iter().find(|e| e.id == draft.id))
+                    .cloned()
+            };
+            let (was, now) = (find(old), find(new));
+            if was.is_some() && was == now {
+                st.effect_draft = Some(draft);
+            } else if was.is_some_and(|was| was != draft) {
+                dropped.push(format!(
+                    "effect {}: {}",
+                    draft.id,
+                    serde_json::to_string(&draft).unwrap_or_default()
+                ));
+            }
+        }
+        if let Some((id, base, draft)) = st.widget_draft.take() {
+            let now = new
+                .and_then(|d| d.widgets.iter().position(|w| w.id() == id))
+                .and_then(|i| self.world.resources.get(ops::UI_DOCUMENT)?["widgets"].get(i));
+            if now == Some(&base) {
+                st.widget_draft = Some((id, base, draft));
+            } else if draft != base {
+                dropped.push(format!("widget {id}: {draft}"));
+            }
+        }
+        if !dropped.is_empty() {
+            self.set_error(format!(
+                "UI Editor: changed in revision {} while you edited it; your unsaved edit was not applied ({})",
+                self.rev,
+                dropped.join("; ")
+            ));
+        }
+    }
+
     /// The UI Editor tab body.
     pub(super) fn ui_editor_tab(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let mut st = std::mem::take(&mut self.ui_editor);
         let key = (self.rev, self.world_version);
         if st.cache.as_ref().is_none_or(|c| c.key != key) {
-            st.cache = Some(Preview::build(key, &self.world));
+            let old = st.cache.replace(Preview::build(key, &self.world));
             st.builds += 1;
-            st.effect_draft = None;
-            st.widget_draft = None;
+            self.ui_keep_drafts(&mut st, old.as_ref().and_then(|p| p.doc.as_ref()));
         }
         let mut preview = st.cache.take().unwrap();
         self.ui_editor_body(ui, &mut st, &mut preview, actions);
@@ -1094,8 +1152,8 @@ impl Editor {
             return;
         };
         let base = self.world.resources[ops::UI_DOCUMENT]["widgets"][index].clone();
-        if st.widget_draft.as_ref().is_none_or(|(w, _)| w != id) {
-            st.widget_draft = Some((id.to_owned(), base.clone()));
+        if st.widget_draft.as_ref().is_none_or(|(w, ..)| w != id) {
+            st.widget_draft = Some((id.to_owned(), base.clone(), base.clone()));
         }
         let spec = self
             .specs
@@ -1105,7 +1163,7 @@ impl Editor {
             .cloned()
             .unwrap_or_else(|| form::Spec::compile(&Value::Null));
         let mixed = Default::default();
-        let (_, draft) = st.widget_draft.as_mut().unwrap();
+        let (_, _, draft) = st.widget_draft.as_mut().unwrap();
         let out = {
             let mut ctx = form::Ctx {
                 world: &self.world,
@@ -1429,4 +1487,12 @@ fn caption_at(painter: &egui::Painter, at: Pos2, text: &str) {
         egui::FontId::proportional(12.0),
         Color32::from_rgb(220, 230, 235),
     );
+}
+
+#[cfg(test)]
+impl Editor {
+    /// The effect form's draft (tests type into it without egui focus).
+    pub(super) fn ui_effect_draft_for_test(&mut self) -> &mut Option<UiEffect> {
+        &mut self.ui_editor.effect_draft
+    }
 }

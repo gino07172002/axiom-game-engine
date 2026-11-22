@@ -102,7 +102,6 @@ pub(crate) enum Action {
     RestoreTo {
         rev: i64,
     },
-    Verify,
     /// `keep`: approve by a field-wise merge onto the current revision; listed conflicting
     /// fields keep the current value (`resolve_proposal {keep, expected_rev}`).
     ResolveProposal {
@@ -158,6 +157,20 @@ pub(crate) fn entity_in_path(path: &str, world: &World) -> Option<String> {
     world.entity(&id).map(|e| e.id.clone())
 }
 
+/// Watchdog of File ▸ Verify World.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `editor_dirty`: a remote request would commit or replace the person's unsaved `draft`.
+fn unsaved_draft(draft: &str) -> anyhow::Error {
+    axiom_core::Diagnostic::error(
+        "editor_dirty",
+        "/editor",
+        format!(
+            "the editor has an unsaved draft ({draft}); ask the user to apply or discard it first (nothing was changed)"
+        ),
+    )
+}
+
 /// Every action drawn in one frame was built against the same revision. Adjacent applies
 /// therefore merge into one atomic batch; otherwise the second would always fail CAS.
 pub(crate) fn coalesce(actions: Vec<Action>) -> Vec<Action> {
@@ -195,6 +208,7 @@ pub(crate) fn coalesce(actions: Vec<Action>) -> Vec<Action> {
     out
 }
 
+#[derive(Clone)]
 struct Draft {
     rev: i64,
     id: String,
@@ -558,7 +572,8 @@ pub(crate) struct Editor {
     /// Per-user preferences (snap steps and toggles, grid, axes, dock, shortcut overrides).
     prefs: commands::Prefs,
     prefs_path: Option<std::path::PathBuf>,
-    prefs_saved: Option<String>,
+    /// Writes the preferences file off the main thread when `prefs` changed.
+    prefs_saved: commands::PrefsSaver,
     palette: Option<commands::Palette>,
     show_shortcuts: bool,
     show_prefs: bool,
@@ -580,6 +595,8 @@ pub(crate) struct Editor {
     pub(crate) scenario_results: std::collections::BTreeMap<String, Value>,
     /// The scenario running on a worker thread (at most one).
     pub(crate) scenario_job: Option<crate::jobs::Job<Value>>,
+    /// File ▸ Verify World: (revision, compile job of the shown world).
+    verify_job: Option<(i64, crate::jobs::Job<anyhow::Result<usize>>)>,
     /// Summary of the last finished background job (observation).
     last_job: Option<Value>,
     material: Option<assets::MaterialDraft>,
@@ -596,6 +613,9 @@ pub(crate) struct Editor {
     /// non-zero, `world` is the optimistic result of those writes and `rev` the last
     /// revision this editor adopted.
     pub(crate) saving: usize,
+    /// Bumped by every error shown (`set_error`, `problem`; true when the last one was a
+    /// `problem`), so a command run can tell its handler reported one.
+    error_seq: (u64, bool),
     /// Writer counters for `observe` (set by the host): last commit duration etc.
     pub(crate) writes: Value,
     /// Installed types (capabilities, systems, resource and component schemas) for the world
@@ -669,6 +689,20 @@ pub(crate) struct Editor {
     pub(crate) merge: merge::MergeState,
     /// The revision a stale, dirty Inspector draft was made on (kept for Merge…).
     merge_base: Option<(i64, std::sync::Arc<World>)>,
+    /// Inspector drafts (and draft merges) sent as writes, oldest first, kept until the
+    /// write is confirmed: a refused or unconfirmed write brings the draft back.
+    submitted: std::collections::VecDeque<Submitted>,
+}
+
+/// An Inspector draft sent as a write, kept until that write commits.
+struct Submitted {
+    /// The draft as the person left it: dirty, on its own revision and baselines.
+    draft: Draft,
+    /// The world the draft was made on (Merge… base when a newer revision won).
+    base: std::sync::Arc<World>,
+    /// The written edit batch as JSON array contents, to recognise its commit (also when
+    /// coalesced with other edits of the same frame).
+    edits: String,
 }
 
 /// Multi-object Inspector: which fields differ between the selected objects.
@@ -739,7 +773,7 @@ impl Editor {
             clipboard: Vec::new(),
             prefs: Default::default(),
             prefs_path: None,
-            prefs_saved: None,
+            prefs_saved: Default::default(),
             palette: None,
             show_shortcuts: false,
             show_prefs: false,
@@ -754,6 +788,7 @@ impl Editor {
             scenarios: Vec::new(),
             scenario_results: Default::default(),
             scenario_job: None,
+            verify_job: None,
             last_job: None,
             material: None,
             prefab: None,
@@ -762,6 +797,7 @@ impl Editor {
             scene_input: SceneInput::default(),
             tween_ui: Default::default(),
             saving: 0,
+            error_seq: (0, false),
             writes: Value::Null,
             registry: std::sync::Arc::new(axiom_core::Registry::core()),
             world_panel: Default::default(),
@@ -798,6 +834,7 @@ impl Editor {
             ghost: Default::default(),
             merge: Default::default(),
             merge_base: None,
+            submitted: Default::default(),
         };
         if selected
             .as_ref()
@@ -970,8 +1007,109 @@ impl Editor {
         self.forget_missing();
         self.drag = None;
         self.scene_input.point_drag = None;
+        // Typing that continued after an Inspector write was sent stays for
+        // `restore_submitted` (the host calls it next) to fold into the unsaved draft.
+        let typing = self
+            .draft
+            .take()
+            .filter(|d| d.dirty() && !self.submitted.is_empty());
         self.reset_draft();
+        if typing.is_some() {
+            self.draft = typing;
+        }
         previous
+    }
+
+    /// The Inspector sent `draft` (made on `base`) as the write of `edits`: kept until that
+    /// write commits (`confirm_submitted`) or comes back (`restore_submitted`).
+    fn track_submitted(&mut self, draft: Draft, base: std::sync::Arc<World>, edits: &[Edit]) {
+        if self.saving == 0 {
+            // Nothing is queued: earlier entries were settled (e.g. on this thread).
+            self.submitted.clear();
+        }
+        let json = serde_json::to_string(edits).unwrap_or_default();
+        let edits = json
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(&json)
+            .to_owned();
+        if !edits.is_empty() {
+            self.submitted.push_back(Submitted { draft, base, edits });
+        }
+    }
+
+    /// A write committed: the Inspector drafts it carried are saved.
+    fn confirm_submitted(&mut self, request: &Request) {
+        let Request::Apply { edits, .. } = request else {
+            return;
+        };
+        if self.submitted.is_empty() {
+            return;
+        }
+        let Ok(json) = serde_json::to_string(edits) else {
+            return;
+        };
+        self.submitted.retain(|s| !json.contains(&s.edits));
+    }
+
+    /// A queued write failed or was not confirmed (the host calls this after showing the
+    /// database again): the oldest unconfirmed Inspector draft comes back dirty on its own
+    /// revision, so it can be applied again, copied, or merged onto a newer revision.
+    /// Typing on the same object and component since then stays on top of it.
+    pub(crate) fn restore_submitted(&mut self) -> bool {
+        let Some(first) = self.submitted.pop_front() else {
+            return false;
+        };
+        let later = std::mem::take(&mut self.submitted).len();
+        let Submitted {
+            mut draft, base, ..
+        } = first;
+        let id = draft.id.clone();
+        if self.world.entity(&id).is_none() {
+            let note =
+                format!("Your unsaved edit of {id} was dropped: the object no longer exists");
+            self.append_error(note);
+            return false;
+        }
+        if let Some(mut now) = self
+            .draft
+            .take()
+            .filter(|d| d.dirty() && d.id == draft.id && d.component == draft.component)
+        {
+            now.rev = draft.rev;
+            now.base_transform = draft.base_transform;
+            now.form_base = draft.form_base;
+            now.label_dirty |= draft.label_dirty;
+            now.transform_dirty |= draft.transform_dirty;
+            now.parent_dirty |= draft.parent_dirty;
+            now.component_dirty |= draft.component_dirty;
+            now.form_dirty |= draft.form_dirty;
+            draft = now;
+        }
+        let rev = draft.rev;
+        self.select(Some(id.clone()));
+        self.draft = Some(draft);
+        // A newer revision won: the draft is stale and merges onto it field by field.
+        self.merge_base = (rev != self.rev).then_some((rev, base));
+        let lost = if later > 0 {
+            format!(" ({later} later Inspector edit(s) built on it were not kept)")
+        } else {
+            String::new()
+        };
+        self.append_error(format!(
+            "Your edit of {id} is kept as an unsaved draft{lost}: Apply again, Copy JSON or Merge…"
+        ));
+        true
+    }
+
+    /// Adds `note` to the error already shown (or shows it).
+    fn append_error(&mut self, note: String) {
+        if self.error && !self.status.is_empty() {
+            let status = format!("{} · {note}", self.status);
+            self.set_error(status);
+        } else {
+            self.set_error(note);
+        }
     }
 
     /// Change list computed off the main thread for revision `rev`; ignored if stale.
@@ -1957,10 +2095,38 @@ impl Editor {
                 "unknown editor command {id}; see discover editor (commands)"
             );
         }
-        anyhow::ensure!(
-            !self.dirty(),
-            "the editor has an unsaved draft; ask the user to apply or reload it first"
-        );
+        // The same draft rules as `remote_view` (a selection change), `remote_open` and
+        // `remote_command` (the draft-merge commands keep their own preconditions), checked
+        // here before any side effect.
+        let draft_merge = command.is_some_and(|id| {
+            matches!(
+                id,
+                "merge.open" | "merge.pick" | "merge.commit" | "merge.cancel"
+            )
+        });
+        if !select.is_empty() || open.is_some() || (command.is_some() && !draft_merge) {
+            self.remote_draft_guard()?;
+        }
+        let graph_open = open.is_some_and(|t| {
+            matches!(
+                t.split_once(':'),
+                Some(("graph" | "rules" | "animator", _))
+            )
+        });
+        let graph_command = command.is_some_and(|id| {
+            (id.starts_with("graph.") || id.starts_with("behavior."))
+                && !matches!(id, "graph.zoom" | "graph.frame")
+        });
+        if graph_open || graph_command {
+            if let Some(draft) = self.graph_unsaved() {
+                return Err(unsaved_draft(&draft));
+            }
+        }
+        if command == Some("ui.select") {
+            if let Some(draft) = self.ui_unsaved() {
+                return Err(unsaved_draft(&draft));
+            }
+        }
         for id in select {
             if self.world.entity(id).is_none() {
                 return Err(axiom_core::Diagnostic::error(
@@ -1976,6 +2142,20 @@ impl Editor {
         if let Some(target) = open {
             let selected = select.first().map(String::as_str);
             self.check_open(target, selected.or(self.selected.as_deref()))?;
+        }
+        Ok(())
+    }
+
+    /// Refuses a remote request that would replace the Inspector draft or a drag.
+    fn remote_draft_guard(&self) -> anyhow::Result<()> {
+        if self.drag.is_some() || self.scene_input.point_drag.is_some() {
+            return Err(unsaved_draft("Scene view drag in progress"));
+        }
+        if self.dirty() {
+            return Err(unsaved_draft(&self.inspector_draft_name()));
+        }
+        if let Some(draft) = self.shader_unsaved() {
+            return Err(unsaved_draft(&draft));
         }
         Ok(())
     }
@@ -2067,6 +2247,52 @@ impl Editor {
         }
     }
 
+    /// The Inspector draft being edited, named for `editor_dirty` errors.
+    fn inspector_draft_name(&self) -> String {
+        match (&self.material, &self.prefab, &self.resource, &self.draft) {
+            (Some(d), ..) => format!("Inspector material {}", d.id),
+            (_, Some(d), ..) => format!("Inspector prefab {}", d.id),
+            (_, _, Some(d), _) => format!("Inspector resource {}", d.id),
+            (.., Some(d)) if d.rev != self.rev => {
+                format!("stale Inspector draft of {} (revision {})", d.id, d.rev)
+            }
+            (.., Some(d)) => format!("Inspector draft of {}", d.id),
+            _ => "Inspector draft".into(),
+        }
+    }
+
+    /// A registered command from the bridge (`editor_view {command, arg}`): as from the menu,
+    /// except that it never commits or replaces a draft the person is editing (refused with
+    /// `editor_dirty`). The stale-draft merge commands are how an agent helps with exactly
+    /// such a draft, so they keep their own preconditions.
+    pub(crate) fn remote_command(
+        &mut self,
+        id: &str,
+        arg: Option<&str>,
+    ) -> anyhow::Result<Vec<Action>> {
+        let draft_merge = match id {
+            "merge.open" => arg.is_some_and(|a| a.trim() == "draft"),
+            "merge.pick" | "merge.commit" | "merge.cancel" => {
+                self.merge.source == Some(merge::MergeSource::Draft)
+            }
+            _ => false,
+        };
+        if !draft_merge {
+            self.remote_draft_guard()?;
+        }
+        let graph = (id.starts_with("graph.") || id.starts_with("behavior."))
+            && !matches!(id, "graph.zoom" | "graph.frame");
+        let unsaved = match id {
+            _ if graph => self.graph_unsaved(),
+            "ui.select" => self.ui_unsaved(),
+            _ => None,
+        };
+        if let Some(draft) = unsaved {
+            return Err(unsaved_draft(&draft));
+        }
+        self.run_command_with(id, arg)
+    }
+
     /// Remote view control from the bridge (`editor_view`). Never touches drafts.
     pub(crate) fn remote_view(
         &mut self,
@@ -2074,10 +2300,10 @@ impl Editor {
         focus: bool,
         dock: Option<&str>,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !self.dirty() && self.drag.is_none(),
-            "the editor has an unsaved draft; ask the user to apply or reload it first"
-        );
+        // Only a selection change touches the Inspector draft (docks and framing do not).
+        if !select.is_empty() {
+            self.remote_draft_guard()?;
+        }
         for id in select {
             if self.world.entity(id).is_none() {
                 return Err(axiom_core::Diagnostic::error(
@@ -2104,7 +2330,16 @@ impl Editor {
     /// selection), `options:COMMAND` (a create command's options dialog), `graph:MACHINE`
     /// or `rules:` (Graphs tab).
     pub(crate) fn remote_open(&mut self, target: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.dirty(), "the editor has an unsaved draft");
+        self.remote_draft_guard()?;
+        if matches!(
+            target.split_once(':'),
+            Some(("graph" | "rules" | "animator", _))
+        ) {
+            // Opening another graph commits the open element / rule draft.
+            if let Some(draft) = self.graph_unsaved() {
+                return Err(unsaved_draft(&draft));
+            }
+        }
         let (kind, id) = target.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(
                 "open expects material:ID, prefab:ID, resource:ID, component:ID, options:COMMAND, graph:MACHINE or rules:"
@@ -2247,6 +2482,8 @@ impl Editor {
         self.poll_ghosts();
         self.poll_merge();
         self.poll_build();
+        self.poll_recording();
+        self.poll_verify();
         let Some(job) = &mut self.scenario_job else {
             return;
         };
@@ -2289,6 +2526,52 @@ impl Editor {
         }
     }
 
+    /// File ▸ Verify World: compiles the shown revision (as `axiom verify`) on a background
+    /// job; `poll_verify` reports it.
+    pub(crate) fn start_verify(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.saving == 0,
+            "wait for the queued edits to save (the editor shows their optimistic world)"
+        );
+        anyhow::ensure!(self.verify_job.is_none(), "Verify is already running");
+        let (world, registry, rev) = (self.world.clone(), self.registry.clone(), self.rev);
+        let job = crate::jobs::Job::spawn(
+            "verify",
+            format!("revision {rev}"),
+            VERIFY_TIMEOUT,
+            move |_| Ok(world.compile(&registry)?.len()),
+        )?;
+        self.verify_job = Some((rev, job));
+        self.notice(format!("Verifying revision {rev}…"));
+        Ok(())
+    }
+
+    fn poll_verify(&mut self) {
+        let Some((rev, job)) = &mut self.verify_job else {
+            return;
+        };
+        let rev = *rev;
+        let Some(outcome) = job.poll() else {
+            return;
+        };
+        self.verify_job = None;
+        match outcome {
+            crate::jobs::Outcome::Done {
+                value: Ok(entities),
+                stop: None,
+            } => self.notice(format!(
+                "Verify passed · revision {rev} · {entities} entities"
+            )),
+            crate::jobs::Outcome::Done {
+                value: Err(error), ..
+            } => self.problem(&error),
+            crate::jobs::Outcome::Done { stop: Some(s), .. }
+            | crate::jobs::Outcome::Abandoned { stop: s } => {
+                self.set_error(format!("Verify of revision {rev} {}", s.name()))
+            }
+        }
+    }
+
     /// Running background jobs for the status bar and `observe`.
     pub(crate) fn jobs_observation(&self) -> Value {
         json!(self
@@ -2300,6 +2583,8 @@ impl Editor {
             .chain(self.merge_jobs_observation())
             .chain(self.screenshot_job_observation())
             .chain(self.build_job_observation())
+            .chain(self.debug.saving.as_ref().map(|j| j.observation()))
+            .chain(self.verify_job.as_ref().map(|(_, j)| j.observation()))
             .chain(self.host_job.clone())
             .collect::<Vec<_>>())
     }
@@ -2361,8 +2646,22 @@ impl Editor {
             .is_some_and(|state| layout::is_active(state, tab))
     }
 
+    /// The error last shown, as an error for the caller: the structured diagnostic of a
+    /// `problem`, else the status text.
+    pub(crate) fn reported_error(&self) -> anyhow::Error {
+        match self.problems.first().filter(|_| self.error_seq.1) {
+            Some(d) => axiom_core::Diagnostic::error(
+                d["code"].as_str().unwrap_or("editor_error"),
+                d["path"].as_str().unwrap_or("/"),
+                d["message"].as_str().unwrap_or(&self.status),
+            ),
+            None => anyhow::anyhow!("{}", self.status),
+        }
+    }
+
     /// Records a failed request as a structured problem and shows it in the status line.
     pub fn problem(&mut self, error: &anyhow::Error) {
+        self.error_seq = (self.error_seq.0 + 1, true);
         self.open_component_after = None;
         let response = axiom_core::error_response(error);
         let d = response["diagnostics"][0].clone();
@@ -2513,6 +2812,7 @@ impl Editor {
     }
 
     pub fn set_error(&mut self, message: impl Into<String>) {
+        self.error_seq = (self.error_seq.0 + 1, false);
         self.error = true;
         self.status = message.into();
         self.debug.console.log(
@@ -2537,6 +2837,7 @@ impl Editor {
     }
 
     pub fn record(&mut self, request: Request, result: &Value) {
+        self.confirm_submitted(&request);
         self.last_bytes = Some((
             serde_json::to_vec(&request).map_or(0, |v| v.len()),
             serde_json::to_vec(result).map_or(0, |v| v.len()),
@@ -2810,5 +3111,58 @@ impl Editor {
             frame.draw_world = false;
         }
         frame
+    }
+}
+
+#[cfg(test)]
+impl Editor {
+    /// What the Inspector's Apply sends for the selected object moved to `position` (the
+    /// draft kept until the write commits, as in `ui.rs`).
+    pub(crate) fn test_inspector_apply_position(&mut self, position: [f32; 3]) -> Action {
+        self.prefs.live_inspector = false;
+        let draft = self.draft.as_mut().expect("an object is selected");
+        let mut transform = draft.transform.clone().expect("it has a transform");
+        transform.position = position;
+        draft.transform = Some(transform);
+        draft.transform_dirty = true;
+        let draft = draft.clone();
+        let edits = inspector_edits(&self.world, &self.registry, &draft, &self.extra).unwrap();
+        let expected_rev = Some(draft.rev);
+        self.track_submitted(draft, self.world.clone(), &edits);
+        Action::Write {
+            request: Request::Apply {
+                expected_rev,
+                edits,
+            },
+            select: None,
+        }
+    }
+
+    /// (dirty, draft revision, has a Merge… base, draft edits on that base).
+    pub(crate) fn test_draft_state(&self) -> (bool, Option<i64>, bool, Vec<Value>) {
+        let base = self.merge_base.as_ref().map(|(_, w)| w.clone());
+        let edits = self
+            .draft
+            .as_ref()
+            .filter(|d| d.dirty())
+            .map(|d| {
+                inspector_edits(
+                    base.as_deref().unwrap_or(&self.world),
+                    &self.registry,
+                    d,
+                    &self.extra,
+                )
+                .unwrap()
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .collect()
+            })
+            .unwrap_or_default();
+        (
+            self.dirty(),
+            self.draft.as_ref().map(|d| d.rev),
+            self.merge_base.is_some(),
+            edits,
+        )
     }
 }

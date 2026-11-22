@@ -289,6 +289,7 @@ fn aspect_command_letterboxes_inside_the_tab_and_persists() {
     h.editor.run_command("game.aspect").unwrap();
     assert_eq!(h.editor.aspect(), Aspect::Square);
     h.frame(vec![]);
+    h.editor.flush_prefs();
     let mut again = Harness::new(lab());
     again.editor.set_prefs_path(path.clone());
     assert_eq!(again.editor.aspect(), Aspect::Square, "persisted in prefs");

@@ -322,9 +322,16 @@ impl Editor {
                         value: Ok(edits),
                         stop: None,
                     } if edits.is_empty() => {
-                        self.close_merge();
-                        self.reset_draft();
-                        self.notice("Merged: the newer revision already has every change");
+                        if self.merge_outdated() {
+                            // Computed before the world or the draft moved on: the draft stays.
+                            if let Err(e) = self.relist_merge() {
+                                self.set_error(format!("{e:#}"));
+                            }
+                        } else {
+                            self.close_merge();
+                            self.reset_draft();
+                            self.notice("Merged: the newer revision already has every change");
+                        }
                     }
                     Outcome::Done {
                         value: Ok(edits),
@@ -361,6 +368,19 @@ impl Editor {
             return;
         }
         if let Some(write) = self.merge.write.take() {
+            // The stale draft is kept until the merge commits: a refused merge brings it
+            // back with its base, ready to merge again.
+            if let (
+                Some(draft),
+                Some((_, base)),
+                Action::Write {
+                    request: Request::Apply { edits, .. },
+                    ..
+                },
+            ) = (self.draft.clone(), self.merge_base.clone(), &write)
+            {
+                self.track_submitted(draft, base, edits);
+            }
             actions.push(write);
             self.close_merge();
             // The stale draft is replaced by the merge (also when the live Inspector would

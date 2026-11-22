@@ -1383,6 +1383,23 @@ impl Editor {
         })
     }
 
+    /// The Graphs tab's unsaved element / rule draft, named (remote commands that would
+    /// commit it are refused: it is the person's edit, not the agent's).
+    pub(super) fn graph_unsaved(&self) -> Option<String> {
+        if let Some(d) = self.graph.element.as_ref().filter(|d| d.dirty) {
+            let machine = self.graph.machine.as_deref().unwrap_or("?");
+            return Some(match &d.sel {
+                Sel::State(s) => format!("Graphs state '{s}' of {machine}"),
+                Sel::Transition(i) => format!("Graphs transition {i} of {machine}"),
+            });
+        }
+        self.graph
+            .rule
+            .as_ref()
+            .filter(|d| d.dirty)
+            .map(|d| format!("Graphs rule '{}'", d.id))
+    }
+
     /// Commits a dirty element / rule draft before the selection moves away from it.
     fn graph_flush(&mut self) {
         if let Some(draft) = self.graph.element.take().filter(|d| d.dirty) {
@@ -2842,6 +2859,20 @@ impl Editor {
     #[cfg(test)]
     pub(super) fn graph_edit_for_test(&mut self, edit: FsmEdit) -> Option<Action> {
         self.graph_edit(edit)
+    }
+
+    /// A typed, not yet committed edit of `state` in the open machine (its form draft).
+    #[cfg(test)]
+    pub(super) fn graph_type_into_state_for_test(&mut self, state: &str, value: Value) {
+        let sel = Sel::State(state.to_owned());
+        let base = self.graph_element(&sel).expect("state of the open machine");
+        self.graph.selected = Some(sel.clone());
+        self.graph.element = Some(Draft {
+            sel,
+            base,
+            value,
+            dirty: true,
+        });
     }
 
     #[cfg(test)]
