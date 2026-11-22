@@ -121,6 +121,37 @@ fn preview_delete_undo_history_and_diff() {
 }
 
 #[test]
+fn undo_is_refused_in_preview_and_proposal_mode() {
+    let mut store = fixture();
+    acl(&mut store, "spawn enemy.basic count=2 id=e/{i}").unwrap();
+    acl(&mut store, "delete e/*").unwrap();
+    let rev = store.current().unwrap().0;
+    let preview = acl_with(&mut store, "undo 2", true).unwrap_err();
+    assert!(
+        preview
+            .to_string()
+            .contains("cannot be previewed or proposed"),
+        "{preview}"
+    );
+    let proposal = store
+        .execute(Request::Acl {
+            text: "undo 2".into(),
+            preview: false,
+            expected_rev: None,
+            propose: true,
+        })
+        .map_err(|e| error_response(&e))
+        .unwrap_err();
+    assert!(
+        proposal
+            .to_string()
+            .contains("cannot be previewed or proposed"),
+        "{proposal}"
+    );
+    assert_eq!(store.current().unwrap().0, rev, "nothing was committed");
+}
+
+#[test]
 fn errors_name_the_line_and_keep_structured_codes() {
     let mut store = fixture();
     let err = acl(&mut store, "# comment\nsel enemy/*").unwrap_err();

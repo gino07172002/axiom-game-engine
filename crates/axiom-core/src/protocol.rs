@@ -205,6 +205,34 @@ pub enum Scope {
     Systems,
 }
 
+/// Every `CoreEdit` kind, as `schema edits` lists it (a contract test compares it with the
+/// variants serde accepts).
+pub const EDIT_KINDS: &[&str] = &[
+    "set_field",
+    "set_where",
+    "put_object",
+    "remove_object",
+    "set",
+    "put_entity",
+    "remove_entity",
+    "reparent",
+    "duplicate_entity",
+    "delete_entity",
+    "move_entity",
+    "set_scene_membership",
+    "set_component",
+    "remove_component",
+    "put_prefab",
+    "set_resource",
+    "remove_resource",
+    "define_component",
+    "define_resource",
+    "put_relation",
+    "remove_relation",
+    "put_scene",
+    "set_systems",
+    "replace_world",
+];
 /// The wire envelope stays typed; unrecognized edit names are routed only to installed adapters.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -362,8 +390,9 @@ impl Edit {
                         "set_where selectors take no cursor or fields",
                     ));
                 }
-                let cap = select.limit.unwrap_or(4096);
-                ensure!((1..=4096).contains(&cap), "set_where limit must be 1..4096");
+                const MAX: usize = crate::local::MAX_SET_WHERE_MATCHES;
+                let cap = select.limit.unwrap_or(MAX);
+                ensure!((1..=MAX).contains(&cap), "set_where limit must be 1..{MAX}");
                 let targets = crate::local::matches(w, r, &select)?;
                 if targets.is_empty() {
                     return Err(crate::Diagnostic::error(
@@ -379,9 +408,28 @@ impl Edit {
                         format!("selector matched {} objects; limit is {cap}", targets.len()),
                     ));
                 }
-                for (target, _) in targets {
-                    target.edit(w, Some(&field), Some(value.clone()))?;
+                // Bound what the expansion writes before copying anything: a small request
+                // must not grow into a huge intermediate world (one value copy per match).
+                let bytes = serde_json::to_vec(&value)?
+                    .len()
+                    .saturating_mul(targets.len());
+                if bytes > crate::local::MAX_SET_WHERE_BYTES {
+                    return Err(crate::Diagnostic::error(
+                        "budget_exceeded",
+                        "/value",
+                        format!(
+                            "set_where would write {bytes} bytes ({} matches x value); the budget is {} bytes: narrow the selector or use a smaller value",
+                            targets.len(),
+                            crate::local::MAX_SET_WHERE_BYTES
+                        ),
+                    ));
                 }
+                // One JSON conversion for the whole selection instead of one per object.
+                let mut doc = json!(&w);
+                for (target, _) in targets {
+                    target.edit_doc(w, &mut doc, Some(&field), Some(value.clone()))?;
+                }
+                crate::local::at("/select", crate::local::Target::decode(w, doc))?;
             }
             Self::Core(CoreEdit::PutObject { target, value }) => {
                 target.edit(w, None, Some(value))?

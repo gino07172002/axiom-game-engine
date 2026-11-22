@@ -29,6 +29,11 @@ fn document(world: &World) -> Result<(Value, UiDocument)> {
             "the world has no ui.document (resource create ui.document first)",
         )
     })?;
+    // The ops edit the authored JSON in place and need the object form (serde would also
+    // decode an array as the struct).
+    if !raw.is_object() {
+        return Err(invalid(DOC_PATH, "ui.document must be a JSON object"));
+    }
     let typed = serde_json::from_value(raw.clone())
         .map_err(|e| invalid(DOC_PATH, format!("ui.document does not parse: {e}")))?;
     Ok((raw.clone(), typed))

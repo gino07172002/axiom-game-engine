@@ -192,6 +192,38 @@ fn cycles_escapes_and_duplicate_object_ids_are_rejected() {
         .contains("duplicate entity"));
 }
 #[test]
+fn package_files_are_read_bounded_and_the_manifest_stays_inside_the_package() {
+    // Oversized manifest / world: refused by the bounded reader (never buffered whole).
+    let f = Fixture::new();
+    f.edit("provider/manifest.json", |v| {
+        v["description"] = json!("x".repeat(70_000))
+    });
+    let error = f.load().unwrap_err().to_string();
+    assert!(error.contains("manifest exceeds 65536 bytes"), "{error}");
+    let f = Fixture::new();
+    f.edit("world.json", |v| v["title"] = json!("x".repeat(4_200_000)));
+    let error = f.load().unwrap_err().to_string();
+    assert!(error.contains("package world exceeds"), "{error}");
+    // A manifest link that resolves outside the package directory is refused.
+    let f = Fixture::new();
+    let outside = f.root.join("outside-manifest.json");
+    std::fs::copy(f.root.join("provider/manifest.json"), &outside).unwrap();
+    std::fs::remove_file(f.root.join("provider/manifest.json")).unwrap();
+    #[cfg(windows)]
+    let linked =
+        std::os::windows::fs::symlink_file(&outside, f.root.join("provider/manifest.json"));
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&outside, f.root.join("provider/manifest.json"));
+    match linked {
+        Ok(()) => {
+            let error = f.load().unwrap_err().to_string();
+            assert!(error.contains("manifest path escapes"), "{error}");
+        }
+        // Windows without symlink privilege (no developer mode): nothing to link.
+        Err(e) => eprintln!("symlink unavailable, escape case not exercised: {e}"),
+    }
+}
+#[test]
 fn resource_merges_are_opt_in_and_reject_ambiguous_map_entries() {
     let f = Fixture::new();
     f.edit("world.json", |v| {

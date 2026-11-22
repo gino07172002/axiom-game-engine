@@ -110,7 +110,9 @@ fn walk(path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Vec<Change>)
                 if aa != bb {
                     out.push(Change {
                         kind: "order".into(),
-                        path: format!("{path}/@order"),
+                        // `#order`, not `/@order`: an object may have the ID `order`
+                        // (same marker as the merge view).
+                        path: format!("{path}#order"),
                         before: Some(preview(&json!(aa))),
                         after: Some(preview(&json!(bb))),
                     });

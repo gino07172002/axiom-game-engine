@@ -114,6 +114,44 @@ fn set_where_updates_every_match_in_one_revision_with_per_object_diff() {
 }
 
 #[test]
+fn set_where_refuses_an_expansion_over_its_byte_budget_before_copying() {
+    // 150 KB request, 120 matches: 18 MB would be written, over the 16 MiB budget.
+    let mut store = fixture();
+    let request = parse_request(
+        &json!({"op":"apply","expected_rev":1,"edits":[
+            {"kind":"set_where","select":{"from":"entities","id_glob":"enemy/*"},"field":"/label","value":"x".repeat(150_000)}]})
+        .to_string(),
+    )
+    .unwrap();
+    let response = axiom_core::error_response(&store.execute(request).unwrap_err());
+    assert_eq!(
+        response["diagnostics"][0]["code"], "budget_exceeded",
+        "{response}"
+    );
+    assert!(response.to_string().contains("120 matches"), "{response}");
+    assert_eq!(store.current().unwrap().0, 1, "nothing was committed");
+}
+
+#[test]
+fn selecting_from_a_malformed_intermediate_resource_is_an_error_not_a_panic() {
+    // The batch first writes widgets without ids, then selects from them: set_where runs on
+    // the not-yet-validated intermediate world and must answer with a diagnostic.
+    let mut store = fixture();
+    let request = parse_request(
+        &json!({"op":"apply","expected_rev":1,"edits":[
+            {"kind":"set_resource","id":"ui.document","value":{"widgets":[{}]}},
+            {"kind":"set_where","select":{"from":"widgets"},"field":"/text","value":"x"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let error = store.execute(request).unwrap_err();
+    let response = axiom_core::error_response(&error);
+    assert_eq!(response["ok"], false, "{response}");
+    assert!(response.to_string().contains("no string id"), "{response}");
+    assert_eq!(store.current().unwrap().0, 1, "nothing was committed");
+}
+
+#[test]
 fn set_where_rejects_empty_and_oversized_matches_without_writing() {
     let mut store = fixture();
     for (select, code) in [

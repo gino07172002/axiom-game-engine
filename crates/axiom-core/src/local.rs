@@ -4,6 +4,12 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+/// Most objects one `set_where` may change (its selector `limit` is 1..this).
+pub const MAX_SET_WHERE_MATCHES: usize = 4096;
+/// Most bytes one `set_where` may write: matches x serialized value, checked before expansion.
+pub const MAX_SET_WHERE_BYTES: usize = 16 * 1024 * 1024;
+/// Largest `limit` of a projected read selection (`select`).
+pub const MAX_SELECT_LIMIT: usize = 128;
 pub fn escape(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
 }
@@ -120,6 +126,25 @@ impl Target {
     }
     pub fn edit(&self, world: &mut World, field: Option<&str>, value: Option<Value>) -> Result<()> {
         let mut doc = json!(world);
+        self.edit_doc(world, &mut doc, field, value)?;
+        at(&self.path(), Self::decode(world, doc))
+    }
+    /// Replaces `world` with the edited document `doc` (one JSON -> IR conversion).
+    pub(crate) fn decode(world: &mut World, doc: Value) -> Result<()> {
+        *world = serde_json::from_value(doc)?;
+        Ok(())
+    }
+    /// `edit` on `doc`, the JSON form of `world`, without converting back: a batch of
+    /// edits on distinct objects (`set_where`) converts the world once instead of once per
+    /// object. `world` is only read for prefab defaults of the edited entity, which edits of
+    /// other objects do not change.
+    pub(crate) fn edit_doc(
+        &self,
+        world: &World,
+        doc: &mut Value,
+        field: Option<&str>,
+        value: Option<Value>,
+    ) -> Result<()> {
         if let (Self::Entity { id }, Some(field)) = (self, field) {
             let parts = pointer(field)
                 .split('/')
@@ -135,7 +160,7 @@ impl Target {
                         .and_then(|p| p.components.get(&component))
                         .cloned();
                     if let Some(inherited) = inherited {
-                        let (path, _) = self.location(&doc)?;
+                        let (path, _) = self.location(doc)?;
                         let components = doc
                             .pointer_mut(&path)
                             .and_then(|v| v.get_mut("components"))
@@ -164,7 +189,7 @@ impl Target {
                     Some(("/resources/behavior.program", "variables", json!({})))
                 }
                 Self::Choice { node, .. } => {
-                    let (p, _) = Self::Node { id: node.clone() }.location(&doc)?;
+                    let (p, _) = Self::Node { id: node.clone() }.location(doc)?;
                     if let Some(parent) = doc.pointer_mut(&p).and_then(Value::as_object_mut) {
                         parent.entry("choices").or_insert_with(|| json!([]));
                     }
@@ -182,7 +207,7 @@ impl Target {
         at(
             &logical,
             (|| -> Result<()> {
-                let (path, array) = self.location(&doc)?;
+                let (path, array) = self.location(doc)?;
                 if let Some(field) = field {
                     let field = pointer(field);
                     ensure!(
@@ -245,7 +270,6 @@ impl Target {
                         }
                     }
                 }
-                *world = serde_json::from_value(doc)?;
                 Ok(())
             })(),
         )
@@ -427,6 +451,16 @@ pub struct Selection {
     pub max_bytes: Option<usize>,
 }
 impl Selection {
+    /// Names its objects by explicit IDs only: evaluated on another revision it can match
+    /// the same objects or fewer, never new ones.
+    pub fn is_id_list(&self) -> bool {
+        !self.ids.is_empty()
+            && self.id_glob.is_none()
+            && self.filter.is_empty()
+            && self.tags.is_empty()
+            && self.components.is_empty()
+            && self.parent.is_none()
+    }
     pub fn all(from: Collection) -> Self {
         Self {
             from,
@@ -478,6 +512,19 @@ fn validate_selection(q: &Selection) -> Result<()> {
     );
     Ok(())
 }
+/// The string `id` of item `i` in a resource list. Selector edits run on the intermediate
+/// world of a batch, before `compile()` has validated it, so a malformed item is an error
+/// (naming the list and position), never a panic.
+fn item_id<'a>(item: &'a Value, list: &str, i: usize) -> Result<&'a str> {
+    item["id"].as_str().ok_or_else(|| {
+        Diagnostic::error(
+            "invalid_resource",
+            format!("{list}/{i}/id"),
+            "item has no string id (fix the resource before selecting from it)",
+        )
+    })
+}
+
 /// All objects matching the selector (ids, id_glob, tags, components, parent, where), sorted
 /// by stable path. Shared by projected reads and selector-based edits.
 pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Value)>> {
@@ -541,17 +588,18 @@ pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Va
                 .pointer("/resources/narrative.graph/nodes")
                 .and_then(Value::as_array)
             {
-                for node in nodes {
-                    let id = node["id"].as_str().unwrap();
+                const NODES: &str = "/resources/narrative.graph/nodes";
+                for (i, node) in nodes.iter().enumerate() {
+                    let id = item_id(node, NODES, i)?;
                     if q.from == Collection::Nodes {
                         add(Target::Node { id: id.into() }, node.clone());
                     } else if q.parent.as_ref().is_none_or(|p| p == id) {
                         if let Some(choices) = node["choices"].as_array() {
-                            for c in choices {
+                            for (j, c) in choices.iter().enumerate() {
                                 add(
                                     Target::Choice {
                                         node: id.into(),
-                                        id: c["id"].as_str().unwrap().into(),
+                                        id: item_id(c, &format!("{NODES}/{i}/choices"), j)?.into(),
                                     },
                                     c.clone(),
                                 );
@@ -568,8 +616,8 @@ pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Va
                 ("/resources/ui.document/widgets", false)
             };
             if let Some(list) = doc.pointer(path).and_then(Value::as_array) {
-                for v in list {
-                    let id = v["id"].as_str().unwrap().to_owned();
+                for (i, v) in list.iter().enumerate() {
+                    let id = item_id(v, path, i)?.to_owned();
                     add(
                         if rule {
                             Target::Rule { id }
@@ -588,7 +636,10 @@ pub fn matches(w: &World, r: &Registry, q: &Selection) -> Result<Vec<(Target, Va
 pub fn select(w: &World, r: &Registry, rev: i64, q: &Selection) -> Result<Value> {
     validate_selection(q)?;
     let limit = q.limit.unwrap_or(16);
-    ensure!((1..=128).contains(&limit), "selection limit must be 1..128");
+    ensure!(
+        (1..=MAX_SELECT_LIMIT).contains(&limit),
+        "selection limit must be 1..{MAX_SELECT_LIMIT}"
+    );
     let max = q.max_bytes.unwrap_or(8192);
     ensure!((256..=65536).contains(&max), "max_bytes must be 256..65536");
     let signature = fingerprint(&(

@@ -36,7 +36,8 @@ $m1Short = Invoke-M1 @('--db',$m1Db,'narrative-check','--budget','1')
 if ($m1Short.complete) { throw 'Exhausted reachability search claimed proof' }
 $m1Scenarios = [ordered]@{}
 foreach ($m1Name in @('rescue','departure','stranded','english')) {
-    $m1Scenarios[$m1Name] = Invoke-M1 @('--db',$m1Db,'scenario',"examples/adv-$m1Name.scenario.json")
+    # Scenario checkpoints stay in memory unless asked; the native load below reads these slots.
+    $m1Scenarios[$m1Name] = Invoke-M1 @('--db',$m1Db,'scenario',"examples/adv-$m1Name.scenario.json",'--save-dir',(Join-Path (Split-Path $m1Db) 'saves'))
 }
 $m1Before = Invoke-M1 @('--db',$m1Db,'query')
 $m1Preview = Invoke-M1 @('--db',$m1Db,'preview','examples/adv-branch-edit.json')

@@ -230,6 +230,24 @@ fn revisions_record_their_author_and_history_shows_it() {
 }
 
 #[test]
+fn diff_order_marker_does_not_collide_with_an_object_called_order() {
+    let before = json!({"entities":[{"id":"x"},{"id":"order"},{"id":"y"}]});
+    let after = json!({"entities":[{"id":"y"},{"id":"x"}]});
+    let changes = axiom_core::diff::changes(&before, &after);
+    let paths: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|c| (c.kind.as_str(), c.path.as_str()))
+        .collect();
+    assert!(
+        paths.contains(&("removed", "/entities/@order")),
+        "{paths:?}"
+    );
+    assert!(paths.contains(&("order", "/entities#order")), "{paths:?}");
+    let unique: std::collections::BTreeSet<_> = paths.iter().map(|p| p.1).collect();
+    assert_eq!(unique.len(), paths.len(), "every change has its own path");
+}
+
+#[test]
 fn databases_from_before_the_author_column_open_and_keep_their_history() {
     let path = std::env::temp_dir().join(format!(
         "axiom-legacy-{}-{}.sqlite",

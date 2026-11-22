@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axiom_core::{
     error_response, parse_request, ContentPackage, CoreEdit, Edit, Request, Scope, Store, World,
 };
@@ -290,12 +290,20 @@ enum Command {
     },
     Import {
         file: PathBuf,
+        /// Refuse the import unless this is still the current revision (someone else may have
+        /// committed since the world was exported).
+        #[arg(long)]
+        expected_rev: Option<i64>,
     },
     Export {
         file: PathBuf,
     },
     Scenario {
         file: PathBuf,
+        /// Also write scenario `save` checkpoints as slot files into this directory. By default
+        /// checkpoints stay in memory so a scenario never touches the game's real saves.
+        #[arg(long)]
+        save_dir: Option<PathBuf>,
     },
     NarrativeCheck {
         #[arg(long, default_value_t = 4096)]
@@ -444,8 +452,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             (1..=60).contains(&timeout_seconds),
             "agent timeout must be 1..60 seconds"
         );
-        let raw = std::fs::read_to_string(suite)?;
-        ensure!(raw.len() <= 1_048_576, "benchmark suite exceeds 1 MiB");
+        let raw = axiom_core::read_bounded_string(&suite, 1_048_576, "benchmark suite")?;
         let agent = agent_executable.map(|executable| axiom_runtime::benchmark::AgentOptions {
             executable,
             args: agent_arg,
@@ -564,11 +571,11 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
     }
     let db = cli.db.unwrap_or_else(|| "data/world.sqlite".into());
     let mut store = if cli.connect.is_none() {
-        let mut store = Store::open_with(
-            &db,
-            registry.authoring.clone(),
-            initial(cli.pack.as_deref(), &registry.authoring)?,
-        )?;
+        // The initial world (default: the content/fps package) is only loaded for a new
+        // database, so `schema`/`query` on an existing one never depend on that package.
+        let mut store = Store::open_lazy(&db, registry.authoring.clone(), || {
+            initial(cli.pack.as_deref(), &registry.authoring)
+        })?;
         // The CLI is how agents author (people use the editor).
         store.set_author(Some(axiom_core::Author::Agent));
         Some(store)
@@ -600,7 +607,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         Command::Benchmark { .. } => unreachable!(),
         Command::Rpc { file } => {
             let raw = if let Some(path) = file {
-                std::fs::read_to_string(path)?
+                axiom_core::read_bounded_string(&path, MAX_REQUEST_BYTES, "request")?
             } else {
                 let mut raw = String::new();
                 std::io::stdin().take(1_048_577).read_to_string(&mut raw)?;
@@ -609,8 +616,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             parse_request(&raw)?
         }
         Command::Select { file } => {
-            let raw = std::fs::read_to_string(file)?;
-            ensure!(raw.len() <= 1_048_576, "selection exceeds budget");
+            let raw = axiom_core::read_bounded_string(&file, MAX_REQUEST_BYTES, "selection")?;
             let value: serde_json::Value = serde_json::from_str(&raw)?;
             if value.get("op").is_some() {
                 let request = parse_request(&raw)?;
@@ -717,7 +723,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             let text = match (eval, file) {
                 (Some(_), Some(_)) => anyhow::bail!("use either -e or a script file"),
                 (Some(inline), None) => inline,
-                (None, Some(path)) => std::fs::read_to_string(path)?,
+                (None, Some(path)) => axiom_core::read_bounded_string(&path, 65_536, "ACL script")?,
                 (None, None) => {
                     let mut raw = String::new();
                     std::io::stdin().take(65_537).read_to_string(&mut raw)?;
@@ -771,8 +777,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         }
         Command::Dispatch { file, expected_rev } => {
             ensure!(cli.connect.is_some(), "command requires --connect");
-            let raw = std::fs::read_to_string(file)?;
-            ensure!(raw.len() <= 1_048_576, "command exceeds budget");
+            let raw = axiom_core::read_bounded_string(&file, MAX_REQUEST_BYTES, "command")?;
             Request::Command {
                 command: serde_json::from_str(&raw)?,
                 expected_rev,
@@ -789,7 +794,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         Command::Apply { ref file } | Command::Preview { ref file } => {
             let preview = matches!(command, Command::Preview { .. });
             let raw = if let Some(p) = file {
-                std::fs::read_to_string(p)?
+                axiom_core::read_bounded_string(p, MAX_REQUEST_BYTES, "request")?
             } else {
                 let mut text = String::new();
                 std::io::stdin().take(1_048_577).read_to_string(&mut text)?;
@@ -821,21 +826,42 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         }
         Command::Verify { ticks, measure } => {
             ensure!(ticks <= 1_000_000, "tick budget exceeds 1000000");
-            let mut result = dispatch(Request::Verify {})?;
+            // Verification and simulation share one snapshot, so the outer `rev` is the
+            // revision that was both validated and simulated.
+            let (mut result, snapshot) =
+                if ticks > 0 && cli.connect.is_none() && cli.request_id.is_none() {
+                    let local = store.as_ref().unwrap();
+                    let (rev, w) = local.current()?;
+                    (local.verify_world(rev, &w)?, Some((rev, w)))
+                } else {
+                    (dispatch(Request::Verify {})?, None)
+                };
             if let Some(runs) = measure {
                 ensure!(
                     cli.connect.is_none(),
                     "load measurement requires a local database"
                 );
-                result["load"] =
+                let load =
                     axiom_runtime::measure::load_profile(store.as_ref().unwrap(), &registry, runs)?;
+                // The profile re-reads the database: a commit in between would make it about
+                // another revision than the one verified.
+                ensure!(
+                    load["rev"] == result["rev"],
+                    "revision changed from {} to {} during verify --measure; run it again",
+                    result["rev"],
+                    load["rev"]
+                );
+                result["load"] = load;
             }
             if ticks > 0 {
                 ensure!(
                     cli.connect.is_none(),
                     "headless simulation requires a local database"
                 );
-                let (rev, w) = store.as_ref().unwrap().current()?;
+                let (rev, w) = match snapshot {
+                    Some(snapshot) => snapshot,
+                    None => store.as_ref().unwrap().current()?,
+                };
                 let mut runtime = axiom_runtime::WorldRuntime::new(w, rev, registry)?;
                 let start = std::time::Instant::now();
                 for _ in 0..ticks {
@@ -847,13 +873,12 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             print(&result, cli.pretty)?;
             return Ok(());
         }
-        Command::Scenario { file } => {
+        Command::Scenario { file, save_dir } => {
             ensure!(
                 cli.connect.is_none(),
                 "scenario uses a local isolated runtime"
             );
-            let raw = std::fs::read_to_string(file)?;
-            ensure!(raw.len() <= 1_048_576, "scenario exceeds 1 MiB");
+            let raw = axiom_core::read_bounded_string(&file, 1_048_576, "scenario")?;
             let scenario = serde_json::from_str(&raw)?;
             let (rev, w) = store.as_ref().unwrap().current()?;
             print(
@@ -862,11 +887,7 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                     rev,
                     registry,
                     scenario,
-                    Some(
-                        &db.parent()
-                            .unwrap_or(std::path::Path::new("data"))
-                            .join("saves"),
-                    ),
+                    save_dir.as_deref(),
                 )?,
                 cli.pretty,
             )?;
@@ -875,10 +896,14 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         Command::Observe => Request::Observe {},
         Command::Undo { rev, expected_rev } => Request::Undo { rev, expected_rev },
         Command::History { limit } => Request::History { limit },
-        Command::Import { file } => Request::Apply {
-            expected_rev: None,
+        Command::Import { file, expected_rev } => Request::Apply {
+            expected_rev,
             edits: vec![Edit::Core(CoreEdit::ReplaceWorld {
-                world: serde_json::from_str(&std::fs::read_to_string(file)?)?,
+                world: serde_json::from_str(&axiom_core::read_bounded_string(
+                    &file,
+                    MAX_IMPORT_BYTES,
+                    "import world",
+                )?)?,
             })],
         },
         Command::Export { file } => {
@@ -886,7 +911,14 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
                 scope: Scope::World,
                 limit: None,
             })?;
-            std::fs::write(&file, serde_json::to_string_pretty(&result["world"])?)?;
+            // A remote error (or any response without a world) must not overwrite the file.
+            if result["ok"] == false {
+                print(&result, cli.pretty)?;
+                bail!("export failed; {} was not written", file.display());
+            }
+            let world: World = serde_json::from_value(result["world"].clone())
+                .context("export response has no valid world; nothing was written")?;
+            std::fs::write(&file, serde_json::to_string_pretty(&world)?)?;
             print(
                 &serde_json::json!({"ok":true,"file":file,"rev":result["rev"]}),
                 cli.pretty,
@@ -894,12 +926,19 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             return Ok(());
         }
         Command::Serve => {
-            for line in std::io::stdin().lock().lines() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let response = parse_request(&line).and_then(&mut dispatch);
+            let mut input = std::io::stdin().lock();
+            let mut line = Vec::new();
+            while let Some(read) = read_bounded_line(&mut input, &mut line, MAX_REQUEST_LINE)? {
+                let response = match read {
+                    Line::TooLong => Err(anyhow::anyhow!(
+                        "request line exceeds {MAX_REQUEST_LINE} bytes; it was discarded"
+                    )),
+                    Line::Complete => match std::str::from_utf8(&line) {
+                        Ok(text) if text.trim().is_empty() => continue,
+                        Ok(text) => parse_request(text).and_then(&mut dispatch),
+                        Err(_) => Err(anyhow::anyhow!("request line is not valid UTF-8")),
+                    },
+                };
                 let result = match response {
                     Ok(v) => v,
                     Err(e) => error_response(&e),
@@ -916,6 +955,59 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
         | Command::AnimationRetarget { .. } => unreachable!(),
     };
     print(&dispatch(request)?, cli.pretty)
+}
+/// Protocol request limit (`parse_request` refuses more); request files are read bounded by it.
+const MAX_REQUEST_BYTES: usize = 1_048_576;
+/// `import FILE` reads at most this much world JSON (the store's total receipt budget).
+const MAX_IMPORT_BYTES: usize = 67_108_864;
+/// Longest `serve` request line read into memory (the protocol limit is 1 MiB; this leaves
+/// room for `\r\n`). Longer lines are skipped without being buffered.
+const MAX_REQUEST_LINE: usize = MAX_REQUEST_BYTES + 2;
+enum Line {
+    Complete,
+    TooLong,
+}
+/// Reads one `\n`-terminated line into `line` (without the terminator), keeping at most `max`
+/// bytes in memory: the rest of an over-long line is read and dropped in bounded chunks.
+/// `None` at end of input.
+fn read_bounded_line(
+    input: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max: usize,
+) -> Result<Option<Line>> {
+    line.clear();
+    let read = input
+        .by_ref()
+        .take(max as u64 + 1)
+        .read_until(b'\n', line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        return Ok(Some(Line::Complete));
+    }
+    if line.len() <= max {
+        // End of input without a newline.
+        return Ok(Some(Line::Complete));
+    }
+    line.clear();
+    loop {
+        let chunk = input.fill_buf()?;
+        if chunk.is_empty() {
+            break;
+        }
+        if let Some(end) = chunk.iter().position(|b| *b == b'\n') {
+            input.consume(end + 1);
+            break;
+        }
+        let n = chunk.len();
+        input.consume(n);
+    }
+    Ok(Some(Line::TooLong))
 }
 fn print(value: &serde_json::Value, pretty: bool) -> Result<()> {
     let text = if pretty {
@@ -936,4 +1028,24 @@ fn print(value: &serde_json::Value, pretty: bool) -> Result<()> {
     }
     println!("{text}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_lines_are_bounded_and_an_overlong_line_does_not_stop_the_stream() {
+        let mut input = std::io::Cursor::new(b"ok\r\n0123456789abcdef\nnext\nlast".to_vec());
+        let mut line = Vec::new();
+        let mut seen = vec![];
+        while let Some(read) = read_bounded_line(&mut input, &mut line, 8).unwrap() {
+            seen.push(match read {
+                Line::Complete => String::from_utf8(line.clone()).unwrap(),
+                Line::TooLong => "<too long>".into(),
+            });
+            assert!(line.capacity() <= 64, "buffer stays bounded");
+        }
+        assert_eq!(seen, ["ok", "<too long>", "next", "last"]);
+    }
 }

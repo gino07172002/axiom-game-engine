@@ -31,13 +31,22 @@ fn invalid(path: impl Into<String>, message: impl Into<String>) -> anyhow::Error
 }
 
 fn resource<'a>(world: &'a World, id: &str, hint: &str) -> Result<&'a Value> {
-    world.resources.get(id).ok_or_else(|| {
+    let raw = world.resources.get(id).ok_or_else(|| {
         Diagnostic::error(
             "not_found",
             format!("/resources/{id}"),
             format!("the world has no {id} ({hint})"),
         )
-    })
+    })?;
+    // The ops below edit the authored JSON in place (`out["field"] = ..`), which needs an
+    // object; an array decoded by serde as a struct would make that indexing panic.
+    if !raw.is_object() {
+        return Err(invalid(
+            format!("/resources/{id}"),
+            format!("{id} must be a JSON object (rewrite it in object form first)"),
+        ));
+    }
+    Ok(raw)
 }
 
 fn put(id: &str, value: Value) -> Vec<Edit> {

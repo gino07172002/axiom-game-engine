@@ -3,6 +3,8 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
+/// Longest proposal note in UTF-8 bytes (ACL `--propose` cuts its script to fit).
+pub const MAX_PROPOSAL_NOTE_BYTES: usize = 2048;
 /// Shared decoded copy of the newest known revision.
 pub type LatestRevision = std::sync::Arc<std::sync::Mutex<Option<(i64, std::sync::Arc<World>)>>>;
 /// Aborts the SQL statement a `Store` connection is running, from any thread.
@@ -49,18 +51,27 @@ impl Store {
         Self::memory_with(Registry::core(), World::empty("world"))
     }
     pub fn open_with(path: impl AsRef<Path>, registry: Registry, initial: World) -> Result<Self> {
+        Self::open_lazy(path, registry, || Ok(initial))
+    }
+    /// `open_with`, but the first revision's world is only built (e.g. a content package
+    /// loaded) when the database is new; an existing database never calls `initial`.
+    pub fn open_lazy(
+        path: impl AsRef<Path>,
+        registry: Registry,
+        initial: impl FnOnce() -> Result<World>,
+    ) -> Result<Self> {
         if let Some(p) = path.as_ref().parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(p)?;
         }
         Self::from_connection(Connection::open(path)?, registry, initial)
     }
     pub fn memory_with(registry: Registry, initial: World) -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?, registry, initial)
+        Self::from_connection(Connection::open_in_memory()?, registry, || Ok(initial))
     }
     fn from_connection(
         mut connection: Connection,
         registry: Registry,
-        initial: World,
+        initial: impl FnOnce() -> Result<World>,
     ) -> Result<Self> {
         connection.busy_timeout(Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS revisions(rev INTEGER PRIMARY KEY AUTOINCREMENT,world TEXT NOT NULL,reason TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')));")?;
@@ -102,6 +113,7 @@ impl Store {
                 )?;
             }
         } else {
+            let initial = initial()?;
             initial.compile(&registry)?;
             tx.execute(
                 "INSERT INTO revisions(world,reason) VALUES (?1,'initialize')",
@@ -183,6 +195,26 @@ impl Store {
         self.remember(rev, world.clone());
         Ok((rev, world))
     }
+    /// `schema`/`discover` topics. `typed:ID` also finds the current world's own
+    /// `component_schemas` / `resource_schemas`; every other topic is registry-only.
+    fn schema_topic(&self, topic: Option<&str>) -> Result<Value> {
+        match topic.and_then(|t| t.strip_prefix("typed:")) {
+            Some(id) => {
+                let (_, world) = self.current_shared()?;
+                crate::typed_schema::typed_schema(&self.registry, &world, id)
+                    .with_context(|| format!("unknown component or resource {id}"))
+            }
+            None => self.registry.schema(topic),
+        }
+    }
+    /// The `verify` response for one snapshot `(rev, w)`. Callers that also simulate or
+    /// measure that world pass the same snapshot, so every part of the answer is about `rev`.
+    pub fn verify_world(&self, rev: i64, w: &World) -> Result<Value> {
+        let c = w.compile(&self.registry)?;
+        Ok(
+            json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":crate::camera::deprecations(w)}),
+        )
+    }
     pub fn current(&self) -> Result<(i64, World)> {
         let (rev, raw): (i64, String) = self.connection.query_row(
             "SELECT rev,world FROM revisions ORDER BY rev DESC LIMIT 1",
@@ -229,9 +261,14 @@ impl Store {
         self.edit(expected_rev, edits, true)
     }
     fn edit(&mut self, expected_rev: Option<i64>, edits: Vec<Edit>, commit: bool) -> Result<Value> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A preview only reads one consistent `(rev, world)` snapshot (WAL): it must not hold
+        // the write lock while it validates, or concurrent commits wait for it.
+        let behavior = if commit {
+            TransactionBehavior::Immediate
+        } else {
+            TransactionBehavior::Deferred
+        };
+        let tx = self.connection.transaction_with_behavior(behavior)?;
         let mut committed = None;
         let result = Self::edit_in(
             &tx,
@@ -340,7 +377,7 @@ impl Store {
                 crate::scene_edit::tree(&world, rev, &query)
             }
             Request::Discover { topic, if_hash } => {
-                let schema = self.registry.schema(topic.as_deref())?;
+                let schema = self.schema_topic(topic.as_deref())?;
                 let hash = crate::local::fingerprint(&schema)?;
                 if if_hash.as_ref() == Some(&hash) {
                     Ok(json!({"ok":true,"hash":hash,"not_modified":true}))
@@ -363,14 +400,23 @@ impl Store {
                 edits,
                 note,
             } => {
-                ensure!(note.len() <= 2048, "proposal note exceeds 2 KiB");
+                ensure!(
+                    note.len() <= MAX_PROPOSAL_NOTE_BYTES,
+                    "proposal note exceeds {MAX_PROPOSAL_NOTE_BYTES} bytes"
+                );
                 let base = match expected_rev {
                     Some(rev) => rev,
                     None => self.revision()?,
                 };
                 let payload = serde_json::to_string(&edits)?;
                 let preview = self.edit(Some(base), edits, false)?;
-                let pending: i64 = self.connection.query_row(
+                let diff = serde_json::to_string(&preview["diff"])?;
+                // Count and insert in one short write transaction, so concurrent proposers
+                // cannot both see 255 pending and overfill the queue.
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let pending: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM proposals WHERE status='pending'",
                     [],
                     |r| r.get(0),
@@ -379,17 +425,14 @@ impl Store {
                     pending < 256,
                     "proposal queue is full; resolve pending proposals first"
                 );
-                self.connection.execute(
+                tx.execute(
                     "INSERT INTO proposals(note,base_rev,edits,preview) VALUES (?1,?2,?3,?4)",
-                    params![
-                        note,
-                        base,
-                        payload,
-                        serde_json::to_string(&preview["diff"])?
-                    ],
+                    params![note, base, payload, diff],
                 )?;
+                let id = tx.last_insert_rowid();
+                tx.commit()?;
                 Ok(
-                    json!({"ok":true,"proposal":self.connection.last_insert_rowid(),"status":"pending","base_rev":base,"diff":preview["diff"]}),
+                    json!({"ok":true,"proposal":id,"status":"pending","base_rev":base,"diff":preview["diff"]}),
                 )
             }
             Request::Proposals { status, limit } => {
@@ -469,6 +512,23 @@ impl Store {
                     base
                 };
                 let mut edits: Vec<Edit> = serde_json::from_str(&edits)?;
+                // A selector re-evaluated on a newer revision can change objects the reviewed
+                // preview never showed (e.g. entities tagged after the proposal was made).
+                // Explicit ID lists are safe: they can only match the reviewed objects.
+                if rebase
+                    && expected != base
+                    && edits.iter().any(|e| {
+                        matches!(e, Edit::Core(CoreEdit::SetWhere { select, .. }) if !select.is_id_list())
+                    })
+                {
+                    return Err(Diagnostic::error(
+                        "stale_selector",
+                        "/rebase",
+                        format!(
+                            "proposal {id} selects objects (set_where) on rev {base}, the current revision is {expected}; a rebase would re-select on the new revision. Review `conflicts {id}` and approve with keep (resolve_proposal keep + expected_rev {expected}), or propose again on rev {expected}"
+                        ),
+                    ));
+                }
                 if let Some(keep) = &keep {
                     let raw: String =
                         tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
@@ -555,7 +615,7 @@ impl Store {
             | Request::ReloadAssets { .. } => {
                 anyhow::bail!("runtime request requires a live engine connection")
             }
-            Request::Schema { topic } => self.registry.schema(topic.as_deref()),
+            Request::Schema { topic } => self.schema_topic(topic.as_deref()),
             Request::Apply {
                 expected_rev,
                 edits,
@@ -604,10 +664,7 @@ impl Store {
             }
             Request::Verify {} => {
                 let (rev, w) = self.current()?;
-                let c = w.compile(&self.registry)?;
-                Ok(
-                    json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":crate::camera::deprecations(&w)}),
-                )
+                self.verify_world(rev, &w)
             }
             Request::Observe {} => {
                 let (rev, w) = self.current()?;

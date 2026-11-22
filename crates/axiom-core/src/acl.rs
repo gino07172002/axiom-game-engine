@@ -2336,6 +2336,14 @@ pub fn run(
             ));
         }
         let (line, stmt) = statements.pop().unwrap();
+        // `undo` commits a restoration revision: it is not a read, so it must not slip past a
+        // dry run or the human review of a proposal.
+        if matches!(stmt, Statement::Undo(_)) && (preview || propose) {
+            return Err(diag(
+                line,
+                "undo commits a restoration revision and cannot be previewed or proposed; run it without --preview/--propose (inspect first with `diff A B`)",
+            ));
+        }
         return read(store, stmt, expected_rev).map_err(|e| {
             if e.downcast_ref::<Diagnostic>().is_some() {
                 e
@@ -2557,7 +2565,13 @@ pub fn run(
         edits.len()
     );
     if propose {
-        let note: String = text.trim().chars().take(2048).collect();
+        // The store limits notes in UTF-8 bytes: cut on a character boundary within it.
+        let note = text.trim();
+        let mut end = note.len().min(crate::store::MAX_PROPOSAL_NOTE_BYTES);
+        while !note.is_char_boundary(end) {
+            end -= 1;
+        }
+        let note = note[..end].to_owned();
         let result = store
             .execute(Request::Propose {
                 expected_rev: Some(rev),
