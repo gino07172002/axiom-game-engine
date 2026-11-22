@@ -239,6 +239,23 @@ pub struct Ribbon {
     pub color: [f32; 4],
     /// Entity the emitter is attached to (editor-view hiding), if any.
     pub attachment: Option<String>,
+    /// The emitter's curves, applied along the trail (head = age 0, tail = age 1) in place of
+    /// the constant `width` / `color`; without them the ribbon keeps its constant look.
+    pub size_curve: Option<Vec<SizeKey>>,
+    pub color_gradient: Option<Vec<ColorStop>>,
+}
+impl Ribbon {
+    /// Width and colour at trail point `index` of `len` (before the tail alpha fade).
+    pub fn style_at(&self, index: usize, len: usize) -> (f32, [f32; 4]) {
+        let age = 1.0 - index as f32 / len.saturating_sub(1).max(1) as f32;
+        let width = self.size_curve.as_ref().map_or(self.width, |keys| {
+            piecewise(keys.iter().map(|k| (k.t, [k.size])), age)[0]
+        });
+        let color = self.color_gradient.as_ref().map_or(self.color, |stops| {
+            piecewise(stops.iter().map(|s| (s.t, s.color)), age)
+        });
+        (width, color)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Light {
@@ -293,7 +310,37 @@ pub fn color_at(e: &Emitter, t: f32) -> [f32; 4] {
             .to_array(),
     }
 }
+/// The set pixels `(x, y)` of a 1-bit `texture_mask`, row by row (the order `evaluate`
+/// indexes). Built once per emitter (`VfxSystem`), not per particle.
+pub fn mask_pixels(mask: &[String]) -> Vec<(u16, u16)> {
+    mask.iter()
+        .enumerate()
+        .flat_map(|(y, row)| {
+            row.bytes()
+                .enumerate()
+                .filter(|&(_, b)| b == b'1')
+                .map(move |(x, _)| (x as u16, y as u16))
+        })
+        .collect()
+}
+/// One particle of `e` (see `evaluate_masked`); builds the mask table on every call, so
+/// loops over many particles use `evaluate_masked` with `mask_pixels` instead.
 pub fn evaluate(e: &Emitter, index: u32, time: f32, origin: Vec3) -> Particle {
+    let pixels = e
+        .texture_mask
+        .as_deref()
+        .map(mask_pixels)
+        .unwrap_or_default();
+    evaluate_masked(e, &pixels, index, time, origin)
+}
+/// One particle of `e`; `pixels` = `mask_pixels` of its `texture_mask` (empty without one).
+pub fn evaluate_masked(
+    e: &Emitter,
+    pixels: &[(u16, u16)],
+    index: u32,
+    time: f32,
+    origin: Vec3,
+) -> Particle {
     let r = |s| random(e.seed, index, s);
     let age = (time / e.lifetime + r(0)).fract() * e.lifetime;
     let t = age / e.lifetime;
@@ -308,17 +355,9 @@ pub fn evaluate(e: &Emitter, index: u32, time: f32, origin: Vec3) -> Particle {
         spawn = Vec3::new((r(1) - 0.5) * 3.5, 3.5, (r(2) - 0.5) * 3.5);
         velocity.y = -velocity.y.abs();
     }
-    if let Some(mask) = &e.texture_mask {
-        let pixels = mask
-            .iter()
-            .enumerate()
-            .flat_map(|(y, row)| {
-                row.bytes()
-                    .enumerate()
-                    .filter_map(move |(x, b)| (b == b'1').then_some((x, y)))
-            })
-            .collect::<Vec<_>>();
+    if let Some(mask) = e.texture_mask.as_ref().filter(|_| !pixels.is_empty()) {
         let (x, y) = pixels[index as usize % pixels.len()];
+        let (x, y) = (usize::from(x), usize::from(y));
         spawn = Vec3::new(
             (x as f32 / (mask[0].len().max(2) - 1) as f32 - 0.5) * 3.0,
             (1.0 - y as f32 / (mask.len().max(2) - 1) as f32) * 2.5,
@@ -378,13 +417,18 @@ struct Running {
     time: f32,
     paused: bool,
     trail: VecDeque<Vec3>,
+    /// `mask_pixels` of the emitter's `texture_mask` (empty without one).
+    mask: Vec<(u16, u16)>,
 }
 pub struct VfxSystem {
     pub library: Library,
     running: BTreeMap<String, Running>,
 }
 impl VfxSystem {
-    fn origin(&self, state: &RuntimeState, e: &Emitter) -> Vec3 {
+    /// World origin of `e`. `matrices` is the caller's lazily built world matrix table, shared
+    /// by every emitter of one `step` / `extract` / command (built at most once, only when an
+    /// emitter is attached to an entity without a live bone socket).
+    fn origin(state: &RuntimeState, e: &Emitter, matrices: &mut Option<Vec<glam::Mat4>>) -> Vec3 {
         if let Some(id) = &e.attachment {
             if let Some(bone) = &e.bone {
                 if let Some(m) = state
@@ -396,7 +440,8 @@ impl VfxSystem {
                 }
             }
             if let Some(&slot) = state.compiled.indices.get(id) {
-                return state.matrices()[slot].transform_point3(Vec3::from_array(e.origin));
+                let matrices = matrices.get_or_insert_with(|| state.matrices());
+                return matrices[slot].transform_point3(Vec3::from_array(e.origin));
             }
         }
         Vec3::from_array(e.origin)
@@ -407,14 +452,16 @@ impl RuntimeSystem for VfxSystem {
         self
     }
     fn step(&mut self, state: &mut RuntimeState, _input: &ActionMap) {
+        let mut matrices = None;
         for (id, e) in &self.library.emitters {
-            let origin = self.origin(state, e);
             let r = self.running.get_mut(id).unwrap();
             if r.paused {
                 continue;
             }
             r.time += FIXED_DT;
+            // Only a running ribbon records its origin.
             if e.renderer == "ribbon" {
+                let origin = Self::origin(state, e, &mut matrices);
                 r.trail.push_back(origin);
                 if r.trail.len() > 96 {
                     r.trail.pop_front();
@@ -450,9 +497,9 @@ impl RuntimeSystem for VfxSystem {
             let time = r.time;
             let paused = r.paused;
             let trail = r.trail.len();
-            let origin = self.origin(state, e);
+            let origin = Self::origin(state, e, &mut None);
             let sample = (0..e.count.min(8))
-                .map(|i| evaluate(e, i, time, origin).position_size)
+                .map(|i| evaluate_masked(e, &r.mask, i, time, origin).position_size)
                 .collect::<Vec<_>>();
             Ok(
                 json!({"id":id,"backend":e.backend,"renderer":e.renderer,"time":time,"paused":paused,"count":e.count,"trail_points":trail,"cpu_reference_sample":sample,"gpu_note":if e.backend=="gpu"{Some("reference values; GPU execution is checked separately by readback")}else{None}}),
@@ -481,28 +528,31 @@ impl RuntimeSystem for VfxSystem {
         Ok(())
     }
     fn extract(&self, state: &RuntimeState, frame: &mut RenderFrame) {
+        let mut matrices = None;
         for (id, e) in &self.library.emitters {
             let r = &self.running[id];
-            let origin = self.origin(state, e);
             if e.renderer == "ribbon" {
                 frame.vfx.ribbons.push(Ribbon {
                     points: r.trail.iter().copied().collect(),
                     width: e.size,
                     color: e.color,
                     attachment: e.attachment.clone(),
+                    size_curve: e.size_curve.clone(),
+                    color_gradient: e.color_gradient.clone(),
                 });
                 continue;
             }
-            let particles = if e.backend == "cpu" {
+            let origin = Self::origin(state, e, &mut matrices);
+            let particles: Vec<Particle> = if e.backend == "cpu" {
                 (0..e.count)
-                    .map(|i| evaluate(e, i, r.time, origin))
+                    .map(|i| evaluate_masked(e, &r.mask, i, r.time, origin))
                     .collect()
             } else {
                 vec![]
             };
             if e.renderer == "light" {
-                for i in 0..e.count.min(32) {
-                    let p = evaluate(e, i, r.time, origin);
+                // Light emitters are CPU only (`Emitter::validate`): the particles above.
+                for p in particles.iter().take(32) {
                     frame.lights.push(Light {
                         position: Vec3::new(
                             p.position_size[0],
@@ -534,7 +584,7 @@ impl RuntimeSystem for VfxSystem {
 }
 pub fn register(r: &mut RuntimeRegistry) {
     r.authoring.capabilities.insert("vfx".into(), 1);
-    r.authoring.resource("vfx.library","vfx",json!({"emitters":"stable ID -> seeded emitter: backend cpu|gpu, renderer sprite|mesh|ribbon|light, count, lifetime, origin, velocity, acceleration, color/end_color, size/end_size, optional size_curve [{t,size}] and color_gradient [{t,color}] (2..8 keys, t 0..1 increasing; replace the two-point size/colour for particles), field fountain|smoke|snow|texture, optional floor/bounce, attachment/bone and 1-bit texture_mask"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
+    r.authoring.resource("vfx.library","vfx",json!({"emitters":"stable ID -> seeded emitter: backend cpu|gpu, renderer sprite|mesh|ribbon|light, count, lifetime, origin, velocity, acceleration, color/end_color, size/end_size, optional size_curve [{t,size}] and color_gradient [{t,color}] (2..8 keys, t 0..1 increasing; replace the two-point size/colour for particles; on a ribbon they set width/colour along the trail, head t=0 to tail t=1, else a ribbon uses size and color only), field fountain|smoke|snow|texture, optional floor/bounce, attachment/bone and 1-bit texture_mask"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
     r.authoring.systems.insert(
         "vfx.simulate".into(),
         SystemDescriptor {
@@ -595,10 +645,107 @@ pub fn register(r: &mut RuntimeRegistry) {
                     time: 0.0,
                     paused: false,
                     trail: VecDeque::new(),
+                    mask: e
+                        .texture_mask
+                        .as_deref()
+                        .map(mask_pixels)
+                        .unwrap_or_default(),
                 },
             );
         }
         Ok(Box::new(VfxSystem { library, running }))
     });
     r.authoring.topics.insert("vfx".into(),json!({"library":"vfx.library","actions":["vfx.restart","vfx.pause","vfx.inspect"],"observe":"project /vfx/emitters/<stable-id>","gpu":"analytic trajectories evaluated in a compute pass; validation readback compares CPU reference","checkpoints":"explicitly unsupported for active VFX state"}));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The per-emitter mask table gives bit-identical particles to the old per-particle scan
+    /// (same row-major order), so seeded results do not change.
+    #[test]
+    fn a_prebuilt_mask_table_matches_the_per_particle_scan() {
+        let mask: Vec<String> = (0..64)
+            .map(|y| {
+                (0..64)
+                    .map(|x| if (x * 7 + y * 3) % 5 == 0 { '1' } else { '0' })
+                    .collect()
+            })
+            .collect();
+        let e = Emitter {
+            count: 2048,
+            field: "texture".into(),
+            texture_mask: Some(mask.clone()),
+            ..Emitter::default()
+        };
+        e.validate().unwrap();
+        // The scan `evaluate` used to run for every particle.
+        let reference: Vec<(usize, usize)> = mask
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.bytes()
+                    .enumerate()
+                    .filter_map(move |(x, b)| (b == b'1').then_some((x, y)))
+            })
+            .collect();
+        let table = mask_pixels(&mask);
+        assert_eq!(
+            table
+                .iter()
+                .map(|&(x, y)| (usize::from(x), usize::from(y)))
+                .collect::<Vec<_>>(),
+            reference
+        );
+        let origin = Vec3::new(1.0, 2.0, 3.0);
+        for i in [0, 1, 17, 818, 2047] {
+            let a = evaluate(&e, i, 1.25, origin);
+            let b = evaluate_masked(&e, &table, i, 1.25, origin);
+            assert_eq!(
+                bytemuck::bytes_of(&a),
+                bytemuck::bytes_of(&b),
+                "particle {i}"
+            );
+        }
+    }
+
+    /// Without curves a ribbon keeps its constant width / colour; with them the trail runs
+    /// from age 0 at the head (newest point) to 1 at the tail.
+    #[test]
+    fn ribbon_curves_style_the_trail_and_are_optional() {
+        let mut ribbon = Ribbon {
+            points: vec![Vec3::ZERO; 5],
+            width: 0.2,
+            color: [1.0, 0.5, 0.25, 1.0],
+            attachment: None,
+            size_curve: None,
+            color_gradient: None,
+        };
+        for i in 0..5 {
+            assert_eq!(ribbon.style_at(i, 5), (0.2, [1.0, 0.5, 0.25, 1.0]));
+        }
+        ribbon.size_curve = Some(vec![
+            SizeKey { t: 0.0, size: 0.4 },
+            SizeKey { t: 1.0, size: 0.0 },
+        ]);
+        ribbon.color_gradient = Some(vec![
+            ColorStop {
+                t: 0.0,
+                color: [1.0; 4],
+            },
+            ColorStop {
+                t: 1.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ]);
+        assert_eq!(ribbon.style_at(4, 5), (0.4, [1.0; 4]));
+        assert_eq!(ribbon.style_at(0, 5), (0.0, [0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(ribbon.style_at(2, 5).0, 0.2);
+        assert_eq!(
+            ribbon.style_at(0, 1).0,
+            0.0,
+            "one point: no division by zero"
+        );
+    }
 }

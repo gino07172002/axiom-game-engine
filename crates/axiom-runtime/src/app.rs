@@ -99,9 +99,8 @@ struct App {
     accumulator: f32,
     poll_elapsed: f32,
     frames: u32,
-    /// On-demand capture requested over the bridge; written on the next rendered frame.
-    pending_capture: Option<PathBuf>,
-    /// Loopback `screenshot` op: one capture at a time, replied when written.
+    /// Loopback `screenshot` op and `editor_view {capture}`: one capture at a time, read back
+    /// asynchronously and written by a background job.
     shots: crate::screenshot::Loopback,
     /// Who the screenshot read-back in flight (or about to be recorded) belongs to.
     grab_owner: Option<GrabOwner>,
@@ -318,10 +317,13 @@ impl FramePhases {
 /// when the grab was asked for).
 enum GrabOwner {
     Loopback {
+        id: u64,
         region: Option<egui::Rect>,
         ppp: f32,
     },
-    Editor,
+    Editor {
+        id: u64,
+    },
 }
 
 struct PendingWrite {
@@ -796,7 +798,6 @@ impl App {
             accumulator: 0.0,
             poll_elapsed: 0.0,
             frames: 0,
-            pending_capture: None,
             shots: Default::default(),
             grab_owner: None,
             observation,
@@ -1691,6 +1692,9 @@ impl App {
             if let Some(shadows) = renderer.local_shadows_observation() {
                 observation.metrics.insert("local_shadows".into(), shadows);
             }
+            if let Some(lighting) = renderer.lighting_observation() {
+                observation.metrics.insert("lighting".into(), lighting);
+            }
             if let Some(post) = renderer.post_observation() {
                 observation.metrics.insert("render_post".into(), post);
             }
@@ -1814,10 +1818,19 @@ impl App {
                 self.editor_action(action)?;
             }
             if let Some(path) = &path {
-                self.pending_capture = Some(path.clone());
+                // The same asynchronous read-back and PNG job as the loopback `screenshot` op
+                // (the main thread never waits for the GPU or the encoder). A NAME under
+                // artifacts/captures is replaced, as before.
+                self.shots.enqueue(crate::screenshot::Request {
+                    path: path.clone(),
+                    view: false,
+                    asked: Instant::now(),
+                    reply: None,
+                    overwrite: true,
+                })?;
             }
             return Ok(
-                serde_json::json!({"ok":true,"editor":self.editor.as_ref().unwrap().observation(),"capture":path,"capture_ready":"written on the next rendered frame"}),
+                serde_json::json!({"ok":true,"editor":self.editor.as_ref().unwrap().observation(),"capture":path,"capture_ready":"read back from the next rendered frame, written by a background job"}),
             );
         }
         if let Request::ReloadAssets { watch, cancel } = request {
@@ -2726,6 +2739,7 @@ impl App {
                     view,
                     asked: Instant::now(),
                     reply: None,
+                    overwrite: false,
                 })
             })();
             match queued {
@@ -3214,11 +3228,11 @@ impl App {
         }
         self.frames += 1;
         let final_frame = self.options.smoke_frames.is_some_and(|n| self.frames >= n);
-        let pending = self.pending_capture.take();
+        // Only the final `--smoke-frames` frame reads back synchronously (one-shot runner).
         let capture_path = if final_frame {
             self.options.screenshot.as_deref()
         } else {
-            pending.as_deref()
+            None
         };
         phases.mark("actions_history_audio");
         let frame = if self.chrome() {
@@ -3251,17 +3265,17 @@ impl App {
                 take_started.elapsed().as_secs_f64() * 1000.0
             );
             match self.grab_owner.take() {
-                Some(GrabOwner::Loopback { region, ppp }) => {
+                Some(GrabOwner::Loopback { id, region, ppp }) => {
                     let crop = grabbed
                         .as_ref()
                         .ok()
                         .zip(region)
                         .map(|(f, r)| crate::screenshot::physical(r, ppp, f.width, f.height));
-                    self.shots.grabbed(grabbed, crop);
+                    self.shots.grabbed(id, grabbed, crop);
                 }
-                Some(GrabOwner::Editor) => {
+                Some(GrabOwner::Editor { id }) => {
                     if let Some(editor) = &mut self.editor {
-                        editor.grabbed(grabbed, ppp);
+                        editor.grabbed(id, grabbed, ppp);
                     }
                 }
                 None => {}
@@ -3270,8 +3284,9 @@ impl App {
         let in_flight = self.renderer.as_ref().unwrap().grab_in_flight();
         if self.grab_owner.is_none() && !in_flight {
             // The crop region of a loopback `view` capture is taken now, at request time.
-            self.grab_owner = if self.shots.wants_grab() {
+            self.grab_owner = if let Some(id) = self.shots.pending_id() {
                 Some(GrabOwner::Loopback {
+                    id,
                     region: self
                         .editor
                         .as_ref()
@@ -3279,10 +3294,11 @@ impl App {
                         .and_then(|e| e.capture_region()),
                     ppp,
                 })
-            } else if self.editor.as_ref().is_some_and(|e| e.wants_grab()) {
-                Some(GrabOwner::Editor)
             } else {
-                None
+                self.editor
+                    .as_ref()
+                    .and_then(|e| e.pending_grab())
+                    .map(|id| GrabOwner::Editor { id })
             };
             self.renderer.as_mut().unwrap().grab = self.grab_owner.is_some();
         }
@@ -3305,10 +3321,6 @@ impl App {
         }
         if !rendered {
             self.frames -= 1;
-            // Keep an on-demand capture for the next frame that actually renders.
-            if !final_frame {
-                self.pending_capture = pending;
-            }
             return Ok(());
         }
         phases.mark("render_present");

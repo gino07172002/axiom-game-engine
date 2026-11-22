@@ -100,13 +100,13 @@ try {
     $rejected=Send-Effects $bad
     if($rejected.ok -or -not $rejected.diagnostics){throw 'Invalid particle budget did not produce diagnostics'}
     $vertexBad='fn vertex_offset(p:vec3<f32>,n:vec3<f32>,uv:vec2<f32>,t:f32,v:vec4<f32>)->vec3<f32>{return p+dpdx(p);} fn surface(s:SurfaceInput)->vec4<f32>{return s.base_color;}'
+    # A vertex hook using a fragment-only builtin used to pass the stand-alone CPU probe and fail at
+    # GPU pipeline creation. CPU validation now checks the assembled cube/mesh modules (Codex R3 F2),
+    # so it is rejected before commit and the usable revision stays active.
     $failure=Send-Effects @{op='apply';expected_rev=$applied.rev;edits=@(@{kind='set_field';target=@{kind='resource';id='render.shaders'};field='/shaders/vertex/wgsl';value=$vertexBad})}
-    if(-not $failure.ok){throw 'Vertex pipeline failure fixture did not pass the CPU signature check'}
-    $retained=Wait-Effects {param($o)$o.requested_rev -eq $failure.rev -and $o.activation -eq 'activation_failed'}
-    if($retained.rev -ne $applied.rev){throw 'GPU vertex stage failure replaced the usable revision'}
-    $repair=Send-Effects @{op='undo';rev=$applied.rev}
-    if(-not $repair.ok){throw 'Vertex shader restoration failed'}
-    $restored=Wait-Effects {param($o)$o.rev -eq $repair.rev -and $o.activation -eq 'applied'}
+    if($failure.ok -or $failure.diagnostics[0].code -ne 'invalid_shader' -or $failure.diagnostics[0].path -ne '/resources/render.shaders/shaders/vertex/wgsl'){throw 'Vertex-stage-only WGSL was not rejected before commit'}
+    $retained=Wait-Effects {param($o)$o.rev -eq $applied.rev -and $o.activation -eq 'applied'}
+    $restored=$retained
     $delta=Send-Effects @{op='observe_delta';fields=@('/showcase','/shader','/activation','/rev');cursor=$firstDelta.cursor}
     if(-not $delta.ok){throw 'Projected effects observation failed'}
     if(-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0){throw 'Effects native helper timed out or failed'}

@@ -786,3 +786,62 @@ fn mouse_drags_wheel_and_map_clicks_drive_the_camera_through_commands() {
         "drag should orbit: {before:?} -> {after:?}"
     );
 }
+
+/// `geometry.prepare` owns its entity's mesh. The rule used to live only in the system
+/// factory: `preview` / `apply` accepted a procedural geometry next to a `render.mesh`, and
+/// only the runtime activation failed (with no entity path). Authoring now rejects it at
+/// the component's path, also through a prefab.
+#[test]
+fn procedural_geometry_ownership_is_checked_at_authoring_time() {
+    let registry = installed_registry();
+    let base = world();
+    assert!(base.systems.iter().any(|s| s == "geometry.prepare"));
+    base.compile(&registry.authoring).unwrap();
+    let slot = base
+        .entities
+        .iter()
+        .position(|e| e.components.contains_key("render.geometry"))
+        .unwrap();
+    let mesh = base
+        .entities
+        .iter()
+        .find_map(|e| e.components.get("render.mesh").cloned())
+        .unwrap();
+    let id = axiom_core::local::escape(&base.entities[slot].id);
+    let expect = |world: &World, problem: &str| {
+        let error = world.compile(&registry.authoring).unwrap_err();
+        let value = axiom_core::error_response(&error);
+        assert_eq!(
+            value["diagnostics"][0]["code"], "geometry_ownership",
+            "{value}"
+        );
+        assert_eq!(
+            value["diagnostics"][0]["path"],
+            format!("/entities/@{id}/components/render.geometry"),
+            "{value}"
+        );
+        assert!(
+            value["error"].as_str().unwrap().contains(problem),
+            "{value}"
+        );
+    };
+    let mut both = base.clone();
+    both.entities[slot]
+        .components
+        .insert("render.mesh".into(), mesh.clone());
+    expect(&both, "remove render.mesh");
+    // The same conflict coming from a prefab.
+    let mut prefabbed = base.clone();
+    let mut prefab = axiom_core::Prefab {
+        components: Default::default(),
+    };
+    prefab.components.insert("render.mesh".into(), mesh);
+    prefabbed.prefabs.insert("meshy".into(), prefab);
+    prefabbed.entities[slot].prefab = Some("meshy".into());
+    expect(&prefabbed, "remove render.mesh");
+    let mut no_transform = base;
+    no_transform.entities[slot]
+        .components
+        .remove("core.transform");
+    expect(&no_transform, "requires core.transform");
+}

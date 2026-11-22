@@ -53,11 +53,11 @@ try {
     $applied = Set-ShaderSource apply $initial.rev $red
     if (-not $applied.ok) { throw ($applied | ConvertTo-Json -Depth 20) }
     $active = Wait-Shader { param($o) $o.rev -eq $applied.rev -and $o.activation -eq 'applied' }
-    # This function compiles alone, then collides with the GPU wrapper's vertex entry point.
+    # This function compiles alone but collides with the GPU wrapper's vertex entry point. CPU
+    # validation checks the assembled cube/mesh modules (Codex R3 F2): rejected before commit.
     $failure = Set-ShaderSource apply $active.rev ($red + "`nfn vs_main() {}")
-    if (-not $failure.ok) { throw 'Expected the isolated hook to pass CPU validation' }
-    $retained = Wait-Shader { param($o) $o.requested_rev -eq $failure.rev -and $o.activation -eq 'activation_failed' }
-    if ($retained.rev -ne $active.rev -or $retained.activation_error.diagnostics[0].code -ne 'shader_pipeline') { throw 'Failed pipeline replaced the active revision' }
+    if ($failure.ok -or $failure.diagnostics[0].code -ne 'invalid_shader' -or $failure.diagnostics[0].path -ne '/resources/render.shaders/shaders/scan/wgsl') { throw 'A hook colliding with the engine template was not rejected before commit' }
+    $retained = Wait-Shader { param($o) $o.rev -eq $active.rev -and $o.activation -eq 'applied' }
     if (-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0) { throw 'Shader preview stopped before capture' }
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id; [void]$process.WaitForExit(5000) }
@@ -101,7 +101,7 @@ $rtsDb = "data/shader-rts-$stamp.sqlite"
 $rts = Invoke-ShaderAxiom @('--db',$rtsDb,'--pack','content/rts-bench','scenario','examples/rts-functional.scenario.json')
 $rtsGpu = Invoke-ShaderAxiom @('--db',$rtsDb,'play','--start','--port','0','--smoke-frames','8','--screenshot',"$reportDir/rts.png")
 if ($rts.observation.rts.summary.units_total -ne 66 -or $rtsGpu.observation.rts.summary.units_total -ne 64) { throw 'RTS regression' }
-$undo = Invoke-ShaderAxiom @('--db',$db,'undo',"$($active.rev)",'--expected-rev',"$($failure.rev)")
+$undo = Invoke-ShaderAxiom @('--db',$db,'undo',"$($initial.rev)",'--expected-rev',"$($active.rev)")
 if (-not $undo.ok -or (Get-FileHash -LiteralPath $exe).Hash -ne $hash) { throw 'Shader undo or executable consistency failed' }
 [ordered]@{
     ok=$true;exe_sha256=$hash;gpu=$baseline.gpu;earlier_regressions=(-not $SkipEarlier);

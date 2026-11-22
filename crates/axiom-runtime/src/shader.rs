@@ -236,7 +236,7 @@ pub fn validate_hook(id: &str, hook: &str) -> Result<()> {
             .unwrap_or_default();
         error(format!("{location}{}", e.as_inner()))
     })?;
-    Ok(())
+    validate_modules(&path, hook)
 }
 
 impl Prepared {
@@ -442,17 +442,184 @@ fn has_vertex_hook(hook: &str) -> bool {
             .any(|(_, f)| f.name.as_deref() == Some("vertex_offset"))
     })
 }
-pub(crate) fn fragment(template: &str, hook: &str, wrapper: &str) -> String {
+/// The world-position lines of `scene.wgsl` (cube `vs_main`) and `mesh.wgsl` (`vertex_main`)
+/// that a material module routes through `vertex_offset`, and the ABI's local-light stub.
+/// Each must occur exactly once in its template (`inject_once`): a reformatted line would
+/// otherwise compile unchanged and silently drop the vertex hook.
+const CUBE_WORLD: &str = "let world = model * vec4<f32>(v.position, 1.0);";
+const CUBE_WORLD_HOOKED: &str = "let world = model * vec4<f32>(vertex_offset(v.position,v.normal,vec2<f32>(0.0),g.eye_time.w,material_surface.params), 1.0);";
+const MESH_WORLD: &str = "let world=d.model*vec4<f32>(position,1.);";
+const MESH_WORLD_HOOKED: &str = "let world=d.model*vec4<f32>(vertex_offset(position,normal,uv,g.eye_time.w,material_surface.params),1.);";
+const ABI_LIGHT_STUB: &str = "return vec3<f32>(0.0);";
+const ABI_LIGHT: &str = "return axiom_lighting(p,n);";
+const MATERIAL_WGSL: &str = include_str!("surface_material.wgsl");
+
+/// `text` with its single `from` replaced. The inputs are compile-time templates, so a miss is
+/// an engine bug caught by every test that assembles a material (`material_modules_*`).
+fn inject_once(text: &str, from: &str, to: &str) -> String {
+    let hits = text.matches(from).count();
+    assert_eq!(
+        hits, 1,
+        "material template must contain `{from}` exactly once"
+    );
+    text.replacen(from, to, 1)
+}
+
+/// The material module source and the 1-based line where `hook` starts in it.
+fn assemble(template: &str, hook: &str, wrapper: &str) -> (String, u32) {
     let vertex = if has_vertex_hook(hook) {
         ""
     } else {
         VERTEX_DEFAULT
     };
     let template = if template.contains("@vertex fn vs_main") {
-        template.replace("let world = model * vec4<f32>(v.position, 1.0);", "let world = model * vec4<f32>(vertex_offset(v.position,v.normal,vec2<f32>(0.0),g.eye_time.w,material_surface.params), 1.0);")
+        inject_once(template, CUBE_WORLD, CUBE_WORLD_HOOKED)
     } else {
-        template.replace("let world=d.model*vec4<f32>(position,1.);", "let world=d.model*vec4<f32>(vertex_offset(position,normal,uv,g.eye_time.w,material_surface.params),1.);")
+        inject_once(template, MESH_WORLD, MESH_WORLD_HOOKED)
     };
-    let abi = ABI.replace("return vec3<f32>(0.0);", "return axiom_lighting(p,n);");
-    format!("{template}\n{abi}\n{hook}\n{vertex}\n{wrapper}")
+    let abi = inject_once(ABI, ABI_LIGHT_STUB, ABI_LIGHT);
+    let prefix = format!("{template}\n{abi}\n");
+    let first = prefix.matches('\n').count() as u32 + 1;
+    (format!("{prefix}{hook}\n{vertex}\n{wrapper}"), first)
+}
+
+#[cfg(test)]
+pub(crate) fn fragment(template: &str, hook: &str, wrapper: &str) -> String {
+    assemble(template, hook, wrapper).0
+}
+
+/// The exact WGSL the GPU compiles for `hook` on cubes (`mesh = false`) or meshes, and the
+/// line where the hook starts (CPU validation and `shader_gpu` share it).
+fn material_module(mesh: bool, hook: &str) -> (String, u32) {
+    let (base, wrapper) = if mesh {
+        (
+            crate::lighting::MESH_WGSL,
+            include_str!("mesh_surface.wgsl"),
+        )
+    } else {
+        (
+            crate::lighting::SCENE_WGSL,
+            include_str!("cube_surface.wgsl"),
+        )
+    };
+    assemble(base, hook, &format!("{MATERIAL_WGSL}\n{wrapper}"))
+}
+
+pub(crate) fn material_source(mesh: bool, hook: &str) -> String {
+    material_module(mesh, hook).0
+}
+
+/// Parses and validates both GPU material modules of `hook`: the probe in `validate_hook`
+/// does not contain the engine templates, so a hook helper named like a template function
+/// (`scene_shadow`, `axiom_fog`, …) passed the probe and failed only at pipeline creation.
+/// Locations inside the hook are reported as hook lines, like the probe's.
+fn validate_modules(path: &str, hook: &str) -> Result<()> {
+    let error = |message: String| Diagnostic::error("invalid_shader", path, message);
+    let lines = hook.lines().count().max(1) as u32;
+    for mesh in [false, true] {
+        let (source, first) = material_module(mesh, hook);
+        let kind = if mesh { "mesh" } else { "cube" };
+        let located = |location: Option<naga::SourceLocation>| match location {
+            Some(p) if (first..first + lines).contains(&p.line_number) => {
+                format!(
+                    "line {}, column {}: ",
+                    p.line_number - first + 1,
+                    p.line_position
+                )
+            }
+            _ => String::new(),
+        };
+        let module = naga::front::wgsl::parse_str(&source).map_err(|e| {
+            error(format!(
+                "{}{} (in the {kind} material module; names of engine WGSL functions are reserved)",
+                located(e.location(&source)),
+                e.message()
+            ))
+        })?;
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .map_err(|e| {
+            error(format!(
+                "{}{} (in the {kind} material module)",
+                located(e.location(&source)),
+                e.as_inner()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn calls(module: &naga::Module, block: &naga::Block, name: &str) -> bool {
+        block.iter().any(|statement| match statement {
+            naga::Statement::Call { function, .. } => {
+                module.functions[*function].name.as_deref() == Some(name)
+            }
+            naga::Statement::Block(b) => calls(module, b, name),
+            naga::Statement::If { accept, reject, .. } => {
+                calls(module, accept, name) || calls(module, reject, name)
+            }
+            _ => false,
+        })
+    }
+
+    /// Both material modules (cube `vs_main`, mesh `vertex_main`) validate and their vertex
+    /// entry really calls `vertex_offset`: the hook is injected by replacing one template
+    /// line, and a reformatted line used to compile unchanged without the hook.
+    #[test]
+    fn material_modules_route_both_vertex_entries_through_vertex_offset() {
+        assert_eq!(crate::lighting::SCENE_WGSL.matches(CUBE_WORLD).count(), 1);
+        assert_eq!(crate::lighting::MESH_WGSL.matches(MESH_WORLD).count(), 1);
+        assert_eq!(ABI.matches(ABI_LIGHT_STUB).count(), 1);
+        let hook = "fn surface(s: SurfaceInput) -> vec4<f32> { return s.base_color; }";
+        for (mesh, entry) in [(false, "vs_main"), (true, "vertex_main")] {
+            let source = material_source(mesh, hook);
+            let module = naga::front::wgsl::parse_str(&source).unwrap();
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap();
+            let vertex = module
+                .entry_points
+                .iter()
+                .find(|e| e.name == entry)
+                .unwrap();
+            assert!(
+                calls(&module, &vertex.function.body, "vertex_offset"),
+                "{entry} does not call vertex_offset"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly once")]
+    fn a_template_without_the_injection_line_is_an_engine_error() {
+        let reformatted = crate::lighting::MESH_WGSL.replace(
+            MESH_WORLD,
+            "let world = d.model * vec4<f32>(position, 1.0);",
+        );
+        fragment(
+            &reformatted,
+            "fn surface(s: SurfaceInput) -> vec4<f32> { return s.base_color; }",
+            "",
+        );
+    }
+
+    /// A hook error inside the assembled module is reported at the hook's own line.
+    #[test]
+    fn assembled_module_errors_point_into_the_hook() {
+        let hook = "fn surface(s: SurfaceInput) -> vec4<f32> { return s.base_color; }\n\nfn axiom_fog(a: f32) -> f32 { return a; }";
+        let error = validate_hook("test", hook).unwrap_err();
+        let error = error.downcast_ref::<Diagnostic>().unwrap().message.clone();
+        assert!(error.contains("axiom_fog"), "{error}");
+        assert_eq!(error_location(&error).map(|l| l.0), Some(3), "{error}");
+    }
 }

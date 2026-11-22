@@ -406,10 +406,10 @@ impl VfxGpu {
                     (b, 1.0, i),
                     (b, -1.0, i),
                 ] {
-                    let mut color = ribbon.color;
+                    let (width, mut color) = ribbon.style_at(t, ribbon.points.len());
                     color[3] *= t as f32 / ribbon.points.len() as f32;
                     vertices.push(Particle {
-                        position_size: [p.x, p.y, p.z, ribbon.width],
+                        position_size: [p.x, p.y, p.z, width],
                         color: [tangent.x, tangent.y, tangent.z, side],
                         misc: color,
                     });

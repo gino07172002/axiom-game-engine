@@ -99,3 +99,33 @@ fn surface_hooks_cannot_install_entry_points_bindings_or_loops() {
         assert!(validate_hook("test", &format!("{valid}\n{suffix}")).is_err());
     }
 }
+
+/// A hook helper named like an engine template function (`scene_shadow` of shadow.wgsl)
+/// passed the stand-alone probe but redefined the function in the module the GPU compiles:
+/// `preview` / `apply` accepted it and the next window start failed in `prepare_shaders`.
+/// Validation now checks the assembled cube and mesh modules and maps the location back to
+/// the hook.
+#[test]
+fn shader_preview_rejects_hook_names_reserved_by_the_engine_templates() {
+    let registry = installed_registry();
+    let pkg = ContentPackage::load(pack(), &registry.authoring).unwrap();
+    let mut store = Store::memory_with(registry.authoring, pkg.world).unwrap();
+    let hook = "fn surface(s: SurfaceInput) -> vec4<f32> { return s.base_color; }\nfn scene_shadow(light: vec4<f32>) -> f32 { return 1.0; }";
+    let result = store.execute(edit("preview", "/shaders/scan/wgsl", json!(hook)));
+    let error = axiom_core::error_response(&result.unwrap_err());
+    assert_eq!(
+        error["diagnostics"][0]["path"],
+        "/resources/render.shaders/shaders/scan/wgsl"
+    );
+    let text = error["error"].as_str().unwrap();
+    assert!(
+        text.contains("scene_shadow") && text.contains("line 2"),
+        "{text}"
+    );
+    assert_eq!(store.revision().unwrap(), 1);
+    // Any other helper name is still the hook's own.
+    let renamed = hook.replace("scene_shadow", "my_shadow");
+    store
+        .execute(edit("preview", "/shaders/scan/wgsl", json!(renamed)))
+        .unwrap();
+}
