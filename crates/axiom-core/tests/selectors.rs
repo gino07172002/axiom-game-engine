@@ -133,6 +133,76 @@ fn set_where_refuses_an_expansion_over_its_byte_budget_before_copying() {
 }
 
 #[test]
+fn set_where_edits_of_one_batch_share_one_expansion_budget() {
+    // Each edit writes 120 matches x ~4 KB = ~481 KB, far under the 16 MiB budget on its own;
+    // 34 of them fit the batch's shared budget, the 35th is refused before it copies.
+    let mut world = fixture().current().unwrap().1;
+    world.component_schemas.insert(
+        "game.note".into(),
+        serde_json::from_value(json!({"fields":{"text":{"ty":"string"}}})).unwrap(),
+    );
+    let mut store = Store::memory_with(Registry::core(), world).unwrap();
+    let edit = json!({"kind":"set_where","select":{"from":"entities","id_glob":"enemy/*"},
+        "field":"/components/game.note","value":{"text":"x".repeat(4000)}});
+    let batch = |op: &str, n: usize| {
+        parse_request(&json!({"op":op,"expected_rev":1,"edits":vec![edit.clone(); n]}).to_string())
+            .unwrap()
+    };
+    let fits = store.execute(batch("preview", 34)).unwrap();
+    assert_eq!(fits["changed"], true, "{fits}");
+    let response = axiom_core::error_response(&store.execute(batch("apply", 36)).unwrap_err());
+    assert_eq!(
+        response["diagnostics"][0]["code"], "budget_exceeded",
+        "{response}"
+    );
+    assert!(
+        response.to_string().contains("split the batch"),
+        "{response}"
+    );
+    assert_eq!(store.current().unwrap().0, 1, "nothing was committed");
+}
+
+#[test]
+fn integer_predicates_compare_exactly_beyond_two_to_the_53() {
+    let mut world = World::empty("ints");
+    world.component_schemas.insert(
+        "game.counter".into(),
+        serde_json::from_value(json!({"fields":{"n":{"ty":"int"}}})).unwrap(),
+    );
+    // 2^53 and 2^53 + 1 are the same f64.
+    for (id, n) in [
+        ("a", 9_007_199_254_740_992_i64),
+        ("b", 9_007_199_254_740_993),
+    ] {
+        let mut e = Entity::new(id);
+        e.set("game.counter", json!({ "n": n })).unwrap();
+        world.entities.push(e);
+    }
+    let mut store = Store::memory_with(Registry::core(), world).unwrap();
+    let find = |store: &mut Store, op: &str| {
+        run(
+            store,
+            json!({"op":"select","query":{"from":"entities","where":[{"field":"/components/game.counter/n","op":op,"value":9_007_199_254_740_993_i64}],"format":"lines"}}),
+        )["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let eq = find(&mut store, "eq");
+    assert!(eq.starts_with('b') && eq.contains("matched=1"), "{eq}");
+    let lt = find(&mut store, "lt");
+    assert!(lt.starts_with('a') && lt.contains("matched=1"), "{lt}");
+    // set_where changes exactly the matching object.
+    run(
+        &mut store,
+        json!({"op":"apply","expected_rev":1,"edits":[{"kind":"set_where","select":{"from":"entities","where":[{"field":"/components/game.counter/n","op":"eq","value":9_007_199_254_740_993_i64}]},"field":"/label","value":"hit"}]}),
+    );
+    let world = store.current().unwrap().1;
+    assert_eq!(world.entity("b").unwrap().label.as_deref(), Some("hit"));
+    assert_eq!(world.entity("a").unwrap().label, None);
+}
+
+#[test]
 fn selecting_from_a_malformed_intermediate_resource_is_an_error_not_a_panic() {
     // The batch first writes widgets without ids, then selects from them: set_where runs on
     // the not-yet-validated intermediate world and must answer with a diagnostic.

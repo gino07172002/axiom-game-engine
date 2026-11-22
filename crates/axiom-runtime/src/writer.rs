@@ -185,9 +185,7 @@ impl Drop for Writer {
 /// is ~8 ms).
 pub fn stage(base: &World, edits: &[Edit], registry: &Registry) -> Result<Arc<World>> {
     let mut next = base.clone();
-    for (i, edit) in edits.iter().cloned().enumerate() {
-        axiom_core::local::at(&format!("/edits/{i}"), edit.apply(&mut next, registry))?;
-    }
+    Edit::apply_all(edits.iter().cloned(), &mut next, registry)?;
     next.compile(registry)?;
     Ok(Arc::new(next))
 }

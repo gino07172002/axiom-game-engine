@@ -569,6 +569,13 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
             world,
         );
     }
+    // Registry-only topics are answered before a database is opened: they neither create one
+    // nor depend on the initial content package.
+    if cli.connect.is_none() && cli.request_id.is_none() {
+        if let Some(response) = registry_only(&command, &registry.authoring) {
+            return print(&response?, cli.pretty);
+        }
+    }
     let db = cli.db.unwrap_or_else(|| "data/world.sqlite".into());
     let mut store = if cli.connect.is_none() {
         // The initial world (default: the content/fps package) is only loaded for a new
@@ -956,6 +963,24 @@ fn execute(registry: axiom_runtime::world::RuntimeRegistry) -> Result<()> {
     };
     print(&dispatch(request)?, cli.pretty)
 }
+/// The local answer to `schema` / `discover` of a registry-only topic (`None`: the command
+/// needs the world, e.g. `typed:ID`, or is not a schema read).
+fn registry_only(
+    command: &Command,
+    registry: &axiom_core::Registry,
+) -> Option<Result<serde_json::Value>> {
+    let request = match command {
+        Command::Schema { topic } => Request::Schema {
+            topic: topic.clone(),
+        },
+        Command::Discover { topic, if_hash } => Request::Discover {
+            topic: topic.clone(),
+            if_hash: if_hash.clone(),
+        },
+        _ => return None,
+    };
+    Store::registry_response(registry, &request)
+}
 /// Protocol request limit (`parse_request` refuses more); request files are read bounded by it.
 const MAX_REQUEST_BYTES: usize = 1_048_576;
 /// `import FILE` reads at most this much world JSON (the store's total receipt budget).
@@ -1033,6 +1058,74 @@ fn print(value: &serde_json::Value, pretty: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_topics_are_answered_without_a_store_and_world_topics_are_not() {
+        let registry = axiom_core::Registry::core();
+        // What an existing database would answer: the same bytes, hash included.
+        let mut store = Store::memory_with(registry.clone(), World::empty("w")).unwrap();
+        for command in [
+            Command::Schema { topic: None },
+            Command::Schema {
+                topic: Some("edits".into()),
+            },
+            Command::Discover {
+                topic: Some("local".into()),
+                if_hash: None,
+            },
+        ] {
+            let request = match &command {
+                Command::Schema { topic } => Request::Schema {
+                    topic: topic.clone(),
+                },
+                Command::Discover { topic, if_hash } => Request::Discover {
+                    topic: topic.clone(),
+                    if_hash: if_hash.clone(),
+                },
+                _ => unreachable!(),
+            };
+            let local = registry_only(&command, &registry)
+                .expect("registry-only topic")
+                .unwrap();
+            assert_eq!(local, store.execute(request).unwrap());
+        }
+        let hash = registry_only(
+            &Command::Discover {
+                topic: Some("local".into()),
+                if_hash: None,
+            },
+            &registry,
+        )
+        .unwrap()
+        .unwrap()["hash"]
+            .clone();
+        let cached = registry_only(
+            &Command::Discover {
+                topic: Some("local".into()),
+                if_hash: hash.as_str().map(str::to_owned),
+            },
+            &registry,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cached["not_modified"], true);
+        // `typed:ID` reads the world's own schemas, other commands need the store.
+        assert!(registry_only(
+            &Command::Schema {
+                topic: Some("typed:game.counter".into())
+            },
+            &registry
+        )
+        .is_none());
+        assert!(registry_only(
+            &Command::Query {
+                scope: "summary".into(),
+                limit: None
+            },
+            &registry
+        )
+        .is_none());
+    }
 
     #[test]
     fn serve_lines_are_bounded_and_an_overlong_line_does_not_stop_the_stream() {

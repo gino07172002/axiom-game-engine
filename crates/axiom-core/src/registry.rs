@@ -57,6 +57,20 @@ pub struct TypeDescriptor {
     pub capability: String,
     pub schema: Value,
     pub validate: ValueValidator,
+    /// Rewrites a legacy stored representation to the current one (`None` when the value is
+    /// already current or cannot be read), applied by `Registry::decode`.
+    pub normalize: Option<ValueNormalizer>,
+}
+pub type ValueNormalizer = fn(&Value) -> Option<Value>;
+/// The object form of a struct type `T` stored as a JSON array (serde reads a struct from its
+/// fields in order). Older revisions could store e.g. `audio.library: []`; validation now
+/// refuses that form for new writes, and reading an old revision rewrites it with this.
+fn object_form<T: serde::de::DeserializeOwned + Serialize>(v: &Value) -> Option<Value> {
+    if !v.is_array() {
+        return None;
+    }
+    let t: T = serde_json::from_value(v.clone()).ok()?;
+    serde_json::to_value(&t).ok().filter(Value::is_object)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SystemDescriptor {
@@ -104,166 +118,189 @@ impl Registry {
             let t: T = serde_json::from_value(v.clone())?;
             // Serde also decodes a struct from a JSON array (its fields in order). Authoring
             // ops edit the stored JSON in place and expect the object form, so the sequence
-            // form of an object type is refused here instead of being stored.
+            // form of an object type is refused here instead of being stored. Stored
+            // revisions from before this rule are rewritten to the object form by `decode`
+            // (`object_form`), so only new writes can reach this refusal.
             anyhow::ensure!(
                 !v.is_array() || !serde_json::to_value(&t)?.is_object(),
                 "must be a JSON object, not an array"
             );
             f(&t)
         }
-        r.component(
+        // A built-in struct type: validated through `typed`, and its legacy array form read
+        // back as the object form.
+        macro_rules! typed {
+            ($r:ident . component($id:expr, $cap:expr, $schema:expr, $t:ty)) => {
+                $r.typed_component::<$t>($id, $cap, $schema, |v| typed::<$t>(v, <$t>::validate))
+            };
+            ($r:ident . resource($id:expr, $cap:expr, $schema:expr, $t:ty)) => {
+                $r.typed_resource::<$t>($id, $cap, $schema, |v| typed::<$t>(v, <$t>::validate))
+            };
+        }
+        typed!(r.component(
             "core.transform",
             "core",
             json!({"position":"vec3","rotation":"unit quaternion xyzw","scale":"positive vec3"}),
-            |v| typed(v, Transform::validate),
-        );
-        r.component(
+            Transform
+        ));
+        typed!(r.component(
             "nav.blocker",
             "core",
-            json!({"half":"[hx,hz] meters 0.01..500","offset":"optional [ox,oz] from the entity position"}),
-            |v| typed(v, crate::blocker::NavBlocker::validate),
-        );
-        r.component(
+            json!({"half":"[hx,hz] meters 0.01..500","offset":"optional [ox,oz] from the entity position"}), crate::blocker::NavBlocker));
+        typed!(r.component(
             "core.health",
             "core",
             json!({"value":"number >= 0","max":"number > 0"}),
-            |v| typed(v, Health::validate),
-        );
-        r.component(
+            Health
+        ));
+        typed!(r.component(
             "core.motion",
             "motion",
             json!({"velocity":"vec3","angular_velocity":"radians/second vec3"}),
-            |v| typed(v, Motion::validate),
-        );
-        r.component(
+            Motion
+        ));
+        typed!(r.component(
             "render.mesh",
             "render",
             json!({"parts":"1..1024 cube parts: transform, color[3], emission, grid"}),
-            |v| typed(v, RenderMesh::validate),
-        );
-        r.component("render.camera","render",json!({"projection":"{kind:perspective,fov_degrees} | {kind:orthographic,height}","near":"positive number","far":"number > near","viewport":"normalized [x,y,width,height]","active":"bool"}),|v|typed(v,Camera::validate));
-        r.component(
+            RenderMesh
+        ));
+        typed!(r.component("render.camera","render",json!({"projection":"{kind:perspective,fov_degrees} | {kind:orthographic,height}","near":"positive number","far":"number > near","viewport":"normalized [x,y,width,height]","active":"bool"}), Camera));
+        typed!(r.component(
             "render.light",
             "render",
             crate::light::light_schema(),
-            |v| typed(v, crate::light::RenderLight::validate),
-        );
-        r.component(
+            crate::light::RenderLight
+        ));
+        typed!(r.component(
             "render.surface",
             "render",
             crate::light::surface_schema(),
-            |v| typed(v, crate::light::RenderSurface::validate),
-        );
-        r.component("render.toon", "render", crate::style::toon_schema(), |v| {
-            typed(v, crate::style::RenderToon::validate)
-        });
-        r.component(
+            crate::light::RenderSurface
+        ));
+        typed!(r.component(
+            "render.toon",
+            "render",
+            crate::style::toon_schema(),
+            crate::style::RenderToon
+        ));
+        typed!(r.component(
             "render.outline",
             "render",
             crate::style::outline_schema(),
-            |v| typed(v, crate::style::RenderOutline::validate),
-        );
-        r.component(
+            crate::style::RenderOutline
+        ));
+        typed!(r.component(
             "render.decal",
             "render",
             crate::style::decal_schema(),
-            |v| typed(v, crate::style::RenderDecal::validate),
-        );
+            crate::style::RenderDecal
+        ));
         r.world_validators.push(crate::style::validate_world);
-        r.resource(
+        typed!(r.resource(
             "render.environment",
             "render",
             crate::light::environment_schema(),
-            |v| typed(v, crate::light::RenderEnvironment::validate),
-        );
-        r.component(
+            crate::light::RenderEnvironment
+        ));
+        typed!(r.component(
             "trigger.zone",
             "trigger",
             crate::trigger::trigger_schema(),
-            |v| typed(v, crate::trigger::TriggerZone::validate),
-        );
-        r.component("path.spline", "path", crate::path::spline_schema(), |v| {
-            typed(v, crate::path::PathSpline::validate)
-        });
-        r.component("path.follow", "path", crate::path::follow_schema(), |v| {
-            typed(v, crate::path::PathFollow::validate)
-        });
-        r.component("nav.agent", "nav", crate::navigation::agent_schema(), |v| {
-            typed(v, crate::navigation::NavAgent::validate)
-        });
-        r.resource(
+            crate::trigger::TriggerZone
+        ));
+        typed!(r.component(
+            "path.spline",
+            "path",
+            crate::path::spline_schema(),
+            crate::path::PathSpline
+        ));
+        typed!(r.component(
+            "path.follow",
+            "path",
+            crate::path::follow_schema(),
+            crate::path::PathFollow
+        ));
+        typed!(r.component(
+            "nav.agent",
+            "nav",
+            crate::navigation::agent_schema(),
+            crate::navigation::NavAgent
+        ));
+        typed!(r.resource(
             "nav.grid",
             "nav",
             crate::navigation::settings_schema(),
-            |v| typed(v, crate::navigation::NavSettings::validate),
-        );
-        r.component(
+            crate::navigation::NavSettings
+        ));
+        typed!(r.component(
             "interact.target",
             "interact",
             crate::interact::target_schema(),
-            |v| typed(v, crate::interact::InteractTarget::validate),
-        );
-        r.component("tween.clips", "tween", crate::tween::clips_schema(), |v| {
-            typed(v, crate::tween::TweenClips::validate)
-        });
-        r.resource(
+            crate::interact::InteractTarget
+        ));
+        typed!(r.component(
+            "tween.clips",
+            "tween",
+            crate::tween::clips_schema(),
+            crate::tween::TweenClips
+        ));
+        typed!(r.resource(
             "audio.library",
             "audio",
             crate::audio::library_schema(),
-            |v| typed(v, crate::audio::AudioLibrary::validate),
-        );
-        r.component(
+            crate::audio::AudioLibrary
+        ));
+        typed!(r.component(
             "audio.source",
             "audio",
             crate::audio::source_schema(),
-            |v| typed(v, crate::audio::AudioSource::validate),
-        );
-        r.component(
+            crate::audio::AudioSource
+        ));
+        typed!(r.component(
             "audio.listener",
             "audio",
             crate::audio::listener_schema(),
-            |v| typed(v, crate::audio::AudioListener::validate),
-        );
-        r.component(
+            crate::audio::AudioListener
+        ));
+        typed!(r.component(
             "camera.follow",
             "camera",
             crate::camera::follow_schema(),
-            |v| typed(v, crate::camera::CameraFollow::validate),
-        );
-        r.component(
+            crate::camera::CameraFollow
+        ));
+        typed!(r.component(
             crate::camera::BLOCKER_COMPONENT,
             "camera",
             crate::camera::blocker_schema(),
-            |v| typed(v, crate::camera::CameraBlocker::validate),
-        );
+            crate::camera::CameraBlocker
+        ));
         r.movers
             .insert("core.motion".into(), "motion.integrate".into());
         r.movers.insert("nav.agent".into(), "nav.steer".into());
         r.movers.insert("camera.follow".into(), "camera.rig".into());
-        r.component(
+        typed!(r.component(
             "physics.collider",
             "physics",
-            json!({"shape":"box + half_extents[3] | capsule + half_height, radius (along local Y) | sphere + radius","friction":format!("optional number 0..{}, default 0.5 (physics.step; two touching colliders use the average)", crate::physics::MAX_FRICTION),"restitution":"optional number 0..1, default 0 (physics.step bounciness; the larger of two touching colliders applies)","sensor":"bool, default false: physics.step trigger volume (reports overlaps, never pushes; not a camera blocker, nav obstacle or FPS cover; not on a dynamic body)","on_enter":"behavior.program event when another physics collider starts touching (solid) or overlapping (sensor) this one (\"\" = none); may declare text fields self, other","on_exit":"behavior.program event when that contact or overlap ends (\"\" = none); same payload rule"}),
-            |v| typed(v, Collider::validate),
-        );
-        r.component(
+            json!({"shape":"box + half_extents[3] | capsule + half_height, radius (along local Y) | sphere + radius","friction":format!("optional number 0..{}, default 0.5 (physics.step; two touching colliders use the average)", crate::physics::MAX_FRICTION),"restitution":"optional number 0..1, default 0 (physics.step bounciness; the larger of two touching colliders applies)","sensor":"bool, default false: physics.step trigger volume (reports overlaps, never pushes; not a camera blocker, nav obstacle or FPS cover; not on a dynamic body)","on_enter":"behavior.program event when another physics collider starts touching (solid) or overlapping (sensor) this one (\"\" = none); may declare text fields self, other","on_exit":"behavior.program event when that contact or overlap ends (\"\" = none); same payload rule"}), Collider));
+        typed!(r.component(
             crate::physics::BODY,
             "physics",
             crate::physics::body_schema(),
-            |v| typed(v, crate::physics::RigidBody::validate),
-        );
-        r.component(
+            crate::physics::RigidBody
+        ));
+        typed!(r.component(
             crate::physics::JOINT,
             "physics",
             crate::physics::joint_schema(),
-            |v| typed(v, crate::physics::PhysicsJoint::validate),
-        );
-        r.resource(
+            crate::physics::PhysicsJoint
+        ));
+        typed!(r.resource(
             crate::physics::SETTINGS,
             "physics",
             crate::physics::settings_schema(),
-            |v| typed(v, crate::physics::PhysicsSettings::validate),
-        );
+            crate::physics::PhysicsSettings
+        ));
         r.movers
             .insert(crate::physics::BODY.into(), crate::physics::SYSTEM.into());
         r.resource(
@@ -283,12 +320,10 @@ impl Registry {
                 Ok(())
             },
         );
-        r.resource(
+        typed!(r.resource(
             crate::ops::LAYOUT_RESOURCE,
             "core",
-            json!({"graphs":"graph key (fsm/MACHINE) -> node name -> [x,y] canvas position; editor metadata, never read by the runtime"}),
-            |v| typed(v, crate::ops::EditorLayout::validate),
-        );
+            json!({"graphs":"graph key (fsm/MACHINE) -> node name -> [x,y] canvas position; editor metadata, never read by the runtime"}), crate::ops::EditorLayout));
         r.resource("input.bindings","core",json!({"axes":"action -> positive/negative key names","buttons":"action -> key name","capture_pointer":"bool","gamepad":"optional {buttons: action -> pad input, axes: action -> {positive, negative} pad inputs, deadzone: 0..0.9 (0.24)}: a second (XInput) input of actions already in buttons / axes; pad inputs: PadA PadB PadX PadY PadLB PadRB PadBack PadStart PadLS PadRS PadDpadUp/Down/Left/Right PadLT PadRT PadLStickUp/Down/Left/Right PadRStickUp/Down/Left/Right (0..1 levels)"}),|v|{let b:InputBindings=serde_json::from_value(v.clone())?;ensure!(b.axes.len()+b.buttons.len()<=64,"input binding budget exceeded");ensure!(b.buttons.iter().all(|(k,v)|k.len()<=64&&v.len()<=64)&&b.axes.iter().all(|(k,v)|k.len()<=64&&v.positive.len()<=64&&v.negative.len()<=64),"invalid input binding");b.validate_gamepad()?;Ok(())});
         r.systems.insert(
             "motion.integrate".into(),
@@ -484,7 +519,7 @@ impl Registry {
             "write":"Use preview or apply with expected_rev; use execute with a request ID for durable retries",
             "observe":{"op":"observe_delta","fields":["/editor","/activation"]},
             "view":{"op":"editor_view","select":["object-id"],"focus":true,"dock":"opens/focuses a tab: hierarchy|scene|game|inspector|world|changes|proposals|history|problems|scenarios|graphs|assets|agent (discover editor_layout, editor_game)","capture":"name -> artifacts/captures/<name>.png on the next frame; refused while a human draft is dirty"},
-            "review":{"propose":{"op":"propose","edits":[],"note":"why"},"list":{"op":"proposals","status":"pending"},"resolve":{"op":"resolve_proposal","id":1,"approve":true,"rebase":false}}
+            "review":{"propose":{"op":"propose","edits":[],"note":"why"},"list":{"op":"proposals","status":"pending"},"all_changes":{"op":"proposal_diff","id":1,"offset":0,"limit":32,"note":"pages every change a proposal makes on its base revision (list keeps the first 64)"},"resolve":{"op":"resolve_proposal","id":1,"approve":true,"rebase":false}}
         }));
         crate::assets::register(&mut r);
         r.topics.insert("execute".into(),json!({"op":"execute","request_id":"1..128 ASCII letters/digits/-_.:","runtime_session":"required for command/save/load; from observe.runtime_session","request":"one apply/undo/command/save/load; nesting prohibited","guarantees":{"apply_undo":"receipt and revision commit atomically in SQLite, durable across process restarts","runtime":"successful results cached for the host session; foreign sessions rejected; cache never silently evicts"},"failures":"failed operations do not reserve request_id; conflicting successful payloads rejected"}));
@@ -503,8 +538,35 @@ impl Registry {
                 capability: capability.into(),
                 schema,
                 validate,
+                normalize: None,
             },
         );
+    }
+    /// `component` for a struct type `T` whose legacy array form `decode` rewrites.
+    fn typed_component<T: serde::de::DeserializeOwned + Serialize>(
+        &mut self,
+        id: &str,
+        capability: &str,
+        schema: Value,
+        validate: ValueValidator,
+    ) {
+        self.component(id, capability, schema, validate);
+        if let Some(d) = self.components.get_mut(id) {
+            d.normalize = Some(object_form::<T>);
+        }
+    }
+    /// `resource` for a struct type `T` whose legacy array form `decode` rewrites.
+    fn typed_resource<T: serde::de::DeserializeOwned + Serialize>(
+        &mut self,
+        id: &str,
+        capability: &str,
+        schema: Value,
+        validate: ValueValidator,
+    ) {
+        self.resource(id, capability, schema, validate);
+        if let Some(d) = self.resources.get_mut(id) {
+            d.normalize = Some(object_form::<T>);
+        }
     }
     pub fn resource(
         &mut self,
@@ -519,6 +581,7 @@ impl Registry {
                 capability: capability.into(),
                 schema,
                 validate,
+                normalize: None,
             },
         );
     }
@@ -529,20 +592,53 @@ impl Registry {
                 capability: capability.into(),
                 schema,
                 validate,
+                normalize: None,
             },
         );
     }
+    /// A stored or imported world in the current IR. Legacy representations that validation
+    /// no longer accepts for new writes are rewritten (`normalize`), so every revision that
+    /// was once committed still opens, edits and undoes.
     pub fn decode(&self, v: Value) -> Result<World> {
         let version = v
             .get("schema_version")
             .and_then(Value::as_u64)
             .context("missing numeric schema_version")?;
-        if version == 2 {
-            Ok(serde_json::from_value(v)?)
+        let mut w = if version == 2 {
+            serde_json::from_value(v)?
         } else if let Some(m) = self.migrations.get(&(version as u32)) {
-            m(v)
+            m(v)?
         } else {
             bail!("unsupported world schema version {version}; no migration installed")
+        };
+        self.normalize(&mut w);
+        Ok(w)
+    }
+    /// Rewrites legacy forms of registered component and resource values in place.
+    pub fn normalize(&self, w: &mut World) {
+        fn fix(types: &BTreeMap<String, TypeDescriptor>, id: &str, v: &mut Value) {
+            // Only array values can be legacy forms: everything else costs one type check.
+            if !v.is_array() {
+                return;
+            }
+            if let Some(n) = types.get(id).and_then(|d| d.normalize) {
+                if let Some(current) = n(v) {
+                    *v = current;
+                }
+            }
+        }
+        let components = w
+            .entities
+            .iter_mut()
+            .map(|e| &mut e.components)
+            .chain(w.prefabs.values_mut().map(|p| &mut p.components));
+        for values in components {
+            for (id, v) in values.iter_mut() {
+                fix(&self.components, id, v);
+            }
+        }
+        for (id, v) in w.resources.iter_mut() {
+            fix(&self.resources, id, v);
         }
     }
     pub fn validate_capabilities(&self, w: &World) -> Result<()> {

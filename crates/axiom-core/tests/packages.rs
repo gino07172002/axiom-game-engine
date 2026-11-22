@@ -243,3 +243,42 @@ fn resource_merges_are_opt_in_and_reject_ambiguous_map_entries() {
         .to_string()
         .contains("duplicate resource entry"));
 }
+
+#[test]
+fn bounded_reads_refuse_a_directory_before_opening_it() {
+    // Special files are refused from their metadata, before `open` (which blocks on a FIFO
+    // without a writer); a directory is the special file every platform can create.
+    let dir = std::env::temp_dir().join(format!("axiom-bounded-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let error = axiom_core::read_bounded(&dir, 16, "manifest").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("not a regular file"),
+        "{error:#}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_reads_refuse_a_fifo_without_blocking() {
+    let dir = std::env::temp_dir().join(format!("axiom-bounded-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("manifest.json");
+    let _ = std::fs::remove_file(&fifo);
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: mkfifo unavailable");
+        return;
+    }
+    // Without a writer, opening the FIFO would block this thread forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(axiom_core::read_bounded(&path, 16, "manifest").map(|_| ()));
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("read_bounded blocked on a FIFO");
+    assert!(format!("{:#}", result.unwrap_err()).contains("not a regular file"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

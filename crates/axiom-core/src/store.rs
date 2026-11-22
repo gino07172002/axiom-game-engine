@@ -207,6 +207,41 @@ impl Store {
             None => self.registry.schema(topic),
         }
     }
+    /// The answer to a request that reads the registry only (`schema` / `discover` of any
+    /// topic except `typed:ID`), without a database; `None` when the request needs the world.
+    /// A client can answer these before opening (or creating) a store.
+    pub fn registry_response(registry: &Registry, request: &Request) -> Option<Result<Value>> {
+        let topic = match request {
+            Request::Schema { topic } | Request::Discover { topic, .. } => topic.as_deref(),
+            _ => return None,
+        };
+        if topic.is_some_and(|t| t.starts_with("typed:")) {
+            return None;
+        }
+        let schema = registry.schema(topic);
+        Some(match request {
+            Request::Discover { if_hash, .. } => {
+                schema.and_then(|schema| Self::discover_response(schema, if_hash.as_deref()))
+            }
+            _ => schema,
+        })
+    }
+    /// One page of a change list (`diff`, `proposal_diff`).
+    fn diff_page(changes: &[crate::diff::Change], offset: usize, limit: usize) -> Result<Value> {
+        ensure!(offset <= changes.len(), "diff offset out of range");
+        let end = (offset + limit).min(changes.len());
+        Ok(
+            json!({"ok":true,"total_changes":changes.len(),"changes":&changes[offset..end],"next_offset":if end<changes.len(){Some(end)}else{None}}),
+        )
+    }
+    fn discover_response(schema: Value, if_hash: Option<&str>) -> Result<Value> {
+        let hash = crate::local::fingerprint(&schema)?;
+        Ok(if if_hash == Some(hash.as_str()) {
+            json!({"ok":true,"hash":hash,"not_modified":true})
+        } else {
+            json!({"ok":true,"hash":hash,"not_modified":false,"schema":schema})
+        })
+    }
     /// The `verify` response for one snapshot `(rev, w)`. Callers that also simulate or
     /// measure that world pass the same snapshot, so every part of the answer is about `rev`.
     pub fn verify_world(&self, rev: i64, w: &World) -> Result<Value> {
@@ -316,9 +351,7 @@ impl Store {
         }
         let previous = registry.decode(serde_json::from_str(&raw)?)?;
         let mut next = previous.clone();
-        for (i, edit) in edits.into_iter().enumerate() {
-            crate::local::at(&format!("/edits/{i}"), edit.apply(&mut next, registry))?;
-        }
+        Edit::apply_all(edits, &mut next, registry)?;
         let compiled = next.compile(registry)?;
         let before = previous.compile(registry)?;
         let added = compiled
@@ -378,12 +411,7 @@ impl Store {
             }
             Request::Discover { topic, if_hash } => {
                 let schema = self.schema_topic(topic.as_deref())?;
-                let hash = crate::local::fingerprint(&schema)?;
-                if if_hash.as_ref() == Some(&hash) {
-                    Ok(json!({"ok":true,"hash":hash,"not_modified":true}))
-                } else {
-                    Ok(json!({"ok":true,"hash":hash,"not_modified":false,"schema":schema}))
-                }
+                Self::discover_response(schema, if_hash.as_deref())
             }
             Request::Select { query } => {
                 let (rev, w) = self.current()?;
@@ -513,13 +541,15 @@ impl Store {
                 };
                 let mut edits: Vec<Edit> = serde_json::from_str(&edits)?;
                 // A selector re-evaluated on a newer revision can change objects the reviewed
-                // preview never showed (e.g. entities tagged after the proposal was made).
-                // Explicit ID lists are safe: they can only match the reviewed objects.
+                // preview never showed (e.g. entities tagged after the proposal was made, or an
+                // ID that only exists now). Each `set_where` must resolve to targets the
+                // reviewed base revision also resolved it to.
                 if rebase
                     && expected != base
-                    && edits.iter().any(|e| {
-                        matches!(e, Edit::Core(CoreEdit::SetWhere { select, .. }) if !select.is_id_list())
-                    })
+                    && edits
+                        .iter()
+                        .any(|e| matches!(e, Edit::Core(CoreEdit::SetWhere { .. })))
+                    && Self::selectors_grow(&tx, &self.registry, base, &edits)?
                 {
                     return Err(Diagnostic::error(
                         "stale_selector",
@@ -587,11 +617,27 @@ impl Store {
                     Ok(json!(self.registry.decode(serde_json::from_str(&raw)?)?))
                 };
                 let changes = crate::diff::changes(&read(from_rev)?, &read(to_rev)?);
-                ensure!(offset <= changes.len(), "diff offset out of range");
-                let end = (offset + limit).min(changes.len());
-                Ok(
-                    json!({"ok":true,"from_rev":from_rev,"to_rev":to_rev,"total_changes":changes.len(),"changes":&changes[offset..end],"next_offset":if end<changes.len(){Some(end)}else{None}}),
-                )
+                let mut page = Self::diff_page(&changes, offset, limit)?;
+                page["from_rev"] = json!(from_rev);
+                page["to_rev"] = json!(to_rev);
+                Ok(page)
+            }
+            Request::ProposalDiff { id, offset, limit } => {
+                let limit = limit.unwrap_or(32);
+                ensure!((1..=128).contains(&limit), "diff limit must be 1..128");
+                // The same change list the proposal's stored preview summarizes: its edits
+                // on its base revision.
+                let (base_rev, edits, status) = self.proposal_edits(id)?;
+                let base = self
+                    .registry
+                    .decode(serde_json::from_str(&self.revision_json(base_rev)?)?)?;
+                let mine = crate::ops::apply_edits(&base, &edits, &self.registry)?;
+                let changes = crate::diff::changes(&json!(base), &json!(mine));
+                let mut page = Self::diff_page(&changes, offset, limit)?;
+                page["proposal"] = json!(id);
+                page["status"] = json!(status);
+                page["base_rev"] = json!(base_rev);
+                Ok(page)
             }
             Request::Execute {
                 request_id,
@@ -724,6 +770,55 @@ impl Store {
             ],
         )?;
         Ok(json!({"ok":true,"rev":tx.last_insert_rowid(),"restored_from":rev}))
+    }
+    /// Whether a `set_where` of `edits`, replayed on the newest revision, selects a target its
+    /// replay on revision `base` (what the proposal's preview showed) does not. Both replays
+    /// apply the edits in order, so each selector sees the batch's earlier edits. A replay
+    /// that fails on the newest revision is left to the commit, which reports it.
+    fn selectors_grow(
+        tx: &Connection,
+        registry: &Registry,
+        base: i64,
+        edits: &[Edit],
+    ) -> Result<bool> {
+        let raw: String =
+            tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
+                r.get(0)
+            })?;
+        let mut reviewed = registry.decode(serde_json::from_str(&raw)?)?;
+        let (_, mut current) = Self::latest_in(tx, registry)?;
+        let (mut reviewed_budget, mut current_budget) = (
+            crate::local::MAX_SET_WHERE_BYTES,
+            crate::local::MAX_SET_WHERE_BYTES,
+        );
+        for edit in edits {
+            if let Edit::Core(CoreEdit::SetWhere { select, .. }) = edit {
+                // A target's path names its kind and full identity (a choice with its node).
+                let targets = |w: &World| -> Result<std::collections::BTreeSet<String>> {
+                    Ok(crate::local::matches(w, registry, select)?
+                        .into_iter()
+                        .map(|(t, _)| t.path())
+                        .collect())
+                };
+                let Ok(now) = targets(&current) else {
+                    return Ok(false);
+                };
+                let then = targets(&reviewed)?;
+                if !now.is_subset(&then) {
+                    return Ok(true);
+                }
+            }
+            edit.clone()
+                .apply_budgeted(&mut reviewed, registry, &mut reviewed_budget)?;
+            if edit
+                .clone()
+                .apply_budgeted(&mut current, registry, &mut current_budget)
+                .is_err()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(false)
     }
     fn latest_in(tx: &Connection, registry: &Registry) -> Result<(i64, World)> {
         let (rev, raw): (i64, String) = tx.query_row(

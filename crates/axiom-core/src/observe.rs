@@ -82,6 +82,14 @@ impl ObservationHistory {
                 .all(|f| !f.is_empty() && !f.starts_with("/gameplay/trace")),
             "use trace_limit for traces; full observation requires legacy observe"
         );
+        // A malformed escape is a request error, not a field that happens to be absent.
+        if let Some(bad) = fields.iter().find(|f| !valid_pointer(f)) {
+            return Err(Diagnostic::error(
+                "invalid_field",
+                bad.as_str(),
+                "invalid JSON pointer escape: `~` must be followed by 0 or 1",
+            ));
+        }
         let signature = fingerprint(&(&fields, trace_limit))?;
         let session = raw["runtime_session"]
             .as_str()
@@ -93,10 +101,18 @@ impl ObservationHistory {
         // is absent right now); at most 32, like the projection itself.
         let mut missing = vec![];
         for field in &fields {
-            if let Some(value) = raw.pointer(field) {
-                insert(&mut state, field, value.clone())?;
-            } else if explicit {
-                missing.push(field.as_str());
+            // A field inside another requested field is already part of that value: projecting
+            // it as well would depend on the order the two were listed in.
+            let covered = fields.iter().any(|other| {
+                field.len() > other.len()
+                    && field.starts_with(other.as_str())
+                    && field.as_bytes()[other.len()] == b'/'
+            });
+            match raw.pointer(field) {
+                Some(value) if !covered => insert(&mut state, field, value.clone())?,
+                Some(_) => {}
+                None if explicit => missing.push(field.as_str()),
+                None => {}
             }
         }
         let traces = raw
@@ -187,6 +203,16 @@ impl ObservationHistory {
         Ok(response)
     }
 }
+/// RFC 6901 escapes: every `~` starts `~0` or `~1`.
+fn valid_pointer(path: &str) -> bool {
+    let mut chars = path.chars();
+    while let Some(c) = chars.next() {
+        if c == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
+}
 fn insert(root: &mut Value, path: &str, value: Value) -> Result<()> {
     let parts = path
         .strip_prefix('/')
@@ -257,5 +283,51 @@ mod tests {
         // The default projection names optional values and reports none of them missing.
         let default = h.observe(&raw, None, &[], 0, None).unwrap();
         assert!(default.get("missing_fields").is_none(), "{default}");
+    }
+
+    #[test]
+    fn a_malformed_pointer_escape_is_an_error_but_an_absent_optional_field_is_not() {
+        let mut h = ObservationHistory::default();
+        let raw = json!({"runtime_session":"s","runtime_epoch":1,"rev":3,"tick":0,"a/b":1,"c~d":2});
+        // Valid escapes resolve; a valid optional field that is absent right now is listed.
+        let ok = h
+            .observe(
+                &raw,
+                None,
+                &["/a~1b".into(), "/c~0d".into(), "/activation_error".into()],
+                0,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ok["snapshot"], json!({"a/b":1,"c~d":2}), "{ok}");
+        assert_eq!(ok["missing_fields"], json!(["/activation_error"]));
+        for bad in ["/a~2b", "/c~", "/x~~0"] {
+            let error = h.observe(&raw, None, &[bad.into()], 0, None).unwrap_err();
+            let d = error.downcast_ref::<Diagnostic>().expect("diagnostic");
+            assert_eq!((d.code.as_str(), d.path.as_str()), ("invalid_field", bad));
+        }
+    }
+
+    #[test]
+    fn a_parent_and_child_field_project_the_same_in_either_order() {
+        let raw = json!({"runtime_session":"s","runtime_epoch":1,"rev":3,"tick":0,"systems":["a","b"],"gameplay":{"node":"n"}});
+        let observe = |fields: &[&str]| {
+            let fields = fields.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+            ObservationHistory::default()
+                .observe(&raw, None, &fields, 0, None)
+                .unwrap()
+        };
+        let parent_first = observe(&["/systems", "/systems/0", "/gameplay", "/gameplay/node"]);
+        let child_first = observe(&["/systems/0", "/systems", "/gameplay/node", "/gameplay"]);
+        let expected = json!({"systems":["a","b"],"gameplay":{"node":"n"}});
+        assert_eq!(parent_first["snapshot"], expected, "{parent_first}");
+        assert_eq!(child_first["snapshot"], expected, "{child_first}");
+        // A child of a present parent that itself is absent is still reported missing.
+        let missing = observe(&["/systems", "/systems/9"]);
+        assert_eq!(
+            missing["missing_fields"],
+            json!(["/systems/9"]),
+            "{missing}"
+        );
     }
 }

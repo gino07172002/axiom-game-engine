@@ -504,9 +504,7 @@ pub fn merge_worlds(
 /// `base` with `edits` applied in order, errors located like a commit's (`/edits/N`).
 pub fn apply_edits(base: &World, edits: &[Edit], registry: &Registry) -> Result<World> {
     let mut next = base.clone();
-    for (i, edit) in edits.iter().cloned().enumerate() {
-        crate::local::at(&format!("/edits/{i}"), edit.apply(&mut next, registry))?;
-    }
+    Edit::apply_all(edits.iter().cloned(), &mut next, registry)?;
     Ok(next)
 }
 
