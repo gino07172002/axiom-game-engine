@@ -67,7 +67,7 @@ cargo fmt --all
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace
-.\scripts\shader-smoke-test.ps1
+pwsh -NoProfile -File .\scripts\shader-smoke-test.ps1   # 需要 PowerShell 7;腳本開頭 #Requires -Version 7.0
 ```
 
 原生驗證以 PowerShell 7 執行。測試包含內容包載入、WGSL 診斷、運行中 shader 替換、故意觸發 GPU 管線錯誤後保留舊畫面，以及 GLB 蒙皮網格套用同一材質介面。會對截圖取樣像素驗證顏色，並重跑 FPS、ADV、RTS 與多相機場景。報告與截圖位於 `artifacts/shader-validation.json` 所列的目錄。

@@ -1,5 +1,5 @@
-# Summarize perf-bench JSONL files: per pack, the median over repeats of each metric,
-# with the min..max spread across repeats.
+# Summarize perf-bench JSONL files: per (pack, build profile), the median over repeats of each
+# metric, with the min..max spread across repeats. Debug and release rows are never mixed.
 #   powershell -File scripts/perf-summary.ps1 artifacts/perf-scratch/bench-release-*.jsonl
 param([Parameter(Mandatory, ValueFromRemainingArguments)][string[]]$Files)
 $ErrorActionPreference = 'Stop'
@@ -22,12 +22,15 @@ $metrics = [ordered]@{
     'edit->live ms p95'      = { param($r) $r.edit_live.edit_to_live_ms.p95 }
     'commit ms p50'          = { param($r) $r.edit_live.commit_ms.p50 }
     'commit ms p95'          = { param($r) $r.edit_live.commit_ms.p95 }
-    # Editor-side main-thread time per commit. Builds before the background writer report
-    # no editor_main_ms: there the whole commit ran on the main thread (commit + request;
-    # the p95 row is then the sum of both p95s, an upper bound).
-    'editor main ms p50'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p50 } else { $r.edit_live.commit_ms.p50 + $r.edit_live.request_ms.p50 } }
-    'editor main ms p95'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p95 } else { $r.edit_live.commit_ms.p95 + $r.edit_live.request_ms.p95 } }
-    'editor main ms max'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.max } else { $r.edit_live.commit_ms.max + $r.edit_live.request_ms.max } }
+    # Editor-side main-thread time per commit, as measured (edit_live.editor_main_ms). Builds
+    # before the background writer report no editor_main_ms (the whole commit ran on the main
+    # thread: commit + request). Their reports hold only per-phase aggregates, and percentiles
+    # of a sum cannot be derived from the phases' percentiles, so p50/p95 are NaN (missing)
+    # there. Only the max has a sound bound, max(a+b) <= max(a)+max(b), shown on its own row.
+    'editor main ms p50'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p50 } else { [double]::NaN } }
+    'editor main ms p95'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.p95 } else { [double]::NaN } }
+    'editor main ms max'     = { param($r) if ($r.edit_live.editor_main_ms) { $r.edit_live.editor_main_ms.max } else { [double]::NaN } }
+    '  legacy main max <= ms' = { param($r) if ($r.edit_live.editor_main_ms) { [double]::NaN } else { $r.edit_live.commit_ms.max + $r.edit_live.request_ms.max } }
     '  piece max ms p95'     = { param($r) if ($r.edit_live.editor_piece_max_ms) { $r.edit_live.editor_piece_max_ms.p95 } else { [double]::NaN } }
     '  staged ms p50'        = { param($r) if ($r.edit_live.staged_ms) { $r.edit_live.staged_ms.p50 } else { [double]::NaN } }
     'main reload ms p50'     = { param($r) $r.edit_live.main_thread_reload_ms.p50 }
@@ -45,10 +48,12 @@ $metrics = [ordered]@{
     'working set MiB'        = { param($r) $r.process_memory_after_runtime.working_set_bytes / 1MB }
 }
 function Med([double[]]$v) { $s = @($v | Sort-Object); $s[[math]::Floor(($s.Count - 1) / 2)] }
-$packs = $rows | Select-Object -ExpandProperty pack -Unique
-foreach ($pack in $packs) {
-    $set = @($rows | Where-Object { $_.pack -eq $pack })
-    "== $pack ($($set[0].build_profile), repeats $($set.Count), entities $($set[0].entities), instances $($set[0].instances))"
+# One group per (pack, build_profile): a debug and a release report of the same pack are
+# summarized separately, each with its own sample count.
+$groups = $rows | Group-Object -Property { "$($_.pack)|$($_.build_profile)" }
+foreach ($group in $groups) {
+    $set = @($group.Group)
+    "== $($set[0].pack) ($($set[0].build_profile), repeats $($set.Count), entities $($set[0].entities), instances $($set[0].instances))"
     foreach ($name in $metrics.Keys) {
         $values = @($set | ForEach-Object { [double](& $metrics[$name] $_) })
         $sorted = @($values | Sort-Object)

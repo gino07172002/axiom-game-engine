@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+# PowerShell 7 (pwsh) is required: ConvertFrom-Json -AsHashtable does not exist in Windows PowerShell 5.1.
 # Build the checked-in composition from the existing reusable content definitions.
 $ErrorActionPreference='Stop'
 Set-Location (Join-Path $PSScriptRoot '..')

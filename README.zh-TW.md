@@ -30,7 +30,7 @@
 
 ## 一分鐘導覽
 
-以下指令都使用同一個資料庫：`axiom --db lab.sqlite …`。第一個指令會從內容包建立它。
+以下每條指令都以 `--db lab.sqlite` 指定同一個暫用資料庫，不會碰到預設世界(`data/world.sqlite`)。請從尚不存在的路徑開始：第一個指令會從內容包建立它。省略 `--db` 時，指令會開啟預設世界。
 
 ```text
 $ axiom --db lab.sqlite --pack content/behavior-lab acl -e "select entities[tag=enemy] fields core.health/value limit 3"
@@ -39,29 +39,29 @@ enemy/1 core.health/value=100
 enemy/2 core.health/value=100
 matched=6 rev=1 next=l1.1.…
 
-$ axiom acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=18"
+$ axiom --db lab.sqlite acl --expected-rev 1 -e "set enemy/* core.health/value 40 where core.transform/position/0>=18"
 ok rev=2 changes=2
 + /entities/@enemy~14/components/core.health = {"value":40}
 + /entities/@enemy~15/components/core.health = {"value":40}
 
-$ axiom call fsm.inspect '{"id":"enemy/0"}'            # 「這個敵人為什麼不追?」
+$ axiom --db lab.sqlite call fsm.inspect '{"id":"enemy/0"}'   # 「這個敵人為什麼不追?」
 {"ok":true,"result":{"state":"idle","transitions":[…,
   {"to":"chase","when":"near(player)<=15","measured":30.016663,"pass":false}]},"rev":2,"tick":0}
 
-$ axiom scenario examples/behavior-chase.scenario.json  # 無頭執行；不同程序的 state_hash 相同
+$ axiom --db lab.sqlite scenario examples/behavior-chase.scenario.json  # 無頭執行；不同程序的 state_hash 相同
 {"ok":true,"state_hash":"…","assertions":[ 5 passed ], …}
 
-$ axiom acl -e "undo 1"
+$ axiom --db lab.sqlite acl --expected-rev 2 -e "undo 1"   # rev 2 之後若有人提交就拒絕
 ok rev=3 restored_from=1
 ```
 
-(上面的修改會在 prefab 實例上加入局部覆寫，prefab 本身的預設值不變。)
+(上面的修改會在 prefab 實例上加入局部覆寫，prefab 本身的預設值不變。`--expected-rev` 是你最後讀到的 revision;中間若有其他人提交，指令回 `revision_conflict`,不做任何修改。)
 
 ## 功能
 
 | 領域 | 內容 |
 |---|---|
-| **編輯協定** | 具型別的 JSON 請求(`select`、`preview`、`apply`、`undo`、`diff`、`history`、`discover`),以及 **ACL**:一種逐行的精簡指令語言，會編譯成同一套請求。所有請求都使用 CAS revision 和 request-ID 重試。 |
+| **編輯協定** | 具型別的 JSON 請求(`select`、`preview`、`apply`、`undo`、`diff`、`history`、`discover`),以及 **ACL**:一種逐行的精簡指令語言，會編譯成同一套請求。寫入可帶 `expected_rev`(CAS)。`apply` 與 `undo` 另可帶 request ID(`--request-id`),持久化 receipt 讓重送回傳第一次的結果，不會提交兩次;ACL、`select` 等其他請求不接受 request ID。 |
 | **查詢** | ID 萬用字元、tag 與 component 篩選、能看到 prefab 繼承值的 `where` 條件、欄位投影、cursor 與位元組預算。輸出可選 JSON 或精簡行格式。 |
 | **批次修改** | `set_where` 以一個 revision 修改所有符合的物件。`spawn` 可以把 prefab 實例化 N 次。所有修改都會依 component／resource schema 驗證。 |
 | **執行層** | 120 Hz 固定步進、帶 generation 檢查的 entity handle、具型別的 component 欄、跨 revision 保留狀態的熱重載。 |
@@ -108,16 +108,18 @@ Agent 只需要 `axiom` 執行檔。典型流程:
 
 1. **探索**:`axiom discover acl`(文法)、`axiom discover local`(JSON schema)、`axiom schema components`。加上 `--if-hash` 可以略過沒有變動的 schema。
 2. **只讀需要的部分**:`axiom acl -e "select … where … fields … limit N"`。
-3. **一筆交易完成修改**:先 `axiom acl --preview script.acl`,再 `axiom acl script.acl`。多行編輯腳本會合成一個 revision。
+3. **一筆交易完成修改**,以讀到的 revision `R` 保護:先 `axiom acl --preview --expected-rev R script.acl`,再 `axiom acl --expected-rev R script.acl`。多行編輯腳本會合成一個 revision。遇到 `revision_conflict` 表示 `R` 之後有人提交：重新讀取、重新預覽後再提交，提交才不會改到預覽沒看到的物件。
+   - **重試**:`apply` 與 `undo` 接受 `--request-id ID`,以相同 ID 重送相同請求會回傳已儲存的結果，不會提交兩次，例如 `axiom --request-id fix-42 apply edit.json`(檔案內帶 `expected_rev`)。ACL、`select` 等其他請求會拒絕 request ID。ACL 回覆遺失時，先用 `axiom acl -e "history 5"`(與 `diff A B`)確認自己的 revision 是否已提交，再決定是否重送。
 4. **不看畫面也能驗證**:`axiom scenario file.json`、`axiom call fsm.inspect '{"id":"…"}' --ticks 600`、`axiom verify --measure 5`。
-5. **即時觀察**:`axiom --connect 127.0.0.1:4242 observe-delta --field /rev`。執行中的遊戲會自動載入新的 revision。
-6. **還原**:`axiom undo REV` 會追加一個還原用的 revision,不會改寫歷史。
+5. **即時觀察**:`axiom --connect 127.0.0.1:4242 observe-delta --field /rev --field /requested_rev --field /activation --field /activation_error`,之後帶上一個回覆的 `--cursor CURSOR` 重送，只取得變更。執行中的遊戲會自動載入新的 revision;`requested_rev` 大於 `rev` 表示新 revision 仍在啟用，`activation: "activation_failed"` 加上 `activation_error` 表示新 revision 被拒、舊的繼續執行(沒有錯誤時 `activation_error` 會列在 `missing_fields`)。
+6. **還原**:`axiom undo REV --expected-rev R` 會追加一個還原 `REV` 的 revision;若你確認過的 revision `R` 之後還有提交就拒絕。不會改寫歷史。
 
 ACL 速查(完整文法請執行 `axiom discover acl`):
 
 ```text
 select SEL [where F OP V [and …]] [fields F,F] [limit N]     # 讀取
-inspect ID | history [N] | diff A B | undo REV                # 讀取
+inspect ID | history [N] | diff A B                           # 讀取
+undo REV                                                       # 寫入：追加還原 revision(請帶 --expected-rev)
 set SEL F VALUE [where …]                                      # 修改
 spawn PREFAB count=N id=enemy/{i} at=x,y,z step=dx,dy,dz tag=a
 delete SEL
