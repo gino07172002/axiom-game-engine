@@ -12,7 +12,7 @@ Run `. .\scripts\env.ps1` before Cargo. It selects this workspace's toolchain/ca
 2. `target/debug/axiom.exe query` to get current revision.
 3. Submit one `apply` JSON request with `expected_rev` and a bounded list of typed edits.
 4. `verify`; `observe` through `--connect 127.0.0.1:4242` to confirm live revision.
-5. Use `undo REV` to append a restoration revision if needed.
+5. Use `undo REV --expected-rev R` (R = the revision you last checked) to append a restoration revision if needed; it is a write and is refused if anything was committed after R.
 
 Examples live in `examples/`. World IR v2 content packages live in `content/`; `assets/worlds/` retains the v1 migration fixture. `import` validates a full world; the runtime never reparses asset files each frame. Use `preview` to validate an edit batch without committing it. Do not directly modify SQLite with unrelated tools.
 
@@ -21,6 +21,8 @@ Shared behavior, narrative, and UI authoring types live in `axiom-core/src/gamep
 ## Engine changes
 
 Run `cargo fmt --all`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. For renderer changes, run the GPU smoke examples from `docs/user-guide.zh-TW.md` and inspect the generated screenshots. `scripts/m0-smoke-test.ps1` covers FPS, empty worlds, multiple cameras, content switching, and transactional edits with the same executable. Do not claim GPU timing or token efficiency improvements without measurement. Keep request errors recoverable and protocol output compact.
+
+Every feature that edits content must be reachable headless with the same result (the parity contract, `docs/editor-parity.zh-TW.md`): a pure ops function in `axiom-core/src/ops.rs`, an ACL verb that compiles to it, the editor command that calls the same ops function, and a parity test (`crates/axiom-runtime/src/editor/parity.rs`, plus `crates/axiom-core/tests/ops.rs`) that compares the resulting worlds. Add the row to the parity table. A GUI-only edit path is not done.
 
 `scripts/m1-smoke-test.ps1` includes M0 plus ADV endings, localization, image bindings, checkpoints, live commands, and data-only edits. Use isolated QA databases; preserve the user's default world and saves.
 

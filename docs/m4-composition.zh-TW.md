@@ -68,4 +68,4 @@ M4 benchmark 有技能取消窗和任務補給條件兩個任務，各自包含�
 
 ## 目前範圍
 
-根包內容版本 2 已加入 `combat.session` 與 `combat.resolve`，RTS 和 Action 共用平面碰撞、遮擋、傷害及死亡結算。小隊與英雄可攻擊同一批敵人；使用 `Play Alliance Combat.cmd` 在獨立資料庫體驗，避免覆蓋原有 authoring。詳見[共用戰鬥指南](shared-combat.zh-TW.md)。混合原型的私有模擬狀態與輸入情境尚未支援 checkpoint，存檔會明確拒絕。內容包為本機、固定相依圖的片段組合。關卡可由 `scripts/build-m4-content.ps1` 重新產生。
+根包內容版本 2 已加入 `combat.session` 與 `combat.resolve`，RTS 和 Action 共用平面碰撞、遮擋、傷害及死亡結算。小隊與英雄可攻擊同一批敵人；使用 `Play Alliance Combat.cmd` 在獨立資料庫體驗，避免覆蓋原有 authoring。詳見[共用戰鬥指南](shared-combat.zh-TW.md)。混合原型的私有模擬狀態與輸入情境尚未支援 checkpoint，存檔會明確拒絕。內容包為本機、固定相依圖的片段組合。關卡可由 `pwsh -NoProfile -File scripts/build-m4-content.ps1` 重新產生(需要 PowerShell 7,腳本以 `#Requires -Version 7.0` 在開頭拒絕 5.1)。

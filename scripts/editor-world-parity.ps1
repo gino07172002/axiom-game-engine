@@ -2,33 +2,26 @@
 # Two fresh databases from content/empty. One is driven only through the real GPU editor's
 # commands (editor_view {select, command, arg} = the World window / Inspector tag chips / menus),
 # the other only through ACL; the exported worlds must be byte-identical with the same revision.
-# Captures the World window and the Inspector tag chips. Databases live under target/.
-param([int]$Port = 4466, [string]$Exe = "target\debug\axiom.exe")
+# Captures the World window and the Inspector tag chips. Databases, exports and captures live in a
+# new per-run folder under target\world-parity. Refuses a -Port that already answers (another
+# editor could receive the writes); -AllowBusyPort skips only that pre-check, the bridge must
+# still belong to the editor this script started before the first write.
+param([int]$Port = 4466, [string]$Exe = "target\debug\axiom.exe", [switch]$AllowBusyPort)
 $ErrorActionPreference = "Stop"
-Set-Location (Split-Path -Parent $PSScriptRoot)
-if (-not (Test-Path $Exe)) { throw "missing $Exe (build it first: cargo build -p axiom)" }
-$work = Join-Path $PWD "target\world-parity"
-New-Item -ItemType Directory -Force $work | Out-Null
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+$Exe = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $Exe))
+if (-not (Test-Path -LiteralPath $Exe)) { throw "missing $Exe (build it first: cargo build -p axiom)" }
+. (Join-Path $PSScriptRoot 'parity-bridge.ps1')
+Assert-PortFree $Port -Allow:$AllowBusyPort
+$work = New-RunFolder (Join-Path $root "target\world-parity")
 $editorDb = Join-Path $work "editor.sqlite"
 $aclDb = Join-Path $work "acl.sqlite"
-Remove-Item "$editorDb*", "$aclDb*" -ErrorAction SilentlyContinue
 foreach ($db in $editorDb, $aclDb) {
     & $Exe --db $db --pack content\empty query | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "seed $db failed" }
 }
 
-function Send-Editor($Request) {
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-        $client.Connect('127.0.0.1', $Port)
-        $client.ReceiveTimeout = 30000
-        $stream = $client.GetStream()
-        $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false), 1024, $true)
-        $writer.AutoFlush = $true
-        $writer.WriteLine(($Request | ConvertTo-Json -Compress -Depth 30))
-        [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false)).ReadLine() | ConvertFrom-Json
-    } finally { $client.Dispose() }
-}
 function Wait-Editor([scriptblock]$Predicate) {
     for ($i = 0; $i -lt 600; $i++) {
         if ($process.HasExited) { throw "Editor exited early. See $work\editor-errors.log" }
@@ -60,11 +53,14 @@ $steps = @(
     @{ select = @();          command = 'object.trigger_box';    arg = $null;                 acl = 'create trigger box' }
 )
 
-$process = Start-Process -FilePath $Exe -ArgumentList ('--db "{0}" editor --port {1}' -f $editorDb, $Port) -WorkingDirectory $PWD -PassThru -RedirectStandardOutput "$work\editor.log" -RedirectStandardError "$work\editor-errors.log"
+$process = Start-Process -FilePath $Exe -ArgumentList ('--db "{0}" editor --port {1}' -f $editorDb, $Port) -WorkingDirectory $root -PassThru -RedirectStandardOutput "$work\editor.log" -RedirectStandardError "$work\editor-errors.log"
 $null = $process.Handle
 $result = [ordered]@{}
 try {
     $first = Wait-Editor { param($o) $o.gpu -and $o.editor.mode -eq 'edit' }
+    # The editor that answered must be the one started above (a foreign editor on this port
+    # would otherwise receive the first write).
+    Assert-BridgeOwner $Port $process.Id
     $rev = $first.editor.authoring_rev
     $result.start_rev = $rev
     $editorMs = @()
@@ -92,27 +88,24 @@ try {
     $reply = Send-Editor @{ op = 'editor_view'; command = 'window.world'; select = @('cube'); focus = $true }
     if (-not $reply.ok) { throw "window.world: $($reply | ConvertTo-Json -Depth 10 -Compress)" }
     Start-Sleep -Milliseconds 2500
-    $shot = Send-Editor @{ op = 'editor_view'; capture = 'editor-world-panel' }
-    $result.capture = $shot.capture
-    Start-Sleep -Milliseconds 3000
+    $result.capture = Save-Capture $work 'editor-world-panel'
     # Screenshot: a resource from the World window opened in the Inspector (schema form).
     $reply = Send-Editor @{ op = 'editor_view'; open = 'resource:nav.grid' }
     if (-not $reply.ok) { throw "open resource: $($reply | ConvertTo-Json -Depth 10 -Compress)" }
     Start-Sleep -Milliseconds 2500
-    $shot = Send-Editor @{ op = 'editor_view'; capture = 'editor-resource-form' }
-    $result.capture_resource = $shot.capture
-    Start-Sleep -Milliseconds 3000
+    $result.capture_resource = Save-Capture $work 'editor-resource-form'
     $result.final_observation = (Send-Editor @{ op = 'observe' }).observation.editor | Select-Object authoring_rev, selection, pending_commits
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id; [void]$process.WaitForExit(10000) }
 }
-& $Exe --db $editorDb export "$work\via-editor.json" | Out-Null
-& $Exe --db $aclDb export "$work\via-acl.json" | Out-Null
-$a = [IO.File]::ReadAllText("$work\via-editor.json")
-$b = [IO.File]::ReadAllText("$work\via-acl.json")
-$result.editor_rev = (& $Exe --db $editorDb query | ConvertFrom-Json).rev
-$result.acl_rev = (& $Exe --db $aclDb query | ConvertFrom-Json).rev
-$result.identical = ($a -eq $b)
-$result.bytes = $a.Length
+# Fresh export paths in this run's folder, exit codes checked, compared byte for byte (SHA-256).
+$viaEditor = Join-Path $work 'via-editor.json'
+$result.editor_sha256 = Export-World $Exe $editorDb $viaEditor
+$result.acl_sha256 = Export-World $Exe $aclDb (Join-Path $work 'via-acl.json')
+$result.editor_rev = Get-WorldRev $Exe $editorDb
+$result.acl_rev = Get-WorldRev $Exe $aclDb
+$result.identical = ($result.editor_sha256 -ceq $result.acl_sha256)
+$result.bytes = (Get-Item -LiteralPath $viaEditor).Length
+$result.work = $work
 $result | ConvertTo-Json -Compress -Depth 6
 if (-not $result.identical -or $result.editor_rev -ne $result.acl_rev) { exit 1 }

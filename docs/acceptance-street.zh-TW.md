@@ -34,7 +34,7 @@
 | `build/50-player.acl` | ACL | 玩家、點擊移動、輸入軸、聽者、跟隨相機 |
 | `build/60-logic.acl` | ACL | 規則、`runtime.bindings`、對話、HUD |
 
-`scripts/build-street.ps1` 從 `content/empty` 建一個全新的資料庫(在 `target/street-build/`,不碰使用者的世界),依序送出上表,`verify`,再 `export` 成 `content/street/world.json` 並產生 `manifest.json`。六個內容 ACL 共 293 個敘述(set 141、create 65、rename 38、instantiate 20、audio 7、tween 7、prefab 5、interact 3、follow 3、camera 2、nav 2;GAP-1 補上後其中 4 行 `set … /tags` 改成 `tag`),加上種子共 7 個檔案,每個檔案恰好一個 revision(rev 2..8)。
+`scripts/build-street.ps1` 從 `content/empty` 建一個全新的資料庫(預設在 `target/street-build/run-*/`,成功後只刪除本次建立的檔案;`-Db` 指向已存在的資料庫或 SQLite sidecar 時直接拒絕、不刪任何東西),依序送出上表,`verify`,再 `export` 成 `content/street/world.json` 並產生 `manifest.json`。六個內容 ACL 共 293 個敘述(set 141、create 65、rename 38、instantiate 20、audio 7、tween 7、prefab 5、interact 3、follow 3、camera 2、nav 2;GAP-1 補上後其中 4 行 `set … /tags` 改成 `tag`),加上種子共 7 個檔案,每個檔案恰好一個 revision(rev 2..8)。
 
 重現性測試 `crates/axiom-runtime/tests/street.rs::street_pack_is_reproducible_from_its_build_script`:在程序內用同一套協定(`Store::execute` 的 `acl` 請求)重播腳本,檢查每段恰好 +1 revision、最後 `verify` 通過、結果和 `content/street/world.json` 逐欄相同(不同時列出前 12 個 JSON pointer),並且內容包能載入、編譯。
 
@@ -143,7 +143,7 @@
 
 ### 從空世界用編輯器:真 GPU 編輯器 ↔ ACL
 
-`scripts/editor-world-parity.ps1`:兩個從 `content/empty` 建的新資料庫,一個只用真 GPU 編輯器的指令(`editor_view {select, command, arg}`)、一個只用 ACL,12 步各一個 revision,最後匯出比對。
+`scripts/editor-world-parity.ps1`:兩個從 `content/empty` 建的新資料庫(放在本次專用的 `target/world-parity/run-*/`,匯出檔、截圖也在這裡;`-Port` 已有程序回應時拒絕執行,第一筆寫入前確認 bridge 屬於本次啟動的編輯器;兩份匯出檢查結束碼後比對 SHA-256),一個只用真 GPU 編輯器的指令(`editor_view {select, command, arg}`)、一個只用 ACL,12 步各一個 revision,最後匯出比對。
 
 | # | 編輯器 | ACL |
 |---|---|---|
@@ -159,7 +159,7 @@
 
 結果(debug,2026-11-09 晚,跑了 4 次):兩邊都是 rev 1 → 13,匯出 4,721 bytes **逐位元相同**(`identical: true`)。每步送出到新 revision 上線 311–1,100 ms(本機每幀 present 阻塞約 250 ms,見 GAP-19)。
 
-截圖(實際看過):`artifacts/captures/editor-world-panel.png` —— World 視窗:ID `corner`、Title「編輯器街口 Corner」;7 個 capability 各自的使用數,Remove 全部停用(都在使用中);系統依 phase 排列 5 `behavior.execute`、7 `interact.focus`、25 `trigger.detect`;3 個資源(`behavior.program` 112 B、`input.bindings` 31 B、`nav.grid` 95 B)與 Create resource 下拉。右側 Inspector 選取 `cube`,TAGS 有 `player` chip 與 x、`add tag…` 輸入框。`artifacts/captures/editor-resource-form.png` —— 從 World 視窗開的 `nav.grid`:Form / JSON 切換、cell_size 0.25(提示「m 0.05..4, default 0.25」)、colliders、expansions_per_step 4096、floor_y、pointer_agent 表單欄位。
+截圖(實際看過;現在寫在本次的 `target/world-parity/run-*/`):`editor-world-panel.png` —— World 視窗:ID `corner`、Title「編輯器街口 Corner」;7 個 capability 各自的使用數,Remove 全部停用(都在使用中);系統依 phase 排列 5 `behavior.execute`、7 `interact.focus`、25 `trigger.detect`;3 個資源(`behavior.program` 112 B、`input.bindings` 31 B、`nav.grid` 95 B)與 Create resource 下拉。右側 Inspector 選取 `cube`,TAGS 有 `player` chip 與 x、`add tag…` 輸入框。`editor-resource-form.png` —— 從 World 視窗開的 `nav.grid`:Form / JSON 切換、cell_size 0.25(提示「m 0.05..4, default 0.25」)、colliders、expansions_per_step 4096、floor_y、pointer_agent 表單欄位。
 
 效能:World 視窗的列與 tag chip 只在 revision(或背景寫入器的暫存世界)改變時重建(測試計數:開著視窗多畫 5 幀不重建,新 revision 重建 1 次)。街道世界上整個編輯器一幀 World 視窗開 / 關的p50:關 2.1 / 3.0 ms、開 2.6 / 3.0 ms(debug 單元測試 `world_tests::world_window_cost_on_the_street_world`,兩輪交錯,雜訊大,不是 GPU 量測)。仍有 egui 本身的每幀配置(文字版面),沒有量測、沒有宣稱零配置。
 
@@ -236,5 +236,5 @@ powershell -NoProfile -File scripts\street-smoke-test.ps1
 
 編輯器(`scripts/street-editor-parity.ps1` 擷取,debug):
 
-- `artifacts/captures/street-editor-crossing.png`:選取「紅綠燈」聚焦斑馬線。可見停止線觸發區的青色線框(TRIG)、車道路徑(PATH)與跟隨者到起點的線(FOLLOW)、對等步驟建立的方塊上的聲源球(SND)與互動圈(USE)、移動 gizmo;Inspector 的 Tween timeline 顯示 green / red / yellow 三個片段、once、Autoplay、8 條軌;Hierarchy 有中文標籤與 MESH / FOLLOW / SND / PFB / LIGHT / PATH / TWEEN 標記;標題列「Axiom Street / 黃昏街口」,REV 16。導航代理(NAV)與跟隨相機(RIG)的 gizmo 不在這個視角內。
-- `artifacts/captures/street-editor-gizmos.png`:選取「咖啡廳大門」聚焦門口,可見門的 USE 圈、吱呀聲的 SND 球、門口 / 室內觸發區線框、Tween timeline(`open`,yaw 軌兩個 key)。
+- `street-editor-crossing.png`(現在寫在 `target/street-parity/run-*/`,經 loopback `screenshot` 寫完才回覆):選取「紅綠燈」聚焦斑馬線。可見停止線觸發區的青色線框(TRIG)、車道路徑(PATH)與跟隨者到起點的線(FOLLOW)、對等步驟建立的方塊上的聲源球(SND)與互動圈(USE)、移動 gizmo;Inspector 的 Tween timeline 顯示 green / red / yellow 三個片段、once、Autoplay、8 條軌;Hierarchy 有中文標籤與 MESH / FOLLOW / SND / PFB / LIGHT / PATH / TWEEN 標記;標題列「Axiom Street / 黃昏街口」,REV 16。導航代理(NAV)與跟隨相機(RIG)的 gizmo 不在這個視角內。
+- `street-editor-gizmos.png`(同上):選取「咖啡廳大門」聚焦門口,可見門的 USE 圈、吱呀聲的 SND 球、門口 / 室內觸發區線框、Tween timeline(`open`,yaw 軌兩個 key)。

@@ -6,7 +6,9 @@ $m1Exe = (Resolve-Path 'target/debug/axiom.exe').Path
 $m1Hash = (Get-FileHash -LiteralPath $m1Exe -Algorithm SHA256).Hash
 $m1Stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $m1Dir = Join-Path $PWD "artifacts/m1-$m1Stamp"
-$m1Db = Join-Path $PWD "data/m1-$m1Stamp.sqlite"
+# The database lives in this run's own folder, so the headless scenarios (--save-dir) and the live
+# Play below write their slots to its saves/ folder, never to data/saves next to a player database.
+$m1Db = Join-Path $m1Dir 'm1.sqlite'
 New-Item -ItemType Directory -Force -Path $m1Dir | Out-Null
 function Invoke-M1([string[]]$M1Args) {
     $m1Raw = & $m1Exe @M1Args

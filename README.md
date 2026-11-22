@@ -30,7 +30,7 @@ Most engines are built for people working in an editor. Axiom is built for AI co
 
 ## A 60-second tour
 
-Every command below uses the same database: `axiom --db lab.sqlite …`. The first command creates it from a content pack.
+Every command below names the same scratch database with `--db lab.sqlite`, so nothing touches your default world (`data/world.sqlite`). Start from a path that does not exist yet: the first command creates it from a content pack. Without `--db`, a command opens the default world.
 
 ```text
 $ axiom --db lab.sqlite --pack content/behavior-lab acl -e "select entities[tag=enemy] fields core.health/value limit 3"
@@ -39,29 +39,29 @@ enemy/1 core.health/value=100
 enemy/2 core.health/value=100
 matched=6 rev=1 next=l1.1.…
 
-$ axiom acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=18"
+$ axiom --db lab.sqlite acl --expected-rev 1 -e "set enemy/* core.health/value 40 where core.transform/position/0>=18"
 ok rev=2 changes=2
 + /entities/@enemy~14/components/core.health = {"value":40}
 + /entities/@enemy~15/components/core.health = {"value":40}
 
-$ axiom call fsm.inspect '{"id":"enemy/0"}'            # "why isn't this enemy chasing?"
+$ axiom --db lab.sqlite call fsm.inspect '{"id":"enemy/0"}'   # "why isn't this enemy chasing?"
 {"ok":true,"result":{"state":"idle","transitions":[…,
   {"to":"chase","when":"near(player)<=15","measured":30.016663,"pass":false}]},"rev":2,"tick":0}
 
-$ axiom scenario examples/behavior-chase.scenario.json  # headless; same state_hash in every process
+$ axiom --db lab.sqlite scenario examples/behavior-chase.scenario.json  # headless; same state_hash in every process
 {"ok":true,"state_hash":"…","assertions":[ 5 passed ], …}
 
-$ axiom acl -e "undo 1"
+$ axiom --db lab.sqlite acl --expected-rev 2 -e "undo 1"   # refused if someone committed after rev 2
 ok rev=3 restored_from=1
 ```
 
-(The edit above adds a local override to prefab instances. The prefab default stays untouched.)
+(The edit above adds a local override to prefab instances. The prefab default stays untouched. `--expected-rev` is the revision you last read; if another writer committed in between, the command fails with `revision_conflict` and changes nothing.)
 
 ## Features
 
 | Area | What you get |
 |---|---|
-| **Authoring protocol** | Typed JSON requests (`select`, `preview`, `apply`, `undo`, `diff`, `history`, `discover`) and **ACL**, a terse line-based command language that compiles to the same requests. Every request uses compare-and-swap revisions and request-ID retries. |
+| **Authoring protocol** | Typed JSON requests (`select`, `preview`, `apply`, `undo`, `diff`, `history`, `discover`) and **ACL**, a terse line-based command language that compiles to the same requests. Writes take an optional `expected_rev` (compare-and-swap). `apply` and `undo` can also carry a request ID whose durable receipt makes a retry return the first result instead of committing twice (`--request-id`); ACL, `select` and other requests do not take one. |
 | **Queries** | ID globs, tag and component filters, `where` predicates that see prefab-inherited values, field projection, cursors and byte budgets. Output can be JSON or compact lines. |
 | **Batch edits** | `set_where` updates every matching object in one revision. `spawn` instantiates prefabs N times. Edits are validated against component and resource schemas. |
 | **Runtime** | Fixed-step 120 Hz simulation, generation-checked entity handles, typed component columns, and hot reload that keeps state across revisions. |
@@ -113,16 +113,18 @@ An agent only needs the `axiom` executable. A typical loop:
 
 1. **Discover**: `axiom discover acl` (grammar), `axiom discover local` (JSON schema), `axiom schema components`. Pass `--if-hash` to skip re-reading a schema that hasn't changed.
 2. **Read** only what is needed: `axiom acl -e "select … where … fields … limit N"`.
-3. **Change** in one transaction: `axiom acl --preview script.acl`, then `axiom acl script.acl`. Multi-line edit scripts commit as a single revision.
+3. **Change** in one transaction, guarded by the revision `R` you read: `axiom acl --preview --expected-rev R script.acl`, then `axiom acl --expected-rev R script.acl`. Multi-line edit scripts commit as a single revision. On `revision_conflict` someone else committed after `R`: read again and preview again before committing, so the commit never touches objects the preview did not show.
+   - **Retries.** `apply` and `undo` accept `--request-id ID`: sending the same ID and request again returns the stored result instead of committing twice, e.g. `axiom --request-id fix-42 apply edit.json` (with `expected_rev` in the file). ACL, `select` and other requests refuse a request ID. If an ACL reply is lost, check `axiom acl -e "history 5"` (and `diff A B`) for your revision before you send it again.
 4. **Verify** without a screen: `axiom scenario file.json`, `axiom call fsm.inspect '{"id":"…"}' --ticks 600`, `axiom verify --measure 5`.
-5. **Observe live**: `axiom --connect 127.0.0.1:4242 observe-delta --field /rev`. The running game reloads new revisions on its own.
-6. **Roll back**: `axiom undo REV` appends a restoring revision. History is never rewritten.
+5. **Observe live**: `axiom --connect 127.0.0.1:4242 observe-delta --field /rev --field /requested_rev --field /activation --field /activation_error`, then repeat with `--cursor CURSOR` from the previous reply to get only what changed. The running game reloads new revisions on its own; `requested_rev` ahead of `rev` means the new revision is still being activated, and `activation: "activation_failed"` with `activation_error` means it was rejected and the old one keeps running (`activation_error` is listed under `missing_fields` while there is no error).
+6. **Roll back**: `axiom undo REV --expected-rev R` appends a revision restoring `REV`, refused if anything was committed after the revision `R` you checked. History is never rewritten.
 
 ACL at a glance (`axiom discover acl` prints the full grammar):
 
 ```text
 select SEL [where F OP V [and …]] [fields F,F] [limit N]     # read
-inspect ID | history [N] | diff A B | undo REV                # read
+inspect ID | history [N] | diff A B                           # read
+undo REV                                                       # write: appends a restoring revision (use --expected-rev)
 set SEL F VALUE [where …]                                      # edit
 spawn PREFAB count=N id=enemy/{i} at=x,y,z step=dx,dy,dz tag=a
 delete SEL

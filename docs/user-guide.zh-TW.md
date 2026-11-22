@@ -112,15 +112,16 @@ Checkpoint 採嚴格內容相容檢查；v0.4 亦接受已知的 v0.3.0／v0.3.1
 
 ## AI 修改流程
 
-最精簡的入口是 ACL(Axiom Command Language)。一行一個敘述，輸出是精簡文字，底層仍編譯成同一套交易式協定(CAS、diff、undo、冪等重試都沿用):
+最精簡的入口是 ACL(Axiom Command Language)。一行一個敘述，輸出是精簡文字，底層仍編譯成同一套交易式協定(CAS `--expected-rev`、diff、undo 都沿用)。ACL 請求不接受 `--request-id`:持久化 receipt 只支援 `apply` 與 `undo`(見下方)。ACL 提交的回覆遺失時，先用 `history`/`diff` 確認該 revision 是否已提交，再決定是否重送。以下範例寫入獨立的 `data/lab.sqlite`(從 `content/behavior-lab` 建立),不碰預設世界:
 
 ```powershell
 .\target\debug\axiom.exe discover acl                      # 文法
-.\target\debug\axiom.exe acl -e "spawn enemy.basic count=10 id=enemy/{i} at=0,0,0 step=2,0,0 tag=enemy"
-.\target\debug\axiom.exe acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=10"
-.\target\debug\axiom.exe acl -e "select entities[tag=enemy] where core.health/value<50 fields core.health/value limit 5"
-.\target\debug\axiom.exe acl -e "inspect enemy/3"
-.\target\debug\axiom.exe acl --preview script.acl          # 多行編輯 = 一個 revision
+.\target\debug\axiom.exe --db data/lab.sqlite --pack content/behavior-lab acl -e "spawn enemy.basic count=10 id=enemy/{i} at=0,0,0 step=2,0,0 tag=enemy"
+.\target\debug\axiom.exe --db data/lab.sqlite acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=10"
+.\target\debug\axiom.exe --db data/lab.sqlite acl -e "select entities[tag=enemy] where core.health/value<50 fields core.health/value limit 5"
+.\target\debug\axiom.exe --db data/lab.sqlite acl -e "inspect enemy/3"
+.\target\debug\axiom.exe --db data/lab.sqlite acl --preview --expected-rev R script.acl   # 多行編輯 = 一個 revision;R = 剛讀到的 revision
+.\target\debug\axiom.exe --db data/lab.sqlite acl --expected-rev R script.acl             # revision_conflict → 重新讀取、重新預覽
 .\target\debug\axiom.exe --connect 127.0.0.1:4242 acl -e "history 5"
 ```
 

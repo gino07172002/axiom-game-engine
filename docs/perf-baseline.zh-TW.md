@@ -130,7 +130,7 @@ GPU 編輯器(release,外部 `set_field` 經 bridge,最終版 vs 基準交錯 2 
 
 ### 量測(release,`perf_bench` 編輯器路徑,5 輪交錯 HEAD 1bf44ac ↔ 本版,每輪每包 20 次編輯捨棄第 1 次;中位數 [各輪範圍])
 
-「編輯器主執行緒/commit」:本版 = 送出 + 顯示樂觀世界 + 處理結果三段主執行緒時間總和(`edit_live.editor_main_ms`);HEAD = 整個同步 `editor_action`(commit + reload 請求,p95 為兩者 p95 相加,上限估計)。
+「編輯器主執行緒/commit」:本版 = 送出 + 顯示樂觀世界 + 處理結果三段主執行緒時間總和(`edit_live.editor_main_ms`);HEAD = 整個同步 `editor_action`(commit + reload 請求,p95 為兩者 p95 相加。這只是近似值，不是總耗時 p95 的上界：兩段的慢樣本落在不同編輯時會低估。`scripts/perf-summary.ps1` 對這種舊報告的 p50/p95 改印 NaN,只另列可證明的 `legacy main max <=`)。
 
 | 內容包 | 編輯器主執行緒/commit p50 HEAD → 本版 | p95 HEAD → 本版 | 單段最大 p95(本版) | 編輯→生效 p50 HEAD → 本版 | 編輯→生效 p95 HEAD → 本版 | 寫入器 commit p50(本版) | 樂觀世界就緒 p50 |
 |---|---|---|---|---|---|---|---|

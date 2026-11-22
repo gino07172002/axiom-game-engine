@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+# PowerShell 7 (pwsh) is required: ConvertFrom-Json -AsHashtable does not exist in Windows PowerShell 5.1.
 param([int]$Port = 4422, [switch]$SkipEarlier)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
