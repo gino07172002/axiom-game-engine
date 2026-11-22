@@ -42,6 +42,14 @@ impl PartialBatch {
         response
     }
 }
+/// Protocol reply of a failed runtime request, the same for the live bridge and the
+/// benchmark harness: a partly applied batch keeps its `applied_count` / `failed_index`.
+pub fn request_error_response(error: &anyhow::Error) -> Value {
+    match PartialBatch::of(error) {
+        Some(partial) => partial.response(error),
+        None => error_response(error),
+    }
+}
 #[derive(Default, Clone)]
 pub struct ActionMap(pub BTreeMap<String, f32>);
 impl ActionMap {
@@ -229,7 +237,8 @@ impl RuntimeState {
         self.columns = columns;
         Ok(runtime_id)
     }
-    fn new(compiled: CompiledWorld, registry: Registry) -> Self {
+    /// Entity handles start at generation `first_generation` (1 for a new runtime).
+    fn new(compiled: CompiledWorld, registry: Registry, first_generation: u64) -> Self {
         let events = crate::events::Events::new(&compiled.source);
         let rng = compiled
             .source
@@ -250,10 +259,10 @@ impl RuntimeState {
             ids: (0..compiled.len())
                 .map(|i| RuntimeEntityId {
                     slot: i as u32,
-                    generation: 1,
+                    generation: first_generation,
                 })
                 .collect(),
-            next_generation: 2,
+            next_generation: first_generation + 1,
             animation_cues: Default::default(),
             audio: Default::default(),
             events,
@@ -1117,6 +1126,32 @@ impl WorldRuntime {
         rev: i64,
         registry: RuntimeRegistry,
     ) -> Result<Self> {
+        Self::build(world, rev, registry, 1)
+    }
+    /// The handle generation a replacement for this runtime should start at
+    /// ([`Self::new_replacing`]). `headroom` leaves generations for entities this runtime
+    /// may still spawn while the replacement is built on another thread.
+    pub(crate) fn replacement_generation(&self, headroom: u64) -> u64 {
+        self.state.next_generation.saturating_add(headroom)
+    }
+    /// A runtime built to replace another one (`adopt`): its entity handles start at
+    /// `first_generation` (from [`Self::replacement_generation`]) before any system factory
+    /// runs, so a handle a factory keeps stays valid when the replacement is adopted for
+    /// another world, and never equals a handle of the replaced runtime.
+    pub(crate) fn new_replacing(
+        world: impl std::borrow::Borrow<World>,
+        rev: i64,
+        registry: RuntimeRegistry,
+        first_generation: u64,
+    ) -> Result<Self> {
+        Self::build(world, rev, registry, first_generation.max(1))
+    }
+    fn build(
+        world: impl std::borrow::Borrow<World>,
+        rev: i64,
+        registry: RuntimeRegistry,
+        first_generation: u64,
+    ) -> Result<Self> {
         let world: &World = world.borrow();
         let started = std::time::Instant::now();
         let compiled = world.compile(&registry.authoring)?;
@@ -1141,7 +1176,7 @@ impl WorldRuntime {
         } else {
             InputBindings::default()
         };
-        let mut state = RuntimeState::new(compiled, registry.authoring.clone());
+        let mut state = RuntimeState::new(compiled, registry.authoring.clone(), first_generation);
         state.contexts = crate::input::Contexts::new(world)?;
         state.combat = crate::combat::Combat::new(world)?;
         state.revision = rev;
@@ -1257,7 +1292,13 @@ impl WorldRuntime {
     ) -> Result<()> {
         let started = std::time::Instant::now();
         self.requested_rev = rev;
-        let next = Self::new(world, rev, self.registry.clone());
+        // Built and adopted on this thread: nothing spawns in between, no headroom needed.
+        let next = Self::new_replacing(
+            world,
+            rev,
+            self.registry.clone(),
+            self.replacement_generation(0),
+        );
         self.adopt(next, prepare, started).map(drop)
     }
     /// Migrates state from this runtime into a replacement built for a new revision (here
@@ -1280,11 +1321,22 @@ impl WorldRuntime {
             let same_world = next.state.compiled.source.id == self.state.compiled.source.id;
             next.runtime_epoch = self.runtime_epoch + u64::from(!same_world);
             if !same_world {
+                // A replacement built with `new_replacing` already starts above every
+                // generation this runtime issued, so the handles its system factories saw
+                // stay valid. Only one that is not (built by `new`, or this runtime spawned
+                // past the headroom meanwhile) is renumbered here, as a last resort.
+                let clash = next
+                    .state
+                    .ids
+                    .iter()
+                    .any(|id| id.generation < self.state.next_generation);
                 next.state.next_generation =
                     next.state.next_generation.max(self.state.next_generation);
-                for id in &mut next.state.ids {
-                    id.generation = next.state.next_generation;
-                    next.state.next_generation += 1;
+                if clash {
+                    for id in &mut next.state.ids {
+                        id.generation = next.state.next_generation;
+                        next.state.next_generation += 1;
+                    }
                 }
             } else {
                 self.transfer_state(&mut next)?;
@@ -1866,5 +1918,87 @@ impl WorldRuntime {
             system.validate(&self.state)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    struct Holder {
+        handle: RuntimeEntityId,
+    }
+    impl RuntimeSystem for Holder {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn step(&mut self, _state: &mut RuntimeState, _input: &ActionMap) {}
+    }
+
+    fn registry() -> RuntimeRegistry {
+        let mut r = RuntimeRegistry::core();
+        r.authoring.capabilities.insert("holder".into(), 1);
+        r.authoring.systems.insert(
+            "holder.keep".into(),
+            SystemDescriptor {
+                id: "holder.keep".into(),
+                capability: "holder".into(),
+                phase: 9,
+                reads: vec![],
+                writes: vec![],
+                after: vec![],
+            },
+        );
+        r.factories.insert("holder.keep".into(), |state| {
+            Ok(Box::new(Holder {
+                handle: state.ids[0],
+            }) as Box<dyn RuntimeSystem>)
+        });
+        r
+    }
+
+    fn world(id: &str) -> World {
+        let mut w = World::empty(id);
+        w.capabilities.insert("holder".into(), 1);
+        w.systems.push("holder.keep".into());
+        let mut e = Entity::new("box");
+        e.set("core.transform", Transform::default()).unwrap();
+        w.entities.push(e);
+        w
+    }
+
+    /// The background activation path: the replacement is built (factories run) while the
+    /// running runtime keeps spawning, then adopted for another world.
+    #[test]
+    fn a_replacement_built_off_thread_keeps_its_factory_handles_across_worlds() {
+        let mut running = WorldRuntime::new(world("a"), 1, registry()).unwrap();
+        let headroom = 1 << 32;
+        let next = WorldRuntime::new_replacing(
+            world("b"),
+            2,
+            running.registry_clone(),
+            running.replacement_generation(headroom),
+        );
+        // The running runtime spawns while the replacement is being built.
+        let template = running.state.compiled.entities[0].clone();
+        let spawned = running
+            .state
+            .spawn(&template, "spawned".into(), [1.0, 0.0, 0.0])
+            .unwrap();
+        running
+            .adopt(next, |_| Ok(()), std::time::Instant::now())
+            .unwrap();
+        let kept = running.system::<Holder>().unwrap().handle;
+        assert_eq!(running.state.resolve(kept), Some(0));
+        assert!(running.state.resolve(spawned).is_none());
+        // A replacement that could clash (built without a floor) is still renumbered, so
+        // old handles never resolve in the new world.
+        let old = running.state.ids[0];
+        let plain = WorldRuntime::new(world("c"), 3, running.registry_clone());
+        running
+            .adopt(plain, |_| Ok(()), std::time::Instant::now())
+            .unwrap();
+        assert!(running.state.resolve(old).is_none());
+        assert!(running.state.ids[0].generation >= kept.generation);
     }
 }

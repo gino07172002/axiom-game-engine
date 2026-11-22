@@ -31,6 +31,11 @@ sha2 = "0.10"
 # feature `ogg` = the Ogg container, no async).
 lewton = "0.10"
 
+[dev-dependencies]
+# Writer tests hold the SQLite write lock from a second connection. The same version and
+# features axiom-core already builds: no new crate in the build.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 
 # Per-process video memory for the editor status bar (vram.rs; the crate is already built for
 # wgpu-hal's D3D12 backend) and XInput gamepads (gamepad.rs).

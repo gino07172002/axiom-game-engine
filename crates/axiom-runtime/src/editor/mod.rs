@@ -1928,6 +1928,133 @@ impl Editor {
         self.set_view_flag(&ids, locked);
     }
 
+    /// What `remote_view` and `remote_open` would refuse (and an unknown `command`), without
+    /// changing anything: the host checks a whole `editor_view` request with it before any
+    /// side effect (Play). The gizmo-drag condition is left to `remote_view` (starting Play
+    /// ends a drag), and a command's state-dependent availability to running it.
+    pub(crate) fn check_remote(
+        &self,
+        select: &[String],
+        dock: Option<&str>,
+        open: Option<&str>,
+        command: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(id) = command {
+            anyhow::ensure!(
+                commands::command(id).is_some(),
+                "unknown editor command {id}; see discover editor (commands)"
+            );
+        }
+        anyhow::ensure!(
+            !self.dirty(),
+            "the editor has an unsaved draft; ask the user to apply or reload it first"
+        );
+        for id in select {
+            if self.world.entity(id).is_none() {
+                return Err(axiom_core::Diagnostic::error(
+                    "not_found",
+                    "/select",
+                    format!("entity {id} not found"),
+                ));
+            }
+        }
+        if let Some(dock) = dock {
+            Self::dock_named(dock)?;
+        }
+        if let Some(target) = open {
+            let selected = select.first().map(String::as_str);
+            self.check_open(target, selected.or(self.selected.as_deref()))?;
+        }
+        Ok(())
+    }
+
+    fn dock_named(dock: &str) -> anyhow::Result<Dock> {
+        Dock::from_name(dock).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown dock {dock}; use {}",
+                Dock::ALL.map(Dock::name).join("|")
+            )
+        })
+    }
+
+    /// `remote_open`'s refusals for `target` with `selected` as the selection.
+    fn check_open(&self, target: &str, selected: Option<&str>) -> anyhow::Result<()> {
+        let (kind, id) = target.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "open expects material:ID, prefab:ID, resource:ID, component:ID, options:COMMAND, graph:MACHINE or rules:"
+            )
+        })?;
+        let missing = || {
+            axiom_core::Diagnostic::error("not_found", "/open", format!("{kind} {id} not found"))
+        };
+        let found = match kind {
+            "material" => assets::MaterialDraft::open(&self.world, self.rev, id).is_some(),
+            "prefab" => self.world.prefabs.contains_key(id),
+            "resource" => self.world.resources.contains_key(id),
+            "component" => {
+                let entity = selected
+                    .and_then(|s| self.world.entity(s))
+                    .ok_or_else(|| anyhow::anyhow!("open component:ID needs a selected object"))?;
+                ui::component_value(&self.world, entity, id).is_some()
+            }
+            "options" => {
+                let command = commands::command(id).map(|c| c.id).ok_or_else(missing)?;
+                anyhow::ensure!(
+                    options::OptionsDialog::for_command(self, command).is_some(),
+                    "{id} has no options dialog"
+                );
+                true
+            }
+            "graph" | "animator" => {
+                let doc = if kind == "graph" {
+                    axiom_core::ops::GraphDoc::Fsm
+                } else {
+                    axiom_core::ops::GraphDoc::Animator
+                };
+                if doc.graph(self.graph_world(), id).is_none() {
+                    // The same diagnostic as `graph_open_doc`.
+                    return Err(axiom_core::Diagnostic::error(
+                        "not_found",
+                        format!("/resources/{}/{}/{id}", doc.resource(), doc.root()),
+                        match doc {
+                            axiom_core::ops::GraphDoc::Fsm => format!("no state machine '{id}'"),
+                            axiom_core::ops::GraphDoc::Animator => {
+                                format!("no animation controller '{id}'")
+                            }
+                        },
+                    ));
+                }
+                true
+            }
+            "rules" => {
+                let exists = id.is_empty()
+                    || self
+                        .graph_world()
+                        .resources
+                        .get("behavior.program")
+                        .and_then(|p| p["rules"].as_array())
+                        .is_some_and(|r| r.iter().any(|x| x["id"] == id));
+                if !exists {
+                    // The same diagnostic as `graph_open_rules`.
+                    return Err(axiom_core::Diagnostic::error(
+                        "not_found",
+                        "/resources/behavior.program/rules",
+                        format!("no rule '{id}'"),
+                    ));
+                }
+                true
+            }
+            other => anyhow::bail!(
+                "unknown kind {other}; use material, prefab, resource, component, options, graph, animator or rules"
+            ),
+        };
+        if found {
+            Ok(())
+        } else {
+            Err(missing())
+        }
+    }
+
     /// Remote view control from the bridge (`editor_view`). Never touches drafts.
     pub(crate) fn remote_view(
         &mut self,
@@ -1950,12 +2077,7 @@ impl Editor {
         }
         if let Some(dock) = dock {
             // Opens the tab if it was closed, then makes it the active, focused one.
-            let tab = Dock::from_name(dock).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown dock {dock}; use {}",
-                    Dock::ALL.map(Dock::name).join("|")
-                )
-            })?;
+            let tab = Self::dock_named(dock)?;
             self.show_dock(tab);
         }
         if let Some((first, rest)) = select.split_first() {

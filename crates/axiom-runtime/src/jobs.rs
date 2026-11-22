@@ -72,7 +72,8 @@ pub struct Job<T> {
     started: Instant,
     timeout: Duration,
     progress: Arc<Progress>,
-    result: mpsc::Receiver<T>,
+    /// The worker's value and when it finished.
+    result: mpsc::Receiver<(T, Instant)>,
     handle: Option<JoinHandle<()>>,
     stop: Option<(Stop, Instant)>,
 }
@@ -92,7 +93,8 @@ impl<T: Send + 'static> Job<T> {
         let handle = std::thread::Builder::new()
             .name(format!("axiom-job-{kind}"))
             .spawn(move || {
-                let _ = sender.send(work(&shared));
+                let value = work(&shared);
+                let _ = sender.send((value, Instant::now()));
             })?;
         Ok(Self {
             kind,
@@ -112,7 +114,9 @@ impl<T> Job<T> {
         self.started.elapsed()
     }
 
-    /// Non-blocking; call once per frame. Enforces the watchdog deadline.
+    /// Non-blocking; call once per frame. Enforces the watchdog deadline, also for a result
+    /// already waiting: a worker that finished after its deadline is reported `TimedOut`
+    /// (whenever it is polled); one that finished in time is not (however late the poll).
     pub fn poll(&mut self) -> Option<Outcome<T>> {
         self.poll_within(Duration::ZERO)
     }
@@ -129,14 +133,15 @@ impl<T> Job<T> {
             })
         };
         match received {
-            Ok(value) => {
+            Ok((value, finished)) => {
                 if let Some(handle) = self.handle.take() {
                     // The worker has sent its result and is returning.
                     let _ = handle.join();
                 }
+                let late = finished.saturating_duration_since(self.started) >= self.timeout;
                 return Some(Outcome::Done {
                     value,
-                    stop: self.stop.map(|(s, _)| s),
+                    stop: self.stop.map(|(s, _)| s).or(late.then_some(Stop::TimedOut)),
                 });
             }
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -282,6 +287,33 @@ mod tests {
                 assert_eq!(stop, Some(Stop::TimedOut));
             }
             Outcome::Abandoned { .. } => panic!("cooperative worker was abandoned"),
+        }
+    }
+
+    /// A result that arrived after the deadline but before the next poll is still a
+    /// timeout: the queued value is not accepted as if the watchdog had not expired.
+    #[test]
+    fn a_result_finished_past_the_deadline_is_timed_out_even_when_already_queued() {
+        let mut job = Job::spawn("test", "late", Duration::from_millis(20), |_| {
+            // Ignores cancellation; nothing polls (so nothing asks it to stop) meanwhile.
+            std::thread::sleep(Duration::from_millis(80));
+            "late"
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        match job.poll() {
+            Some(Outcome::Done { value, stop }) => {
+                assert_eq!(value, "late");
+                assert_eq!(stop, Some(Stop::TimedOut));
+            }
+            _ => panic!("expected the queued result"),
+        }
+        // Finished in time but polled late: not a timeout.
+        let mut job = Job::spawn("test", "quick", Duration::from_secs(5), |_| "quick").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        match wait(&mut job) {
+            Outcome::Done { stop, .. } => assert_eq!(stop, None),
+            Outcome::Abandoned { .. } => panic!("expected the result"),
         }
     }
 

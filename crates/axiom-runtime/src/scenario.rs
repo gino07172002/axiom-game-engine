@@ -345,6 +345,16 @@ fn compare(label: &str, actual: &Value, op: axiom_core::local::Op, value: &Value
     );
     Ok(())
 }
+/// `value` with every number rounded to `f32` (as the typed column stores it).
+fn as_f32_precision(value: &Value) -> Value {
+    match value {
+        Value::Number(n) => n
+            .as_f64()
+            .map_or_else(|| value.clone(), |v| json!(v as f32)),
+        Value::Array(items) => Value::Array(items.iter().map(as_f32_precision).collect()),
+        other => other.clone(),
+    }
+}
 fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
     if let Assertion::Field {
         entity,
@@ -362,6 +372,8 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
         // Custom components read their live typed columns (as checkpoints save them), not
         // the authored values the runtime was compiled from.
         let mut components = runtime.state.compiled.entities[i].components.clone();
+        // Pointers of fields stored as `f32` (float / vec3 columns).
+        let mut single = vec![];
         for (name, table) in &runtime.state.columns {
             let Some(row) = table.entities.iter().position(|slot| *slot == i) else {
                 continue;
@@ -370,6 +382,16 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
                 continue;
             };
             for (field, column) in &table.fields {
+                if matches!(
+                    column,
+                    axiom_core::Column::Float(_) | axiom_core::Column::Vec3(_)
+                ) {
+                    single.push(format!(
+                        "/components/{}/{}",
+                        axiom_core::local::escape(name),
+                        axiom_core::local::escape(field)
+                    ));
+                }
                 match crate::checkpoint::column_value(column, row, &runtime.state) {
                     Some(value) => {
                         component.insert(field.clone(), value);
@@ -393,7 +415,17 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
             .pointer(&pointer)
             .cloned()
             .with_context(|| format!("field {pointer} missing on {entity}"))?;
-        compare(&format!("{entity}{pointer}"), &actual, *op, value)?;
+        // A live `f32` column reads back as the nearest f64 of its f32 (0.1 -> 0.100000001…):
+        // the expected value is compared at the same precision.
+        let expected = if single
+            .iter()
+            .any(|p| pointer == *p || pointer.starts_with(&format!("{p}/")))
+        {
+            as_f32_precision(value)
+        } else {
+            value.clone()
+        };
+        compare(&format!("{entity}{pointer}"), &actual, *op, &expected)?;
         return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
     }
     if let Assertion::Call {
@@ -567,6 +599,48 @@ mod tests {
         let passed = check(&mut runtime, &assertion(true)).unwrap();
         assert_eq!(passed["actual"], true);
         assert!(check(&mut runtime, &assertion(false)).is_err());
+    }
+
+    /// A custom `float` / `vec3` field the simulation never touched still equals its
+    /// authored decimal value, although the live column holds it as `f32`.
+    #[test]
+    fn float_field_assertions_compare_at_the_columns_precision() {
+        let mut w = axiom_core::World::empty("floats");
+        w.component_schemas.insert(
+            "game.stats".into(),
+            serde_json::from_value(json!({"fields":{"speed":{"ty":"float"},"aim":{"ty":"vec3"}}}))
+                .unwrap(),
+        );
+        let mut a = axiom_core::Entity::new("a");
+        a.set("game.stats", json!({"speed":0.1,"aim":[0.1,0.2,0.3]}))
+            .unwrap();
+        w.entities = vec![a];
+        let mut runtime = WorldRuntime::new(w, 1, crate::world::RuntimeRegistry::core()).unwrap();
+        let assertion = |field: &str, op: &str, value: Value| -> Assertion {
+            serde_json::from_value(json!({"kind":"field","entity":"a",
+                "field":field,"op":op,"value":value}))
+            .unwrap()
+        };
+        for (field, op, value) in [
+            ("/components/game.stats/speed", "eq", json!(0.1)),
+            ("/components/game.stats/speed", "le", json!(0.1)),
+            ("/components/game.stats/aim/1", "eq", json!(0.2)),
+            ("/components/game.stats/aim", "eq", json!([0.1, 0.2, 0.3])),
+        ] {
+            check(&mut runtime, &assertion(field, op, value.clone()))
+                .unwrap_or_else(|e| panic!("{field} {op} {value}: {e:#}"));
+        }
+        // Still a real comparison.
+        assert!(check(
+            &mut runtime,
+            &assertion("/components/game.stats/speed", "eq", json!(0.11))
+        )
+        .is_err());
+        assert!(check(
+            &mut runtime,
+            &assertion("/components/game.stats/speed", "gt", json!(0.1))
+        )
+        .is_err());
     }
 
     #[test]

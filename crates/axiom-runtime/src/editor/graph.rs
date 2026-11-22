@@ -1328,7 +1328,7 @@ impl Editor {
         }
     }
 
-    fn graph_world(&self) -> &World {
+    pub(super) fn graph_world(&self) -> &World {
         match &self.graph.scratch {
             Some((version, world)) if *version == self.world_version => world,
             _ => &self.world,
