@@ -590,7 +590,6 @@ impl RuntimeSystem for RtsSystem {
         self.sim
             .set_combat(state.combat.as_ref().map(|c| c.scene.clone()));
         let delivered = self.sim.stats.delivered;
-        let balance = self.sim.balance;
         let production_backup = self
             .sim
             .buildings
@@ -636,8 +635,8 @@ impl RuntimeSystem for RtsSystem {
             }
         }
         if self.sim.stats.delivered > delivered {
-            for (faction, previous) in balance.into_iter().enumerate() {
-                let amount = self.sim.balance[faction].saturating_sub(previous);
+            // Gross deliveries: production paid in the same tick must not hide them.
+            for (faction, amount) in self.sim.delivered_tick.into_iter().enumerate() {
                 if amount > 0 {
                     state.events.publish(
                         "rts.simulate",

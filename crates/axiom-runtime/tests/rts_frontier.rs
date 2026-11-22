@@ -345,3 +345,51 @@ fn frontier_runs_are_deterministic() {
     };
     assert_eq!(hash(), hash());
 }
+
+#[test]
+fn delivery_events_report_gross_minerals_when_the_opponent_spends_in_the_same_tick() {
+    let mut r = frontier();
+    let ai = sim(&r).session.opponent.clone().unwrap();
+    let period = ai.think_ticks * sim(&r).session.nav_stride;
+    // The next step thinks (and spends) and decides (and delivers).
+    while !(r.state.tick + 1).is_multiple_of(period) {
+        r.step(&ActionMap::default());
+    }
+    let s = &mut r.system_mut::<RtsSystem>().unwrap().sim;
+    let f = ai.faction;
+    let hq = s
+        .buildings
+        .iter_mut()
+        .find(|b| b.def.faction == f && b.health > 0.0 && !b.def.produces.is_empty())
+        .unwrap();
+    // Room in the queue and minerals, so this think trains (the cost is already in `spent`).
+    hq.queue.clear();
+    let depot = hq.position;
+    s.balance[f as usize] += 1000;
+    s.initial_economy += 1000;
+    let node = s.resources[0].id.clone();
+    let worker = s
+        .units
+        .iter_mut()
+        .find(|u| u.def.faction == f && u.def.role == Role::Worker && u.health > 0.0)
+        .unwrap();
+    worker.position = [depot[0], depot[1] + 2.5];
+    worker.carried = 5;
+    worker.order = Order::Gather {
+        target: node,
+        returning: true,
+    };
+    s.initial_economy += 5;
+    let (spent, delivered, balance) = (s.stats.spent, s.stats.delivered, s.balance[f as usize]);
+    r.step(&ActionMap::default());
+    let s = sim(&r);
+    assert_eq!(s.stats.delivered, delivered + 5, "{}", s.summary());
+    assert!(
+        s.stats.spent >= spent + 5,
+        "the opponent spends in the same tick"
+    );
+    // `rts.delivered` (published for packages that export it, see m4) carries this gross
+    // amount; the balance delta of the tick is smaller because production was paid from it.
+    assert_eq!(s.delivered_tick[f as usize], 5);
+    assert!(s.balance[f as usize] < balance + 5);
+}

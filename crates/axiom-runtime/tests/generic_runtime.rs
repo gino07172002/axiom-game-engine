@@ -266,3 +266,23 @@ fn replacing_the_world_with_another_world_id_starts_fresh_simulation_state() {
     assert_eq!(r.state.ids[0], id);
     assert!(r.state.transforms[0].as_ref().unwrap().position[0] > 0.5);
 }
+#[test]
+fn switching_to_another_fps_world_starts_a_fresh_round() {
+    let w = axiom_fps::demo_world().unwrap();
+    let mut r = WorldRuntime::new(w.clone(), 1, axiom_runtime::installed_registry()).unwrap();
+    let mut fire = ActionMap::default();
+    fire.0.insert("fire".into(), 1.0);
+    for _ in 0..4 {
+        r.step(&fire);
+    }
+    let shots = r.observation().metrics["shots"].clone();
+    assert!(shots.as_u64().unwrap() > 0, "{shots}");
+    // Same world, new revision: the round continues.
+    r.reconcile(w.clone(), 2).unwrap();
+    assert_eq!(r.observation().metrics["shots"], shots);
+    // Another world that reuses the sentinel IDs: a new round.
+    let mut other = w;
+    other.id = "other-arena".into();
+    r.reconcile(other, 3).unwrap();
+    assert_eq!(r.observation().metrics["shots"], 0);
+}

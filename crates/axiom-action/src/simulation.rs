@@ -170,14 +170,15 @@ impl Simulation {
         })
     }
     pub fn victory(&self) -> bool {
+        // A scene without opponents is never "won", with or without shared combat.
         if let Some(scene) = &self.combat {
-            return scene
+            let mut opponents = scene
                 .bodies
                 .values()
                 .filter(|b| b.faction != self.actors[self.hero].def.faction)
-                .all(|b| !b.alive());
+                .peekable();
+            return opponents.peek().is_some() && opponents.all(|b| !b.alive());
         }
-        // A scene without opponents is never "won".
         let mut opponents = self
             .actors
             .iter()

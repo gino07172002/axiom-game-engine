@@ -155,11 +155,14 @@ impl RuntimeSystem for FpsSystem {
     fn transfer(
         &mut self,
         old: &dyn RuntimeSystem,
-        _previous: &RuntimeState,
+        previous: &RuntimeState,
         next: &mut RuntimeState,
     ) -> Result<()> {
         if let Some(old) = old.as_any().downcast_ref::<Self>() {
-            self.sim.restore_from(&old.sim);
+            // Another world starts its own round, even when sentinel IDs coincide.
+            if previous.compiled.source.id == next.compiled.source.id {
+                self.sim.restore_from(&old.sim);
+            }
             self.sync(next);
         }
         Ok(())

@@ -101,11 +101,16 @@ pub struct Showcase {
     overview_target: Vec3,
     overview_height: f32,
     orbit: bool,
+    /// A GUI advances auto-orbit per rendered frame (`view {auto:true}`), which is smooth at
+    /// any frame rate; without one the fixed step advances it.
+    gui_orbit: bool,
     held: BTreeSet<String>,
     /// Last station the catalog list scrolled to (UI convenience only).
     scrolled: std::sync::Mutex<Option<String>>,
 }
 const FOV_DEGREES: f32 = 48.0;
+/// Auto-orbit yaw speed (radians per second of simulation).
+const ORBIT_RATE: f32 = 0.25;
 const OVERVIEW_TARGET: Vec3 = Vec3::new(0.0, 0.0, -25.0);
 const OVERVIEW_OFFSET: Vec3 = Vec3::new(0.0, 47.0, 60.0);
 const OVERVIEW_HEIGHT: f32 = 44.0;
@@ -202,10 +207,17 @@ impl Showcase {
             Some(v) => serde_json::from_value(v.clone())?,
             None => [0.0, 0.0],
         };
+        let auto = match args.get("auto") {
+            Some(v) => v.as_bool().context("view auto must be a bool")?,
+            None => false,
+        };
         ensure!(
             zoom > 0.0 && aspect > 0.0 && pan.iter().all(|v| v.is_finite()),
             "invalid view arguments"
         );
+        if auto {
+            self.gui_orbit = true;
+        }
         if self.active.is_some() {
             self.yaw += orbit;
             self.pitch = (self.pitch + pitch).clamp(-0.1, 1.45);
@@ -283,9 +295,13 @@ impl RuntimeSystem for Showcase {
             }
         }
         self.held = pressed;
-        // Auto-orbit and mouse input are applied per rendered frame (draw_ui -> `view`), so the
-        // camera moves smoothly regardless of how many fixed steps a frame runs.
+        // Mouse input and, with a GUI, auto-orbit are applied per rendered frame (draw_ui ->
+        // `view`), so the camera moves smoothly regardless of how many fixed steps a frame
+        // runs (no interpolation). Headless runs and scenarios orbit here instead.
         if self.active.is_some() {
+            if self.orbit && !self.gui_orbit {
+                self.yaw += ORBIT_RATE * FIXED_DT;
+            }
             self.yaw += input.axis("view.orbit") * 1.1 * FIXED_DT;
             self.pitch = (self.pitch + input.axis("view.pitch") * FIXED_DT).clamp(-0.1, 1.35);
             self.distance =
@@ -368,6 +384,7 @@ impl RuntimeSystem for Showcase {
         self.overview_target = old.overview_target;
         self.overview_height = old.overview_height;
         self.orbit = old.orbit;
+        self.gui_orbit = old.gui_orbit;
         self.held = old.held.clone();
         next.compiled.entities[next.compiled.indices[&self.tour.camera]]
             .camera
@@ -533,14 +550,14 @@ impl RuntimeSystem for Showcase {
                     for (index, control) in station.controls.iter().enumerate() {
                         let key = format!("{id}/{index}");
                         let stored = state.compiled.source.resources.get(&control.resource).and_then(|v|v.pointer(&control.field)).and_then(Value::as_f64).unwrap_or(control.default);
-                        let draft = ui.numeric_drafts.entry(key.clone()).or_insert(stored);
+                        let (draft, base) = ui.numeric_drafts.entry(key.clone()).or_insert((stored, state.revision));
                         let response = p.add(egui::Slider::new(draft,control.min..=control.max).text(&control.label).clamping(egui::SliderClamping::Always));
                         ui.targets.insert(format!("showcase/control/{id}/{index}"),response.rect);
                         if response.drag_stopped() || (response.changed() && !response.dragged()) {
-                            let value = *draft;
+                            let (value, base) = (*draft, *base);
                             ui.numeric_drafts.remove(&key);
-                            actions.push(Action::Apply(json!({"op":"apply","expected_rev":state.revision,"edits":[{"kind":"set_field","target":{"kind":"resource","id":control.resource},"field":control.field,"value":value}]}).to_string()));
-                        } else if !response.dragged() && !response.changed() { *draft = stored; }
+                            actions.push(Action::Apply(json!({"op":"apply","expected_rev":base,"edits":[{"kind":"set_field","target":{"kind":"resource","id":control.resource},"field":control.field,"value":value}]}).to_string()));
+                        } else if !response.dragged() && !response.changed() { *draft = stored; *base = state.revision; }
                     }
                 });
                 p.label(egui::RichText::new("左鍵拖曳旋轉 · 右鍵拖曳平移 · 滾輪縮放 · 雙擊重置視角 · ←/→ 上一站/下一站 · O 總覽地圖").small().color(muted));
@@ -600,15 +617,16 @@ impl RuntimeSystem for Showcase {
                 zoom = (-scroll * 0.0018).exp();
             }
         }
-        if station_view && self.orbit && ui.playing {
-            orbit += 0.25 * ctx.input(|i| i.stable_dt).min(0.1);
+        let auto = station_view && self.orbit && ui.playing;
+        if auto {
+            orbit += ORBIT_RATE * ctx.input(|i| i.stable_dt).min(0.1);
         }
         if response.double_clicked() {
             actions.push(call("reset_view", json!({})));
         } else if orbit != 0.0 || pitch != 0.0 || zoom != 1.0 || pan != [0.0, 0.0] {
             actions.push(call(
                 "view",
-                json!({"orbit":orbit,"pitch":pitch,"zoom":zoom,"pan":pan,"aspect":aspect}),
+                json!({"orbit":orbit,"pitch":pitch,"zoom":zoom,"pan":pan,"aspect":aspect,"auto":auto}),
             ));
         }
         if response.dragged() {
@@ -745,7 +763,7 @@ pub fn register(r: &mut RuntimeRegistry) {
         "view",
         "reset_view",
     ] {
-        r.authoring.action(&format!("showcase.{action}"),"showcase",json!({"station":"stable station ID for focus","direction":"-1|1 for next","enabled":"bool for orbit","view":"{orbit?,pitch? radians, zoom? factor, pan?:[x,y] viewport fraction, aspect?}"}),|v|{ensure!(v.is_object(),"showcase arguments must be an object");Ok(())});
+        r.authoring.action(&format!("showcase.{action}"),"showcase",json!({"station":"stable station ID for focus","direction":"-1|1 for next","enabled":"bool for orbit","view":"{orbit?,pitch? radians, zoom? factor, pan?:[x,y] viewport fraction, aspect?, auto?: true when a GUI applies auto-orbit itself}"}),|v|{ensure!(v.is_object(),"showcase arguments must be an object");Ok(())});
     }
     r.factories.insert("showcase.navigate".into(), |state| {
         let tour: Tour = state.compiled.source.resource("showcase.tour")?;
@@ -808,6 +826,7 @@ pub fn register(r: &mut RuntimeRegistry) {
             overview_target: OVERVIEW_TARGET,
             overview_height: OVERVIEW_HEIGHT,
             orbit: false,
+            gui_orbit: false,
             held: BTreeSet::new(),
             scrolled: std::sync::Mutex::new(None),
         };

@@ -462,6 +462,7 @@ fn validate_world(w: &World) -> Result<()> {
     let grid = nav::Grid::new(session.grid.clone())?;
     let mut count = 0;
     let mut positions = vec![];
+    let mut minerals = 0u64;
     for e in &w.entities {
         ensure!(
             !e.id.starts_with("produced/"),
@@ -509,6 +510,9 @@ fn validate_world(w: &World) -> Result<()> {
                 }
                 positions.push(([t.position[0], t.position[2]], d.radius));
             }
+            if let Some(v) = c.get("rts.resource") {
+                minerals += u64::from(serde_json::from_value::<ResourceDef>(v.clone())?.amount);
+            }
             if let Some(v) = c.get("rts.building") {
                 let d: BuildingDef = serde_json::from_value(v.clone())?;
                 ensure!(
@@ -522,6 +526,19 @@ fn validate_world(w: &World) -> Result<()> {
                     );
                 }
             }
+        }
+    }
+    // Either faction may mine every node, so each balance must hold its start plus all of them.
+    for (faction, balance) in session.initial_balance.iter().enumerate() {
+        if u64::from(*balance) + minerals > u64::from(u32::MAX) {
+            return Err(axiom_core::Diagnostic::error(
+                "invalid_value",
+                format!("/resources/rts.session/initial_balance/{faction}"),
+                format!(
+                    "initial balance {balance} plus {minerals} world minerals exceeds {}",
+                    u32::MAX
+                ),
+            ));
         }
     }
     ensure!(

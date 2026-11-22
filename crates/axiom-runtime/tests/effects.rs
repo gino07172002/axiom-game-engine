@@ -845,3 +845,118 @@ fn procedural_geometry_ownership_is_checked_at_authoring_time() {
         .remove("core.transform");
     expect(&no_transform, "requires core.transform");
 }
+#[test]
+fn auto_orbit_advances_in_fixed_steps_without_a_gui() {
+    let mut r = runtime();
+    call(&mut r, "showcase", "focus", json!({"station":"mat/01-pbr"}));
+    let (start, _) = camera(&r);
+    steps(&mut r, 120);
+    assert!(camera(&r).0.distance(start) < 1e-4, "no orbit when off");
+    call(&mut r, "showcase", "orbit", json!({"enabled":true}));
+    steps(&mut r, 120);
+    let target = Vec3::new(-25.0, 1.25, 0.0);
+    let (eye, _) = camera(&r);
+    // One second at 0.25 rad/s around the pedestal, at the same distance.
+    let yaw = |p: Vec3| (p.x - target.x).atan2(p.z - target.z);
+    let turned = (yaw(eye) - yaw(start)).abs();
+    assert!((turned - 0.25).abs() < 0.01, "{turned}");
+    assert!(((eye - target).length() - (start - target).length()).abs() < 1e-3);
+    call(&mut r, "showcase", "orbit", json!({"enabled":false}));
+    steps(&mut r, 60);
+    assert!(camera(&r).0.distance(eye) < 1e-4);
+    // Once a GUI applies auto-orbit per frame, fixed steps leave it to the GUI.
+    call(&mut r, "showcase", "orbit", json!({"enabled":true}));
+    call(
+        &mut r,
+        "showcase",
+        "view",
+        json!({"orbit":0.01,"auto":true}),
+    );
+    let (eye, _) = camera(&r);
+    steps(&mut r, 60);
+    assert!(camera(&r).0.distance(eye) < 1e-4);
+}
+/// One GUI frame; returns the `apply` requests it produced.
+fn apply_frame(
+    ctx: &egui::Context,
+    r: &WorldRuntime,
+    ui: &mut UiState,
+    events: Vec<egui::Event>,
+) -> Vec<Value> {
+    let mut actions = vec![];
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 720.0),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| actions = r.draw_ui(ctx, ui),
+    );
+    actions
+        .into_iter()
+        .filter_map(|a| match a {
+            Action::Apply(s) => Some(serde_json::from_str::<Value>(&s).unwrap()),
+            _ => None,
+        })
+        .collect()
+}
+#[test]
+fn a_slider_drag_commits_against_the_revision_it_started_from() {
+    let mut r = runtime();
+    let ctx = egui::Context::default();
+    let mut ui = UiState {
+        playing: true,
+        ..Default::default()
+    };
+    call(
+        &mut r,
+        "showcase",
+        "focus",
+        json!({"station":"mat/03-metalness"}),
+    );
+    apply_frame(&ctx, &r, &mut ui, vec![]);
+    apply_frame(&ctx, &r, &mut ui, vec![]);
+    let target = ui.targets["showcase/control/mat/03-metalness/0"];
+    let at = |dx: f32| target.left_center() + egui::vec2(dx, 0.0);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut requests = apply_frame(
+        &ctx,
+        &r,
+        &mut ui,
+        vec![egui::Event::PointerMoved(at(20.0)), button(at(20.0), true)],
+    );
+    requests.extend(apply_frame(
+        &ctx,
+        &r,
+        &mut ui,
+        vec![egui::Event::PointerMoved(at(40.0))],
+    ));
+    // Another author commits while the drag is held; the runtime reloads that revision.
+    r.state.revision = 5;
+    requests.extend(apply_frame(
+        &ctx,
+        &r,
+        &mut ui,
+        vec![egui::Event::PointerMoved(at(60.0))],
+    ));
+    let released = apply_frame(
+        &ctx,
+        &r,
+        &mut ui,
+        vec![egui::Event::PointerMoved(at(60.0)), button(at(60.0), false)],
+    );
+    assert_eq!(released.len(), 1, "{requests:?} {released:?}");
+    assert_eq!(released[0]["expected_rev"], 1, "{released:?}");
+    assert!(
+        requests.iter().all(|q| q["expected_rev"] == 1),
+        "{requests:?}"
+    );
+}

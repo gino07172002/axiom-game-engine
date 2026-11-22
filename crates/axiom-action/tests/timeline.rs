@@ -185,3 +185,31 @@ fn three_authored_attacks_can_chain_and_kill() {
     assert!(s.victory());
     assert!(s.request(Kind::Attack, Vec2::ZERO).is_err());
 }
+#[test]
+fn shared_combat_without_opponents_is_not_a_victory() {
+    let mut s = sim();
+    let mut scene = axiom_combat::Scene::new(axiom_combat::Config {
+        bounds: axiom_combat::Rect {
+            min: [-20.0, -20.0],
+            max: [20.0, 20.0],
+        },
+        obstacles: vec![],
+    });
+    // Only the hero's faction publishes bodies (a social or exploration world).
+    for b in s.combat_bodies().into_iter().filter(|b| b.faction == 0) {
+        scene.bodies.insert(b.handle.id.clone(), b);
+    }
+    s.combat = Some(scene.clone());
+    assert!(!s.victory());
+    assert_eq!(s.request(Kind::Attack, Vec2::ZERO).unwrap(), "started");
+    // With a dead opponent body the shared round is won.
+    let mut enemy = s
+        .combat_bodies()
+        .into_iter()
+        .find(|b| b.faction == 1)
+        .unwrap();
+    enemy.health = 0.0;
+    scene.bodies.insert(enemy.handle.id.clone(), enemy);
+    s.combat = Some(scene);
+    assert!(s.victory());
+}

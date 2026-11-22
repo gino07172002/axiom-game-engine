@@ -4,7 +4,7 @@ use crate::{
     ui::{Action, UiState},
     ui_effects::{EffectVisuals, Visual},
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar, TextStyle};
 use egui::{Color32, RichText, Vec2};
 #[derive(Clone)]
@@ -18,12 +18,14 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
         return Ok(());
     };
     for (id, path) in &ui.images {
-        ensure!(
-            std::fs::metadata(path)?.len() <= IMAGE_BYTES,
-            "UI image asset exceeds budget"
-        );
-        let raw = std::fs::read(path)?;
-        let (w, h, rgba) = decode_png(&raw)?;
+        // One bounded read: a file that grows after a size check cannot exceed the budget.
+        let (raw, (w, h, rgba)) = axiom_core::read_bounded(
+            std::path::Path::new(path),
+            IMAGE_BYTES as usize,
+            "UI image asset",
+        )
+        .and_then(|raw| decode_png(&raw).map(|decoded| (raw, decoded)))
+        .with_context(|| format!("ui.document image {id}"))?;
         let fingerprint = raw.iter().fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ *b as u64).wrapping_mul(0x100000001b3)
         });
@@ -681,7 +683,7 @@ fn slider(
     state: &mut UiState,
     actions: &mut Vec<Action>,
 ) {
-    let committed = g.slider_value(s, state.slider_values.get(&s.id).copied());
+    let committed = g.slider_value(s);
     let mut value = state.slider_drafts.get(&s.id).copied().unwrap_or(committed);
     let label = g.text(&s.text);
     ui.horizontal(|ui| {
@@ -709,9 +711,6 @@ fn slider(
         let draft = state.slider_drafts.remove(&s.id);
         if (release || response.changed()) && draft.unwrap_or(value) != committed {
             let value = draft.unwrap_or(value);
-            if s.variable.is_none() {
-                state.slider_values.insert(s.id.clone(), value);
-            }
             actions.push(Action::Gameplay(RuntimeCommand::Slide {
                 widget: s.id.clone(),
                 value,

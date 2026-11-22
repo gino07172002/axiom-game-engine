@@ -122,3 +122,69 @@ fn v1_import_exports_v2_and_preview_is_read_only() {
     s.apply(Some(1), vec![edit]).unwrap();
     assert_eq!(json!(s.current().unwrap().1)["schema_version"], 2);
 }
+#[test]
+fn mixed_generic_and_group_edits_fail_recoverably_instead_of_panicking() {
+    let mut s =
+        Store::memory_with(axiom_fps::registry(), axiom_fps::demo_world().unwrap()).unwrap();
+    let before = s.current().unwrap();
+    for path in ["enemies.speed", "enemies.damage"] {
+        let edits = vec![
+            Edit::Core(CoreEdit::SetComponent {
+                entity: "enemy/0".into(),
+                component: "fps.sentinel".into(),
+                value: json!(5),
+            }),
+            Edit::set(path, json!(0.5)),
+        ];
+        let e = s.apply(Some(before.0), edits.clone()).unwrap_err();
+        assert!(format!("{e:#}").contains("must be an object"), "{e:#}");
+        assert!(s
+            .execute(Request::Preview {
+                expected_rev: Some(before.0),
+                edits,
+            })
+            .is_err());
+    }
+    let edits = vec![
+        Edit::Core(CoreEdit::SetComponent {
+            entity: "player".into(),
+            component: "fps.weapon".into(),
+            value: json!([1]),
+        }),
+        Edit::set("weapon.damage", json!(30)),
+    ];
+    assert!(s.apply(Some(before.0), edits).is_err());
+    assert_eq!(s.current().unwrap(), before);
+}
+#[test]
+fn compatibility_deletes_share_the_v2_reference_cleanup_and_prefab_resolution() {
+    let mut w = axiom_fps::demo_world().unwrap();
+    let cover = axiom_fps::from_world(&w).unwrap().obstacles[0].id.clone();
+    let cover_entity = format!("obstacle/{cover}");
+    // The cover component comes from a prefab; the sentinel and cover are scene members.
+    let e = w.entity_mut(&cover_entity).unwrap();
+    let base = Prefab {
+        components: std::mem::take(&mut e.components),
+    };
+    e.prefab = Some("cover".into());
+    w.prefabs.insert("cover".into(), base);
+    w.scenes.push(Scene {
+        id: "arena".into(),
+        entities: vec!["enemy/0".into(), "enemy/7".into(), cover_entity.clone()],
+        active: true,
+    });
+    w.compile(&axiom_fps::registry()).unwrap();
+    let mut s = Store::memory_with(axiom_fps::registry(), w).unwrap();
+    s.apply(
+        None,
+        vec![
+            Edit::set("enemies.count", json!(4)),
+            Edit::Extension(json!({"kind":"remove_obstacle","id":cover})),
+        ],
+    )
+    .unwrap();
+    let (_, w) = s.current().unwrap();
+    assert!(w.entity("enemy/7").is_none() && w.entity(&cover_entity).is_none());
+    assert_eq!(w.scenes[0].entities, vec!["enemy/0".to_string()]);
+    assert_eq!(axiom_fps::from_world(&w).unwrap().enemies.count, 4);
+}

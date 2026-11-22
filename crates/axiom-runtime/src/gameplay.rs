@@ -24,6 +24,9 @@ pub struct Progress {
     /// Capability calls of `call` actions (absent when none ran: older saves load).
     #[serde(default, skip_serializing_if = "CallStats::is_empty")]
     pub calls: CallStats,
+    /// Committed values of sliders without a variable (absent when none moved: older saves load).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sliders: BTreeMap<String, f64>,
 }
 /// Outcome of the capability calls `call` actions queued (observe `calls`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -66,6 +69,9 @@ pub struct Gameplay {
     pub node: Option<usize>,
     pub ending: Option<String>,
     pub active: Vec<bool>,
+    /// Authored `scenes[].active` this state was built from: a hot reload keeps the runtime
+    /// flag of a scene only while its authored flag is unchanged.
+    authored_active: std::sync::Arc<[bool]>,
     pub pending: VecDeque<PendingEvent>,
     pub locale: Option<String>,
     pub held: Vec<String>,
@@ -80,6 +86,9 @@ pub struct Gameplay {
     /// `animation.evaluate` each step; derived, not part of saves.
     pub animation: Vec<Scalar>,
     pub call_stats: CallStats,
+    /// Committed values of sliders without a variable, set by successful `slide` commands
+    /// (GUI and CLI alike) and observed under `bindings`.
+    pub slider_values: BTreeMap<String, f64>,
 }
 struct Budget(usize);
 impl Budget {
@@ -100,6 +109,7 @@ impl Gameplay {
             node: None,
             ending: None,
             active: w.scenes.iter().map(|s| s.active).collect(),
+            authored_active: w.scenes.iter().map(|s| s.active).collect(),
             pending: VecDeque::new(),
             locale: compiled.ui.as_ref().map(|u| u.locale.clone()),
             held: vec![],
@@ -108,6 +118,7 @@ impl Gameplay {
             prompt: None,
             calls: vec![],
             call_stats: CallStats::default(),
+            slider_values: BTreeMap::new(),
             animation: compiled
                 .animation_reads
                 .iter()
@@ -298,11 +309,11 @@ impl Gameplay {
             })
             .with_context(|| format!("unknown slider {widget}"))
     }
-    /// The value slider `s` shows: its variable, else `fallback` (the UI's last value).
-    pub fn slider_value(&self, s: &BoundSlider, fallback: Option<f64>) -> f64 {
+    /// The committed value of slider `s`: its variable, else its last successful `slide`.
+    pub fn slider_value(&self, s: &BoundSlider) -> f64 {
         match s.variable {
             Some(i) => crate::ui_effects::number(&self.values[i]),
-            None => fallback.unwrap_or(s.value),
+            None => self.slider_values.get(&s.id).copied().unwrap_or(s.value),
         }
     }
     fn apply(&mut self, command: &RuntimeCommand, tick: u64, b: &mut Budget) -> Result<()> {
@@ -340,6 +351,8 @@ impl Gameplay {
                     } else {
                         Scalar::Number(v)
                     };
+                } else {
+                    next.slider_values.insert(s.id.clone(), v);
                 }
                 next.record(tick, "slide", widget);
             }
@@ -398,17 +411,32 @@ impl Gameplay {
         }
         Ok(())
     }
-    pub fn step(&mut self, input: &crate::ActionMap, tick: u64) {
+    /// One fixed step; returns whether it switched scene flags (the caller syncs visibility).
+    pub fn step(&mut self, input: &crate::ActionMap, tick: u64) -> bool {
         if self.fault.is_some() {
-            return;
+            return false;
+        }
+        // Idle step (no event due, held inputs unchanged): nothing to enqueue, drain or
+        // re-record, so skip the copy-on-write state.
+        if self.pending.iter().all(|e| e.due > tick)
+            && self
+                .compiled
+                .inputs
+                .iter()
+                .filter(|(a, _)| input.pressed(a))
+                .map(|(a, _)| a)
+                .eq(self.held.iter())
+        {
+            return false;
         }
         let result = (|| -> Result<Self> {
             let mut next = self.clone();
-            for (action, event) in next.compiled.inputs.clone() {
-                if input.pressed(&action) && !next.held.contains(&action) {
+            let compiled = next.compiled.clone();
+            for (action, event) in &compiled.inputs {
+                if input.pressed(action) && !next.held.contains(action) {
                     next.enqueue(PendingEvent {
                         due: tick,
-                        event: next.compiled.event_ids[event].clone(),
+                        event: compiled.event_ids[*event].clone(),
                         fields: BTreeMap::new(),
                     })?;
                 }
@@ -424,8 +452,15 @@ impl Gameplay {
             Ok(next)
         })();
         match result {
-            Ok(next) => *self = next,
-            Err(e) => self.fault = Some(axiom_core::error_response(&e)),
+            Ok(next) => {
+                let switched = next.active != self.active;
+                *self = next;
+                switched
+            }
+            Err(e) => {
+                self.fault = Some(axiom_core::error_response(&e));
+                false
+            }
         }
     }
     pub fn choices(&self) -> Vec<&CompiledChoice> {
@@ -469,6 +504,7 @@ impl Gameplay {
             locale: self.locale.clone(),
             held_inputs: self.held.clone(),
             calls: self.call_stats.clone(),
+            sliders: self.slider_values.clone(),
         }
     }
     pub fn restore(&mut self, p: &Progress, tick: u64) -> Result<()> {
@@ -575,6 +611,16 @@ impl Gameplay {
             "invalid saved inputs"
         );
         next.held = p.held_inputs.clone();
+        next.slider_values.clear();
+        for (id, value) in &p.sliders {
+            let s = self
+                .slider(id)
+                .ok()
+                .filter(|s| s.variable.is_none())
+                .context("save slider missing")?;
+            ensure!(s.snap(*value)? == *value, "invalid saved slider value");
+            next.slider_values.insert(id.clone(), *value);
+        }
         next.calls.clear();
         next.call_stats = p.calls.clone();
         next.fault = None;
@@ -604,7 +650,19 @@ impl Gameplay {
         }
         for (i, id) in self.compiled.scenes.iter().enumerate() {
             if let Some(j) = old.compiled.scenes.iter().position(|s| s == id) {
-                self.active[i] = old.active[j];
+                // An edited authored flag wins; otherwise the scene keeps its runtime state.
+                if self.authored_active.get(i) == old.authored_active.get(j) {
+                    self.active[i] = old.active[j];
+                }
+            }
+        }
+        for (id, value) in &old.slider_values {
+            if let Ok(s) = self.slider(id) {
+                if s.variable.is_none() {
+                    if let Ok(v) = s.snap(*value) {
+                        self.slider_values.insert(id.clone(), v);
+                    }
+                }
             }
         }
         for e in &old.pending {
@@ -685,8 +743,8 @@ impl Gameplay {
                     };
                     Some((id.clone(), json!((n / max).clamp(0.0, 1.0))))
                 }
-                BoundWidget::Slider(s) if s.variable.is_some() && self.test(&s.when) => {
-                    Some((s.id.clone(), json!(self.slider_value(s, None))))
+                BoundWidget::Slider(s) if self.test(&s.when) => {
+                    Some((s.id.clone(), json!(self.slider_value(s))))
                 }
                 _ => None,
             })
@@ -751,10 +809,14 @@ impl crate::world::RuntimeSystem for BehaviorSystem {
         self
     }
     fn step(&mut self, state: &mut crate::world::RuntimeState, input: &crate::ActionMap) {
-        if let Some(g) = &mut state.gameplay {
-            g.step(input, state.tick);
+        let Some(g) = &mut state.gameplay else {
+            return;
+        };
+        // Every other path that changes scene flags (commands, events, reloads, checkpoints)
+        // syncs itself; a step only needs to when its own rules switched scenes.
+        if g.step(input, state.tick) {
+            state.sync_scenes();
         }
-        state.sync_scenes();
     }
     fn transfer(
         &mut self,

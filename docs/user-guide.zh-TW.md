@@ -104,7 +104,7 @@ RTS 操作（`content/rts`，邊境之戰）：左鍵拖曳框選藍方單位，
 .\target\debug\axiom.exe --db data/adv.sqlite play --start --load-slot quick
 ```
 
-`narrative-check` 在明確預算內探索選項、UI 按鈕與延遲事件，回傳各結局的路徑；不包含未知的外部事件來源，預算不足時 `complete:false`，不宣稱完成證明。`observe.gameplay` 提供變數、可見選項、節點、結局、場景、UI 綁定值及最近 128 筆 trace。
+`narrative-check` 在明確預算內探索選項、UI 按鈕與延遲事件，回傳各結局的路徑；不包含未知的外部事件來源；需要原生能力（`call`）的按鈕不展開，列在 `skipped_native_buttons`（widget 與能力名）並回 `complete:false`，其他分支已證明的結局照常回報。預算不足時同樣 `complete:false`，不宣稱完成證明。`observe.gameplay` 提供變數、可見選項、節點、結局、場景、UI 綁定值及最近 128 筆 trace。
 
 存檔位於資料庫同層的 `saves/`，使用世界 ID 命名空間及受限 slot 名稱；最多 8 MiB。包含獨立 `save_version`、來源 authoring revision、內容定義、模擬時鐘、穩定 entity／node IDs、型別欄位、旗標、待處理事件及語系。讀檔不執行節點進入動作、不新增 SQLite revision；寫入先 flush 暫存檔並保留上一份 `.bak`，若主檔遺失可讀取備份。毀損或不相容存檔不會取代目前狀態。
 
