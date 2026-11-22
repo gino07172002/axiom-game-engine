@@ -51,6 +51,55 @@ struct ManualMorph {
     value: Option<f32>,
     ramp: Option<(f32, f32, f32, f32)>,
 }
+/// The last skinned vertices of a player with the pose and morph weights they came from, so
+/// an extraction whose inputs did not change reuses them (paused characters, idle editor).
+/// A cloned player starts empty (a copy evaluated by `prepare` must not share it).
+#[derive(Default)]
+struct SkinCache(std::sync::Mutex<Option<SkinnedSnapshot>>);
+struct SkinnedSnapshot {
+    pose: Vec<Trs>,
+    morph_weights: Vec<f32>,
+    vertices: Arc<Vec<SkinnedVertex>>,
+}
+impl Clone for SkinCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl SkinCache {
+    /// The skinned vertices of `pose` / `weights`: the cached ones when both are unchanged.
+    fn get(
+        &self,
+        asset: &Asset,
+        pose: &Pose,
+        mode: skin::Skinning,
+        weights: &[f32],
+    ) -> Result<Arc<Vec<SkinnedVertex>>> {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = slot.as_ref() {
+            if s.pose == pose.local && s.morph_weights == weights {
+                return Ok(s.vertices.clone());
+            }
+        }
+        let vertices = Arc::new(skin::deform_with(asset, pose, mode, weights)?);
+        match slot.as_mut() {
+            Some(s) => {
+                s.pose.clone_from(&pose.local);
+                s.morph_weights.clear();
+                s.morph_weights.extend_from_slice(weights);
+                s.vertices = vertices.clone();
+            }
+            None => {
+                *slot = Some(SkinnedSnapshot {
+                    pose: pose.local.clone(),
+                    morph_weights: weights.to_vec(),
+                    vertices: vertices.clone(),
+                })
+            }
+        }
+        Ok(vertices)
+    }
+}
 #[derive(Clone)]
 struct Controller {
     config: Player,
@@ -111,6 +160,8 @@ struct Controller {
     rig: Option<Box<rig::Rig>>,
     /// The entity's stylized mesh look (`render.toon` / `outline` / `decal`).
     style: Option<Arc<crate::mesh_style::MeshStyle>>,
+    /// Skinned vertices of the last extraction (reused while pose and weights hold).
+    skinned: SkinCache,
 }
 /// Per-entity state of an `animation.controller` (cheap to clone: `Arc`s and `Copy` state).
 #[derive(Clone)]
@@ -257,6 +308,7 @@ impl Controller {
             unbound_morphs,
             rig: None,
             style: None,
+            skinned: SkinCache::default(),
             config,
         };
         out.evaluate(0.)?;
@@ -513,7 +565,16 @@ impl Controller {
         self.fault = None;
         Ok(())
     }
+    /// Every bone `animation.inspect` names resolves (the batch pre-check and the command share
+    /// this resolution).
+    fn check_bones(&self, bones: &[String]) -> Result<()> {
+        for id in bones {
+            self.asset.skeleton.bone(id)?;
+        }
+        Ok(())
+    }
     fn inspect(&self, bones: &[String], parts: bool) -> Result<Value> {
+        self.check_bones(bones)?;
         let globals = self.asset.skeleton.globals(&self.pose)?;
         let mut values = BTreeMap::new();
         for id in bones {
@@ -538,6 +599,13 @@ impl Controller {
                     .collect(),
             );
         }
+        Ok(out)
+    }
+    /// `animation.inspect`: the summary with the primitive count, and the full primitive list
+    /// only when asked for.
+    fn inspect_command(&self, args: &InspectArgs) -> Result<Value> {
+        let mut out = self.inspect(&args.bones, args.parts)?;
+        out["part_count"] = json!(self.asset.materials.len());
         Ok(out)
     }
     /// Morph weights and hidden parts, only when the asset has targets / something is hidden
@@ -590,6 +658,8 @@ impl Controller {
         self.time = 0.;
         self.playing = true;
         self.speed = a.speed;
+        // The new playback's speed holds; a ramp of the previous one does not continue.
+        self.ramp = None;
         self.looping = a.looping;
         Ok(())
     }
@@ -604,9 +674,9 @@ pub struct AnimationSystem {
     fired: u64,
     /// First failure to deliver an event (reported in metrics; simulation continues).
     emit_fault: Option<String>,
-    /// The editor's last scrubbed pose: (entity, clip, seconds, pose). A playhead that did not
-    /// move reuses it, so an idle preview neither clones nor evaluates per frame.
-    scrubbed: Option<(String, String, f32, Pose)>,
+    /// The editor's last scrubbed pose and morph weights. A playhead that did not move reuses
+    /// it, so an idle preview neither clones nor evaluates per frame.
+    scrubbed: Option<Scrub>,
     /// Reused list of this step's resolved rig targets.
     rig_points: Vec<Option<Vec3>>,
     /// `animation.choreography` stages and the running one (`animation.stage`).
@@ -618,12 +688,14 @@ pub struct AnimationSystem {
 }
 
 /// An entity posed by the editor's Animation timeline for one extraction: only the drawn
-/// pose is swapped; [`AnimationSystem::end_scrub`] puts the simulation's pose back.
+/// pose and morph weights are swapped; [`AnimationSystem::end_scrub`] puts the simulation's
+/// back.
 pub(crate) struct Scrub {
     entity: String,
     clip: String,
     time: f32,
     pose: Pose,
+    morph_weights: Vec<f32>,
 }
 
 impl AnimationSystem {
@@ -644,8 +716,10 @@ impl AnimationSystem {
         } else {
             0.0
         };
-        let (entity, clip, posed) = match self.scrubbed.take() {
-            Some((e, c, t, pose)) if e == entity && c == clip && t == time => (e, c, pose),
+        let (entity, clip, posed, weights) = match self.scrubbed.take() {
+            Some(s) if s.entity == entity && s.clip == clip && s.time == time => {
+                (s.entity, s.clip, s.pose, s.morph_weights)
+            }
             _ => {
                 // A new playhead: evaluate on a copy (twists / IK / overrides apply as in play).
                 let mut probe = p.clone();
@@ -657,15 +731,23 @@ impl AnimationSystem {
                 // The timeline previews the clip itself, not the controller's choice.
                 probe.animator = None;
                 probe.evaluate(0.0).ok()?;
-                (entity.to_owned(), clip.to_owned(), probe.pose)
+                (
+                    entity.to_owned(),
+                    clip.to_owned(),
+                    probe.pose,
+                    probe.morph_weights,
+                )
             }
         };
+        // The pose and the morph weights it was sampled with are swapped as a pair.
         let pose = std::mem::replace(&mut p.pose, posed);
+        let morph_weights = std::mem::replace(&mut p.morph_weights, weights);
         Some(Scrub {
             entity,
             clip,
             time,
             pose,
+            morph_weights,
         })
     }
 
@@ -679,7 +761,12 @@ impl AnimationSystem {
     pub(crate) fn end_scrub(&mut self, scrub: Scrub) {
         if let Some(p) = self.players.get_mut(&scrub.entity) {
             let posed = std::mem::replace(&mut p.pose, scrub.pose);
-            self.scrubbed = Some((scrub.entity, scrub.clip, scrub.time, posed));
+            let weights = std::mem::replace(&mut p.morph_weights, scrub.morph_weights);
+            self.scrubbed = Some(Scrub {
+                pose: posed,
+                morph_weights: weights,
+                ..scrub
+            });
         }
     }
 }
@@ -756,6 +843,7 @@ pub fn register(registry: &mut RuntimeRegistry) {
     axiom_animation::authoring::register(&mut registry.authoring);
     choreo::register(&mut registry.authoring);
     parts::register(&mut registry.authoring);
+    axiom_animation::authoring::actions_topic(&mut registry.authoring);
     registry
         .factories
         .insert("animation.evaluate".into(), |state| {
@@ -1105,7 +1193,7 @@ impl RuntimeSystem for AnimationSystem {
                     .get(entity)
                     .with_context(|| format!("animation entity missing: {entity}"))?;
                 let args: InspectArgs = serde_json::from_value(args.clone())?;
-                return old.inspect(&args.bones, true);
+                return old.inspect_command(&args);
             }
             let (entity, p) = self.prepare(state, action, args)?;
             if action == "play" {
@@ -1133,9 +1221,12 @@ impl RuntimeSystem for AnimationSystem {
             "inspect" => args
                 .get("entity")
                 .and_then(Value::as_str)
-                .filter(|e| self.players.contains_key(*e))
-                .map(drop)
-                .context("animation entity missing"),
+                .and_then(|e| self.players.get(e))
+                .context("animation entity missing")
+                .and_then(|p| {
+                    let a: InspectArgs = serde_json::from_value(args.clone())?;
+                    p.check_bones(&a.bones)
+                }),
             _ => self.prepare(state, action, args).map(drop),
         })
     }
@@ -1156,15 +1247,28 @@ impl RuntimeSystem for AnimationSystem {
         self.emit_fault.clone_from(&old.emit_fault);
         for (id, p) in &mut self.players {
             if let Some(previous) = old.players.get(id) {
+                // The running clip continues only while the new revision still has it (a
+                // clip started by `animation.play` may have been removed); otherwise the
+                // player starts as authored.
+                let active_kept = previous
+                    .active
+                    .as_ref()
+                    .is_none_or(|c| p.clips.contains_key(c));
                 if p.config.asset == previous.config.asset
                     && p.config.retarget == previous.config.retarget
                 {
-                    p.time = previous.time;
-                    // The same playback continues: markers already passed do not fire again.
-                    p.marker_fresh = previous.marker_fresh;
-                    if p.config.clip == previous.config.clip {
+                    if active_kept {
+                        p.time = previous.time;
+                        // The same playback continues: markers already passed do not fire
+                        // again.
+                        p.marker_fresh = previous.marker_fresh;
+                    }
+                    if active_kept && p.config.clip == previous.config.clip {
                         p.active = previous.active.clone();
-                        p.playing = previous.playing;
+                        // An edited `playing` applies, like `speed` and `looping`.
+                        if p.config.playing == previous.config.playing {
+                            p.playing = previous.playing;
+                        }
                         if p.config.speed == previous.config.speed {
                             p.speed = previous.speed;
                             p.ramp = previous.ramp;
@@ -1216,12 +1320,13 @@ impl RuntimeSystem for AnimationSystem {
             }
             let model = models[slot];
             if let Ok(vertices) =
-                skin::deform_with(&p.asset, &p.pose, p.config.skinning, &p.morph_weights)
+                p.skinned
+                    .get(&p.asset, &p.pose, p.config.skinning, &p.morph_weights)
             {
                 frame.meshes.push(MeshFrame {
                     id: id.clone(),
                     asset: p.asset.clone(),
-                    vertices: Arc::new(vertices),
+                    vertices,
                     model,
                     material: state.compiled.entities[slot]
                         .material
@@ -1305,7 +1410,20 @@ impl AnimationSystem {
             "play" => p.play(serde_json::from_value(args.clone())?)?,
             "seek" => {
                 let a: SeekArgs = serde_json::from_value(args.clone())?;
-                p.time = a.seconds;
+                if let Some(c) = &p.animator {
+                    anyhow::bail!(
+                        "this entity is driven by animation controller {}; seek applies to clip playback (set controller parameters with animation.param)",
+                        c.id
+                    );
+                }
+                // Stored the way a step leaves it: wrapped into a loop, clamped otherwise.
+                p.time = match p.active.as_ref().and_then(|id| p.clips.get(id)) {
+                    Some(clip) if p.looping && clip.source.duration > 0.0 => {
+                        a.seconds.rem_euclid(clip.source.duration)
+                    }
+                    Some(clip) => a.seconds.clamp(0.0, clip.source.duration.max(0.0)),
+                    None => a.seconds,
+                };
                 p.playing = !a.paused;
                 p.fade = None;
                 // A jump fires nothing on the way; only a seek to 0 restarts the markers.
@@ -1568,9 +1686,19 @@ fn crossings(
         }
         return;
     }
-    let first = (prev.max(0.0) / duration).floor() as u32;
-    let last = ((end / duration).floor() as u32).min(first + 8);
-    for k in first..=last {
+    // Cycles count from the one holding `prev` (shifted to start at 0), so a long time over a
+    // short clip neither saturates nor overflows the cycle index.
+    let shift = (prev.max(0.0) / duration).floor() * duration;
+    let (prev, end) = if shift > 0.0 {
+        ((prev - shift).max(0.0), end - shift)
+    } else {
+        (prev, end)
+    };
+    if end <= prev || !end.is_finite() {
+        return;
+    }
+    let last = ((end / duration).floor() as u32).min(8);
+    for k in 0..=last {
         let base = k as f32 * duration;
         if k >= 1 && prev < base && base <= end {
             hit(None);
@@ -2119,18 +2247,113 @@ impl Controller {
     }
 }
 
-/// The primitives of `asset` for error messages: material IDs with their group names.
+/// Primitives an error message lists, and the bytes it spends on them.
+const PART_NAMES_SHOWN: usize = 16;
+const PART_NAMES_BYTES: usize = 1024;
+/// The primitives of `asset` for error messages: material IDs with their group names, bounded
+/// (the rest are counted and `animation.inspect` with `parts:true` lists all).
 fn part_names(asset: &Asset) -> String {
-    asset
-        .materials
-        .iter()
-        .map(|m| {
-            if m.groups.is_empty() {
-                m.id.clone()
+    let mut out = String::new();
+    let mut shown = 0;
+    for m in &asset.materials {
+        let name = if m.groups.is_empty() {
+            m.id.clone()
+        } else {
+            format!("{} ({})", m.id, m.groups.join(", "))
+        };
+        if shown == PART_NAMES_SHOWN || out.len() + name.len() + 2 > PART_NAMES_BYTES {
+            break;
+        }
+        if shown > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(&name);
+        shown += 1;
+    }
+    let more = asset.materials.len() - shown;
+    if more > 0 {
+        if shown > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(&format!(
+            "+{more} more (animation.inspect with parts:true lists all)"
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn marker_crossings_after_a_far_seek_into_a_tiny_loop_do_not_overflow() {
+        let list = [CMarker {
+            at: 0.0,
+            event: None,
+            cue: None,
+        }];
+        // 86400 s / 10 us = 8.64e9 cycles: the absolute cycle index exceeds u32.
+        let (mut ends, mut markers) = (0, 0);
+        crossings(&list, 1e-5, true, 86400.0, 86400.0 + 1.0 / 60.0, |m| {
+            if m.is_some() {
+                markers += 1
             } else {
-                format!("{} ({})", m.id, m.groups.join(", "))
+                ends += 1
             }
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+        });
+        assert!(ends <= 8 && markers <= 9, "{ends} {markers}");
+        assert!(ends > 0);
+        // An ordinary loop is unchanged: 1 s clip, from 0.95 to 1.05 crosses the wrap once.
+        let (mut ends, mut markers) = (0, 0);
+        crossings(&list, 1.0, true, 0.95, 1.05, |m| {
+            if m.is_some() {
+                markers += 1
+            } else {
+                ends += 1
+            }
+        });
+        assert_eq!((ends, markers), (1, 1));
+        // Later cycles count the same as early ones.
+        let (mut ends, mut markers) = (0, 0);
+        crossings(&list, 1.0, true, 10.95, 11.05, |m| {
+            if m.is_some() {
+                markers += 1
+            } else {
+                ends += 1
+            }
+        });
+        assert_eq!((ends, markers), (1, 1));
+    }
+
+    #[test]
+    fn a_timeline_scrub_draws_the_clip_morph_weights_with_its_pose() {
+        let world = axiom_core::ContentPackage::load(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/character-lab"),
+            &crate::installed_registry().authoring,
+        )
+        .unwrap()
+        .world;
+        let mut r = crate::world::WorldRuntime::new(world, 1, crate::installed_registry()).unwrap();
+        let system = r.system_mut::<AnimationSystem>().unwrap();
+        let live = system.players["face"].morph_weights.clone();
+        let duration = system.players["face"].clips["pulse"].source.duration;
+        let at = duration * 0.5;
+        // What the clip itself gives at the playhead.
+        let mut probe = system.players["face"].clone();
+        probe.time = at;
+        probe.looping = false;
+        probe.evaluate(0.0).unwrap();
+        let expected = probe.morph_weights.clone();
+        assert_ne!(expected, live, "the fixture's weights move over the clip");
+        let scrub = system.begin_scrub("face", "pulse", at).unwrap();
+        assert_eq!(system.players["face"].morph_weights, expected);
+        system.end_scrub(scrub);
+        assert_eq!(system.players["face"].morph_weights, live);
+        // An unmoved playhead reuses the cached pair.
+        let scrub = system.begin_scrub("face", "pulse", at).unwrap();
+        assert_eq!(system.players["face"].morph_weights, expected);
+        system.end_scrub(scrub);
+        assert_eq!(system.players["face"].morph_weights, live);
+    }
 }

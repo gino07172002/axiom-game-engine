@@ -56,15 +56,13 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
     }
     ensure!(b.textures.len() <= 128, "texture count budget exceeded");
     let mut textures = vec![];
+    let mut decoded = 0;
     for source in b.textures {
-        textures.push(super::texture(&std::fs::read(confined(
-            path.parent().unwrap_or(Path::new(".")),
-            &source,
-        )?)?)?);
-        ensure!(
-            textures.iter().map(|t| t.rgba.len()).sum::<usize>() <= 268_435_456,
-            "decoded textures exceed 256 MiB"
-        );
+        confined(path.parent().unwrap_or(Path::new(".")), &source)
+            .and_then(|file| super::read_texture_file(&file))
+            .and_then(|bytes| super::texture(&bytes))
+            .and_then(|image| super::push_texture(&mut textures, &mut decoded, image))
+            .with_context(|| format!(".axrig texture {source}"))?;
     }
     let skeleton = b.skeleton.compile()?;
     b.humanoid.compile(&skeleton, true)?;

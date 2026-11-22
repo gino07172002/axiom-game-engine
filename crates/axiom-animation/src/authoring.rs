@@ -264,6 +264,9 @@ pub struct InspectArgs {
     pub entity: String,
     #[serde(default)]
     pub bones: Vec<String>,
+    /// List every primitive (`{id, groups, visible}`); otherwise only `part_count`.
+    #[serde(default)]
+    pub parts: bool,
 }
 pub fn register(r: &mut Registry) {
     r.resource_mergers
@@ -425,7 +428,7 @@ pub fn register(r: &mut Registry) {
                 lib.assets.contains_key(&p.asset),
                 "animation asset missing for {id}"
             );
-            if let Some(rt) = p.retarget {
+            if let Some(rt) = &p.retarget {
                 ensure!(
                     lib.assets.contains_key(&rt.source_asset)
                         && lib.profiles.contains_key(&rt.source_profile)
@@ -433,6 +436,7 @@ pub fn register(r: &mut Registry) {
                     "retarget asset/profile missing for {id}"
                 );
             }
+            check_player_clip(&lib, &id, &p)?;
         }
         Ok(())
     });
@@ -455,7 +459,7 @@ pub fn register(r: &mut Registry) {
     r.action(
         "animation.seek",
         "animation",
-        json!({"entity":"stable ID","seconds":"0..86400","paused":"default false"}),
+        json!({"entity":"stable ID (clip playback only; refused for players driven by animation.controller)","seconds":"0..86400 (wrapped into a looping clip, clamped to a one-shot)","paused":"default false"}),
         |v| {
             let a: SeekArgs = serde_json::from_value(v.clone())?;
             ensure!(
@@ -476,8 +480,67 @@ pub fn register(r: &mut Registry) {
         },
     );
     r.action("animation.bone","animation",json!({"entity":"stable ID","bone":"bone ID","rotation":"normalized xyzw local quaternion override"}),|v|{let a:BoneArgs=serde_json::from_value(v.clone())?;ensure!(a.rotation.is_finite()&&(a.rotation.length_squared()-1.).abs()<0.001,"invalid bone rotation");Ok(())});
-    r.action("animation.inspect","animation",json!({"entity":"stable ID","bones":"optional up to 64 stable IDs; omitted returns summary only"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.bones.len()<=64,"bone inspection budget exceeded");Ok(())});
-    r.topics.insert("animation".into(),json!({"formats":["pmx 2.0/2.1","glTF 2.0","GLB"],"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":["play","seek","ik","twist","bone","inspect","param","speed","morph","visibility"],"morphs":"glTF morph targets (names from extras.targetNames), weight channels become clip morph tracks; animation.morph overrides a weight (ramped, playback kept); at most 64 targets per mesh, 128 per asset, 1,000,000 deltas","parts":"animation.player.hidden + animation.visibility show / hide primitives by material ID or glTF mesh / material / node name","layers":"controller layers: one clip each, override or additive (relative to frame 0), weight (x weight_parameter), bone mask (bones / subtrees), applied in order after the states blend","controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip or a 1D blend tree, ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","look-at (animation.look_at)","spring bones (animation.spring)","skinning"],"secondary":"animation.spring chains with bone colliders and animation.look_at chains run at the fixed step after IK; IK sockets and look-at entity / bone targets read the end of the previous step (one step lag); their state is checkpointed","skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
+    r.action("animation.inspect","animation",json!({"entity":"stable ID","bones":"optional up to 64 stable IDs; omitted returns summary only","parts":"optional bool: list every primitive {id,groups,visible} (default: part_count only)"}),|v|{let a:InspectArgs=serde_json::from_value(v.clone())?;ensure!(a.bones.len()<=64,"bone inspection budget exceeded");Ok(())});
+    r.topics.insert("animation".into(),json!({"formats":import::FORMATS.iter().map(|(e,d)|format!(".{e}: {d}")).collect::<Vec<_>>(),"interchange":{"rigify":"bake evaluated DEF deform skeleton to glTF; controllers/constraints remain in Blender","unity":"Humanoid semantic mapping + baked bone TRS through the Unity export bridge; not binary Avatar or muscle-curve execution"},"coordinates":["axiom","gltf","blender","unity","mmd","unreal","custom signed orthonormal basis + meters_per_unit"],"humanoid_roles":humanoid::roles(),"actions":"filled from the registered animation.* actions (see actions_topic)","morphs":"glTF morph targets (names from extras.targetNames), weight channels become clip morph tracks; animation.morph overrides a weight (ramped, playback kept); at most 64 targets per mesh, 128 per asset, 1,000,000 deltas","parts":"animation.player.hidden + animation.visibility show / hide primitives by material ID or glTF mesh / material / node name","layers":"controller layers: one clip each, override or additive (relative to frame 0), weight (x weight_parameter), bone mask (bones / subtrees), applied in order after the states blend","controller":"animation.controllers resource + animation.controller component: float/bool/trigger parameters (float source speed = planar m/s), states play a clip, a 1D blend tree (blend1d) or a 2D directional blend (blend2d), ordered transitions with conditions, exit_time and cross-fade duration; set parameters with animation.param","limits":{"players":32,"bones_per_asset":MAX_BONES,"vertices_per_asset":MAX_VERTICES,"influences":4,"ik_per_player":32},"pipeline":["sample/blend","reference-pose retarget","bone overrides","twist correction","two-bone IK","look-at (animation.look_at)","spring bones (animation.spring)","skinning"],"secondary":"animation.spring chains with bone colliders and animation.look_at chains run at the fixed step after IK; IK sockets and look-at entity / bone targets read the end of the previous step (one step lag); their state is checkpointed","skinning":"CPU LBS / SDEF / dual quaternion, immutable textured triangle snapshots","checkpoint":"playback (clip, time, speed, ramp, fade, overrides, IK targets, twist toggles) and controller state are saved in checkpoints (Checkpoint.systems)"}));
+    actions_topic(r);
+}
+/// Sets the `animation` topic's `actions` to the registered `animation.*` actions; call it
+/// again after registering more of them (the runtime's stage / pick).
+pub fn actions_topic(r: &mut Registry) {
+    let actions: Vec<&str> = r
+        .actions
+        .keys()
+        .filter_map(|k| k.strip_prefix("animation."))
+        .collect();
+    let actions = json!(actions);
+    if let Some(topic) = r.topics.get_mut("animation") {
+        topic["actions"] = actions;
+    }
+}
+/// `animation.player.clip` must name a clip of the player's clip source (its retarget source
+/// asset, else its asset) or a library clip, so a revision that validates also activates.
+/// Assets whose clips cannot be listed here (missing file, unknown format) are left to the
+/// runtime build, which reports them.
+fn check_player_clip(lib: &Library, entity: &str, p: &Player) -> Result<()> {
+    let Some(clip) = &p.clip else {
+        return Ok(());
+    };
+    if lib.clips.contains_key(clip) {
+        return Ok(());
+    }
+    let asset = p.retarget.as_ref().map_or(&p.asset, |rt| &rt.source_asset);
+    let Some(source) = lib.assets.get(asset) else {
+        return Ok(());
+    };
+    let Ok(Some(ids)) = import::clip_ids(&source.path) else {
+        return Ok(());
+    };
+    if ids.iter().any(|c| c == clip) {
+        return Ok(());
+    }
+    const SHOWN: usize = 16;
+    let mut known: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .chain(lib.clips.keys().map(String::as_str))
+        .collect();
+    known.sort_unstable();
+    known.dedup();
+    let more = known.len().saturating_sub(SHOWN);
+    let mut list = known
+        .iter()
+        .take(SHOWN)
+        .map(|c| c.chars().take(64).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if more > 0 {
+        list.push_str(&format!(" (+{more} more)"));
+    }
+    Err(axiom_core::Diagnostic::error(
+        "unknown_clip",
+        format!("{}/clip", component_path(entity)),
+        format!("clip {clip} is not in asset {asset} or the library (clips: {list})"),
+    ))
 }
 pub fn component_path(entity: &str) -> String {
     format!(

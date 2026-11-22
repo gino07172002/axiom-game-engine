@@ -155,6 +155,21 @@ fn commands_on_the_wrong_kind_of_player_fail_with_reasons() {
     )
     .unwrap_err();
     assert!(kind.contains("is a float"), "{kind}");
+    // Seek moves a clip's clock, which a controller does not read: refused, not reported as
+    // a time the pose does not show.
+    let before = controller(&r);
+    let seek = call(
+        &mut r,
+        "animation",
+        "seek",
+        json!({"entity":"walker","seconds":0.4}),
+    )
+    .unwrap_err();
+    assert!(
+        seek.contains("driven by animation controller locomotion"),
+        "{seek}"
+    );
+    assert_eq!(controller(&r), before);
     // An FSM / action clip cue on a controlled entity is counted, not silently lost.
     let mut w = lab();
     w.entities

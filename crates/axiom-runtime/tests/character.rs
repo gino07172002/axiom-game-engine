@@ -219,7 +219,8 @@ fn authored_and_runtime_visibility_reach_the_render_frame() {
     assert_eq!(drawn(&r, "face2").1, [0b100, 0, 0, 0]);
     assert_eq!(player(&r, "face2")["hidden"], json!(["1/1/0"]));
     assert_eq!(drawn(&r, "face").1, [0; 4]);
-    let parts = call(&mut r, "inspect", json!({"entity":"face2"})).unwrap()["parts"].clone();
+    let parts =
+        call(&mut r, "inspect", json!({"entity":"face2","parts":true})).unwrap()["parts"].clone();
     assert_eq!(parts[2]["visible"], false, "{parts}");
     assert_eq!(parts[2]["groups"], json!(["hat", "felt"]));
     call(
