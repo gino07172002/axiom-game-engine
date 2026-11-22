@@ -10,14 +10,14 @@
 #![windows_subsystem = "windows"]
 
 use anyhow::{bail, ensure, Context, Result};
+use axiom_runtime::packaging::{GameManifest, GAME_FILE};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const GAME_FILE: &str = axiom_runtime::packaging::GAME_FILE;
 const NO_DIALOG: &str = "AXIOM_PLAYER_NO_DIALOG";
-const MAX_GAME_FILE: u64 = 64 * 1024;
 
-/// Where a failure is reported: `%APPDATA%\Axiom\<id>\crash.log` once the id is known.
+/// Where a failure is reported: `%APPDATA%\Axiom\<id>\crash.log` (or beside `--db`) once the
+/// id is known.
 static CRASH_LOG: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[derive(Default)]
@@ -31,6 +31,7 @@ struct Args {
 struct Game {
     id: String,
     title: String,
+    /// Canonical shipped pack directory, inside the canonical game folder.
     pack: PathBuf,
 }
 
@@ -47,16 +48,8 @@ fn run() -> Result<()> {
     let exe = std::env::current_exe().context("locate the player executable")?;
     let dir = exe.parent().context("player executable has no directory")?;
     let game = read_game(dir)?;
-    let data = data_dir(&game.id)?;
-    *CRASH_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.join("crash.log"));
-    let db = match args.db {
-        Some(db) => db,
-        None => {
-            std::fs::create_dir_all(&data)
-                .with_context(|| format!("create save directory {}", data.display()))?;
-            data.join("world.sqlite")
-        }
-    };
+    let (db, crash_log) = locations(args.db, &game.id, std::env::var_os("APPDATA"))?;
+    *CRASH_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(crash_log);
     if let Some(parent) = db.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create database directory {}", parent.display()))?;
@@ -65,6 +58,8 @@ fn run() -> Result<()> {
     let world = axiom_core::ContentPackage::load(&game.pack, &registry.authoring)
         .with_context(|| format!("load game content {}", game.pack.display()))?
         .world;
+    // The packager's rule, enforced again at launch: nothing outside the shipped pack.
+    axiom_runtime::packaging::ensure_files_inside(&world, &game.pack)?;
     axiom_runtime::run(
         axiom_runtime::RunOptions {
             mode: axiom_runtime::RunMode::Play {
@@ -113,58 +108,49 @@ fn parse_args(mut raw: impl Iterator<Item = std::ffi::OsString>) -> Result<Args>
 }
 
 fn read_game(dir: &Path) -> Result<Game> {
-    let path = dir.join(GAME_FILE);
-    let size = std::fs::metadata(&path)
-        .with_context(|| format!("{} not found beside the player", path.display()))?
-        .len();
-    ensure!(size <= MAX_GAME_FILE, "{} exceeds 64 KiB", path.display());
-    let raw = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&raw).with_context(|| format!("parse {}", path.display()))?;
-    let text = |key: &str| {
-        value[key]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string)
-            .with_context(|| format!("{GAME_FILE}: \"{key}\" must be a non-empty string"))
-    };
-    let format = value["format"].as_u64();
+    let game = GameManifest::read(dir)?;
+    // Resolve links and junctions: the pack must really sit inside the game folder.
+    let root = dir
+        .canonicalize()
+        .with_context(|| format!("game folder {}", dir.display()))?;
+    let pack = root
+        .join(&game.pack)
+        .canonicalize()
+        .with_context(|| format!("game content {} not found", dir.join(&game.pack).display()))?;
     ensure!(
-        format == Some(axiom_runtime::packaging::FORMAT as u64),
-        "{GAME_FILE}: unsupported format {:?} (this player reads format {})",
-        value["format"],
-        axiom_runtime::packaging::FORMAT
-    );
-    let id = text("id")?;
-    // The id names the save directory: one plain path component.
-    ensure!(
-        id.len() <= 128
-            && id != "."
-            && id != ".."
-            && id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
-        "{GAME_FILE}: id {id:?} must use only letters, digits, '-', '_' or '.'"
-    );
-    let title = text("title")?;
-    let pack = PathBuf::from(text("pack")?);
-    ensure!(
-        pack.components()
-            .all(|c| matches!(c, std::path::Component::Normal(_))),
-        "{GAME_FILE}: pack must be a relative path inside the game folder"
+        pack.starts_with(&root) && pack != root,
+        "{GAME_FILE}: pack {:?} resolves outside the game folder (to {})",
+        game.pack,
+        pack.display()
     );
     Ok(Game {
-        id,
-        title,
-        pack: dir.join(pack),
+        id: game.id,
+        title: game.title,
+        pack,
     })
 }
 
-fn data_dir(id: &str) -> Result<PathBuf> {
-    let appdata = std::env::var_os("APPDATA")
+/// The database and crash log. `%APPDATA%` is needed only for the default save directory:
+/// with `--db` the crash log goes beside the database.
+fn locations(
+    db: Option<PathBuf>,
+    id: &str,
+    appdata: Option<std::ffi::OsString>,
+) -> Result<(PathBuf, PathBuf)> {
+    if let Some(db) = db {
+        let dir = db
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        return Ok((db, dir.join("crash.log")));
+    }
+    let appdata = appdata
         .filter(|v| !v.is_empty())
         .context("APPDATA is not set; cannot choose a save directory (pass --db PATH)")?;
-    Ok(PathBuf::from(appdata).join("Axiom").join(id))
+    let data = PathBuf::from(appdata).join("Axiom").join(id);
+    std::fs::create_dir_all(&data)
+        .with_context(|| format!("create save directory {}", data.display()))?;
+    Ok((data.join("world.sqlite"), data.join("crash.log")))
 }
 
 /// Writes the crash log (best effort) and tells the person, since there is no console.
@@ -232,10 +218,16 @@ mod tests {
         read_game(dir)
     }
 
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axiom-player-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("content")).unwrap();
+        dir
+    }
+
     #[test]
     fn reads_game_file_and_rejects_unsafe_fields() {
-        let dir = std::env::temp_dir().join(format!("axiom-player-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("game");
         let ok = game(
             &dir,
             r#"{"format":1,"id":"adv-demo","title":"Last Signal","pack":"content","exe":"x.exe"}"#,
@@ -243,17 +235,65 @@ mod tests {
         .unwrap();
         assert_eq!(ok.id, "adv-demo");
         assert_eq!(ok.title, "Last Signal");
-        assert_eq!(ok.pack, dir.join("content"));
+        assert_eq!(ok.pack, dir.join("content").canonicalize().unwrap());
         for bad in [
             r#"{"format":2,"id":"a","title":"t","pack":"content"}"#,
             r#"{"format":1,"id":"../x","title":"t","pack":"content"}"#,
             r#"{"format":1,"id":"a","title":"","pack":"content"}"#,
             r#"{"format":1,"id":"a","title":"t","pack":"../content"}"#,
-            r#"{"format":1,"id":"a","title":"t","pack":"C:\\content"}"#,
+            r#"{"format":1,"id":"a","title":"t","pack":"C:\content"}"#,
+            r#"{"format":1,"id":"a","title":"t","pack":"missing"}"#,
             "{not json",
         ] {
             assert!(game(&dir, bad).is_err(), "{bad}");
         }
+        std::fs::write(dir.join(GAME_FILE), vec![b' '; 70_000]).unwrap();
+        assert!(read_game(&dir).is_err(), "over 64 KiB");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // R9 F4: a `content` junction that leads outside the game folder is refused.
+    #[cfg(windows)]
+    #[test]
+    fn pack_junction_outside_the_game_folder_is_refused() {
+        let dir = scratch("junction");
+        let outside =
+            std::env::temp_dir().join(format!("axiom-player-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = dir.join("linked");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let error = game(&dir, r#"{"format":1,"id":"a","title":"t","pack":"linked"}"#)
+            .err()
+            .expect("junction leaving the folder must be refused");
+        assert!(
+            error.to_string().contains("outside the game folder"),
+            "{error:#}"
+        );
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    // R9 F15: `--db` works without APPDATA, as the error message promises.
+    #[test]
+    fn explicit_db_does_not_need_appdata() {
+        let dir = scratch("db");
+        let db = dir.join("saves/world.sqlite");
+        let (chosen, log) = locations(Some(db.clone()), "adv-demo", None).unwrap();
+        assert_eq!(chosen, db);
+        assert_eq!(log, dir.join("saves/crash.log"));
+        let error = locations(None, "adv-demo", None).unwrap_err();
+        assert!(error.to_string().contains("--db"), "{error}");
+        let (chosen, log) =
+            locations(None, "adv-demo", Some(dir.clone().into_os_string())).unwrap();
+        assert_eq!(chosen, dir.join("Axiom/adv-demo/world.sqlite"));
+        assert_eq!(log, dir.join("Axiom/adv-demo/crash.log"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

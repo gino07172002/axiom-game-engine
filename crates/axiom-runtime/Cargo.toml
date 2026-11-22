@@ -35,4 +35,4 @@ lewton = "0.10"
 # Per-process video memory for the editor status bar (vram.rs; the crate is already built for
 # wgpu-hal's D3D12 backend) and XInput gamepads (gamepad.rs).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_UI_Input_XboxController"] }
+windows = { version = "0.58", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Storage_FileSystem", "Win32_UI_Input_XboxController"] }

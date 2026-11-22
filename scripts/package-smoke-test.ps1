@@ -1,13 +1,18 @@
 # Packaging smoke test (docs/plan-packaging.zh-TW.md, P5).
-# For each pack: `axiom package` -> copy the folder elsewhere -> run the windowed player from the
-# copy with an isolated APPDATA -> check exit code, screenshot, APPDATA database, that the game
-# folder stays unchanged and that nothing in the player's database points back at the repo.
+# For each pack: `axiom package` -> copy the folder elsewhere and move the original output away
+# -> run the windowed player from the copy with an isolated APPDATA -> check exit code,
+# screenshot, APPDATA database, that every game file keeps its relative path and SHA-256, and
+# (through `axiom query world` on the player's database) that every resolved asset path lies in
+# the moved copy's content folder. Every child process has a wall-clock limit; on timeout it is
+# killed and the pack, stage and log paths are reported.
 # Negative cases: an external animation asset and --force on a non-game folder are refused and
 # leave nothing behind. Never touches data/ or the real %APPDATA%.
 param(
     [switch]$Release,
     [string[]]$Packs = @('plaza', 'adv', 'fps', 'action'),
     [int]$Frames = 120,
+    [int]$PackageTimeoutSeconds = 300,
+    [int]$PlayerTimeoutSeconds = 300,
     [switch]$Keep
 )
 $ErrorActionPreference = 'Stop'
@@ -25,25 +30,74 @@ foreach ($exe in $cli, $player) {
 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $root = (New-Item -ItemType Directory -Force (Join-Path $repo "artifacts\package-smoke-$stamp")).FullName
+$logs = (New-Item -ItemType Directory -Force (Join-Path $root 'logs')).FullName
 
-function Invoke-Package([string]$pack, [string]$out, [string[]]$extra = @()) {
+function Quote([string]$arg) {
+    if ($arg -match '[\s"]') { '"' + ($arg -replace '"', '\"') + '"' } else { $arg }
+}
+
+# Runs one child process with a wall-clock limit; kills it (and waits briefly) on timeout.
+function Invoke-Bounded([string]$exe, [string[]]$arguments, [string]$stage, [int]$seconds, [string]$workdir = $root) {
+    $tag = ($stage -replace '[^A-Za-z0-9_.-]', '_')
+    $out = Join-Path $logs "$tag.out.txt"
+    $err = Join-Path $logs "$tag.err.txt"
+    $proc = Start-Process -FilePath $exe -ArgumentList (($arguments | ForEach-Object { Quote $_ }) -join ' ') `
+        -WorkingDirectory $workdir -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+    # Read the handle now: without it Windows PowerShell reports no ExitCode after exit.
+    $null = $proc.Handle
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    if (-not $proc.WaitForExit($seconds * 1000)) {
+        try { $proc.Kill() } catch {}
+        [void]$proc.WaitForExit(10000)
+        throw "timeout after $seconds s: stage '$stage' ($exe); logs: $out, $err"
+    }
+    $proc.WaitForExit()
+    $watch.Stop()
+    [pscustomobject]@{ code = $proc.ExitCode; ms = $watch.ElapsedMilliseconds; out = $out; err = $err }
+}
+
+function Invoke-Package([string]$pack, [string]$out, [string]$stage, [string[]]$extra = @()) {
     # stderr carries warnings (e.g. output inside the repo) and recoverable errors as JSON.
-    $ErrorActionPreference = 'Continue'
-    $lines = & $cli --pack $pack package --out $out @extra 2>&1 | ForEach-Object { "$_" }
-    $json = $lines | Where-Object { $_.StartsWith('{') } | Select-Object -Last 1
+    # Children run in the artifacts folder: pass the pack as an absolute path.
+    $pack = (Resolve-Path $pack).Path
+    $run = Invoke-Bounded $cli (@('--pack', $pack, 'package', '--out', $out) + $extra) "package-$stage" $PackageTimeoutSeconds
+    $lines = @(Get-Content $run.out -Encoding UTF8) + @(Get-Content $run.err -Encoding UTF8)
+    $json = $lines | Where-Object { "$_".StartsWith('{') } | Select-Object -Last 1
     if (-not $json) { throw "no JSON from package ${pack}: $($lines -join ' ')" }
     $json | ConvertFrom-Json
+}
+
+# Relative path + SHA-256 of every file under $dir.
+function Get-Manifest([string]$dir) {
+    $base = (Resolve-Path $dir).Path.TrimEnd('\') + '\'
+    (Get-ChildItem -Recurse -File $dir | Sort-Object FullName | ForEach-Object {
+        $_.FullName.Substring($base.Length) + '=' + (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+    }) -join '|'
+}
+
+# Paths package import resolves (the fields packaging::resolved_files reads).
+function Get-ResolvedPaths($world) {
+    $r = $world.resources
+    $paths = @()
+    if ($r.'ui.document'.images) { $paths += $r.'ui.document'.images.PSObject.Properties | ForEach-Object { $_.Value } }
+    if ($r.'animation.library'.assets) { $paths += $r.'animation.library'.assets.PSObject.Properties | ForEach-Object { $_.Value.path } }
+    if ($r.'audio.library'.clips) { $paths += $r.'audio.library'.clips.PSObject.Properties | Where-Object { $_.Value.file.path } | ForEach-Object { $_.Value.file.path } }
+    $paths | Where-Object { $_ }
 }
 
 $results = @()
 foreach ($name in $Packs) {
     $out = Join-Path $root "dist\$name"
-    $report = Invoke-Package "content\$name" $out
+    $report = Invoke-Package "content\$name" $out $name
     if (-not $report.ok) { throw "package $name failed: $($report.error)" }
     $moved = Join-Path $root "moved\$name copy"
     New-Item -ItemType Directory -Force (Split-Path $moved) | Out-Null
     Copy-Item -Recurse $out $moved
-    $before = (Get-ChildItem -Recurse -File $moved | ForEach-Object { $_.FullName } | Sort-Object) -join '|'
+    # Move the original output away: the copy must run on its own.
+    $away = Join-Path $root "away\$name"
+    New-Item -ItemType Directory -Force (Split-Path $away) | Out-Null
+    Move-Item $out $away
+    $before = Get-Manifest $moved
     $appdata = Join-Path $root "appdata\$name"
     New-Item -ItemType Directory -Force $appdata | Out-Null
     $shot = Join-Path $root "$name.png"
@@ -51,30 +105,34 @@ foreach ($name in $Packs) {
     $env:APPDATA = $appdata
     $env:AXIOM_PLAYER_NO_DIALOG = '1'
     try {
-        $watch = [Diagnostics.Stopwatch]::StartNew()
-        $proc = Start-Process -FilePath (Join-Path $moved $report.exe) -WorkingDirectory $root -Wait -PassThru `
-            -ArgumentList @('--smoke-frames', "$Frames", '--screenshot', "`"$shot`"") `
-            -RedirectStandardOutput (Join-Path $root "$name.out.json") -RedirectStandardError (Join-Path $root "$name.err.txt")
-        $watch.Stop()
+        $run = Invoke-Bounded (Join-Path $moved $report.exe) @('--smoke-frames', "$Frames", '--screenshot', $shot) "player-$name" $PlayerTimeoutSeconds
     } finally {
         $env:APPDATA = $saved
         Remove-Item Env:AXIOM_PLAYER_NO_DIALOG -ErrorAction SilentlyContinue
     }
-    if ($proc.ExitCode -ne 0) { throw "player $name exited $($proc.ExitCode): $(Get-Content -Raw (Join-Path $root "$name.err.txt"))" }
+    if ($run.code -ne 0) { throw "player $name exited $($run.code): $(Get-Content -Raw $run.err)" }
     if (-not (Test-Path $shot)) { throw "player $name wrote no screenshot" }
     $db = Join-Path $appdata "Axiom\$($report.id)\world.sqlite"
     if (-not (Test-Path $db)) { throw "player $name did not create $db" }
-    $after = (Get-ChildItem -Recurse -File $moved | ForEach-Object { $_.FullName } | Sort-Object) -join '|'
-    if ($after -ne $before) { throw "player $name wrote into its game folder" }
-    # Asset paths are resolved at import: they must point into the moved copy, never the repo.
-    $bytes = [IO.File]::ReadAllText($db, [Text.Encoding]::UTF8)
-    foreach ($wal in "$db-wal") { if (Test-Path $wal) { $bytes += [IO.File]::ReadAllText($wal, [Text.Encoding]::UTF8) } }
-    $source = (Join-Path $repo 'content').Replace('\', '\\')
-    if ($bytes.Contains($source) -or $bytes.Contains((Join-Path $repo 'content'))) { throw "player $name database references the repo content" }
+    $after = Get-Manifest $moved
+    if ($after -ne $before) { throw "player $name changed files in its game folder" }
+    # Asset paths are resolved at import: each must lie in the moved copy's content folder.
+    $query = Invoke-Bounded $cli @('--db', $db, 'query', 'world') "query-$name" $PackageTimeoutSeconds
+    if ($query.code -ne 0) { throw "query world on $name failed: $(Get-Content -Raw $query.err)" }
+    $answer = Get-Content -Raw -Encoding UTF8 $query.out | ConvertFrom-Json
+    $world = if ($answer.world) { $answer.world } elseif ($answer.result) { $answer.result } else { $answer }
+    $content = (Resolve-Path (Join-Path $moved 'content')).Path
+    $resolved = @(Get-ResolvedPaths $world)
+    foreach ($path in $resolved) {
+        $plain = "$path" -replace '^\\\\\?\\', ''
+        if (-not $plain.StartsWith($content + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "player $name resolved $plain outside the moved content folder $content"
+        }
+    }
     $results += [ordered]@{
         pack = $name; id = $report.id; exe = $report.exe; files = $report.files.Count; bytes = $report.bytes
-        package_ms = $report.ms; unreferenced = @($report.unreferenced); player_ms = $watch.ElapsedMilliseconds
-        screenshot = $shot
+        pack_digest = $report.pack_digest; package_ms = $report.ms; unreferenced = @($report.unreferenced)
+        player_ms = $run.ms; resolved_assets = $resolved.Count; screenshot = $shot
     }
 }
 
@@ -89,7 +147,7 @@ $asset = $world.resources.'animation.library'.assets.character
 $asset | Add-Member -Force -NotePropertyName external -NotePropertyValue $true
 $asset.path = (Join-Path $ext 'outside\rigify.glb')
 [IO.File]::WriteAllText($worldPath, ($world | ConvertTo-Json -Depth 100 -Compress), (New-Object Text.UTF8Encoding $false))
-$refused = Invoke-Package (Join-Path $ext 'pack') (Join-Path $ext 'out\Game')
+$refused = Invoke-Package (Join-Path $ext 'pack') (Join-Path $ext 'out\Game') 'external'
 if ($refused.ok -or "$($refused.error)" -notlike '*external animation asset*') { throw "external asset was not refused: $($refused | ConvertTo-Json -Compress)" }
 if ((Test-Path (Join-Path $ext 'out')) ) { throw 'refused external package left output behind' }
 
@@ -97,14 +155,17 @@ if ((Test-Path (Join-Path $ext 'out')) ) { throw 'refused external package left 
 $foreign = Join-Path $root 'foreign'
 New-Item -ItemType Directory -Force $foreign | Out-Null
 Set-Content -Path (Join-Path $foreign 'keep.txt') -Value 'keep'
-$denied = Invoke-Package 'content\adv' $foreign @('--force')
+$denied = Invoke-Package 'content\adv' $foreign 'foreign' @('--force')
 if ($denied.ok -or -not (Test-Path (Join-Path $foreign 'keep.txt'))) { throw '--force replaced a non-game folder' }
 
 $summary = [ordered]@{ok = $true; build = $build; packs = $results; external_refused = $refused.error; force_guard = $denied.error; root = $root }
 $summary | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $root 'report.json')
 if (-not $Keep) {
-    # Keep only the screenshots and the report; the copies hold 100 MB executables each.
-    foreach ($dir in 'dist', 'moved', 'appdata', 'external', 'foreign') { Remove-Item -Recurse -Force (Join-Path $root $dir) }
+    # Keep only the screenshots, logs and the report; the copies hold 100 MB executables each.
+    foreach ($dir in 'dist', 'moved', 'away', 'appdata', 'external', 'foreign') {
+        $path = Join-Path $root $dir
+        if (Test-Path $path) { Remove-Item -Recurse -Force $path }
+    }
 }
 $summary | ConvertTo-Json -Depth 6 -Compress
 $global:LASTEXITCODE = 0

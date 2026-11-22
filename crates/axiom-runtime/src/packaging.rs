@@ -2,26 +2,42 @@
 //!
 //! The output ships the pack *directory*, not an authoring database: package import rewrites
 //! asset paths to absolute ones, so the player re-imports `content/` on every launch and the
-//! folder can move. Output is staged in a sibling `*.partial` directory and renamed only after
-//! the copied pack loads cleanly with no path outside the output, so failure or cancellation
-//! never leaves a half-written game.
+//! folder can move. Output is staged in a sibling `<out>.partial-<unique>` directory that this
+//! build creates atomically (and is the only directory a failed build removes), then published
+//! only after the copied pack loads cleanly with no file outside the output. Publishing never
+//! overwrites a destination that appeared during the build; `--force` moves the previous build
+//! aside and restores it if the new one cannot be put in place. One build per output folder at
+//! a time (an OS file lock that the process releases even when it dies).
 use anyhow::{bail, ensure, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Written into every output; `--force` only replaces directories that carry it.
 pub const GAME_FILE: &str = "game.json";
 pub const CONTENT_DIR: &str = "content";
 pub const FORMAT: u32 = 1;
+/// Largest `game.json` the packager writes and the player reads.
+pub const MAX_GAME_FILE: usize = 64 * 1024;
 /// Build sources that a pack keeps beside its world but never reads at run time.
 pub const DEFAULT_EXCLUDES: &[&str] = &[
     "build/", ".git/", "*.acl", "*.blend", "*.blend1", "*.py", "*.ps1",
 ];
 const MAX_FILES: usize = 4096;
+/// Every directory entry the walk reads, kept or excluded.
+const MAX_ENTRIES: usize = 65_536;
+const MAX_DEPTH: usize = 32;
+/// Whole output: content, player executable and `game.json`.
 const MAX_BYTES: u64 = 4 << 30;
+const COPY_CHUNK: usize = 1 << 16;
+/// Excluded paths named in the report (the total is always given).
+const SKIPPED_LISTED: usize = 32;
+/// Largest glTF JSON / `.axrig` bundle read to list its dependencies (the importer's limit).
+const MAX_ASSET_FILE: usize = 134_217_728;
 
 pub struct PackageOptions {
     pub pack: PathBuf,
@@ -33,6 +49,8 @@ pub struct PackageOptions {
     pub force: bool,
     /// Executable copied into the output as `<exe_name>.exe`.
     pub player_exe: PathBuf,
+    /// Refuse to publish unless the shipped pack files hash to this `pack_digest`.
+    pub expected_pack_digest: Option<String>,
 }
 
 /// Shared with a background job: countable progress and cooperative cancellation.
@@ -41,6 +59,105 @@ pub struct Progress {
     pub done: AtomicUsize,
     pub total: AtomicUsize,
     pub cancel: AtomicBool,
+}
+
+impl Progress {
+    fn check(&self) -> Result<()> {
+        ensure!(!self.cancel.load(Ordering::Relaxed), "packaging cancelled");
+        Ok(())
+    }
+}
+
+/// `game.json`: the one contract between the packager (writer) and the player (reader).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GameManifest {
+    pub format: u32,
+    /// Names the save directory: one plain ASCII path component.
+    pub id: String,
+    pub title: String,
+    /// Relative path of the shipped pack inside the game folder.
+    pub pack: String,
+    #[serde(default)]
+    pub exe: String,
+    #[serde(default)]
+    pub engine: String,
+}
+
+impl GameManifest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.format == FORMAT,
+            "{GAME_FILE}: unsupported format {} (this player reads format {FORMAT})",
+            self.format
+        );
+        let id = &self.id;
+        ensure!(
+            !id.is_empty()
+                && id.len() <= 128
+                && id != "."
+                && id != ".."
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+            "{GAME_FILE}: id {id:?} must be 1-128 ASCII letters, digits, '-', '_' or '.' (it names the save folder)"
+        );
+        ensure!(
+            !self.title.trim().is_empty(),
+            "{GAME_FILE}: \"title\" must be a non-empty string"
+        );
+        let pack = Path::new(&self.pack);
+        ensure!(
+            !self.pack.trim().is_empty()
+                && pack
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "{GAME_FILE}: pack must be a relative path inside the game folder"
+        );
+        ensure!(
+            self.exe.is_empty()
+                || (Path::new(&self.exe).components().count() == 1
+                    && Path::new(&self.exe)
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)))),
+            "{GAME_FILE}: exe must be a file name"
+        );
+        Ok(())
+    }
+
+    /// Validated, pretty JSON within [`MAX_GAME_FILE`].
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let bytes = serde_json::to_vec_pretty(self)?;
+        ensure!(
+            bytes.len() <= MAX_GAME_FILE,
+            "{GAME_FILE} exceeds {MAX_GAME_FILE} bytes (title too long?)"
+        );
+        Ok(bytes)
+    }
+
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            bytes.len() <= MAX_GAME_FILE,
+            "{GAME_FILE} exceeds {MAX_GAME_FILE} bytes"
+        );
+        let game: Self =
+            serde_json::from_slice(bytes).with_context(|| format!("parse {GAME_FILE}"))?;
+        game.validate()?;
+        Ok(game)
+    }
+
+    /// Reads `dir/game.json` (never more than [`MAX_GAME_FILE`] + 1 bytes).
+    pub fn read(dir: &Path) -> Result<Self> {
+        let path = dir.join(GAME_FILE);
+        let bytes =
+            axiom_core::read_bounded(&path, MAX_GAME_FILE, GAME_FILE).with_context(|| {
+                format!(
+                    "{} not found or unreadable beside the player",
+                    path.display()
+                )
+            })?;
+        Self::parse(&bytes).with_context(|| format!("{}", path.display()))
+    }
 }
 
 /// The windowed player (`crates/axiom-player`) built beside the running executable; it reads
@@ -77,7 +194,6 @@ pub fn package(
     let source_world = serde_json::to_value(&loaded.world)?;
     reject_outside(&source_world, &pack)?;
     let referenced = referenced_files(&pack, &source_world)?;
-    let id = loaded.manifest.id.clone();
     let title = options
         .title
         .clone()
@@ -88,49 +204,257 @@ pub fn package(
         !exe_name.is_empty(),
         "executable name has no usable characters"
     );
+    // The same contract the player enforces, checked before anything is written.
+    let game = GameManifest {
+        format: FORMAT,
+        id: loaded.manifest.id.clone(),
+        title,
+        pack: CONTENT_DIR.into(),
+        exe: format!("{exe_name}.exe"),
+        engine: env!("CARGO_PKG_VERSION").into(),
+    };
+    let game_bytes = game.to_bytes()?;
+    if let Some(expected) = &options.expected_pack_digest {
+        ensure!(
+            expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+            "expected_pack_digest must be 64 hex digits (a report's pack_digest)"
+        );
+    }
 
     let out = normalized(&options.out)?;
     ensure!(
         !out.starts_with(&pack) && !pack.starts_with(&out),
         "output must not overlap the pack directory"
     );
-    if out.exists() {
+    if let Some(meta) = existing(&out)? {
         ensure!(
             options.force,
             "output {} exists; pass --force to replace it",
             shown(&out)
         );
-        ensure!(
-            out.join(GAME_FILE).is_file(),
-            "refusing to replace {}: it is not a packaged game folder",
-            shown(&out)
-        );
+        game_folder(&out, &meta)?;
     }
-    let staging = sibling(&out, "partial")?;
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)
-            .with_context(|| format!("remove stale {}", shown(&staging)))?;
-    }
-    let result = build(
-        registry, options, progress, &pack, &staging, &id, &title, &exe_name,
-    );
-    let mut report = match result {
-        Ok(mut report) => {
-            annotate(&mut report, &referenced);
-            report
+    progress.check()?;
+    let parent = out
+        .parent()
+        .context("output path needs a parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("create {}", shown(parent)))?;
+    let _lock = OutputLock::acquire(&out)?;
+    let staging = Staging::create(&out)?;
+    let mut report = build(
+        registry,
+        options,
+        progress,
+        &pack,
+        &staging.0,
+        &game,
+        &game_bytes,
+    )?;
+    annotate(&mut report, &referenced);
+    if let Some(warning) = publish(&staging.0, &out, options.force, progress)? {
+        if let Some(warnings) = report["warnings"].as_array_mut() {
+            warnings.push(json!(warning));
         }
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-    };
-    if out.exists() {
-        std::fs::remove_dir_all(&out).with_context(|| format!("replace {}", shown(&out)))?;
     }
-    std::fs::rename(&staging, &out).with_context(|| format!("finalize {}", shown(&out)))?;
-    report["out"] = json!(out.to_string_lossy().trim_start_matches(r"\\?\"));
+    staging.published();
+    report["out"] = json!(shown(&out));
     report["ms"] = json!(started.elapsed().as_millis() as u64);
     Ok(report)
+}
+
+/// The staging directory this build created; removed on drop unless published.
+struct Staging(PathBuf, bool);
+
+impl Staging {
+    /// `create_dir` (never `create_dir_all`) on a fresh unique name: the directory exists only
+    /// because this call made it, so removing it can never touch a pack or another build.
+    fn create(out: &Path) -> Result<Self> {
+        let path = unique_sibling(out, "partial", |p| std::fs::create_dir(p))?;
+        Ok(Self(path, false))
+    }
+
+    fn published(mut self) {
+        self.1 = true;
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.1 {
+            let _ = remove_own_dir(&self.0);
+        }
+    }
+}
+
+static UNIQUE: AtomicU64 = AtomicU64::new(0);
+
+/// Tries `<out>.<suffix>-<pid>-<n>` names until `make` succeeds on one that did not exist.
+fn unique_sibling(
+    out: &Path,
+    suffix: &str,
+    make: impl Fn(&Path) -> std::io::Result<()>,
+) -> Result<PathBuf> {
+    let name = out
+        .file_name()
+        .context("output path needs a final directory name")?;
+    for _ in 0..64 {
+        let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+        let mut candidate = name.to_os_string();
+        candidate.push(format!(".{suffix}-{}-{n}", std::process::id()));
+        let path = out.with_file_name(candidate);
+        match make(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("create {}", shown(&path))),
+        }
+    }
+    bail!("no free {suffix} name beside {}", shown(out))
+}
+
+/// Removes a directory this build created or moved aside; never a link or junction.
+fn remove_own_dir(path: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    ensure!(
+        meta.is_dir() && !is_link(&meta),
+        "refusing to remove {}: not a plain directory",
+        shown(path)
+    );
+    std::fs::remove_dir_all(path).with_context(|| format!("remove {}", shown(path)))
+}
+
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
+fn existing(path: &Path) -> Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("inspect {}", shown(path))),
+    }
+}
+
+/// `--force` replaces only a plain directory (no link or junction) holding a `game.json` file.
+fn game_folder(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
+    let game = std::fs::symlink_metadata(out.join(GAME_FILE));
+    ensure!(
+        meta.is_dir() && !is_link(meta) && game.is_ok_and(|g| g.is_file()),
+        "refusing to replace {}: it is not a packaged game folder",
+        shown(out)
+    );
+    Ok(())
+}
+
+/// Serializes builds of one output folder across processes (CLI and editor). The lock file
+/// lives in the temp directory, keyed by the output path; the OS drops the lock when the
+/// holder exits, so a crashed build never blocks the next one.
+struct OutputLock(#[allow(dead_code)] std::fs::File);
+
+impl OutputLock {
+    fn acquire(out: &Path) -> Result<Self> {
+        let key = format!(
+            "{:x}",
+            Sha256::digest(out.to_string_lossy().to_lowercase().as_bytes())
+        );
+        let path = std::env::temp_dir().join(format!("axiom-build-{}.lock", &key[..16]));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open build lock {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self(file)),
+            Err(std::fs::TryLockError::WouldBlock) => bail!(
+                "another build is writing {}; wait for it or cancel it",
+                shown(out)
+            ),
+            Err(std::fs::TryLockError::Error(e)) => {
+                Err(e).with_context(|| format!("lock {}", path.display()))
+            }
+        }
+    }
+}
+
+/// Renames `from` to `to`, failing (never replacing) when `to` exists.
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
+        let wide = |p: &Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both buffers are NUL-terminated UTF-16 that outlive the call. No flags:
+        // MoveFileExW fails with ERROR_ALREADY_EXISTS instead of replacing `to`.
+        unsafe {
+            MoveFileExW(
+                PCWSTR::from_raw(from.as_ptr()),
+                PCWSTR::from_raw(to.as_ptr()),
+                MOVE_FILE_FLAGS(0),
+            )
+        }
+        .map_err(|e| {
+            let code = e.code().0 as u32;
+            if code & 0xFFFF_0000 == 0x8007_0000 {
+                std::io::Error::from_raw_os_error((code & 0xFFFF) as i32)
+            } else {
+                std::io::Error::other(e)
+            }
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        // Best effort off Windows: check, then rename (std::fs::rename replaces).
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(from, to)
+    }
+}
+
+/// The cancellation cut-off: a cancel seen here still wins; after it the build is published.
+/// Returns a warning when the previous build could not be removed after a successful swap.
+fn publish(staging: &Path, out: &Path, force: bool, progress: &Progress) -> Result<Option<String>> {
+    progress.check()?;
+    let Some(meta) = existing(out)? else {
+        return rename_noreplace(staging, out)
+            .map(|()| None)
+            .with_context(|| format!("finalize {}", shown(out)));
+    };
+    // Re-validated here: the folder may have appeared or changed during the build.
+    ensure!(
+        force,
+        "output {} appeared during the build; pass --force to replace it",
+        shown(out)
+    );
+    game_folder(out, &meta)?;
+    let backup = unique_sibling(out, "old", |p| rename_noreplace(out, p))
+        .with_context(|| format!("move the previous build {} aside", shown(out)))?;
+    if let Err(error) = rename_noreplace(staging, out) {
+        let restored = rename_noreplace(&backup, out);
+        return Err(error).with_context(|| match restored {
+            Ok(()) => format!("finalize {} (the previous build was restored)", shown(out)),
+            Err(_) => format!(
+                "finalize {} (the previous build is kept at {})",
+                shown(out),
+                shown(&backup)
+            ),
+        });
+    }
+    Ok(remove_own_dir(&backup)
+        .err()
+        .map(|e| format!("previous build kept at {}: {e:#}", shown(&backup))))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -140,108 +464,162 @@ fn build(
     progress: &Progress,
     pack: &Path,
     staging: &Path,
-    id: &str,
-    title: &str,
-    exe_name: &str,
+    game: &GameManifest,
+    game_bytes: &[u8],
 ) -> Result<Value> {
     let excludes: Vec<&str> = DEFAULT_EXCLUDES
         .iter()
         .copied()
         .chain(options.excludes.iter().map(String::as_str))
         .collect();
-    let mut sources = vec![];
-    let mut skipped = vec![];
-    collect(pack, pack, &excludes, &mut sources, &mut skipped)?;
-    sources.sort();
-    let exe = format!("{exe_name}.exe");
-    progress.total.store(sources.len() + 1, Ordering::Relaxed);
+    let walk = collect(pack, &excludes, progress)?;
+    // Content files, the player and game.json.
+    progress
+        .total
+        .store(walk.files.len() + 2, Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
 
     let content = staging.join(CONTENT_DIR);
-    std::fs::create_dir_all(&content)?;
+    std::fs::create_dir(&content)?;
     let mut files = vec![];
-    let mut bytes = 0u64;
-    for relative in &sources {
-        ensure!(
-            !progress.cancel.load(Ordering::Relaxed),
-            "packaging cancelled"
-        );
+    let mut remaining = MAX_BYTES;
+    let mut buffer = vec![0u8; COPY_CHUNK];
+    let mut digest = Sha256::new();
+    for relative in &walk.files {
+        progress.check()?;
         let target = content.join(relative);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let (size, hash) = copy_hashed(&pack.join(relative), &target)?;
-        bytes += size;
-        ensure!(bytes <= MAX_BYTES, "output exceeds the 4 GiB budget");
-        files.push(
-            json!({"path":format!("{CONTENT_DIR}/{}",slash(relative)),"bytes":size,"sha256":hash}),
-        );
+        let (size, hash) = copy_hashed(
+            &pack.join(relative),
+            &target,
+            &mut remaining,
+            &mut buffer,
+            progress,
+        )?;
+        let path = slash(relative);
+        digest.update(format!("{path}\t{hash}\n"));
+        files.push(json!({"path":format!("{CONTENT_DIR}/{path}"),"bytes":size,"sha256":hash}));
         progress.done.fetch_add(1, Ordering::Relaxed);
     }
-    ensure!(
-        !progress.cancel.load(Ordering::Relaxed),
-        "packaging cancelled"
-    );
-    let (size, hash) = copy_hashed(&options.player_exe, &staging.join(&exe))
-        .with_context(|| format!("copy player {}", options.player_exe.display()))?;
-    bytes += size;
-    files.push(json!({"path":exe,"bytes":size,"sha256":hash}));
+    let pack_digest = format!("{:x}", digest.finalize());
+    let (size, hash) = copy_hashed(
+        &options.player_exe,
+        &staging.join(&game.exe),
+        &mut remaining,
+        &mut buffer,
+        progress,
+    )
+    .with_context(|| format!("copy player {}", options.player_exe.display()))?;
+    files.push(json!({"path":game.exe,"bytes":size,"sha256":hash}));
     progress.done.fetch_add(1, Ordering::Relaxed);
-    // A cancel that arrives during the (large) executable copy still wins: nothing is renamed.
-    ensure!(
-        !progress.cancel.load(Ordering::Relaxed),
-        "packaging cancelled"
+
+    let size = game_bytes.len() as u64;
+    ensure!(size <= remaining, "output exceeds the 4 GiB budget");
+    remaining -= size;
+    write_new(&staging.join(GAME_FILE), game_bytes)?;
+    files.push(
+        json!({"path":GAME_FILE,"bytes":size,"sha256":format!("{:x}", Sha256::digest(game_bytes))}),
     );
+    progress.done.fetch_add(1, Ordering::Relaxed);
+    progress.check()?;
 
-    let game = json!({"format":FORMAT,"id":id,"title":title,"pack":CONTENT_DIR,"exe":exe,"engine":env!("CARGO_PKG_VERSION")});
-    std::fs::write(staging.join(GAME_FILE), serde_json::to_vec_pretty(&game)?)?;
-
-    // The copy must load on its own: every resolved path stays inside the output folder.
+    // The copy must load on its own: every file the resolved world reads stays inside the
+    // output folder, and every animation asset finds the files its importer will read.
     let world = axiom_core::ContentPackage::load(&content, registry)
         .context("packaged content does not load (an excluded file is still referenced?)")?
         .world;
+    progress.check()?;
+    let world = serde_json::to_value(&world)?;
     let root = staging.canonicalize()?;
-    let mut escaped = vec![];
-    escapes(&serde_json::to_value(&world)?, &root, &mut escaped);
+    let escaped = outside_files(&world, &root);
     ensure!(
         escaped.is_empty(),
         "packaged world references files outside the output: {}",
-        escaped.join(", ")
+        listing(&escaped)
     );
-    Ok(
-        json!({"ok":true,"id":id,"title":title,"exe":exe,"files":files,"bytes":bytes,"skipped":skipped}),
-    )
+    check_asset_dependencies(&world, progress)?;
+    if let Some(expected) = &options.expected_pack_digest {
+        ensure!(
+            expected.eq_ignore_ascii_case(&pack_digest),
+            "pack_digest {pack_digest} does not match expected_pack_digest {expected}: the pack changed since it was reviewed"
+        );
+    }
+    Ok(json!({
+        "ok":true,"id":game.id,"title":game.title,"exe":game.exe,"files":files,
+        "bytes":MAX_BYTES - remaining,"pack_digest":pack_digest,
+        "skipped":walk.skipped,"skipped_total":walk.skipped_total,
+    }))
 }
 
-fn collect(
-    root: &Path,
-    dir: &Path,
-    excludes: &[&str],
-    out: &mut Vec<PathBuf>,
-    skipped: &mut Vec<String>,
-) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let kind = entry.file_type()?;
-        let relative = entry.path().strip_prefix(root)?.to_path_buf();
-        ensure!(
-            !kind.is_symlink(),
-            "symbolic link {} is not supported",
-            slash(&relative)
-        );
-        if excluded(&relative, kind.is_dir(), excludes) {
-            skipped.push(slash(&relative) + if kind.is_dir() { "/" } else { "" });
-            continue;
+struct Walk {
+    files: Vec<PathBuf>,
+    /// The first [`SKIPPED_LISTED`] excluded paths (directories end in `/`).
+    skipped: Vec<String>,
+    skipped_total: usize,
+}
+
+/// Iterative, bounded walk: at most [`MAX_ENTRIES`] entries read, [`MAX_DEPTH`] levels and
+/// [`MAX_FILES`] kept files. Links and junctions are refused, never followed.
+fn collect(root: &Path, excludes: &[&str], progress: &Progress) -> Result<Walk> {
+    let mut walk = Walk {
+        files: vec![],
+        skipped: vec![],
+        skipped_total: 0,
+    };
+    let mut entries_read = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        progress.check()?;
+        let mut entries = vec![];
+        for entry in std::fs::read_dir(&dir)? {
+            entries_read += 1;
+            ensure!(
+                entries_read <= MAX_ENTRIES,
+                "pack walk exceeds {MAX_ENTRIES} directory entries"
+            );
+            entries.push(entry?);
         }
-        if kind.is_dir() {
-            collect(root, &entry.path(), excludes, out, skipped)?;
-        } else {
-            out.push(relative);
-            ensure!(out.len() <= MAX_FILES, "pack exceeds {MAX_FILES} files");
+        entries.sort_by_key(|e| e.file_name());
+        let mut subdirs = vec![];
+        for entry in entries {
+            // `DirEntry::file_type` does not follow links; junctions count as links.
+            let kind = entry.file_type()?;
+            let relative = entry.path().strip_prefix(root)?.to_path_buf();
+            ensure!(
+                !kind.is_symlink(),
+                "symbolic link or junction {} is not supported",
+                slash(&relative)
+            );
+            let is_dir = kind.is_dir();
+            if excluded(&relative, is_dir, excludes) {
+                walk.skipped_total += 1;
+                if walk.skipped.len() < SKIPPED_LISTED {
+                    walk.skipped
+                        .push(slash(&relative) + if is_dir { "/" } else { "" });
+                }
+                continue;
+            }
+            if is_dir {
+                ensure!(
+                    depth < MAX_DEPTH,
+                    "pack is nested deeper than {MAX_DEPTH} levels at {}",
+                    slash(&relative)
+                );
+                subdirs.push((entry.path(), depth + 1));
+            } else {
+                walk.files.push(relative);
+                ensure!(
+                    walk.files.len() <= MAX_FILES,
+                    "pack exceeds {MAX_FILES} files"
+                );
+            }
         }
+        stack.extend(subdirs.into_iter().rev());
     }
-    Ok(())
+    walk.files.sort();
+    Ok(walk)
 }
 
 fn excluded(relative: &Path, dir: bool, patterns: &[&str]) -> bool {
@@ -263,40 +641,115 @@ fn excluded(relative: &Path, dir: bool, patterns: &[&str]) -> bool {
     })
 }
 
-fn copy_hashed(from: &Path, to: &Path) -> Result<(u64, String)> {
-    let bytes = std::fs::read(from).with_context(|| format!("read {}", from.display()))?;
-    std::fs::write(to, &bytes).with_context(|| format!("write {}", to.display()))?;
-    Ok((bytes.len() as u64, format!("{:x}", Sha256::digest(&bytes))))
+/// Streams `from` into the new file `to` through `buffer`, hashing as it goes; the bytes come
+/// out of `remaining` before they are written, and cancellation is checked between chunks.
+fn copy_hashed(
+    from: &Path,
+    to: &Path,
+    remaining: &mut u64,
+    buffer: &mut [u8],
+    progress: &Progress,
+) -> Result<(u64, String)> {
+    let mut input =
+        std::fs::File::open(from).with_context(|| format!("read {}", from.display()))?;
+    let length = input.metadata()?.len();
+    ensure!(
+        length <= *remaining,
+        "output exceeds the 4 GiB budget at {} ({length} bytes)",
+        from.display()
+    );
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .with_context(|| format!("write {}", to.display()))?;
+    let mut hasher = Sha256::new();
+    let mut copied = 0u64;
+    loop {
+        progress.check()?;
+        let n = input
+            .read(buffer)
+            .with_context(|| format!("read {}", from.display()))?;
+        if n == 0 {
+            break;
+        }
+        copied += n as u64;
+        ensure!(
+            copied <= *remaining,
+            "output exceeds the 4 GiB budget at {}",
+            from.display()
+        );
+        hasher.update(&buffer[..n]);
+        output
+            .write_all(&buffer[..n])
+            .with_context(|| format!("write {}", to.display()))?;
+    }
+    *remaining -= copied;
+    Ok((copied, format!("{:x}", hasher.finalize())))
 }
 
-/// Absolute filesystem paths in the resolved world that point outside `root`.
-fn escapes(value: &Value, root: &Path, out: &mut Vec<String>) {
-    match value {
-        Value::String(s) => {
-            let path = Path::new(s.trim_start_matches(r"\\?\"));
-            if path.is_absolute() && path.components().count() > 1 {
-                let inside = Path::new(s)
-                    .canonicalize()
-                    .map(|p| p.starts_with(root))
-                    .unwrap_or(false);
-                if !inside && out.len() < 8 && !out.contains(s) {
-                    out.push(s.clone());
-                }
-            }
-        }
-        Value::Array(items) => items.iter().for_each(|v| escapes(v, root, out)),
-        Value::Object(map) => map.values().for_each(|v| escapes(v, root, out)),
-        _ => {}
-    }
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(bytes))
+        .with_context(|| format!("write {}", path.display()))
 }
 
 const LISTED: usize = 8;
 
-/// Fails, listing the first [`LISTED`] and the total, when the resolved source world reads a
-/// file outside `pack`: every `external: true` animation asset (resolved against the working
-/// directory, so never relocatable, even when it happens to sit inside the pack) and every
-/// absolute path that does not resolve inside the pack (missing files count as outside).
-fn reject_outside(world: &Value, pack: &Path) -> Result<()> {
+/// Every file the resolved world reads, by the field that names it: `(JSON pointer, path)`.
+/// These are the fields package import rewrites to absolute paths (UI images, animation
+/// assets, audio clip files; shaders are inlined). Other strings are content, never files.
+pub fn resolved_files(world: &Value) -> Vec<(String, String)> {
+    let mut found = vec![];
+    let mut add = |pointer: String, value: &Value| {
+        if let Some(path) = value.as_str() {
+            found.push((pointer, path.to_string()));
+        }
+    };
+    let esc = axiom_core::local::escape;
+    if let Some(images) = world
+        .pointer("/resources/ui.document/images")
+        .and_then(Value::as_object)
+    {
+        for (id, path) in images {
+            add(format!("/resources/ui.document/images/{}", esc(id)), path);
+        }
+    }
+    if let Some(assets) = world
+        .pointer("/resources/animation.library/assets")
+        .and_then(Value::as_object)
+    {
+        for (id, asset) in assets {
+            add(
+                format!("/resources/animation.library/assets/{}/path", esc(id)),
+                &asset["path"],
+            );
+        }
+    }
+    if let Some(clips) = world
+        .pointer("/resources/audio.library/clips")
+        .and_then(Value::as_object)
+    {
+        for (id, clip) in clips {
+            if let Some(path) = clip.pointer("/file/path") {
+                add(
+                    format!("/resources/audio.library/clips/{}/file/path", esc(id)),
+                    path,
+                );
+            }
+        }
+    }
+    found
+}
+
+/// Files the resolved world reads outside `root` (path -> why): every `external: true`
+/// animation asset (resolved against the working directory, so never relocatable, even when
+/// it happens to sit inside `root`) and every resolved file that does not canonicalize inside
+/// `root` (missing files count as outside).
+fn outside_files(world: &Value, root: &Path) -> BTreeMap<String, String> {
     let mut found = BTreeMap::<String, String>::new();
     if let Some(assets) = world
         .pointer("/resources/animation.library/assets")
@@ -309,49 +762,221 @@ fn reject_outside(world: &Value, pack: &Path) -> Result<()> {
             }
         }
     }
-    let mut paths = BTreeSet::new();
-    absolute_strings(world, &mut paths);
-    for path in paths {
+    for (pointer, path) in resolved_files(world) {
         let inside = Path::new(&path)
             .canonicalize()
-            .is_ok_and(|p| p.starts_with(pack));
+            .is_ok_and(|p| p.starts_with(root));
         if !inside {
             found
                 .entry(plain(&path))
-                .or_insert_with(|| "absolute path outside the pack".into());
+                .or_insert_with(|| format!("{pointer} outside the pack"));
         }
     }
-    if found.is_empty() {
-        return Ok(());
-    }
+    found
+}
+
+fn listing(found: &BTreeMap<String, String>) -> String {
     let listed: Vec<String> = found
         .iter()
         .take(LISTED)
         .map(|(path, why)| format!("{path} ({why})"))
         .collect();
     let more = found.len().saturating_sub(LISTED);
-    bail!(
-        "pack references {} file(s) outside {}; move them into the pack with relative paths (external: false): {}{}",
+    format!(
+        "{}{}",
+        listed.join(", "),
+        if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// Fails, listing the first [`LISTED`] and the total, when the resolved source world reads a
+/// file outside `pack`.
+fn reject_outside(world: &Value, pack: &Path) -> Result<()> {
+    let found = outside_files(world, pack);
+    ensure!(
+        found.is_empty(),
+        "pack references {} file(s) outside {}; move them into the pack with relative paths (external: false): {}",
         found.len(),
         plain(&pack.to_string_lossy()),
-        listed.join(", "),
-        if more > 0 { format!(", and {more} more") } else { String::new() }
-    )
+        listing(&found)
+    );
+    Ok(())
+}
+
+/// The player's launch check, shared with the packager: the loaded world reads no file
+/// outside `root` (the canonical shipped pack directory) and no `external` animation asset.
+pub fn ensure_files_inside(world: &axiom_core::World, root: &Path) -> Result<()> {
+    let found = outside_files(&serde_json::to_value(world)?, root);
+    ensure!(
+        found.is_empty(),
+        "game content reads {} file(s) outside {}: {}",
+        found.len(),
+        plain(&root.to_string_lossy()),
+        listing(&found)
+    );
+    Ok(())
+}
+
+/// Every animation asset of the resolved world finds the files its importer reads besides the
+/// asset itself (glTF buffer/image URIs, `.axrig` textures; a PMX texture table sits behind
+/// its geometry, so a PMX is imported whole).
+fn check_asset_dependencies(world: &Value, progress: &Progress) -> Result<()> {
+    let Some(library) = world.pointer("/resources/animation.library") else {
+        return Ok(());
+    };
+    let library: axiom_animation::authoring::Library = serde_json::from_value(library.clone())?;
+    for (id, source) in &library.assets {
+        progress.check()?;
+        asset_dependencies(&source.path, &source.options).with_context(|| {
+            format!(
+                "packaged animation asset {id} ({}) is incomplete (an excluded file is still needed?)",
+                plain(&source.path.to_string_lossy())
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Files `path` reads besides itself, resolved with the importer's `confined` rule (an error
+/// names a missing one). Unknown formats have none here (the importer refuses them).
+fn asset_dependencies(
+    path: &Path,
+    options: &axiom_animation::import::ImportOptions,
+) -> Result<Vec<PathBuf>> {
+    let extension = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let uris: Vec<String> = match extension.as_str() {
+        "gltf" => gltf_uris(&axiom_core::read_bounded(path, MAX_ASSET_FILE, "glTF")?)?,
+        "glb" => gltf_uris(&glb_json(path)?)?,
+        "axrig" => {
+            #[derive(Deserialize)]
+            struct Textures {
+                #[serde(default)]
+                textures: Vec<String>,
+            }
+            let bundle: Textures = serde_json::from_slice(&axiom_core::read_bounded(
+                path,
+                MAX_ASSET_FILE,
+                ".axrig bundle",
+            )?)?;
+            bundle.textures
+        }
+        "pmx" => {
+            axiom_animation::import::load(path, options)?;
+            vec![]
+        }
+        _ => vec![],
+    };
+    let root = path.parent().unwrap_or(Path::new("."));
+    uris.iter()
+        .map(|uri| axiom_animation::import::confined(root, uri))
+        .collect()
+}
+
+/// External (non-`data:`) buffer and image URIs of a glTF JSON document, percent-decoded the
+/// way the importer decodes them.
+fn gltf_uris(json: &[u8]) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Uri {
+        #[serde(default)]
+        uri: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Doc {
+        #[serde(default)]
+        buffers: Vec<Uri>,
+        #[serde(default)]
+        images: Vec<Uri>,
+    }
+    let doc: Doc = serde_json::from_slice(json).context("glTF JSON")?;
+    let mut uris = vec![];
+    for uri in doc
+        .buffers
+        .into_iter()
+        .chain(doc.images)
+        .filter_map(|u| u.uri)
+    {
+        if uri.starts_with("data:") {
+            continue;
+        }
+        let mut bytes = vec![];
+        let mut input = uri.bytes();
+        while let Some(b) = input.next() {
+            if b == b'%' {
+                let digits = [
+                    input.next().context("invalid URI escape")?,
+                    input.next().context("invalid URI escape")?,
+                ];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&digits)?, 16)?);
+            } else {
+                bytes.push(b);
+            }
+        }
+        uris.push(String::from_utf8(bytes)?);
+    }
+    Ok(uris)
+}
+
+/// The JSON chunk of a GLB, read without loading its binary chunk.
+fn glb_json(path: &Path) -> Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    let mut header = [0u8; 20];
+    file.read_exact(&mut header)?;
+    ensure!(
+        &header[0..4] == b"glTF" && &header[16..20] == b"JSON",
+        "invalid GLB header"
+    );
+    let size = u32::from_le_bytes(header[12..16].try_into()?) as u64;
+    ensure!(
+        size <= length && size <= MAX_ASSET_FILE as u64,
+        "truncated GLB JSON chunk"
+    );
+    let mut json = vec![];
+    file.take(size).read_to_end(&mut json)?;
+    ensure!(json.len() as u64 == size, "truncated GLB JSON chunk");
+    Ok(json)
 }
 
 /// Pack-relative files the runtime reads: for the root package and every dependency
 /// (recursively, through manifest `dependencies[*].path`) its manifest, world file, declared
 /// `assets` and `render.shaders` `.wgsl` files (inlined at import, so only the raw world names
-/// them); plus every absolute path in the resolved world that lands on a file inside the pack
-/// (animation GLBs, UI images, ...). Anything read by other means is not covered.
+/// them); plus every resolved file field of the world (animation assets with their glTF
+/// buffers and textures, UI images, audio clips). Anything read by other means is not covered.
 fn referenced_files(pack: &Path, world: &Value) -> Result<BTreeSet<String>> {
     let mut referenced = BTreeSet::new();
     let mut visited = BTreeSet::new();
     manifest_closure(pack, pack, &mut visited, &mut referenced)?;
-    let mut paths = BTreeSet::new();
-    absolute_strings(world, &mut paths);
-    for path in paths {
+    for (_, path) in resolved_files(world) {
         add_file(pack, Path::new(&path), &mut referenced);
+    }
+    if let Some(assets) = world
+        .pointer("/resources/animation.library/assets")
+        .and_then(Value::as_object)
+    {
+        for asset in assets.values() {
+            let Some(path) = asset["path"].as_str().map(Path::new) else {
+                continue;
+            };
+            // Report only: a PMX is not imported here, and a broken dependency fails later,
+            // in the staged-output check.
+            if path
+                .extension()
+                .is_some_and(|e| !e.eq_ignore_ascii_case("pmx"))
+            {
+                for dependency in asset_dependencies(path, &Default::default()).unwrap_or_default()
+                {
+                    add_file(pack, &dependency, &mut referenced);
+                }
+            }
+        }
     }
     Ok(referenced)
 }
@@ -370,12 +995,20 @@ fn manifest_closure(
     }
     ensure!(visited.len() <= 32, "package count exceeds 32");
     let manifest_path = dir.join("manifest.json");
-    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    let manifest: Value = serde_json::from_slice(&axiom_core::read_bounded(
+        &manifest_path,
+        65536,
+        "manifest",
+    )?)?;
     add_file(pack, &manifest_path, referenced);
     if let Some(world) = manifest["world"].as_str() {
         let world_path = dir.join(world);
         add_file(pack, &world_path, referenced);
-        let raw: Value = serde_json::from_slice(&std::fs::read(&world_path)?)?;
+        let raw: Value = serde_json::from_slice(&axiom_core::read_bounded(
+            &world_path,
+            4_194_304,
+            "package world",
+        )?)?;
         if let Some(shaders) = raw
             .pointer("/resources/render.shaders/shaders")
             .and_then(Value::as_object)
@@ -405,21 +1038,6 @@ fn add_file(pack: &Path, path: &Path, referenced: &mut BTreeSet<String>) {
                 referenced.insert(slash(relative));
             }
         }
-    }
-}
-
-/// Every string in `value` that is an absolute filesystem path (`C:\...`, `\\?\C:\...`).
-fn absolute_strings(value: &Value, out: &mut BTreeSet<String>) {
-    match value {
-        Value::String(s) => {
-            let path = Path::new(s.trim_start_matches(r"\\?\"));
-            if path.is_absolute() && path.components().count() > 1 {
-                out.insert(s.clone());
-            }
-        }
-        Value::Array(items) => items.iter().for_each(|v| absolute_strings(v, out)),
-        Value::Object(map) => map.values().for_each(|v| absolute_strings(v, out)),
-        _ => {}
     }
 }
 
@@ -501,15 +1119,6 @@ fn normalized(path: &Path) -> Result<PathBuf> {
             .parent()
             .context("output path has no existing ancestor")?;
     }
-}
-
-fn sibling(out: &Path, suffix: &str) -> Result<PathBuf> {
-    let name = out
-        .file_name()
-        .context("output path needs a final directory name")?;
-    let mut name = name.to_os_string();
-    name.push(format!(".{suffix}"));
-    Ok(out.with_file_name(name))
 }
 
 /// Keeps letters, digits, space, `-`, `_` and `.`; Windows-reserved characters are dropped.
@@ -607,6 +1216,7 @@ mod tests {
             excludes: vec!["notes.txt".into()],
             force: false,
             player_exe: player,
+            expected_pack_digest: None,
         };
         let first = package(&registry, &options, &Progress::default()).unwrap();
         assert_eq!(first["exe"], "Two Cameras.exe");
@@ -651,9 +1261,7 @@ mod tests {
         progress.cancel.store(true, Ordering::Relaxed);
         let error = package(&registry, &options, &progress).unwrap_err();
         assert!(error.to_string().contains("cancelled"), "{error}");
-        assert!(
-            !base.join("out/cancelled").exists() && !base.join("out/cancelled.partial").exists()
-        );
+        assert!(!base.join("out/cancelled").exists() && leftovers(&base.join("out")).is_empty());
 
         // Output inside the pack is refused before anything is written.
         options.out = pack.join("dist");
@@ -677,6 +1285,7 @@ mod tests {
             excludes: vec![],
             force: false,
             player_exe: player.into(),
+            expected_pack_digest: None,
         }
     }
 
@@ -736,7 +1345,7 @@ mod tests {
                 && error.contains("external animation asset character"),
             "{error}"
         );
-        assert!(!out.exists() && !base.join("out/Game.partial").exists());
+        assert!(!out.exists() && leftovers(&base.join("out")).is_empty());
         assert!(!base.join("out").exists(), "nothing may be written");
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -820,5 +1429,387 @@ mod tests {
         );
         assert_eq!(sanitize("..."), "");
         assert_eq!(sanitize(&"x".repeat(80)).len(), 64);
+    }
+
+    /// Staging and backup directories a build may leave beside its output.
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.contains(".partial-") || n.contains(".old-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn two_cameras(base: &Path) -> PathBuf {
+        let pack = base.join("pack");
+        copy_dir(&content("two-cameras"), &pack);
+        pack
+    }
+
+    // R9 F1: a pack named like the old fixed staging folder (`<out>.partial`) is never removed,
+    // and neither is another build's staging folder.
+    #[test]
+    fn staging_never_removes_a_pack_or_foreign_partial_folder() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("f1");
+        let pack = base.join("Game.partial");
+        copy_dir(&content("two-cameras"), &pack);
+        let foreign = base.join("Other.partial");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("keep.txt"), "x").unwrap();
+        let out = base.join("Game");
+        package(
+            &registry,
+            &options(&pack, &out, &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        assert!(pack.join("manifest.json").is_file(), "the pack was deleted");
+        assert!(out.join(GAME_FILE).is_file());
+        // A failed build (missing player) removes only its own staging folder.
+        let mut failing = options(&pack, &base.join("Other"), &base.join("missing.exe"));
+        failing.force = true;
+        assert!(package(&registry, &failing, &Progress::default()).is_err());
+        assert!(foreign.join("keep.txt").is_file() && pack.join("manifest.json").is_file());
+        assert!(leftovers(&base).is_empty(), "{:?}", leftovers(&base));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F2: publishing never replaces a destination that appeared during the build, and a
+    // forced replacement that cannot be put in place restores the previous build.
+    #[test]
+    fn publish_refuses_new_destinations_and_restores_on_failure() {
+        let (base, _) = scratch("f2");
+        let out = base.join("Game");
+        let staging = base.join("Game.partial-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join(GAME_FILE), "new").unwrap();
+        // Appeared during the build (not a game folder, no --force): untouched.
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("mine.txt"), "x").unwrap();
+        let error = publish(&staging, &out, false, &Progress::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("appeared during the build"),
+            "{error}"
+        );
+        assert!(out.join("mine.txt").is_file() && staging.join(GAME_FILE).is_file());
+        // --force re-validates: still not a packaged game folder.
+        let error = publish(&staging, &out, true, &Progress::default()).unwrap_err();
+        assert!(error.to_string().contains("not a packaged game"), "{error}");
+        assert!(out.join("mine.txt").is_file());
+        // A previous build whose replacement fails (staging vanished) is restored in place.
+        std::fs::remove_dir_all(&out).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join(GAME_FILE), "old").unwrap();
+        let gone = base.join("Game.partial-gone");
+        let error = publish(&gone, &out, true, &Progress::default()).unwrap_err();
+        assert!(format!("{error:#}").contains("restored"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(out.join(GAME_FILE)).unwrap(), "old");
+        // A successful forced swap leaves no backup behind.
+        publish(&staging, &out, true, &Progress::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(out.join(GAME_FILE)).unwrap(), "new");
+        assert!(
+            !staging.exists() && leftovers(&base).is_empty(),
+            "{:?}",
+            leftovers(&base)
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F2: --force never replaces a link or junction to a game folder.
+    #[cfg(windows)]
+    #[test]
+    fn force_refuses_a_junction_output() {
+        let (base, _) = scratch("junction");
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join(GAME_FILE), "{}").unwrap();
+        let link = base.join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let staging = base.join("link.partial-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        let error = publish(&staging, &link, true, &Progress::default()).unwrap_err();
+        assert!(error.to_string().contains("not a packaged game"), "{error}");
+        assert!(real.join(GAME_FILE).is_file());
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F3: the byte budget is checked before a file is written, and it covers the player
+    // and game.json, not only content.
+    #[test]
+    fn byte_budget_is_checked_before_writing() {
+        let (base, player) = scratch("f3");
+        let target = base.join("copy.exe");
+        let mut remaining = 3u64;
+        let mut buffer = vec![0u8; 2];
+        let error = copy_hashed(
+            &player,
+            &target,
+            &mut remaining,
+            &mut buffer,
+            &Progress::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("4 GiB budget"), "{error}");
+        assert!(!target.exists(), "nothing may be written over budget");
+        assert_eq!(remaining, 3);
+        // Streamed through a 2-byte buffer: same bytes and hash as a whole-file read.
+        let mut remaining = 100u64;
+        let (size, hash) = copy_hashed(
+            &player,
+            &target,
+            &mut remaining,
+            &mut buffer,
+            &Progress::default(),
+        )
+        .unwrap();
+        assert_eq!((size, remaining), (4, 96));
+        assert_eq!(hash, format!("{:x}", Sha256::digest(b"stub")));
+        assert_eq!(std::fs::read(&target).unwrap(), b"stub");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F5: a cancel that arrives after the last copy still wins at the publish cut-off.
+    #[test]
+    fn cancel_before_publish_keeps_the_previous_output() {
+        let (base, _) = scratch("f5");
+        let out = base.join("Game");
+        let staging = base.join("Game.partial-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        let progress = Progress::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        let error = publish(&staging, &out, true, &progress).unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(!out.exists() && staging.exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F6: a kept .gltf whose excluded .bin it still needs fails the build; kept, the .bin
+    // counts as referenced.
+    #[test]
+    fn gltf_buffers_must_ship_with_the_gltf() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("f6");
+        let pack = base.join("pack");
+        copy_dir(&content("animation"), &pack);
+        std::fs::write(
+            pack.join("model.gltf"),
+            r#"{"asset":{"version":"2.0"},"buffers":[{"uri":"mesh%20data.bin","byteLength":4}],"images":[{"uri":"data:image/png;base64,AA=="}]}"#,
+        )
+        .unwrap();
+        std::fs::write(pack.join("mesh data.bin"), b"abcd").unwrap();
+        let world_path = pack.join("world.json");
+        let mut world: Value =
+            serde_json::from_slice(&std::fs::read(&world_path).unwrap()).unwrap();
+        world["resources"]["animation.library"]["assets"]["extra"] = json!({"path":"model.gltf"});
+        std::fs::write(&world_path, serde_json::to_vec(&world).unwrap()).unwrap();
+        let mut opts = options(&pack, &base.join("out/Game"), &player);
+        opts.excludes = vec!["mesh data.bin".into()];
+        let error = format!(
+            "{:#}",
+            package(&registry, &opts, &Progress::default()).unwrap_err()
+        );
+        assert!(
+            error.contains("animation asset extra") && error.contains("mesh data.bin"),
+            "{error}"
+        );
+        assert!(!base.join("out/Game").exists() && leftovers(&base.join("out")).is_empty());
+        opts.excludes.clear();
+        let report = package(&registry, &opts, &Progress::default()).unwrap();
+        assert!(
+            !strings(&report, "unreferenced").contains(&"mesh data.bin".to_string()),
+            "{report}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F7 + F13: the packager writes the game.json the player reads, refuses an id the
+    // player would refuse before writing anything, and lists game.json with its hash.
+    #[test]
+    fn game_json_contract_and_hash() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("f7");
+        let pack = two_cameras(&base);
+        let out = base.join("out/Game");
+        let mut opts = options(&pack, &out, &player);
+        opts.title = Some("First".into());
+        let first = package(&registry, &opts, &Progress::default()).unwrap();
+        let game = GameManifest::read(&out).unwrap();
+        assert_eq!(
+            (
+                game.id.as_str(),
+                game.title.as_str(),
+                game.pack.as_str(),
+                game.exe.as_str()
+            ),
+            ("axiom.two-cameras", "First", CONTENT_DIR, "Game.exe")
+        );
+        let entry = first["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == GAME_FILE)
+            .expect("game.json is listed")
+            .clone();
+        let bytes = std::fs::read(out.join(GAME_FILE)).unwrap();
+        assert_eq!(entry["sha256"], format!("{:x}", Sha256::digest(&bytes)));
+        let total: u64 = first["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["bytes"].as_u64().unwrap())
+            .sum();
+        assert_eq!(first["bytes"], total);
+        opts.title = Some("Second".into());
+        opts.force = true;
+        let second = package(&registry, &opts, &Progress::default()).unwrap();
+        assert_ne!(hashes(&first), hashes(&second), "a title change must show");
+
+        // A Unicode id passes content validation but not the player's rule: refused early.
+        let manifest_path = pack.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["id"] = json!("相機");
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let unicode = base.join("out/Unicode");
+        let error = package(
+            &registry,
+            &options(&pack, &unicode, &player),
+            &Progress::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("save folder"), "{error:#}");
+        assert!(!unicode.exists() && leftovers(&base.join("out")).is_empty());
+        for bad in [
+            r#"{"format":2,"id":"a","title":"t","pack":"content"}"#,
+            r#"{"format":1,"id":"../x","title":"t","pack":"content"}"#,
+            r#"{"format":1,"id":"a","title":" ","pack":"content"}"#,
+            r#"{"format":1,"id":"a","title":"t","pack":"../content"}"#,
+            r#"{"format":1,"id":"a","title":"t","pack":"content","exe":"..\\x.exe"}"#,
+        ] {
+            assert!(GameManifest::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        assert!(GameManifest::parse(&vec![b' '; MAX_GAME_FILE + 1]).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F8: the report carries the digest of the shipped pack files, and a build pinned to
+    // a reviewed digest refuses a pack that changed since.
+    #[test]
+    fn pack_digest_is_reported_and_can_be_pinned() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("f8");
+        let pack = two_cameras(&base);
+        let first = package(
+            &registry,
+            &options(&pack, &base.join("out/a"), &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        let digest = first["pack_digest"].as_str().unwrap().to_string();
+        assert_eq!(digest.len(), 64);
+        let mut pinned = options(&pack, &base.join("out/b"), &player);
+        pinned.expected_pack_digest = Some(digest.clone());
+        let second = package(&registry, &pinned, &Progress::default()).unwrap();
+        assert_eq!(second["pack_digest"], digest.as_str());
+        std::fs::write(pack.join("notes.txt"), "changed after review").unwrap();
+        pinned.out = base.join("out/c");
+        let error = package(&registry, &pinned, &Progress::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("expected_pack_digest"),
+            "{error}"
+        );
+        assert!(!base.join("out/c").exists() && leftovers(&base.join("out")).is_empty());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F10: the walk is bounded in depth and reports a bounded sample of exclusions.
+    #[test]
+    fn walk_bounds_depth_and_excluded_listing() {
+        let (base, _) = scratch("f10");
+        let pack = base.join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        for i in 0..40 {
+            std::fs::write(pack.join(format!("s{i:02}.acl")), "x").unwrap();
+        }
+        std::fs::write(pack.join("keep.txt"), "x").unwrap();
+        let walk = collect(&pack, DEFAULT_EXCLUDES, &Progress::default()).unwrap();
+        assert_eq!(walk.files, [PathBuf::from("keep.txt")]);
+        assert_eq!(walk.skipped_total, 40);
+        assert_eq!(walk.skipped.len(), SKIPPED_LISTED);
+        let mut deep = pack.clone();
+        for _ in 0..=MAX_DEPTH {
+            deep = deep.join("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let error = collect(&pack, DEFAULT_EXCLUDES, &Progress::default())
+            .err()
+            .expect("too deep");
+        assert!(error.to_string().contains("nested deeper"), "{error}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F12: an absolute path that is only content text (here the world title) is not a
+    // file reference; resolved file fields are named in errors.
+    #[test]
+    fn absolute_path_text_is_not_a_file_reference() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("f12");
+        let pack = two_cameras(&base);
+        let world_path = pack.join("world.json");
+        let mut world: Value =
+            serde_json::from_slice(&std::fs::read(&world_path).unwrap()).unwrap();
+        world["title"] = json!(r"Saves go to C:\Users\Public\Documents\never-read.txt");
+        std::fs::write(&world_path, serde_json::to_vec(&world).unwrap()).unwrap();
+        let mut opts = options(&pack, &base.join("out/Game"), &player);
+        opts.title = Some("Game".into());
+        package(&registry, &opts, &Progress::default()).unwrap();
+        let resolved = json!({"resources":{"audio.library":{"clips":{"hum":{"file":{"path":r"C:\nowhere\hum.wav"}}}}}});
+        let found = outside_files(&resolved, &base.canonicalize().unwrap());
+        assert_eq!(
+            found.values().collect::<Vec<_>>(),
+            ["/resources/audio.library/clips/hum/file/path outside the pack"]
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 F4: the player's launch check refuses external animation assets.
+    #[test]
+    fn launch_check_refuses_external_animation_assets() {
+        let registry = crate::installed_registry().authoring;
+        let (base, _) = scratch("f4");
+        let pack = base.join("pack");
+        copy_dir(&content("animation"), &pack);
+        let root = pack.canonicalize().unwrap();
+        let world = axiom_core::ContentPackage::load(&root, &registry)
+            .unwrap()
+            .world;
+        ensure_files_inside(&world, &root).unwrap();
+        let world_path = pack.join("world.json");
+        let mut raw: Value = serde_json::from_slice(&std::fs::read(&world_path).unwrap()).unwrap();
+        let asset = &mut raw["resources"]["animation.library"]["assets"]["character"];
+        asset["external"] = json!(true);
+        asset["path"] = json!(root.join("rigify.glb").to_string_lossy());
+        std::fs::write(&world_path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let world = axiom_core::ContentPackage::load(&root, &registry)
+            .unwrap()
+            .world;
+        let error = ensure_files_inside(&world, &root).unwrap_err();
+        assert!(
+            error.to_string().contains("external animation asset"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
