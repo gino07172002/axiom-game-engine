@@ -17,8 +17,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-/// Written into every output; `--force` only replaces directories that carry it.
+/// Written into every output; the player reads it.
 pub const GAME_FILE: &str = "game.json";
+/// Written by the packager beside `game.json` (it records that file's SHA-256); `--force`
+/// replaces only folders whose marker matches their `game.json`.
+pub const BUILD_MARKER: &str = ".axiom-build";
+const MAX_MARKER: usize = 1024;
 pub const CONTENT_DIR: &str = "content";
 pub const FORMAT: u32 = 1;
 /// Largest `game.json` the packager writes and the player reads.
@@ -221,7 +225,7 @@ pub fn package(
         );
     }
 
-    let out = normalized(&options.out)?;
+    let out = output_path(&options.out)?;
     ensure!(
         !out.starts_with(&pack) && !pack.starts_with(&out),
         "output must not overlap the pack directory"
@@ -343,15 +347,85 @@ fn existing(path: &Path) -> Result<Option<std::fs::Metadata>> {
     }
 }
 
-/// `--force` replaces only a plain directory (no link or junction) holding a `game.json` file.
+/// `--force` replaces only a folder proven to be this packager's output; anything else is
+/// refused and left untouched.
 fn game_folder(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
-    let game = std::fs::symlink_metadata(out.join(GAME_FILE));
+    proven_build(out, meta).with_context(|| {
+        format!(
+            "refusing to replace {}: it is not a packaged game folder written by `axiom package` \
+             (remove it yourself or choose another output)",
+            shown(out)
+        )
+    })
+}
+
+/// The bytes of [`BUILD_MARKER`] for a build whose `game.json` is `game_bytes`.
+fn marker_bytes(game_bytes: &[u8]) -> Vec<u8> {
+    format!(
+        "{{\"format\":{FORMAT},\"game_sha256\":\"{:x}\"}}\n",
+        Sha256::digest(game_bytes)
+    )
+    .into_bytes()
+}
+
+/// A plain directory (no link or junction) whose valid `game.json` matches the build marker,
+/// whose executable and pack directory exist, and which holds nothing else.
+fn proven_build(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
+    ensure!(meta.is_dir() && !is_link(meta), "not a plain directory");
+    let game_bytes = read_plain_file(&out.join(GAME_FILE), MAX_GAME_FILE)?;
+    let game = GameManifest::parse(&game_bytes)?;
+    let marker = read_plain_file(&out.join(BUILD_MARKER), MAX_MARKER)?;
     ensure!(
-        meta.is_dir() && !is_link(meta) && game.is_ok_and(|g| g.is_file()),
-        "refusing to replace {}: it is not a packaged game folder",
-        shown(out)
+        marker == marker_bytes(&game_bytes),
+        "{BUILD_MARKER} does not match {GAME_FILE}"
     );
+    ensure!(!game.exe.is_empty(), "{GAME_FILE} names no executable");
+    let exe = std::fs::symlink_metadata(out.join(&game.exe))
+        .with_context(|| format!("executable {}", game.exe))?;
+    ensure!(
+        exe.is_file() && !is_link(&exe),
+        "{} is not a plain file",
+        game.exe
+    );
+    let pack_root = Path::new(&game.pack)
+        .components()
+        .next()
+        .context("pack is empty")?
+        .as_os_str()
+        .to_os_string();
+    let pack = std::fs::symlink_metadata(out.join(&pack_root))
+        .with_context(|| format!("pack {}", game.pack))?;
+    ensure!(
+        pack.is_dir() && !is_link(&pack),
+        "pack {} is not a plain directory",
+        game.pack
+    );
+    let allowed = [
+        std::ffi::OsString::from(GAME_FILE),
+        BUILD_MARKER.into(),
+        game.exe.clone().into(),
+        pack_root,
+    ];
+    for entry in std::fs::read_dir(out)?.take(allowed.len() + 1) {
+        let name = entry?.file_name();
+        ensure!(
+            allowed.contains(&name),
+            "{} is not part of a build",
+            name.to_string_lossy()
+        );
+    }
     Ok(())
+}
+
+/// Reads a regular file (never a link) of at most `limit` bytes.
+fn read_plain_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let meta = std::fs::symlink_metadata(path).with_context(|| format!("{name} missing"))?;
+    ensure!(
+        meta.is_file() && !is_link(&meta),
+        "{name} is not a plain file"
+    );
+    axiom_core::read_bounded(path, limit, &name)
 }
 
 /// Serializes builds of one output folder across processes (CLI and editor). The lock file
@@ -473,10 +547,10 @@ fn build(
         .chain(options.excludes.iter().map(String::as_str))
         .collect();
     let walk = collect(pack, &excludes, progress)?;
-    // Content files, the player and game.json.
+    // Content files, the player, game.json and the build marker.
     progress
         .total
-        .store(walk.files.len() + 2, Ordering::Relaxed);
+        .store(walk.files.len() + 3, Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
 
     let content = staging.join(CONTENT_DIR);
@@ -521,6 +595,15 @@ fn build(
     write_new(&staging.join(GAME_FILE), game_bytes)?;
     files.push(
         json!({"path":GAME_FILE,"bytes":size,"sha256":format!("{:x}", Sha256::digest(game_bytes))}),
+    );
+    progress.done.fetch_add(1, Ordering::Relaxed);
+    let marker = marker_bytes(game_bytes);
+    let size = marker.len() as u64;
+    ensure!(size <= remaining, "output exceeds the 4 GiB budget");
+    remaining -= size;
+    write_new(&staging.join(BUILD_MARKER), &marker)?;
+    files.push(
+        json!({"path":BUILD_MARKER,"bytes":size,"sha256":format!("{:x}", Sha256::digest(&marker))}),
     );
     progress.done.fetch_add(1, Ordering::Relaxed);
     progress.check()?;
@@ -1101,6 +1184,21 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     })
 }
 
+/// The output folder: its parent in canonical form, its last component kept as written. The
+/// last component is never resolved, so an existing link or junction there is inspected (and
+/// refused) as itself instead of as the directory it points to.
+fn output_path(path: &Path) -> Result<PathBuf> {
+    let path = absolute(path)?;
+    let name = match path.components().next_back() {
+        Some(std::path::Component::Normal(name)) => name.to_os_string(),
+        _ => bail!("output {} must end in a folder name", path.display()),
+    };
+    let parent = path
+        .parent()
+        .context("output path needs a parent directory")?;
+    Ok(normalized(parent)?.join(name))
+}
+
 /// Absolute, in the same canonical (verbatim) form as `canonicalize`, even when the path
 /// does not exist yet: the deepest existing ancestor is canonicalized and the rest appended.
 fn normalized(path: &Path) -> Result<PathBuf> {
@@ -1503,12 +1601,11 @@ mod tests {
         assert!(out.join("mine.txt").is_file());
         // A previous build whose replacement fails (staging vanished) is restored in place.
         std::fs::remove_dir_all(&out).unwrap();
-        std::fs::create_dir_all(&out).unwrap();
-        std::fs::write(out.join(GAME_FILE), "old").unwrap();
+        let old = fake_build(&out, "old");
         let gone = base.join("Game.partial-gone");
         let error = publish(&gone, &out, true, &Progress::default()).unwrap_err();
         assert!(format!("{error:#}").contains("restored"), "{error:#}");
-        assert_eq!(std::fs::read_to_string(out.join(GAME_FILE)).unwrap(), "old");
+        assert_eq!(std::fs::read(out.join(GAME_FILE)).unwrap(), old);
         // A successful forced swap leaves no backup behind.
         publish(&staging, &out, true, &Progress::default()).unwrap();
         assert_eq!(std::fs::read_to_string(out.join(GAME_FILE)).unwrap(), "new");
@@ -1520,14 +1617,64 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    // R9 F2: --force never replaces a link or junction to a game folder.
+    /// A folder laid out exactly like a build (valid game.json titled `title`, matching marker,
+    /// executable, content directory); returns its game.json bytes.
+    fn fake_build(out: &Path, title: &str) -> Vec<u8> {
+        std::fs::create_dir_all(out.join(CONTENT_DIR)).unwrap();
+        let game = GameManifest {
+            format: FORMAT,
+            id: "axiom.test".into(),
+            title: title.into(),
+            pack: CONTENT_DIR.into(),
+            exe: "Game.exe".into(),
+            engine: String::new(),
+        }
+        .to_bytes()
+        .unwrap();
+        std::fs::write(out.join(GAME_FILE), &game).unwrap();
+        std::fs::write(out.join(BUILD_MARKER), marker_bytes(&game)).unwrap();
+        std::fs::write(out.join("Game.exe"), b"stub").unwrap();
+        game
+    }
+
+    /// Relative path and contents of every file under `dir`.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut found = vec![];
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let e = e.unwrap();
+                if e.file_type().unwrap().is_dir() {
+                    stack.push(e.path());
+                } else {
+                    found.push((
+                        e.path().strip_prefix(dir).unwrap().to_path_buf(),
+                        std::fs::read(e.path()).unwrap(),
+                    ));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    // R9 F2 (round 3): `package --force` given a junction to a real build refuses the junction
+    // itself; the build it points to keeps every file. Goes through the public entry, which
+    // used to resolve the junction to its target before checking it.
     #[cfg(windows)]
     #[test]
     fn force_refuses_a_junction_output() {
-        let (base, _) = scratch("junction");
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("junction");
+        let pack = two_cameras(&base);
         let real = base.join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        std::fs::write(real.join(GAME_FILE), "{}").unwrap();
+        package(
+            &registry,
+            &options(&pack, &real, &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        let before = snapshot(&real);
         let link = base.join("link");
         let made = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
@@ -1536,12 +1683,81 @@ mod tests {
             .output()
             .unwrap();
         assert!(made.status.success(), "{made:?}");
-        let staging = base.join("link.partial-test");
-        std::fs::create_dir_all(&staging).unwrap();
-        let error = publish(&staging, &link, true, &Progress::default()).unwrap_err();
-        assert!(error.to_string().contains("not a packaged game"), "{error}");
-        assert!(real.join(GAME_FILE).is_file());
+        let mut opts = options(&pack, &link, &player);
+        opts.force = true;
+        opts.title = Some("Replacement".into());
+        let error = package(&registry, &opts, &Progress::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("not a packaged game"),
+            "{error:#}"
+        );
+        assert_eq!(snapshot(&real), before, "the junction target changed");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(is_link(&meta), "the junction itself was replaced");
+        assert!(leftovers(&base).is_empty(), "{:?}", leftovers(&base));
         std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    // R9 N2: --force replaces only folders proven to be a build (valid game.json, matching
+    // marker, executable, content, nothing else). Every other folder keeps every file.
+    #[test]
+    fn force_refuses_folders_that_are_not_proven_builds() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("n2");
+        let pack = two_cameras(&base);
+        let mut opts = options(&pack, &base.join("built"), &player);
+        package(&registry, &opts, &Progress::default()).unwrap();
+        opts.force = true;
+        type Case = (&'static str, fn(&Path));
+        let cases: [Case; 5] = [
+            ("empty-game-json", |d| {
+                std::fs::write(d.join(GAME_FILE), "").unwrap();
+                std::fs::write(d.join("keep.txt"), "work").unwrap();
+            }),
+            ("invalid-game-json", |d| {
+                std::fs::write(d.join(GAME_FILE), "{}").unwrap();
+                std::fs::write(d.join("keep.txt"), "work").unwrap();
+            }),
+            ("no-marker", |d| {
+                std::fs::remove_file(d.join(BUILD_MARKER)).unwrap();
+            }),
+            ("stale-marker", |d| {
+                let mut game: Value =
+                    serde_json::from_slice(&std::fs::read(d.join(GAME_FILE)).unwrap()).unwrap();
+                game["title"] = json!("Edited by hand");
+                std::fs::write(d.join(GAME_FILE), serde_json::to_vec(&game).unwrap()).unwrap();
+            }),
+            ("extra-file", |d| {
+                std::fs::write(d.join("my notes.txt"), "work").unwrap();
+            }),
+        ];
+        for (name, prepare) in cases {
+            let dir = base.join(name);
+            if name == "empty-game-json" || name == "invalid-game-json" {
+                std::fs::create_dir_all(&dir).unwrap();
+            } else {
+                copy_dir(&base.join("built"), &dir);
+            }
+            prepare(&dir);
+            let before = snapshot(&dir);
+            opts.out = dir.clone();
+            let error = package(&registry, &opts, &Progress::default()).unwrap_err();
+            assert!(
+                error.to_string().contains("not a packaged game folder"),
+                "{name}: {error:#}"
+            );
+            assert_eq!(snapshot(&dir), before, "{name}: files changed");
+        }
+        // The real build is replaced.
+        opts.out = base.join("built");
+        opts.title = Some("Rebuilt".into());
+        package(&registry, &opts, &Progress::default()).unwrap();
+        assert_eq!(
+            GameManifest::read(&base.join("built")).unwrap().title,
+            "Rebuilt"
+        );
+        assert!(leftovers(&base).is_empty(), "{:?}", leftovers(&base));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

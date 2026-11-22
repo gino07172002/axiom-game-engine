@@ -151,12 +151,16 @@ $refused = Invoke-Package (Join-Path $ext 'pack') (Join-Path $ext 'out\Game') 'e
 if ($refused.ok -or "$($refused.error)" -notlike '*external animation asset*') { throw "external asset was not refused: $($refused | ConvertTo-Json -Compress)" }
 if ((Test-Path (Join-Path $ext 'out')) ) { throw 'refused external package left output behind' }
 
-# Negative 2: --force never replaces a folder that is not a packaged game.
+# Negative 2: --force never replaces a folder that is not a packaged game, even one that holds
+# a file named game.json (R9 N2): only a folder carrying the packager's build marker qualifies.
 $foreign = Join-Path $root 'foreign'
 New-Item -ItemType Directory -Force $foreign | Out-Null
 Set-Content -Path (Join-Path $foreign 'keep.txt') -Value 'keep'
+[IO.File]::WriteAllText((Join-Path $foreign 'game.json'), '{}', (New-Object Text.UTF8Encoding $false))
+$foreignBefore = Get-Manifest $foreign
 $denied = Invoke-Package 'content\adv' $foreign 'foreign' @('--force')
-if ($denied.ok -or -not (Test-Path (Join-Path $foreign 'keep.txt'))) { throw '--force replaced a non-game folder' }
+if ($denied.ok -or "$($denied.error)" -notlike '*not a packaged game folder*') { throw "--force on a non-game folder was not refused: $($denied | ConvertTo-Json -Compress)" }
+if ((Get-Manifest $foreign) -ne $foreignBefore) { throw '--force changed files in a non-game folder' }
 
 $summary = [ordered]@{ok = $true; build = $build; packs = $results; external_refused = $refused.error; force_guard = $denied.error; root = $root }
 $summary | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $root 'report.json')

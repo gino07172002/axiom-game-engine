@@ -443,7 +443,7 @@ impl Editor {
                             ui.label("");
                             let r = ui
                                 .checkbox(&mut dialog.force, "Replace an existing build")
-                                .on_hover_text("Only a folder that holds game.json is replaced");
+                                .on_hover_text("Only a folder written by a previous build is replaced");
                             rects.push(("build:force", r.rect));
                             ui.end_row();
                         });
