@@ -667,7 +667,8 @@ pub fn validate_world(
         let (id, component) = sources
             .first()
             .map(|s| (s.0, "audio.source"))
-            .unwrap_or((listeners[0].0, "audio.listener"));
+            .or_else(|| listeners.first().map(|l| (l.0, "audio.listener")))
+            .expect("sources or listeners is non-empty (checked above)");
         return Err(crate::Diagnostic::error(
             "invalid_audio",
             at(id, component, ""),
@@ -758,6 +759,19 @@ mod tests {
         let l: AudioListener = serde_json::from_value(json!({"forward":"+z"})).unwrap();
         assert_eq!(l.forward, ListenerForward::PlusZ);
         assert!(serde_json::from_value::<AudioListener>(json!({"forward":"z"})).is_err());
+    }
+
+    #[test]
+    fn a_source_without_listener_or_spatial_system_is_a_diagnostic_not_a_panic() {
+        let world = crate::World::empty("w");
+        let source = AudioSource::new("engine");
+        let error = validate_world(&world, &[("boat", &source, true)], &[]).unwrap_err();
+        let d = error.downcast_ref::<crate::Diagnostic>().unwrap();
+        assert_eq!(d.code, "invalid_audio");
+        assert!(d.path.contains("boat"), "{}", d.path);
+        let listener: AudioListener = serde_json::from_value(json!({})).unwrap();
+        let error = validate_world(&world, &[], &[("ear", &listener, true)]).unwrap_err();
+        assert!(format!("{error:#}").contains("audio.listener"), "{error:#}");
     }
 
     #[test]

@@ -210,11 +210,11 @@ Observe 分開回報 `rev`（已啟用）、`requested_rev` 與 `activation`。F
 
 原生 Transform 在定義不變時保留執行位置；自訂欄位在 schema／定義不變時保留值，entity references 依穩定邏輯 ID 重新連結。FPS 模組依邏輯 ID 保留傷害、裝填、角色與擊殺狀態；變更地形或出生點會安全重置角色位置。世界 undo 恢復定義，重新開始會重建遊玩狀態。
 
-Adapter 僅綁定 loopback TCP，JSONL 協定不依賴 MCP 或特定 LLM。預設連接埠 4242，`play --port 0` 可停用；多個遊戲使用不同 `--db` 與 `--port`。Stdio 批次使用 `axiom serve`，每行一個 request／response。
+Adapter 僅綁定 loopback TCP，JSONL 協定不依賴 MCP 或特定 LLM。預設連接埠 4242，`play --port 0` 可停用；多個遊戲使用不同 `--db` 與 `--port`。Stdio 批次使用 `axiom serve`，每行一個 request／response。每行最多讀入 1 MiB(協定上限);超長的行在讀取時就丟棄並回一筆錯誤,之後的行照常處理。CLI 的檔案輸入(`rpc`/`apply`/`preview`/`select`/`dispatch FILE` 1 MiB、`acl FILE` 64 KiB、`scenario`/benchmark suite 1 MiB、`import` 64 MiB)也是有界讀取,超過上限時在配置整份檔案前就回錯。
 
 ## 舊資料與存取
 
-`import` 接受 v1 FPS 或 v2 世界，`export` 輸出 v2。開啟舊資料庫時，舊 revision 保持原文，另追加 `migrate:1->2`。對舊 revision 執行 undo，會轉換後追加 v2 恢復版本；不回退 SQLite 實體 schema。
+`import` 接受 v1 FPS 或 v2 世界，`export` 輸出 v2。`import FILE --expected-rev N` 只在 N 仍是最新 revision 時取代世界(否則 `revision_conflict`,例如匯出後有人在編輯器提交了);不帶時照舊無條件取代。`export` 在回應是錯誤或沒有合法世界時不寫檔、不覆寫既有檔案,並以失敗結束。開啟舊資料庫時，舊 revision 保持原文，另追加 `migrate:1->2`。對舊 revision 執行 undo，會轉換後追加 v2 恢復版本；不回退 SQLite 實體 schema。
 
 原始 v1 範例保留在 `assets/worlds/proving-ground.json`，用於遷移與回歸。可編輯的 v2 FPS 內容位於 `content/fps/world.json`；模型方塊、材質、競技場標記都存於內容資料。`content/fps/models.json` 是基準配方的模型來源；已載入世界的外觀以 world.json／資料庫中的 `fps.visuals` 為準。
 
@@ -235,7 +235,7 @@ cargo build --release -p axiom -j1
 .\target\debug\axiom.exe --db data/scenario.sqlite scenario examples/fps-regression.scenario.json
 ```
 
-Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。`commands` 的操作(`op`)有 `command`、`save`、`load`、`assert`、`look`(`{"op":"look","deltas":[[dx,dy],…]}`,滑鼠視角原始 delta,依序套用)與 `pointer`(`{"op":"pointer","kind":"primary_down|primary_up|move|secondary_down","screen":[x,y],"aspect":a,"additive":false}`,遊戲區域正規化座標,射線由當下相機推導);tick 為 `ticks` 的操作在最後一步之後、最終斷言之前執行(見 `docs/adr-scenario-mouse-input.zh-TW.md`)。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
+Scenario 透過通用 ActionMap 及 typed commands 注入輸入，支援中途斷言、存讀檔、選項可見性與觀察值比對；不建立視窗。`commands` 的操作(`op`)有 `command`、`save`、`load`、`assert`、`look`(`{"op":"look","deltas":[[dx,dy],…]}`,滑鼠視角原始 delta,依序套用)與 `pointer`(`{"op":"pointer","kind":"primary_down|primary_up|move|secondary_down","screen":[x,y],"aspect":a,"additive":false}`,遊戲區域正規化座標,射線由當下相機推導);tick 為 `ticks` 的操作在最後一步之後、最終斷言之前執行(見 `docs/adr-scenario-mouse-input.zh-TW.md`)。Scenario 的 `save`/`load` checkpoint 預設只留在記憶體,不碰遊戲的 `saves/`;要驗證磁碟存檔時加 `scenario FILE --save-dir DIR`(用獨立的 QA 目錄)。`verify --ticks N` 的驗證與模擬用同一份 revision 快照;`--measure` 期間 revision 變了會回錯要求重跑。M1 smoke 預設包含 M0／FPS 回歸，再驗證三個 ADV 結局、中英文 UI、圖片、跨程序 checkpoint、preview／資料編輯／undo、即時命令及狀態遷移，並比對執行檔 SHA256。報告位於 `artifacts/m1-validation.json`，截圖位於 `artifacts/m1-*.png`。
 
 M2 smoke 預設包含 M1.5 → M1 → M0，不必逐一重跑上述腳本。RTS 功能場景（`content/rts-bench`）執行 7200 ticks：64 初始單位、32 友方全數群組抵達、採集交付、生產兩單位至 66。另驗證原生 64／128／256 單位畫面、即時命令與生產冪等重試。`artifacts/m2-validation.json` 保存完整證據，`artifacts/m2-*.png` 為截圖。
 

@@ -144,7 +144,7 @@ fn proposals_and_history_show_readable_paths_and_order_summaries() {
     let mut h = Harness::new(package("editor-lab"), vec2(1366.0, 768.0));
     let diff = json!({"total_changes":3,"truncated":false,"changes":[
         {"kind":"changed","path":"/entities/@stage~1crate/components/core.transform/position/0","before":4,"after":6},
-        {"kind":"order","path":"/entities/@order","before":["stage/crate","stage/rack","floor"],"after":["floor","stage/crate"]},
+        {"kind":"order","path":"/entities#order","before":["stage/crate","stage/rack","floor"],"after":["floor","stage/crate"]},
         {"kind":"removed","path":"/entities/@stage~1rack"}
     ]});
     h.editor.set_proposals(
@@ -167,7 +167,7 @@ fn proposals_and_history_show_readable_paths_and_order_summaries() {
         assert!(drawn(&out, line), "Proposals shows {line:?}");
     }
     assert!(!drawn(&out, "~1"), "escaped paths are not shown");
-    assert!(!drawn(&out, "@order"));
+    assert!(!drawn(&out, "#order"));
     h.editor.show_dock(Dock::History);
     h.frame(vec![]);
     let out = h.frame_out(vec![]).1;

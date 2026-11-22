@@ -103,3 +103,62 @@ fn invalid_proposals_are_rejected_at_submission() {
         .unwrap_err();
     assert!(format!("{both:#}").contains("either --preview or --propose"));
 }
+
+#[test]
+fn a_stale_proposal_whose_selector_could_match_new_objects_is_not_rebased() {
+    let mut s = store();
+    acl(&mut s, "tag enemy/0 +foe", false).unwrap();
+    let edits = serde_json::from_value(json!([{"kind":"set_where","select":{"from":"entities","tags":["foe"]},"field":"/label","value":"Marked"}])).unwrap();
+    s.execute(Request::Propose {
+        expected_rev: None,
+        edits,
+        note: String::new(),
+    })
+    .unwrap();
+    // After the proposal, another entity gets the tag: a rebase would mark it too.
+    acl(&mut s, "create cube id=late\ntag late +foe", false).unwrap();
+    let rev = s.revision().unwrap();
+    let stale = resolve(&mut s, 1, true, true).unwrap_err();
+    assert_eq!(stale["diagnostics"][0]["code"], "stale_selector", "{stale}");
+    assert!(stale.to_string().contains("conflicts 1"), "{stale}");
+    assert_eq!(s.revision().unwrap(), rev, "nothing was written");
+    assert_eq!(s.proposal_signature().unwrap().0, 1, "still pending");
+    // Approving with keep evaluates the selector on the reviewed base revision only.
+    let kept = s
+        .execute(Request::ResolveProposal {
+            id: 1,
+            approve: true,
+            rebase: false,
+            keep: Some(vec![]),
+            expected_rev: Some(rev),
+        })
+        .unwrap();
+    assert_eq!(kept["status"], "approved", "{kept}");
+    let world = s.current().unwrap().1;
+    assert_eq!(
+        world.entity("enemy/0").unwrap().label.as_deref(),
+        Some("Marked")
+    );
+    assert_ne!(
+        world.entity("late").unwrap().label.as_deref(),
+        Some("Marked")
+    );
+}
+
+#[test]
+fn an_acl_proposal_note_is_cut_to_the_byte_limit_on_a_character_boundary() {
+    let mut s = store();
+    // A long Traditional Chinese comment (3 bytes per character) next to one valid edit.
+    let script = format!("# {}\nset enemy/0 core.health/value 40", "註解".repeat(800));
+    assert!(script.len() > 2048 && script.chars().count() < 2048);
+    acl(&mut s, &script, true).unwrap();
+    let listed = s
+        .execute(Request::Proposals {
+            status: Some("pending".into()),
+            limit: None,
+        })
+        .unwrap();
+    let note = listed["proposals"][0]["note"].as_str().unwrap();
+    assert!(note.len() <= 2048 && note.len() > 2040, "{}", note.len());
+    assert!(script.starts_with(note));
+}

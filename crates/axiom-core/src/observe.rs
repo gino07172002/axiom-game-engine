@@ -36,6 +36,7 @@ impl ObservationHistory {
         );
         let max = max.unwrap_or(8192);
         ensure!((256..=65536).contains(&max), "max_bytes must be 256..65536");
+        let explicit = !fields.is_empty();
         let fields = if fields.is_empty() {
             [
                 "/world_id",
@@ -88,9 +89,14 @@ impl ObservationHistory {
             .to_owned();
         let epoch = raw["runtime_epoch"].as_u64().unwrap_or(0);
         let mut state = json!({});
+        // Requested fields this observation does not have (a typo, or an optional value that
+        // is absent right now); at most 32, like the projection itself.
+        let mut missing = vec![];
         for field in &fields {
             if let Some(value) = raw.pointer(field) {
                 insert(&mut state, field, value.clone())?;
+            } else if explicit {
+                missing.push(field.as_str());
             }
         }
         let traces = raw
@@ -147,6 +153,9 @@ impl ObservationHistory {
         } else {
             // State deltas contain exact values, never the compact diff previews used for authoring.
             response["changes"] = json!(state_changes(&previous.unwrap().state, &state));
+        }
+        if !missing.is_empty() {
+            response["missing_fields"] = json!(missing);
         }
         if trace_limit > 0 {
             response["trace"] = json!(trace);
@@ -230,4 +239,23 @@ pub fn state_changes(a: &Value, b: &Value) -> Vec<Value> {
     }
     walk("", Some(a), Some(b), &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_fields_that_are_absent_are_listed_not_silently_dropped() {
+        let mut h = ObservationHistory::default();
+        let raw =
+            json!({"runtime_session":"s","runtime_epoch":1,"rev":3,"tick":0,"requested_rev":3});
+        let fields = vec!["/requested_rev".to_owned(), "/requsted_rev".to_owned()];
+        let first = h.observe(&raw, None, &fields, 0, None).unwrap();
+        assert_eq!(first["snapshot"], json!({"requested_rev":3}));
+        assert_eq!(first["missing_fields"], json!(["/requsted_rev"]));
+        // The default projection names optional values and reports none of them missing.
+        let default = h.observe(&raw, None, &[], 0, None).unwrap();
+        assert!(default.get("missing_fields").is_none(), "{default}");
+    }
 }

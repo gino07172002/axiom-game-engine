@@ -902,11 +902,15 @@ pub fn add_camera_follow(
     follow.min_distance = options.min_distance.unwrap_or(follow.min_distance);
     follow.max_distance = options.max_distance.unwrap_or(follow.max_distance);
     // Without an explicit distance the default one is kept inside the requested range.
+    // A non-finite bound would make `clamp` panic: the default distance is then kept and
+    // `validate` below names the bad bound.
     follow.distance = options.distance.unwrap_or_else(|| {
-        follow.distance.clamp(
-            follow.min_distance,
-            follow.max_distance.max(follow.min_distance),
-        )
+        let (lo, hi) = (follow.min_distance, follow.max_distance);
+        if lo.is_finite() && hi.is_finite() {
+            follow.distance.clamp(lo, hi.max(lo))
+        } else {
+            follow.distance
+        }
     });
     follow.yaw = options.yaw.unwrap_or(follow.yaw);
     follow.pitch = options.pitch.unwrap_or(follow.pitch);
@@ -1790,7 +1794,7 @@ pub fn make_interactable(
                 .as_object_mut()
                 .map(|b| b.entry("buttons").or_insert_with(|| json!({})))
                 .and_then(Value::as_object_mut)
-                .expect("input.bindings parsed as an object with a buttons map");
+                .ok_or_else(|| not_an_object("/resources/input.bindings/buttons"))?;
             buttons.insert(target.action.clone(), json!("KeyE"));
             edits.push(Edit::Core(CoreEdit::SetResource {
                 id: "input.bindings".into(),
@@ -1827,6 +1831,16 @@ pub struct AudioSourceOptions {
 }
 
 /// The authored `audio.library` (empty when the world has none).
+/// A stored resource (or one of its maps) is not the JSON object an op edits in place, e.g.
+/// the array form older revisions could store. Recoverable: rewrite the resource as an object.
+fn not_an_object(path: &str) -> anyhow::Error {
+    Diagnostic::error(
+        "invalid_value",
+        path,
+        "must be a JSON object (rewrite the resource in object form first)",
+    )
+}
+
 fn audio_library(world: &World) -> Result<crate::audio::AudioLibrary> {
     world
         .resources
@@ -1903,7 +1917,7 @@ pub fn add_audio_clip(world: &World, id: &str, preset: &str) -> Result<Vec<Edit>
         .as_object_mut()
         .map(|l| l.entry("clips").or_insert_with(|| json!({})))
         .and_then(Value::as_object_mut)
-        .expect("audio.library parsed as an object with a clips map")
+        .ok_or_else(|| not_an_object("/resources/audio.library/clips"))?
         .insert(id.to_owned(), json!(clip));
     let mut edits = enable_system(world, Some("audio"), None);
     edits.push(Edit::Core(CoreEdit::SetResource {
@@ -1960,7 +1974,7 @@ pub fn add_audio_file_clip(
         .as_object_mut()
         .map(|l| l.entry("clips").or_insert_with(|| json!({})))
         .and_then(Value::as_object_mut)
-        .expect("audio.library parsed as an object with a clips map")
+        .ok_or_else(|| not_an_object("/resources/audio.library/clips"))?
         .insert(id.to_owned(), json!({ "file": entry }));
     let mut edits = enable_system(world, Some("audio"), None);
     edits.push(Edit::Core(CoreEdit::SetResource {

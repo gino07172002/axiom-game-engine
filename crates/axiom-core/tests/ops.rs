@@ -1,5 +1,5 @@
 //! Headless editor operations: `axiom_core::ops` and their ACL verbs, with no editor running.
-use axiom_core::{error_response, ops, Camera, Edit, Registry, Request, Store, World};
+use axiom_core::{error_response, ops, Camera, CoreEdit, Edit, Registry, Request, Store, World};
 use serde_json::Value;
 
 fn lab() -> World {
@@ -1453,6 +1453,23 @@ fn camera_follow_verb_matches_the_op_and_reports_structured_errors() {
     let named = after(&start, "create camera id=main\ncamera main follow hero").unwrap();
     assert_eq!(follow(&named, "main").target, "hero");
     assert!(ops::add_camera_follow(&start, &[], "hero", &Default::default()).is_err());
+    // Non-finite bounds are an `invalid_value`, never a `clamp` panic (ACL and shared op).
+    for text in [
+        "camera rig follow hero min=NaN",
+        "camera rig follow hero max=NaN",
+        "camera rig follow hero min=inf",
+    ] {
+        assert_eq!(
+            code(after(&start, text).unwrap_err()),
+            "invalid_value",
+            "{text}"
+        );
+    }
+    let nan = ops::CameraFollowOptions {
+        min_distance: Some(f32::NAN),
+        ..Default::default()
+    };
+    assert!(ops::add_camera_follow(&start, &["rig".to_owned()], "hero", &nan).is_err());
 }
 
 #[test]
@@ -1474,6 +1491,31 @@ fn adding_an_audio_clip_keeps_the_other_library_entries_verbatim() {
     assert_eq!(library["clips"]["mini"], serde_json::json!({"seconds":1}));
     assert_eq!(library["cues"], world.resources["audio.library"]["cues"]);
     assert_eq!(library["clips"]["creak"]["wave"], "saw");
+}
+
+#[test]
+fn a_resource_in_array_form_is_refused_and_never_panics_an_op() {
+    let mut world = lab();
+    world.capabilities.insert("audio".into(), 1);
+    let mut store = Store::memory_with(Registry::core(), world.clone()).unwrap();
+    // Serde decodes `[]` as an empty AudioLibrary; validation now refuses that form.
+    let error = store
+        .execute(Request::Apply {
+            expected_rev: None,
+            edits: vec![Edit::Core(CoreEdit::SetResource {
+                id: "audio.library".into(),
+                value: serde_json::json!([]),
+            })],
+        })
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("not an array"), "{error:#}");
+    // A world that already holds the array form (older revision) gets a diagnostic.
+    world
+        .resources
+        .insert("audio.library".into(), serde_json::json!([]));
+    let error = ops::add_audio_clip(&world, "creak", "creak").unwrap_err();
+    assert!(format!("{error:#}").contains("JSON object"), "{error:#}");
+    assert!(ops::add_audio_file_clip(&world, "f", "a.wav", None).is_err());
 }
 
 #[test]

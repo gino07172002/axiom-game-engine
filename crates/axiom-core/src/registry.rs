@@ -97,8 +97,19 @@ impl Registry {
         ] {
             r.capabilities.insert(id.into(), 1);
         }
-        fn typed<T: serde::de::DeserializeOwned>(v: &Value, f: fn(&T) -> Result<()>) -> Result<()> {
-            f(&serde_json::from_value(v.clone())?)
+        fn typed<T: serde::de::DeserializeOwned + serde::Serialize>(
+            v: &Value,
+            f: fn(&T) -> Result<()>,
+        ) -> Result<()> {
+            let t: T = serde_json::from_value(v.clone())?;
+            // Serde also decodes a struct from a JSON array (its fields in order). Authoring
+            // ops edit the stored JSON in place and expect the object form, so the sequence
+            // form of an object type is refused here instead of being stored.
+            anyhow::ensure!(
+                !v.is_array() || !serde_json::to_value(&t)?.is_object(),
+                "must be a JSON object, not an array"
+            );
+            f(&t)
         }
         r.component(
             "core.transform",
@@ -457,7 +468,7 @@ impl Registry {
             "narrative.graph".into(),
             crate::discovery::gameplay_schema(),
         );
-        r.topics.insert("observe_delta".into(),json!({"op":"observe_delta","cursor":"optional opaque cursor from previous response","fields":"optional array of JSON pointers; default excludes timing noise and UI text","trace_limit":"0..128; optional recent trace records","max_bytes":"256..65536; default 8192","responses":"snapshot + reset reason, or changes + cursor; expired cursors reset explicitly"}));
+        r.topics.insert("observe_delta".into(),json!({"op":"observe_delta","cursor":"optional opaque cursor from previous response","fields":"optional array of JSON pointers; default excludes timing noise and UI text","trace_limit":"0..128; optional recent trace records","max_bytes":"256..65536; default 8192","responses":"snapshot + reset reason, or changes + cursor; expired cursors reset explicitly","missing_fields":"explicit fields this observation does not have (a misspelled pointer, or an optional value absent right now); omitted when none"}));
         r.topics.insert("editor".into(),json!({
             "commands":"discover editor_commands; run with {\"op\":\"editor_view\",\"command\":ID}",
             "read":{"op":"scene_tree","query":{"parent":"optional immediate parent ID","roots_only":"optional; mutually exclusive with parent","scene":"optional scene ID","text":"optional label or ID substring","limit":"1..128, default 32","max_bytes":"256..65536, default 8192","cursor":"next_cursor from same revision and filters"}},
@@ -705,7 +716,7 @@ impl Registry {
                     .collect(),
             )),
             Some("edits") => Ok(
-                json!({"kinds":["set_field","put_object","remove_object","set","put_entity","remove_entity","reparent","duplicate_entity","delete_entity","move_entity","set_scene_membership","set_component","remove_component","put_prefab","set_resource","remove_resource","define_component","define_resource","put_relation","remove_relation","put_scene","set_systems","replace_world"],"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
+                json!({"kinds":crate::protocol::EDIT_KINDS,"set":"JSON pointer beginning with /, or id/title; legacy paths require adapter","example":{"op":"preview","expected_rev":1,"edits":[{"kind":"put_entity","entity":{"id":"box","components":{"core.transform":{"position":[1,0,0]}}}}]},"activation":"authoring commit is distinct from runtime applied revision"}),
             ),
             Some(name) if name.starts_with("typed:") => {
                 let id = &name["typed:".len()..];

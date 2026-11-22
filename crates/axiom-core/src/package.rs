@@ -391,6 +391,26 @@ impl ContentPackage {
         Ok(Self { manifest, world })
     }
 }
+/// Reads the regular file `path`, holding at most `limit + 1` bytes in memory: a larger file
+/// is an error naming `what` and the limit, before it can be buffered whole.
+pub fn read_bounded(path: &Path, limit: usize, what: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).with_context(|| format!("{what}: {}", path.display()))?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "{what} is not a regular file: {}",
+        path.display()
+    );
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= limit, "{what} exceeds {limit} bytes");
+    Ok(bytes)
+}
+/// `read_bounded` as UTF-8 text.
+pub fn read_bounded_string(path: &Path, limit: usize, what: &str) -> Result<String> {
+    String::from_utf8(read_bounded(path, limit, what)?)
+        .with_context(|| format!("{what} is not valid UTF-8"))
+}
 struct Loader<'a> {
     boundary: PathBuf,
     registry: &'a Registry,
@@ -411,8 +431,14 @@ impl Loader<'_> {
             "package dependency cycle or depth limit"
         );
         let registry = self.registry;
-        let manifest_raw = std::fs::read(root.join("manifest.json"))?;
-        ensure!(manifest_raw.len() <= 65536, "manifest exceeds 64 KiB");
+        // Same canonical boundary check as the world file: a manifest link must not point
+        // outside the package directory.
+        let manifest_path = root.join("manifest.json").canonicalize()?;
+        ensure!(
+            manifest_path.starts_with(root),
+            "package manifest path escapes package directory"
+        );
+        let manifest_raw = read_bounded(&manifest_path, 65536, "manifest")?;
         let manifest: PackageManifest = serde_json::from_slice(&manifest_raw)?;
         crate::valid_id(&manifest.id)?;
         ensure!(
@@ -426,8 +452,7 @@ impl Loader<'_> {
             world_path.starts_with(root),
             "package world path escapes package directory"
         );
-        let raw = std::fs::read_to_string(world_path)?;
-        ensure!(raw.len() <= 4_194_304, "package world exceeds 4 MiB");
+        let raw = read_bounded_string(&world_path, 4_194_304, "package world")?;
         let hash = fingerprint(&(
             serde_json::from_slice::<Value>(&manifest_raw)?,
             serde_json::from_str::<Value>(&raw)?,
@@ -495,7 +520,7 @@ impl Loader<'_> {
                         length <= 33_554_432 && self.asset_bytes <= 134_217_728,
                         "declared asset byte budget exceeded"
                     );
-                    let bytes = std::fs::read(file)?;
+                    let bytes = read_bounded(&file, 33_554_432, "declared asset")?;
                     ensure!(
                         format!("{:x}", Sha256::digest(&bytes)).eq_ignore_ascii_case(expected),
                         "declared asset SHA-256 mismatch"

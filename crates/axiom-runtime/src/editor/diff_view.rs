@@ -151,7 +151,12 @@ pub(crate) fn change_line(change: &Value) -> String {
         Some("removed") => format!("- {}", readable_path(path)),
         Some("order") => match order_summary(change) {
             Some(summary) => {
-                let container = path.strip_suffix("/@order").unwrap_or(path);
+                // `#order` cannot collide with an object ID; `/@order` is the marker of
+                // diffs stored before it (proposal previews).
+                let container = path
+                    .strip_suffix("#order")
+                    .or_else(|| path.strip_suffix("/@order"))
+                    .unwrap_or(path);
                 format!("↕ {} order: {summary}", readable_path(container))
             }
             None => String::new(),
@@ -216,8 +221,11 @@ mod tests {
             change_line(&changed),
             "~ plaza/lamp-1 · core.transform/position[0]: 4.0 → 6.0"
         );
-        let order = json!({"kind":"order","path":"/entities/@order","before":["a","b","c","d"],"after":["b","c","a","d"]});
+        let order = json!({"kind":"order","path":"/entities#order","before":["a","b","c","d"],"after":["b","c","a","d"]});
         assert_eq!(change_line(&order), "↕ entities order: moved a (4 items)");
+        // Proposal previews stored before the `#order` marker still read the same.
+        let legacy = json!({"kind":"order","path":"/entities/@order","before":["a","b","c","d"],"after":["b","c","a","d"]});
+        assert_eq!(change_line(&legacy), "↕ entities order: moved a (4 items)");
         let omitted = json!({"kind":"order","path":"/entities/@order","before":{"omitted":true,"bytes":900,"fingerprint":"x"},"after":{"omitted":true,"bytes":900,"fingerprint":"y"}});
         assert_eq!(
             change_line(&omitted),
