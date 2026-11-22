@@ -5616,6 +5616,11 @@ mod tests {
         assert!(crate::world::PartialBatch::of(&error).is_some());
         frames(&mut app, &[], 10);
         command(&mut app, "play.stop", None).unwrap();
+        // Stopping saves in a background job (R8 F11).
+        app.editor
+            .as_mut()
+            .unwrap()
+            .flush_recording(std::time::Duration::from_secs(30));
         let summary = app
             .editor
             .as_ref()
