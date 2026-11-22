@@ -60,8 +60,7 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
     for source in b.textures {
         confined(path.parent().unwrap_or(Path::new(".")), &source)
             .and_then(|file| super::read_texture_file(&file))
-            .and_then(|bytes| super::texture(&bytes))
-            .and_then(|image| super::push_texture(&mut textures, &mut decoded, image))
+            .and_then(|bytes| super::push_texture(&mut textures, &mut decoded, &bytes))
             .with_context(|| format!(".axrig texture {source}"))?;
     }
     let skeleton = b.skeleton.compile()?;

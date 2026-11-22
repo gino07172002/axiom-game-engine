@@ -80,10 +80,13 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
                 .to_vec(),
             ::gltf::image::Source::Uri { uri: value, .. } => uri(root, value)?,
         };
-        let texture =
-            super::texture(&data).with_context(|| format!("glTF image {}", image.index()))?;
-        super::push_texture(&mut textures, &mut decoded, texture)?;
+        super::push_texture(&mut textures, &mut decoded, &data)
+            .with_context(|| format!("glTF image {}", image.index()))?;
     }
+    // The gltf crate's readers compute accessor ranges unchecked (`count - 1`, `offset +
+    // length`) and `unreachable!` on unexpected component types: validate every accessor
+    // before any reader is built.
+    check_accessors(doc, &buffers)?;
     let n = doc.nodes().count();
     ensure!(n > 0, "glTF has no nodes");
     let mut parents = vec![None; n];
@@ -505,6 +508,151 @@ fn mesh_targets(
         out.push(morphs.add_target(id, default, &at)?);
     }
     Ok(out)
+}
+
+/// Largest dense size of one accessor (the total buffer budget).
+const MAX_ACCESSOR_BYTES: usize = 268_435_456;
+
+/// Checks, with checked arithmetic, everything the gltf crate's accessor readers assume:
+/// buffer views inside their buffers, every accessor (and its sparse indices and values)
+/// non-empty and inside its view with a stride of at least one element, and the dimensions
+/// and component types the readers this importer uses accept.
+fn check_accessors(doc: &::gltf::Document, buffers: &[Vec<u8>]) -> Result<()> {
+    for view in doc.views() {
+        let len = buffers.get(view.buffer().index()).map_or(0, Vec::len);
+        ensure!(
+            view.offset()
+                .checked_add(view.length())
+                .is_some_and(|end| end <= len),
+            "glTF buffer view {} lies outside buffer {}",
+            view.index(),
+            view.buffer().index()
+        );
+    }
+    for a in doc.accessors() {
+        let i = a.index();
+        let elem = a.size();
+        ensure!(a.count() > 0, "glTF accessor {i}: count must be at least 1");
+        ensure!(
+            a.count()
+                .checked_mul(elem)
+                .is_some_and(|n| n <= MAX_ACCESSOR_BYTES),
+            "glTF accessor {i}: exceeds 256 MiB"
+        );
+        if let Some(view) = a.view() {
+            span(i, "", a.offset(), a.count(), elem, &view)?;
+        }
+        if let Some(sparse) = a.sparse() {
+            let n = sparse.count();
+            ensure!(
+                n > 0 && n <= a.count(),
+                "glTF accessor {i}: sparse count must be in 1..={}",
+                a.count()
+            );
+            let indices = sparse.indices();
+            span(
+                i,
+                "sparse indices ",
+                indices.offset(),
+                n,
+                indices.index_type().size(),
+                &indices.view(),
+            )?;
+            let values = sparse.values();
+            span(
+                i,
+                "sparse values ",
+                values.offset(),
+                n,
+                elem,
+                &values.view(),
+            )?;
+        }
+    }
+    use ::gltf::accessor::{DataType as T, Dimensions as D};
+    use ::gltf::Semantic as S;
+    const FLOAT: &[T] = &[T::F32];
+    const NORMALIZED: &[T] = &[T::I8, T::U8, T::I16, T::U16, T::F32];
+    let expect = |a: ::gltf::Accessor, what: &str, dims: D, types: &[T]| -> Result<()> {
+        ensure!(
+            a.dimensions() == dims && types.contains(&a.data_type()),
+            "glTF accessor {} ({what}) must be {dims:?} of {types:?}, found {:?} of {:?}",
+            a.index(),
+            a.dimensions(),
+            a.data_type()
+        );
+        Ok(())
+    };
+    for mesh in doc.meshes() {
+        for p in mesh.primitives() {
+            for (semantic, a) in p.attributes() {
+                match semantic {
+                    S::Positions | S::Normals => expect(a, "POSITION/NORMAL", D::Vec3, FLOAT)?,
+                    S::TexCoords(0) => expect(a, "TEXCOORD_0", D::Vec2, &[T::U8, T::U16, T::F32])?,
+                    S::Joints(0) => expect(a, "JOINTS_0", D::Vec4, &[T::U8, T::U16])?,
+                    S::Weights(0) => expect(a, "WEIGHTS_0", D::Vec4, &[T::U8, T::U16, T::F32])?,
+                    _ => {}
+                }
+            }
+            if let Some(a) = p.indices() {
+                expect(a, "indices", D::Scalar, &[T::U8, T::U16, T::U32])?;
+            }
+            for target in p.morph_targets() {
+                for a in [target.positions(), target.normals(), target.tangents()]
+                    .into_iter()
+                    .flatten()
+                {
+                    expect(a, "morph target", D::Vec3, FLOAT)?;
+                }
+            }
+        }
+    }
+    for skin in doc.skins() {
+        if let Some(a) = skin.inverse_bind_matrices() {
+            expect(a, "inverseBindMatrices", D::Mat4, FLOAT)?;
+        }
+    }
+    for animation in doc.animations() {
+        for channel in animation.channels() {
+            let sampler = channel.sampler();
+            expect(sampler.input(), "animation input", D::Scalar, FLOAT)?;
+            let output = sampler.output();
+            use ::gltf::animation::Property as P;
+            match channel.target().property() {
+                P::Translation | P::Scale => expect(output, "animation output", D::Vec3, FLOAT)?,
+                P::Rotation => expect(output, "animation output", D::Vec4, NORMALIZED)?,
+                P::MorphTargetWeights => expect(output, "animation output", D::Scalar, NORMALIZED)?,
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `count` elements of `elem` bytes from `offset` (strided by the view) end inside `view`.
+fn span(
+    accessor: usize,
+    what: &str,
+    offset: usize,
+    count: usize,
+    elem: usize,
+    view: &::gltf::buffer::View,
+) -> Result<()> {
+    let stride = view.stride().unwrap_or(elem);
+    ensure!(
+        elem > 0 && stride >= elem,
+        "glTF accessor {accessor}: {what}byteStride {stride} is smaller than its {elem}-byte element"
+    );
+    let end = count
+        .checked_sub(1)
+        .and_then(|n| n.checked_mul(stride))
+        .and_then(|n| n.checked_add(offset))
+        .and_then(|n| n.checked_add(elem));
+    ensure!(
+        end.is_some_and(|end| end <= view.length()),
+        "glTF accessor {accessor}: {what}range exceeds buffer view {}",
+        view.index()
+    );
+    Ok(())
 }
 
 /// The non-empty, distinct names that also select a primitive.
