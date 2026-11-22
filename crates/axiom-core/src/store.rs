@@ -89,6 +89,16 @@ impl Store {
         if !has_author {
             tx.execute_batch("ALTER TABLE revisions ADD COLUMN author TEXT")?;
         }
+        // Proposals from before `targets` (what each `set_where` selected when the proposal
+        // was previewed) keep NULL: approving one with a selector needs a new proposal.
+        let has_targets: bool = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='targets'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_targets {
+            tx.execute_batch("ALTER TABLE proposals ADD COLUMN targets TEXT")?;
+        }
         // `history` looks up the approved proposal of each revision; without an index that is
         // a scan of every proposal row (edits and previews included) per revision listed.
         tx.execute_batch(
@@ -115,6 +125,7 @@ impl Store {
         } else {
             let initial = initial()?;
             initial.compile(&registry)?;
+            registry.validate_write(&initial, None)?;
             tx.execute(
                 "INSERT INTO revisions(world,reason) VALUES (?1,'initialize')",
                 [serde_json::to_string(&initial)?],
@@ -175,7 +186,7 @@ impl Store {
         let base = self
             .registry
             .decode(serde_json::from_str(&self.revision_json(base_rev)?)?)?;
-        let mine = crate::ops::apply_edits(&base, &edits, &self.registry)?;
+        let (mine, _) = crate::ops::review_edits(&base, &edits, &self.registry)?;
         let view = crate::ops::merge_view(&base, &mine, &theirs);
         Ok(
             json!({"ok":true,"proposal":id,"base_rev":base_rev,"rev":rev,"conflicts":view.conflicts,"proposal_only":view.mine_only,"current_only":view.theirs_only}),
@@ -246,8 +257,11 @@ impl Store {
     /// measure that world pass the same snapshot, so every part of the answer is about `rev`.
     pub fn verify_world(&self, rev: i64, w: &World) -> Result<Value> {
         let c = w.compile(&self.registry)?;
+        // Rules newer than this revision are reported, not enforced: it stays readable.
+        let mut diagnostics = crate::camera::deprecations(w);
+        diagnostics.extend(self.registry.write_warnings(w));
         Ok(
-            json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":crate::camera::deprecations(w)}),
+            json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":diagnostics}),
         )
     }
     pub fn current(&self) -> Result<(i64, World)> {
@@ -354,6 +368,7 @@ impl Store {
         Edit::apply_all(edits, &mut next, registry)?;
         let compiled = next.compile(registry)?;
         let before = previous.compile(registry)?;
+        registry.validate_write(&next, Some(&previous))?;
         let added = compiled
             .indices
             .keys()
@@ -437,8 +452,22 @@ impl Store {
                     None => self.revision()?,
                 };
                 let payload = serde_json::to_string(&edits)?;
+                let selects = edits.iter().any(is_set_where);
+                let targets = if selects { Some(edits.clone()) } else { None };
                 let preview = self.edit(Some(base), edits, false)?;
                 let diff = serde_json::to_string(&preview["diff"])?;
+                // What each selector resolved to in the reviewed preview, so approval can
+                // refuse to commit a different selection (`targets_changed`).
+                let targets = match targets {
+                    Some(edits) => {
+                        let world = self
+                            .registry
+                            .decode(serde_json::from_str(&self.revision_json(base)?)?)?;
+                        Self::set_where_targets(&self.registry, world, &edits)?
+                    }
+                    None => vec![],
+                };
+                let targets = serde_json::to_string(&targets)?;
                 // Count and insert in one short write transaction, so concurrent proposers
                 // cannot both see 255 pending and overfill the queue.
                 let tx = self
@@ -454,8 +483,8 @@ impl Store {
                     "proposal queue is full; resolve pending proposals first"
                 );
                 tx.execute(
-                    "INSERT INTO proposals(note,base_rev,edits,preview) VALUES (?1,?2,?3,?4)",
-                    params![note, base, payload, diff],
+                    "INSERT INTO proposals(note,base_rev,edits,preview,targets) VALUES (?1,?2,?3,?4,?5)",
+                    params![note, base, payload, diff, targets],
                 )?;
                 let id = tx.last_insert_rowid();
                 tx.commit()?;
@@ -512,11 +541,11 @@ impl Store {
                         ));
                     }
                 }
-                let (status, base, edits): (String, i64, String) = tx
+                let (status, base, edits, targets): (String, i64, String, Option<String>) = tx
                     .query_row(
-                        "SELECT status,base_rev,edits FROM proposals WHERE id=?1",
+                        "SELECT status,base_rev,edits,targets FROM proposals WHERE id=?1",
                         [id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?
                     .ok_or_else(|| {
@@ -540,16 +569,56 @@ impl Store {
                     base
                 };
                 let mut edits: Vec<Edit> = serde_json::from_str(&edits)?;
+                let stored = edits.clone();
+                let budget = |e| Self::split_hint(&tx, &self.registry, id, base, &stored, e);
+                // Each `set_where` must still select, on the reviewed base revision, exactly
+                // what the reviewed preview selected: a change in selector semantics (e.g.
+                // exact integer comparison) must not retarget a reviewed proposal.
+                if edits.iter().any(is_set_where) {
+                    let current: i64 =
+                        tx.query_row("SELECT MAX(rev) FROM revisions", [], |r| r.get(0))?;
+                    let Some(targets) = targets else {
+                        // Stored before targets were recorded (and before batches shared one
+                        // budget): say how to split it when the new proposal must be split.
+                        if let Some(e) =
+                            Self::over_budget(&tx, &self.registry, id, base, &stored, None)
+                        {
+                            return Err(e);
+                        }
+                        return Err(Diagnostic::error(
+                            "stale_selector",
+                            "/id",
+                            format!(
+                                "proposal {id} selects objects (set_where) but was stored before the targets of its preview were recorded, so approving it could change objects its review never showed; review `proposal_diff {id}`, then propose the same edits again on rev {current} (and reject this one)"
+                            ),
+                        ));
+                    };
+                    let reviewed: Vec<Vec<String>> = serde_json::from_str(&targets)?;
+                    let raw: String =
+                        tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
+                            r.get(0)
+                        })?;
+                    let base_world = self.registry.decode(serde_json::from_str(&raw)?)?;
+                    let now = Self::set_where_targets(&self.registry, base_world, &edits)
+                        .map_err(budget)?;
+                    if now != reviewed {
+                        return Err(Diagnostic::error(
+                            "stale_selector",
+                            "/id",
+                            format!(
+                                "proposal {id}'s set_where now selects different objects on its base rev {base} than its reviewed preview did; review `proposal_diff {id}`, then propose again on rev {current}"
+                            ),
+                        ));
+                    }
+                }
                 // A selector re-evaluated on a newer revision can change objects the reviewed
                 // preview never showed (e.g. entities tagged after the proposal was made, or an
                 // ID that only exists now). Each `set_where` must resolve to targets the
                 // reviewed base revision also resolved it to.
                 if rebase
                     && expected != base
-                    && edits
-                        .iter()
-                        .any(|e| matches!(e, Edit::Core(CoreEdit::SetWhere { .. })))
-                    && Self::selectors_grow(&tx, &self.registry, base, &edits)?
+                    && edits.iter().any(is_set_where)
+                    && Self::selectors_grow(&tx, &self.registry, base, &edits).map_err(budget)?
                 {
                     return Err(Diagnostic::error(
                         "stale_selector",
@@ -566,7 +635,8 @@ impl Store {
                         })?;
                     let base_world = self.registry.decode(serde_json::from_str(&raw)?)?;
                     let (_, theirs) = Self::latest_in(&tx, &self.registry)?;
-                    let mine = crate::ops::apply_edits(&base_world, &edits, &self.registry)?;
+                    let mine = crate::ops::apply_edits(&base_world, &edits, &self.registry)
+                        .map_err(budget)?;
                     edits = crate::ops::merge(&base_world, &mine, &theirs, keep)?;
                     if edits.is_empty() {
                         // Everything the proposal changes is already in the current revision.
@@ -585,7 +655,8 @@ impl Store {
                     true,
                     &mut None,
                     self.author,
-                )?;
+                )
+                .map_err(budget)?;
                 // `resolved_rev` names the revision the approval created (none when it changed
                 // nothing), so History never credits a proposal with someone else's revision.
                 tx.execute(
@@ -631,7 +702,7 @@ impl Store {
                 let base = self
                     .registry
                     .decode(serde_json::from_str(&self.revision_json(base_rev)?)?)?;
-                let mine = crate::ops::apply_edits(&base, &edits, &self.registry)?;
+                let (mine, _) = crate::ops::review_edits(&base, &edits, &self.registry)?;
                 let changes = crate::diff::changes(&json!(base), &json!(mine));
                 let mut page = Self::diff_page(&changes, offset, limit)?;
                 page["proposal"] = json!(id);
@@ -820,6 +891,91 @@ impl Store {
         }
         Ok(false)
     }
+    /// The targets (sorted paths) each `set_where` of `edits` selects when the batch is
+    /// replayed in order on `world`. Replays with the review budget: the commit enforces
+    /// the shared one.
+    fn set_where_targets(
+        registry: &Registry,
+        mut world: World,
+        edits: &[Edit],
+    ) -> Result<Vec<Vec<String>>> {
+        let mut budget = crate::ops::review_budget(edits.len());
+        let mut out = vec![];
+        for edit in edits {
+            if let Edit::Core(CoreEdit::SetWhere { select, .. }) = edit {
+                let targets: std::collections::BTreeSet<String> =
+                    crate::local::matches(&world, registry, select)?
+                        .into_iter()
+                        .map(|(t, _)| t.path())
+                        .collect();
+                out.push(targets.into_iter().collect());
+            }
+            edit.clone()
+                .apply_budgeted(&mut world, registry, &mut budget)?;
+        }
+        Ok(out)
+    }
+    /// `e` as an approval error of proposal `id`: a `budget_exceeded` (a proposal stored
+    /// before its batch shared one `set_where` budget) says how to split the batch. The
+    /// proposal stays pending (the approval transaction rolls back).
+    fn split_hint(
+        tx: &Connection,
+        registry: &Registry,
+        id: i64,
+        base: i64,
+        edits: &[Edit],
+        e: anyhow::Error,
+    ) -> anyhow::Error {
+        if e.downcast_ref::<Diagnostic>()
+            .is_none_or(|d| d.code != "budget_exceeded")
+        {
+            return e;
+        }
+        Self::over_budget(tx, registry, id, base, edits, Some(&e)).unwrap_or(e)
+    }
+    /// The split-the-batch error of proposal `id` when its batch expands beyond one shared
+    /// `set_where` budget on its base revision (or `cause` already says so).
+    fn over_budget(
+        tx: &Connection,
+        registry: &Registry,
+        id: i64,
+        base: i64,
+        edits: &[Edit],
+        cause: Option<&anyhow::Error>,
+    ) -> Option<anyhow::Error> {
+        const MAX: usize = crate::local::MAX_SET_WHERE_BYTES;
+        let used = (|| -> Result<Vec<usize>> {
+            let raw: String =
+                tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
+                    r.get(0)
+                })?;
+            let world = registry.decode(serde_json::from_str(&raw)?)?;
+            Ok(crate::ops::review_edits(&world, edits, registry)?.1)
+        })();
+        let (total, size) = match used {
+            // The largest batch size whose consecutive batches all fit one budget.
+            Ok(used) => (
+                used.iter().sum::<usize>(),
+                (1..=edits.len())
+                    .rev()
+                    .find(|&k| used.chunks(k).all(|c| c.iter().sum::<usize>() <= MAX))
+                    .unwrap_or(1),
+            ),
+            Err(_) => (0, 1),
+        };
+        if cause.is_none() && total <= MAX {
+            return None;
+        }
+        let cause = cause.map(|e| format!(" ({e:#})")).unwrap_or_default();
+        Some(Diagnostic::error(
+            "budget_exceeded",
+            "/id",
+            format!(
+                "proposal {id} exceeds the batch budget: its {} edits expand to {total} set_where bytes, a batch may expand to {MAX} (it was stored before a batch's edits shared one budget). It stays pending and `proposal_diff {id}` still shows it; split it into batches of at most {size} edits, propose those again on the current revision and reject this one{cause}",
+                edits.len()
+            ),
+        ))
+    }
     fn latest_in(tx: &Connection, registry: &Registry) -> Result<(i64, World)> {
         let (rev, raw): (i64, String) = tx.query_row(
             "SELECT rev,world FROM revisions ORDER BY rev DESC LIMIT 1",
@@ -896,4 +1052,8 @@ fn ensure_same(id: &str, a: &str, b: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+/// Whether `edit` selects its targets when it is applied (`set_where`).
+fn is_set_where(edit: &Edit) -> bool {
+    matches!(edit, Edit::Core(CoreEdit::SetWhere { .. }))
 }

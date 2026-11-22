@@ -971,3 +971,100 @@ fn audio_file_clips_are_added_by_acl_like_the_op() {
     );
     assert!(acl(&mut s, "audio clip x file=a.wav loud=1").is_err());
 }
+
+/// A database whose newest revision holds `input.bindings` stored before key names and the
+/// button-or-axis rule were checked: `move` is both, `W` / `PadA` / `MouseRight` are not
+/// keyboard key names.
+fn legacy_input_database(name: &str) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("axiom-legacy-input-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("world.sqlite");
+    drop(Store::open_with(&path, Registry::core(), world()).unwrap());
+    let mut legacy = json!(world());
+    legacy["resources"]["input.bindings"] = legacy_bindings();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO revisions(world,reason) VALUES (?1,'legacy')",
+            [legacy.to_string()],
+        )
+        .unwrap();
+    path
+}
+
+fn legacy_bindings() -> Value {
+    json!({"capture_pointer":false,
+        "axes":{"move":{"positive":"W","negative":"KeyS"}},
+        "buttons":{"move":"KeyE","jump":"PadA","look":"MouseRight","use":"KeyE"}})
+}
+
+#[test]
+fn legacy_input_bindings_open_repair_and_undo() {
+    let path = legacy_input_database("repair");
+    let mut s = Store::open_with(&path, Registry::core(), world()).expect("opens");
+    let verify = s.execute(Request::Verify {}).unwrap();
+    assert_eq!(verify["ok"], true, "{verify}");
+    assert_eq!(
+        verify["diagnostics"][0]["code"], "action_kind",
+        "the old violation is reported, not enforced: {verify}"
+    );
+    // `input remove move` repairs one action while the other old bindings stay as stored.
+    let repaired = acl(&mut s, "input remove move").expect("input remove on an old database");
+    let bindings = &repaired.resources["input.bindings"];
+    assert!(bindings["axes"].get("move").is_none() && bindings["buttons"].get("move").is_none());
+    assert_eq!(bindings["buttons"]["jump"], "PadA");
+    // An edit of another action commits too; a new invalid key on the old world is refused.
+    acl(&mut s, "input button fire KeyF").expect("unrelated rebind");
+    let refused = acl(&mut s, "input button fire W").unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "invalid_value",
+        "{refused}"
+    );
+    // Undo back to the legacy revision, then reopen.
+    let undone = s
+        .execute(Request::Undo {
+            rev: 2,
+            expected_rev: Some(4),
+        })
+        .unwrap();
+    assert_eq!(undone["rev"], 5, "{undone}");
+    drop(s);
+    let reopened = Store::open_with(&path, Registry::core(), world()).unwrap();
+    assert_eq!(
+        reopened.current().unwrap().1.resources["input.bindings"],
+        legacy_bindings()
+    );
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn new_writes_of_legacy_input_bindings_stay_refused() {
+    // On a clean world each old form is refused, as a whole resource and through ACL.
+    let mut s = store();
+    let error = s
+        .execute(Request::Apply {
+            expected_rev: None,
+            edits: vec![Edit::Core(CoreEdit::SetResource {
+                id: "input.bindings".into(),
+                value: legacy_bindings(),
+            })],
+        })
+        .unwrap_err();
+    assert_eq!(code(&error), "action_kind", "{error:#}");
+    for (script, expected) in [
+        ("input axis move_x W KeyA", "invalid_value"),
+        ("input button jump PadA", "invalid_value"),
+        ("input button jump MouseRight", "invalid_value"),
+        ("input button move_x KeyQ", "action_kind"),
+    ] {
+        let refused = acl(&mut s, script).unwrap_err();
+        assert_eq!(
+            refused["diagnostics"][0]["code"], expected,
+            "{script}: {refused}"
+        );
+    }
+    assert_eq!(s.revision().unwrap(), 1);
+}

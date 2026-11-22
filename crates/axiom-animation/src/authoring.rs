@@ -436,7 +436,21 @@ pub fn register(r: &mut Registry) {
                     "retarget asset/profile missing for {id}"
                 );
             }
-            check_player_clip(&lib, &id, &p)?;
+        }
+        Ok(())
+    });
+    // Strict on write only (C0): worlds stored before the clip check still open, undo and
+    // accept repairs; an edit that introduces an unknown clip is refused.
+    r.strict_world_validators.push(|w| {
+        if !w.capabilities.contains_key("animation") {
+            return Ok(());
+        }
+        let lib: Library = w.resource("animation.library")?;
+        for e in &w.entities {
+            if let Some(v) = w.resolved_components(e).remove("animation.player") {
+                let p: Player = serde_json::from_value(v)?;
+                check_player_clip(&lib, &e.id, &p)?;
+            }
         }
         Ok(())
     });

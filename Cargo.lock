@@ -294,6 +294,7 @@ dependencies = [
  "axiom-combat",
  "axiom-core",
  "glam",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

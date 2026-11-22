@@ -197,6 +197,7 @@ pub fn stage(base: &World, edits: &[Edit], registry: &Registry) -> Result<Arc<Wo
     let mut next = base.clone();
     Edit::apply_all(edits.iter().cloned(), &mut next, registry)?;
     next.compile(registry)?;
+    registry.validate_write(&next, Some(base))?;
     Ok(Arc::new(next))
 }
 

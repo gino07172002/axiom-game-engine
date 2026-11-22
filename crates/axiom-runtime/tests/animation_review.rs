@@ -142,8 +142,13 @@ fn a_misspelled_player_clip_fails_validation_not_activation() {
     let registry = axiom_runtime::installed_registry();
     let mut w = plain();
     player_mut(&mut w, "walker")["clip"] = json!("idel");
-    // The same world compile preview and apply run.
-    let e = w.compile(&registry.authoring).unwrap_err();
+    // Strict on write (C0): a stored world with the typo still compiles, so it opens and
+    // undoes; preview and apply refuse a write that introduces it.
+    w.compile(&registry.authoring).unwrap();
+    let e = registry
+        .authoring
+        .validate_write(&w, Some(&plain()))
+        .unwrap_err();
     let d = e
         .downcast_ref::<axiom_core::Diagnostic>()
         .unwrap_or_else(|| panic!("not a diagnostic: {e:#}"));
@@ -158,10 +163,13 @@ fn a_misspelled_player_clip_fails_validation_not_activation() {
     );
     // Asset clips, library clips and no clip all validate.
     for clip in [json!("walk"), json!("lean"), Value::Null] {
-        let mut w = plain();
-        player_mut(&mut w, "walker")["clip"] = clip;
-        w.compile(&registry.authoring).unwrap();
+        let mut ok = plain();
+        player_mut(&mut ok, "walker")["clip"] = clip;
+        ok.compile(&registry.authoring).unwrap();
+        registry.authoring.validate_write(&ok, None).unwrap();
     }
+    // An unrelated edit on a world that already has the typo still commits.
+    registry.authoring.validate_write(&w, Some(&w)).unwrap();
 }
 
 #[test]

@@ -526,8 +526,32 @@ fn emitted_events(w: &World, defs: &Machines) -> Result<BTreeMap<String, bool>> 
     Ok(events)
 }
 
-/// Cross-object checks `fsm.step` needs to start, run by `World::compile` (preview, apply,
-/// editor commits) so an invalid reference never reaches a committed revision.
+/// `fsm.agent` radius range, a rule added after agents were already stored: strict on write
+/// (see `validate_world`).
+fn validate_radius(w: &World) -> Result<()> {
+    for e in &w.entities {
+        let c = w.resolved_components(e);
+        let Some(raw) = c.get("fsm.agent") else {
+            continue;
+        };
+        let agent: Agent = serde_json::from_value(raw.clone())?;
+        if !(agent.radius.is_finite() && (0.05..=5.0).contains(&agent.radius)) {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                format!(
+                    "/entities/@{}/components/fsm.agent/radius",
+                    axiom_core::local::escape(&e.id)
+                ),
+                "fsm.agent radius must be 0.05..5",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Cross-object checks `fsm.step` needs to start. Strict on write (`Registry::validate_write`:
+/// preview, apply, proposals, editor commits): a revision stored before these checks still
+/// opens and undoes, while a write may not introduce an invalid reference.
 fn validate_world(w: &World) -> Result<()> {
     if !w.systems.iter().any(|s| s == "fsm.step") {
         return Ok(());
@@ -1055,15 +1079,13 @@ pub fn register(r: &mut RuntimeRegistry) {
         json!({"machine":"fsm.machines ID (must exist when fsm.step runs; the entity needs core.transform)","radius":"body radius in meters for separation and blockers, 0.05..5 (default 0.3)"}),
         |v| {
             let a: Agent = serde_json::from_value(v.clone())?;
-            valid_id(&a.machine)?;
-            ensure!(
-                a.radius.is_finite() && (0.05..=5.0).contains(&a.radius),
-                "fsm.agent radius must be 0.05..5"
-            );
-            Ok(())
+            // The radius range is checked on write (`validate_radius`).
+            valid_id(&a.machine)
         },
     );
-    r.authoring.world_validators.push(validate_world);
+    // Added after FSM content was stored: strict on write, never when a revision is read.
+    r.authoring.strict_world_validators.push(validate_world);
+    r.authoring.strict_world_validators.push(validate_radius);
     r.authoring
         .movers
         .insert("fsm.agent".into(), "fsm.step".into());

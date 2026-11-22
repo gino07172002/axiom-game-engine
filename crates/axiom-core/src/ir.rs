@@ -826,7 +826,23 @@ impl InputBindings {
     /// An action is either a button or an axis: the same name in both would make the button
     /// overwrite the axis value every step. Key names must be keys the native host produces.
     pub fn validate_keys(&self) -> Result<()> {
-        if let Some(action) = self.buttons.keys().find(|a| self.axes.contains_key(*a)) {
+        self.validate_keys_since(None)
+    }
+    /// `validate_keys` for the actions whose button or axis differs from `before` (all of
+    /// them without `before`): bindings stored before these rules keep working, and an edit
+    /// that leaves an old binding alone (e.g. `input remove` of another action) commits.
+    pub fn validate_keys_since(&self, before: Option<&InputBindings>) -> Result<()> {
+        let changed = |action: &str| {
+            before.is_none_or(|b| {
+                b.buttons.get(action) != self.buttons.get(action)
+                    || b.axes.get(action) != self.axes.get(action)
+            })
+        };
+        if let Some(action) = self
+            .buttons
+            .keys()
+            .find(|a| self.axes.contains_key(*a) && changed(a))
+        {
             let escaped = crate::local::escape(action);
             return Err(crate::Diagnostic::error(
                 "action_kind",
@@ -840,14 +856,20 @@ impl InputBindings {
         let keys = self
             .buttons
             .iter()
+            .filter(|(a, _)| changed(a))
             .map(|(a, k)| (format!("buttons/{}", crate::local::escape(a)), k))
-            .chain(self.axes.iter().flat_map(|(a, axis)| {
-                let at = format!("axes/{}", crate::local::escape(a));
-                [
-                    (format!("{at}/positive"), &axis.positive),
-                    (format!("{at}/negative"), &axis.negative),
-                ]
-            }));
+            .chain(
+                self.axes
+                    .iter()
+                    .filter(|(a, _)| changed(a))
+                    .flat_map(|(a, axis)| {
+                        let at = format!("axes/{}", crate::local::escape(a));
+                        [
+                            (format!("{at}/positive"), &axis.positive),
+                            (format!("{at}/negative"), &axis.negative),
+                        ]
+                    }),
+            );
         for (at, key) in keys {
             if let Err(message) = crate::ops_tuning::check_key_name(key) {
                 return Err(crate::Diagnostic::error(
@@ -858,6 +880,21 @@ impl InputBindings {
             }
         }
         Ok(())
+    }
+    /// The `input.bindings` write rule (`Registry::write_validators`): `validate_keys` for
+    /// the actions this write changes.
+    pub fn validate_written(next: &World, previous: Option<&World>) -> Result<()> {
+        let read = |w: &World| {
+            w.resources
+                .get("input.bindings")
+                .map(|v| serde_json::from_value::<InputBindings>(v.clone()))
+        };
+        let Some(bindings) = read(next) else {
+            return Ok(());
+        };
+        // A previous value that is absent or no longer decodes checks every action.
+        let before = previous.map(|p| read(p).and_then(Result::ok).unwrap_or_default());
+        bindings?.validate_keys_since(before.as_ref())
     }
     /// Gamepad entries name known inputs and rebind existing actions of the same kind.
     pub fn validate_gamepad(&self) -> Result<()> {

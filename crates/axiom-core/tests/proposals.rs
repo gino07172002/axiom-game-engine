@@ -307,3 +307,191 @@ fn an_acl_proposal_note_is_cut_to_the_byte_limit_on_a_character_boundary() {
     assert!(note.len() <= 2048 && note.len() > 2040, "{}", note.len());
     assert!(script.starts_with(note));
 }
+
+/// A database in a fresh temp directory opened with `world`, and a raw connection to it for
+/// writing rows the way an older build did.
+fn file_store(name: &str, world: World) -> (std::path::PathBuf, Store, rusqlite::Connection) {
+    let dir = std::env::temp_dir().join(format!("axiom-proposal-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("world.sqlite");
+    let store = Store::open_with(&path, Registry::core(), world).unwrap();
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    (path, store, raw)
+}
+
+/// A pending proposal as a build before recorded targets stored it (no `targets`).
+fn insert_legacy_proposal(raw: &rusqlite::Connection, edits: &Value) -> i64 {
+    raw.execute(
+        "INSERT INTO proposals(note,base_rev,edits,preview) VALUES ('legacy',1,?1,'{}')",
+        [edits.to_string()],
+    )
+    .unwrap();
+    raw.last_insert_rowid()
+}
+
+fn status(s: &mut Store, id: i64) -> Value {
+    let listed = s
+        .execute(Request::Proposals {
+            status: None,
+            limit: Some(64),
+        })
+        .unwrap();
+    listed["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap()["status"]
+        .clone()
+}
+
+/// Two counters that are the same f64 (2^53 and 2^53 + 1).
+fn counters() -> World {
+    let mut world = World::empty("ints");
+    world.component_schemas.insert(
+        "game.counter".into(),
+        serde_json::from_value(json!({"fields":{"n":{"ty":"int"}}})).unwrap(),
+    );
+    for (id, n) in [
+        ("a", 9_007_199_254_740_992_i64),
+        ("b", 9_007_199_254_740_993),
+    ] {
+        let mut e = Entity::new(id);
+        e.set("game.counter", json!({ "n": n })).unwrap();
+        world.entities.push(e);
+    }
+    world
+}
+
+#[test]
+fn a_selector_proposal_stored_before_recorded_targets_needs_a_new_proposal() {
+    let (path, mut s, raw) = file_store("legacy-targets", counters());
+    // Reviewed with f64 comparison: `lt 2^53+1` matched nothing then, and matches `a` now.
+    let edits = json!([{"kind":"set_where","select":{"from":"entities","where":[{"field":"/components/game.counter/n","op":"lt","value":9_007_199_254_740_993_i64}]},"field":"/label","value":"hit"}]);
+    let id = insert_legacy_proposal(&raw, &edits);
+    // Review still works.
+    let page = s
+        .execute(Request::ProposalDiff {
+            id,
+            offset: 0,
+            limit: None,
+        })
+        .unwrap();
+    assert_eq!(page["status"], "pending", "{page}");
+    let refused = resolve(&mut s, id, true, false).unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "stale_selector",
+        "{refused}"
+    );
+    assert!(
+        refused.to_string().contains("propose the same edits again"),
+        "{refused}"
+    );
+    assert_eq!(s.revision().unwrap(), 1, "nothing committed");
+    assert_eq!(status(&mut s, id), "pending");
+    // Proposed again, it records its targets and approves.
+    let again = s
+        .execute(Request::Propose {
+            expected_rev: Some(1),
+            edits: serde_json::from_value(edits).unwrap(),
+            note: String::new(),
+        })
+        .unwrap();
+    let approved = resolve(&mut s, again["proposal"].as_i64().unwrap(), true, false).unwrap();
+    assert_eq!(approved["rev"], 2, "{approved}");
+    let world = s.current().unwrap().1;
+    assert_eq!(world.entity("a").unwrap().label.as_deref(), Some("hit"));
+    assert_eq!(world.entity("b").unwrap().label, None);
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_proposal_whose_selector_now_resolves_differently_is_not_approved() {
+    let (path, mut s, raw) = file_store("changed-targets", counters());
+    let edits = json!([{"kind":"set_where","select":{"from":"entities","where":[{"field":"/components/game.counter/n","op":"ge","value":0}]},"field":"/label","value":"hit"}]);
+    let proposed = s
+        .execute(Request::Propose {
+            expected_rev: Some(1),
+            edits: serde_json::from_value(edits).unwrap(),
+            note: String::new(),
+        })
+        .unwrap();
+    let id = proposed["proposal"].as_i64().unwrap();
+    let recorded: String = raw
+        .query_row("SELECT targets FROM proposals WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let recorded: Vec<Vec<String>> = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].len(), 2, "both counters: {recorded:?}");
+    // Simulate a change of selector semantics after review: the recorded preview selected
+    // only the first of them.
+    raw.execute(
+        "UPDATE proposals SET targets=?2 WHERE id=?1",
+        rusqlite::params![id, json!([[recorded[0][0]]]).to_string()],
+    )
+    .unwrap();
+    let refused = resolve(&mut s, id, true, false).unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "stale_selector",
+        "{refused}"
+    );
+    assert_eq!(s.revision().unwrap(), 1);
+    assert_eq!(status(&mut s, id), "pending");
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_large_proposal_stored_before_the_shared_budget_stays_reviewable() {
+    // 120 enemies; each edit writes 120 x ~4 KB = ~481 KB: 36 of them (~17.3 MB) were a valid
+    // proposal when each edit had its own 16 MiB budget, and exceed one shared budget.
+    let mut world = World::empty("budget");
+    world.component_schemas.insert(
+        "game.note".into(),
+        serde_json::from_value(json!({"fields":{"text":{"ty":"string"}}})).unwrap(),
+    );
+    for i in 0..120 {
+        world.entities.push(Entity::new(format!("enemy/{i:03}")));
+    }
+    let (path, mut s, raw) = file_store("budget", world);
+    let edit = json!({"kind":"set_where","select":{"from":"entities","id_glob":"enemy/*"},
+        "field":"/components/game.note","value":{"text":"x".repeat(4000)}});
+    let id = insert_legacy_proposal(&raw, &json!(vec![edit; 36]));
+    let page = s
+        .execute(Request::ProposalDiff {
+            id,
+            offset: 0,
+            limit: Some(8),
+        })
+        .expect("a stored proposal stays reviewable");
+    assert_eq!(page["status"], "pending", "{page}");
+    assert_eq!(page["total_changes"], 120, "{page}");
+    let conflicts = s
+        .execute(Request::ResolveProposal {
+            id,
+            approve: true,
+            rebase: false,
+            keep: None,
+            expected_rev: None,
+        })
+        .map_err(|e| error_response(&e))
+        .unwrap_err();
+    assert_eq!(
+        conflicts["diagnostics"][0]["code"], "budget_exceeded",
+        "{conflicts}"
+    );
+    let text = conflicts.to_string();
+    assert!(
+        text.contains("split it into batches of at most 34 edits"),
+        "{text}"
+    );
+    assert_eq!(status(&mut s, id), "pending");
+    assert_eq!(s.revision().unwrap(), 1);
+    assert!(s.proposal_conflicts(id).is_ok(), "conflicts are listed too");
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

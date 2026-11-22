@@ -377,11 +377,18 @@ impl Edit {
         r: &Registry,
     ) -> Result<()> {
         let mut budget = crate::local::MAX_SET_WHERE_BYTES;
+        Self::apply_all_with(edits, w, r, &mut budget)
+    }
+    /// `apply_all` drawing from `budget` (bytes still allowed; what is left on return). Only
+    /// read-only review of a stored proposal passes more than `MAX_SET_WHERE_BYTES`.
+    pub fn apply_all_with(
+        edits: impl IntoIterator<Item = Edit>,
+        w: &mut World,
+        r: &Registry,
+        budget: &mut usize,
+    ) -> Result<()> {
         for (i, edit) in edits.into_iter().enumerate() {
-            crate::local::at(
-                &format!("/edits/{i}"),
-                edit.apply_budgeted(w, r, &mut budget),
-            )?;
+            crate::local::at(&format!("/edits/{i}"), edit.apply_budgeted(w, r, budget))?;
         }
         Ok(())
     }
@@ -563,7 +570,7 @@ impl Edit {
                 }
             }
             Self::Core(CoreEdit::SetSystems { systems }) => w.systems = systems,
-            Self::Core(CoreEdit::ReplaceWorld { world }) => *w = r.decode(world)?,
+            Self::Core(CoreEdit::ReplaceWorld { world }) => *w = r.decode_new(world)?,
             Self::Extension(mut v) => {
                 let name = v
                     .get("kind")
