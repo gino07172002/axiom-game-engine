@@ -131,7 +131,7 @@ fn read_game(dir: &Path) -> Result<Game> {
 }
 
 /// The database and crash log. `%APPDATA%` is needed only for the default save directory:
-/// with `--db` the crash log goes beside the database.
+/// with `--db` the crash log goes beside the database, under a name distinct from it.
 fn locations(
     db: Option<PathBuf>,
     id: &str,
@@ -142,7 +142,15 @@ fn locations(
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        return Ok((db, dir.join("crash.log")));
+        let taken = db
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("crash.log"));
+        let log = if taken {
+            "player-crash.log"
+        } else {
+            "crash.log"
+        };
+        return Ok((db, dir.join(log)));
     }
     let appdata = appdata
         .filter(|v| !v.is_empty())
@@ -174,18 +182,80 @@ fn report(message: &str) {
         .parent()
         .map(std::fs::create_dir_all)
         .transpose()
-        .and_then(|_| std::fs::write(&log, body))
-        .is_ok();
+        .ok()
+        .and_then(|_| write_log(&log, body.as_bytes()));
     eprintln!("axiom-player: {message}");
     if std::env::var_os(NO_DIALOG).is_some_and(|v| v == "1") {
         return;
     }
-    let detail = if written {
-        format!("{message}\n\nDetails were written to:\n{}", log.display())
-    } else {
-        message.to_string()
+    let detail = match written {
+        Some(path) => format!("{message}\n\nDetails were written to:\n{}", path.display()),
+        None => message.to_string(),
     };
     dialog("The game could not start", &detail);
+}
+
+/// Every crash log starts with this; an existing file without it is never overwritten.
+const LOG_HEADER: &[u8] = b"axiom-player ";
+
+/// Writes `body` (which starts with [`LOG_HEADER`]) to `path`, or to `<stem>-<n>.<ext>`
+/// beside it when `path` holds something other than an earlier crash log (a database, for
+/// example). Returns where it was written.
+fn write_log(path: &Path, body: &[u8]) -> Option<PathBuf> {
+    if replace_log(path, body).ok()? {
+        return Some(path.to_path_buf());
+    }
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    let ext = path
+        .extension()
+        .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
+    (1..=16).find_map(|n| {
+        let candidate = path.with_file_name(format!("{stem}-{n}{ext}"));
+        replace_log(&candidate, body)
+            .ok()
+            .filter(|&w| w)
+            .map(|_| candidate)
+    })
+}
+
+/// Creates `path`, or overwrites it only when it is an earlier crash log (checked on the same
+/// handle that is then truncated). `Ok(false)` means the file belongs to someone else.
+fn replace_log(path: &Path, body: &[u8]) -> std::io::Result<bool> {
+    use std::io::{Read, Seek, Write};
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !std::fs::symlink_metadata(path)?.is_file() {
+                return Ok(false);
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?;
+            let mut head = [0u8; LOG_HEADER.len()];
+            let mut read = 0;
+            while read < head.len() {
+                match file.read(&mut head[read..])? {
+                    0 => break,
+                    n => read += n,
+                }
+            }
+            if head[..read] != *LOG_HEADER {
+                return Ok(false);
+            }
+            file.set_len(0)?;
+            file.seek(std::io::SeekFrom::Start(0))?;
+            file
+        }
+        Err(e) => return Err(e),
+    };
+    file.write_all(body)?;
+    Ok(true)
 }
 
 #[cfg(windows)]
@@ -294,6 +364,50 @@ mod tests {
             locations(None, "adv-demo", Some(dir.clone().into_os_string())).unwrap();
         assert_eq!(chosen, dir.join("Axiom/adv-demo/world.sqlite"));
         assert_eq!(log, dir.join("Axiom/adv-demo/crash.log"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // R9 N1: a `--db` named crash.log is never overwritten by the crash log, and the log never
+    // replaces any existing file that is not an earlier crash log.
+    #[test]
+    fn crash_log_never_overwrites_the_database() {
+        let dir = scratch("n1");
+        let sqlite = b"SQLite format 3\0 pretend pages".to_vec();
+        let db = dir.join("crash.log");
+        std::fs::write(&db, &sqlite).unwrap();
+        let (chosen, log) = locations(Some(db.clone()), "adv-demo", None).unwrap();
+        assert_eq!(chosen, db);
+        assert_ne!(log, db, "the crash log must not share the database's name");
+        let upper = dir.join("CRASH.LOG");
+        let (_, log_upper) = locations(Some(upper.clone()), "adv-demo", None).unwrap();
+        assert_ne!(
+            log_upper.file_name().unwrap().to_ascii_lowercase(),
+            upper.file_name().unwrap().to_ascii_lowercase()
+        );
+        let body = b"axiom-player 0.0.0\r\nerror: boom\r\n";
+        // Even pointed straight at the database, the log goes elsewhere.
+        let written = write_log(&db, body).unwrap();
+        assert_ne!(written, db);
+        assert_eq!(
+            std::fs::read(&db).unwrap(),
+            sqlite,
+            "database bytes changed"
+        );
+        assert_eq!(std::fs::read(&written).unwrap(), body);
+        // An empty foreign file is not a crash log either.
+        let empty = dir.join("empty.log");
+        std::fs::write(&empty, b"").unwrap();
+        assert_ne!(write_log(&empty, body).unwrap(), empty);
+        assert!(std::fs::read(&empty).unwrap().is_empty());
+        // An earlier crash log is replaced in place.
+        let old = dir.join("player-crash.log");
+        std::fs::write(
+            &old,
+            b"axiom-player 0.0.0\r\nerror: an older and much longer message\r\n",
+        )
+        .unwrap();
+        assert_eq!(write_log(&old, body).unwrap(), old);
+        assert_eq!(std::fs::read(&old).unwrap(), body);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
