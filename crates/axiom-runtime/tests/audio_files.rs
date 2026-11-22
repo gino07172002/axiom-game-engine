@@ -145,6 +145,14 @@ fn changed_file_content_restarts_and_old_paths_still_work_after_reload() {
     for _ in 0..60 {
         r.step(&ActionMap::default());
     }
+    // The Inspector reads file info from the active runtime, not the process-wide cache
+    // (which then holds both versions under the same path).
+    let seconds = |r: &WorldRuntime| {
+        r.system::<axiom_runtime::spatial_audio::AudioSpatialSystem>()
+            .and_then(|s| s.clip_file("hum"))
+            .map(|f| f.seconds)
+    };
+    assert_eq!(seconds(&r), Some(1.0));
     std::fs::write(
         &wav,
         encode_wav(&sine(220.0, 22_050, 2.0, 1), 1, 22_050, 16, false),
@@ -152,6 +160,7 @@ fn changed_file_content_restarts_and_old_paths_still_work_after_reload() {
     .unwrap();
     r.reconcile(world, 2).unwrap();
     r.step(&ActionMap::default());
+    assert_eq!(seconds(&r), Some(2.0));
     let audio = r.observation().metrics["audio"].clone();
     assert_eq!(audio["clips"]["files"][0]["seconds"], 2.0, "{audio}");
     let inspect = r
@@ -165,6 +174,53 @@ fn changed_file_content_restarts_and_old_paths_still_work_after_reload() {
     assert!(
         inspect["time"].as_f64().unwrap() < 0.05,
         "restarted: {inspect}"
+    );
+}
+
+/// A runtime build whose file is unchanged since it was decoded does not read it again (the
+/// editor builds Play runtimes on its main thread): with the file locked against reading,
+/// the build still succeeds from the cache.
+#[cfg(windows)]
+#[test]
+fn an_unchanged_decoded_file_is_not_read_again_by_the_next_build() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = pack("unread", json!({"hum":{"file":{"path":"sounds/hum.wav"}}}));
+    std::fs::write(
+        root.join("sounds/hum.wav"),
+        encode_wav(&sine(130.0, 22_050, 0.7, 1), 1, 22_050, 16, false),
+    )
+    .unwrap();
+    let world = load(&root).unwrap();
+    WorldRuntime::new(world.clone(), 1, installed_registry()).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(root.join("sounds/hum.wav"))
+        .unwrap();
+    assert!(
+        std::fs::read(root.join("sounds/hum.wav")).is_err(),
+        "locked"
+    );
+    let r = WorldRuntime::new(world, 2, installed_registry()).unwrap();
+    assert_eq!(
+        r.observation().metrics["audio"]["clips"]["files"][0]["seconds"],
+        0.7
+    );
+    drop(lock);
+}
+
+#[test]
+fn an_over_budget_clip_count_fails_before_any_file_is_read() {
+    // Every clip names a missing file: reading any of them would fail with "not found", so
+    // a budget error proves the count was checked first.
+    let clips: serde_json::Map<String, Value> = (0..=axiom_core::audio::MAX_LIBRARY_CLIPS)
+        .map(|k| (format!("c{k}"), json!({"file":{"path":"sounds/none.wav"}})))
+        .collect();
+    let root = pack("too-many", Value::Object(clips));
+    let e = message(&load(&root).unwrap_err());
+    assert!(
+        e.starts_with("/resources/audio.library/clips ") && e.contains("clip budget"),
+        "{e}"
     );
 }
 

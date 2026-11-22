@@ -831,6 +831,82 @@ fn gamepad_bindings_are_alternates_of_existing_actions() {
 }
 
 #[test]
+fn duplicate_actions_and_unmatchable_keys_fail_validation_with_their_path() {
+    let mut store = store();
+    let apply = |store: &mut Store, bindings: Value| {
+        store
+            .execute(Request::Apply {
+                expected_rev: None,
+                edits: vec![Edit::Core(CoreEdit::SetResource {
+                    id: "input.bindings".into(),
+                    value: bindings,
+                })],
+            })
+            .map(drop)
+            .map_err(|e| error_response(&e)["diagnostics"][0].clone())
+    };
+    // The same action as a button and an axis.
+    let e = apply(
+        &mut store,
+        json!({"axes":{"move":{"positive":"KeyD","negative":"KeyA"}},"buttons":{"move":"Space"}}),
+    )
+    .unwrap_err();
+    assert_eq!(e["code"], "action_kind", "{e}");
+    assert_eq!(e["path"], "/resources/input.bindings/buttons/move", "{e}");
+    assert!(e["message"].as_str().unwrap().contains("/axes/move"), "{e}");
+    // Keys the host never produces: a pad input in a keyboard field, an invented name.
+    let e = apply(&mut store, json!({"buttons":{"jump":"PadA"}})).unwrap_err();
+    assert_eq!(e["path"], "/resources/input.bindings/buttons/jump", "{e}");
+    assert!(e["message"].as_str().unwrap().contains("input pad"), "{e}");
+    let e = apply(
+        &mut store,
+        json!({"axes":{"x":{"positive":"KeyD","negative":"Banana7"}}}),
+    )
+    .unwrap_err();
+    assert_eq!(
+        e["path"], "/resources/input.bindings/axes/x/negative",
+        "{e}"
+    );
+    for key in [
+        "KeyW",
+        "Space",
+        "F24",
+        "NumpadEnter",
+        "MouseLeft",
+        "WheelUp",
+    ] {
+        apply(&mut store, json!({"buttons":{"a":key}})).unwrap();
+    }
+    let w = store.current().unwrap().1;
+    assert!(ops::edit_input(
+        &w,
+        &InputEdit::Button {
+            action: "a".into(),
+            key: "Banana7".into()
+        }
+    )
+    .is_err());
+    // An older revision that holds both: one remove clears both entries.
+    let mut old = World::empty("dup");
+    old.resources.insert(
+        "input.bindings".into(),
+        json!({"axes":{"move":{"positive":"KeyD","negative":"KeyA"}},"buttons":{"move":"Space","jump":"KeyJ"}}),
+    );
+    let edits = ops::edit_input(
+        &old,
+        &InputEdit::Remove {
+            action: "move".into(),
+        },
+    )
+    .unwrap();
+    let written = serde_json::to_string(&edits).unwrap();
+    assert!(
+        written.contains(r#""axes":{}"#) && written.contains(r#""buttons":{"jump":"KeyJ"}"#),
+        "{written}"
+    );
+}
+
+#[test]
 fn old_bindings_round_trip_unchanged_and_bad_gamepad_maps_fail_validation() {
     let raw = json!({"axes":{"move_x":{"positive":"KeyD","negative":"KeyA"}},"buttons":{"jump":"Space"},"capture_pointer":true});
     let b: axiom_core::InputBindings = serde_json::from_value(raw.clone()).unwrap();

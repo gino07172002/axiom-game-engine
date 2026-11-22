@@ -349,6 +349,46 @@ fn one_shots_stop_at_the_clip_end_and_loops_wrap() {
 }
 
 #[test]
+fn a_one_shot_that_ends_within_one_frame_still_reaches_the_mixer() {
+    // 0.01 s at pitch 4 ends on the step after its start: two fixed steps in one frame leave
+    // no voice in the block the host publishes, so the start must arrive as a shot.
+    let mut w = world(json!([source(
+        "blip",
+        [1.0, 0.0, 0.0],
+        json!({"clip":"blip","loop":false,"autoplay":false,"pitch":4.0})
+    )]));
+    w.resources.get_mut("audio.library").unwrap()["clips"]["blip"] =
+        json!({"frequency":440,"seconds":0.01,"attack":0,"release":0});
+    let mut r = runtime(w);
+    steps(&mut r, 1);
+    call(&mut r, "play", json!({"id":"blip"})).unwrap();
+    steps(&mut r, 2);
+    let s = inspect(&mut r, "blip");
+    assert_eq!(
+        (s["playing"].clone(), s["voice"].clone()),
+        (json!(false), Value::Null)
+    );
+    assert_eq!(summary(&r)["finished"], 1);
+    let sys = r
+        .system::<axiom_runtime::spatial_audio::AudioSpatialSystem>()
+        .unwrap();
+    assert!(sys.voices().iter().all(|v| !v.active()), "no voice left");
+    let shots: Vec<VoiceParams> = sys.shots(0).map(|(_, p)| *p).collect();
+    assert_eq!(shots.len(), 1, "{shots:?}");
+    assert_eq!(sys.shots(1).count(), 0, "the cursor skips delivered shots");
+    // What the host delivers: the latest (silent) block and the shot.
+    let mut mixer = Mixer::default();
+    mixer.set_clips(sys.clip_table().clone());
+    mixer.set_params(sys.voices());
+    mixer.play_shot(&shots[0]);
+    let mut out = vec![0i16; 2 * 256];
+    mixer.render(&mut out);
+    assert!(out.iter().any(|&x| x != 0), "the one-shot sounds");
+    assert_eq!(mixer.stats.shots_started, 1);
+    assert_eq!(summary(&r)["shots"], 1);
+}
+
+#[test]
 fn rules_bindings_and_tween_finish_play_sounds() {
     let mut w = world(json!([
         {"id":"door","components":{"core.transform":{},

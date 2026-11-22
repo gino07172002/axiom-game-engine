@@ -3,7 +3,8 @@
 //! `input.bindings.gamepad` binds to actions ([`crate::ActionMap::from_input`]).
 //!
 //! `XInputGetState` on an empty slot is slow (it searches for the device), so only connected
-//! slots are read every frame; empty ones are probed once per [`PROBE_INTERVAL`]. A controller
+//! slots are read every frame; empty ones are probed once per [`PROBE_INTERVAL`], at most one
+//! per frame (round robin), so a frame never waits on several empty slots. A controller
 //! that disappears reads as disconnected on the next poll (its levels drop to 0). Headless
 //! runs, tests and the editor's automated hosts never poll: their pad state is empty unless a
 //! scenario injects one.
@@ -163,6 +164,10 @@ pub struct Gamepads {
     pads: Pads,
     /// When each empty slot is probed next.
     probe: [Option<Instant>; PADS],
+    /// Where the round robin of empty-slot probes continues.
+    next_probe: usize,
+    /// Empty-slot probes made (at most one per poll).
+    probes: u64,
     polls: u64,
     poll_us_max: u64,
     poll_us_last: u64,
@@ -177,6 +182,8 @@ impl Gamepads {
             enabled: enabled && cfg!(windows),
             pads: Pads::default(),
             probe: [None; PADS],
+            next_probe: 0,
+            probes: 0,
             polls: 0,
             poll_us_max: 0,
             poll_us_last: 0,
@@ -191,25 +198,40 @@ impl Gamepads {
             return &self.pads;
         }
         let started = Instant::now();
-        for slot in 0..PADS {
-            let connected = self.pads.0[slot].is_some();
-            if !connected && self.probe[slot].is_some_and(|at| started < at) {
-                continue;
-            }
-            let read = read_slot(slot as u32);
-            match (connected, read.is_some()) {
-                (false, true) => self.plugged += 1,
-                (true, false) => self.unplugged += 1,
-                _ => {}
-            }
-            self.pads.0[slot] = read;
-            self.probe[slot] = read.is_none().then(|| started + PROBE_INTERVAL);
-        }
+        self.poll_with(started, read_slot);
         let us = started.elapsed().as_micros() as u64;
         self.polls += 1;
         self.poll_us_last = us;
         self.poll_us_max = self.poll_us_max.max(us);
         &self.pads
+    }
+
+    /// One poll at `now` through `read`: connected slots are read every time; at most one due
+    /// empty slot is probed (round robin), so the slow empty-slot queries are spread over
+    /// frames instead of all landing in the first frame and then every [`PROBE_INTERVAL`].
+    fn poll_with(&mut self, now: Instant, mut read: impl FnMut(u32) -> Option<PadState>) {
+        let first = self.next_probe;
+        let mut probed = false;
+        for k in 0..PADS {
+            let slot = (first + k) % PADS;
+            let connected = self.pads.0[slot].is_some();
+            if !connected {
+                if probed || self.probe[slot].is_some_and(|at| now < at) {
+                    continue;
+                }
+                probed = true;
+                self.probes += 1;
+                self.next_probe = (slot + 1) % PADS;
+            }
+            let state = read(slot as u32);
+            match (connected, state.is_some()) {
+                (false, true) => self.plugged += 1,
+                (true, false) => self.unplugged += 1,
+                _ => {}
+            }
+            self.pads.0[slot] = state;
+            self.probe[slot] = state.is_none().then(|| now + PROBE_INTERVAL);
+        }
     }
 
     /// Whether this host reads hardware (the native window on Windows).
@@ -220,7 +242,7 @@ impl Gamepads {
     pub fn observation(&self) -> Value {
         json!({"backend": if self.enabled {"xinput"} else {"disabled"},
             "connected": self.pads.0.iter().map(Option::is_some).collect::<Vec<_>>(),
-            "polls": self.polls, "poll_us_last": self.poll_us_last, "poll_us_max": self.poll_us_max,
+            "polls": self.polls, "probes": self.probes, "poll_us_last": self.poll_us_last, "poll_us_max": self.poll_us_max,
             "plugged": self.plugged, "unplugged": self.unplugged,
             "probe_interval_ms": PROBE_INTERVAL.as_millis() as u64})
     }
@@ -311,6 +333,49 @@ mod tests {
         assert!(bad(json!({"left_stick":[2.0,0.0]})).contains("-1..1"));
         assert!(bad(json!({"left_trigger":-0.5})).contains("0..1"));
         assert!(bad(json!({"rumble":1})).contains("unknown field"));
+    }
+
+    #[test]
+    fn empty_slots_are_probed_one_per_poll_and_connected_ones_every_poll() {
+        let mut g = Gamepads::new(false);
+        let t0 = Instant::now();
+        let pad = PadState {
+            buttons: 0x1000,
+            ..Default::default()
+        };
+        // Slot 2 holds a controller; the reader records every slot it is asked for.
+        let mut calls = vec![];
+        let poll = |g: &mut Gamepads, at: Instant, calls: &mut Vec<Vec<u32>>| {
+            let mut asked = vec![];
+            g.poll_with(at, |slot| {
+                asked.push(slot);
+                (slot == 2).then_some(pad)
+            });
+            calls.push(asked);
+        };
+        for frame in 0..6 {
+            poll(&mut g, t0 + Duration::from_millis(16 * frame), &mut calls);
+        }
+        // Frames 0..2 find the pad on slot 2 in the third probe; afterwards it is read every
+        // frame, and the remaining empty slots (3) take one probe each.
+        assert_eq!(
+            calls,
+            vec![vec![0], vec![1], vec![2], vec![3, 2], vec![2], vec![2]]
+        );
+        assert!(calls
+            .iter()
+            .all(|c| c.iter().filter(|&&s| s != 2).count() <= 1));
+        assert_eq!((g.pads.connected(), g.plugged, g.probes), (1, 1, 4));
+        // A second later the empty slots are due again, still one per poll.
+        calls.clear();
+        for frame in 0..4 {
+            poll(
+                &mut g,
+                t0 + PROBE_INTERVAL + Duration::from_millis(100 + 16 * frame),
+                &mut calls,
+            );
+        }
+        assert_eq!(calls, vec![vec![0, 2], vec![1, 2], vec![2, 3], vec![2]]);
     }
 
     #[test]

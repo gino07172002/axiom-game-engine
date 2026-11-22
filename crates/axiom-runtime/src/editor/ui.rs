@@ -1183,7 +1183,7 @@ impl Editor {
         let audio = self.selected.as_deref().and_then(|id| self.audio_clips(id));
         let audio_file = audio
             .as_ref()
-            .and_then(|(_, current)| self.audio_file_caption(current));
+            .and_then(|(_, current)| self.audio_file_caption(current, runtime));
         let mut audio_clip: Option<String> = None;
         self.refresh_tag_cache();
         self.refresh_mixed();
