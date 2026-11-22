@@ -408,7 +408,9 @@ pub(crate) fn membership(world: &mut World, scene: &str, entity: &str, member: b
     Ok(())
 }
 
-pub(crate) fn delete(world: &mut World, id: &str) -> Result<()> {
+/// Deletes one entity with its relations and scene memberships (`delete_entity`). Genre
+/// compatibility edits reuse it so every entry point cleans up the same references.
+pub fn delete(world: &mut World, id: &str) -> Result<()> {
     ensure!(world.entity(id).is_some(), "entity not found {id}");
     // Keep child objects and their local transforms. The batch validator checks typed references.
     world.entities.retain(|e| e.id != id);

@@ -226,3 +226,23 @@ fn scenario_rejects_unknown_actions_and_failed_assertions() {
     let scenario:scenario::Scenario=serde_json::from_value(json!({"ticks":1,"assertions":[{"kind":"position","entity":"box","axis":0,"min":9,"max":10}]})).unwrap();
     assert!(scenario::run(motion_world(), 1, RuntimeRegistry::core(), scenario).is_err());
 }
+#[test]
+fn switching_to_another_fps_world_starts_a_fresh_round() {
+    let w = axiom_fps::demo_world().unwrap();
+    let mut r = WorldRuntime::new(w.clone(), 1, axiom_runtime::installed_registry()).unwrap();
+    let mut fire = ActionMap::default();
+    fire.0.insert("fire".into(), 1.0);
+    for _ in 0..4 {
+        r.step(&fire);
+    }
+    let shots = r.observation().metrics["shots"].clone();
+    assert!(shots.as_u64().unwrap() > 0, "{shots}");
+    // Same world, new revision: the round continues.
+    r.reconcile(w.clone(), 2).unwrap();
+    assert_eq!(r.observation().metrics["shots"], shots);
+    // Another world that reuses the sentinel IDs: a new round.
+    let mut other = w;
+    other.id = "other-arena".into();
+    r.reconcile(other, 3).unwrap();
+    assert_eq!(r.observation().metrics["shots"], 0);
+}

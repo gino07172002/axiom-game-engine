@@ -19,6 +19,7 @@ pub fn analyze(world: &World, budget: usize) -> Result<Value> {
     let mut endings = std::collections::BTreeMap::new();
     let mut explored = 0;
     let mut complete = true;
+    let mut skipped = BTreeSet::new();
     let mut state_bytes = 0usize;
     let mut queued_bytes = serde_json::to_vec(&pending[0].0.progress())?.len();
     while let Some((g, tick, path)) = pending.pop_front() {
@@ -56,8 +57,17 @@ pub fn analyze(world: &World, budget: usize) -> Result<Value> {
             })
             .collect::<Vec<_>>();
         for w in &g.compiled.widgets {
-            if let BoundWidget::Button(_, _, command, condition) = w {
+            if let BoundWidget::Button(id, _, command, condition) = w {
                 if g.test(condition) && !matches!(command, RuntimeCommand::Locale { .. }) {
+                    // Native capability calls need WorldRuntime systems this analysis does
+                    // not run: report the branch as unexplored instead of failing.
+                    if let Some(call) = native_call(command) {
+                        complete = false;
+                        if skipped.len() < MAX_SKIPPED {
+                            skipped.insert((id.clone(), call));
+                        }
+                        continue;
+                    }
                     commands.push(command.clone());
                 }
             }
@@ -111,7 +121,23 @@ pub fn analyze(world: &World, budget: usize) -> Result<Value> {
             pending.push_back((next, due, path));
         }
     }
+    let skipped = skipped
+        .into_iter()
+        .map(|(widget, call)| json!({"widget":widget,"call":call}))
+        .collect::<Vec<_>>();
     Ok(
-        json!({"ok":true,"complete":complete,"explored_states":explored,"budget":budget,"reachable_endings":endings,"scope":"authored choices, UI button commands and delayed events; external event sources excluded"}),
+        json!({"ok":true,"complete":complete,"explored_states":explored,"budget":budget,"reachable_endings":endings,"skipped_native_buttons":skipped,"scope":"authored choices, UI button commands and delayed events; external event sources and native capability calls excluded"}),
     )
+}
+/// Distinct (widget, call) pairs reported as skipped.
+const MAX_SKIPPED: usize = 64;
+/// `capability.action` of the first native call `command` would run (alone or in a batch).
+fn native_call(command: &RuntimeCommand) -> Option<String> {
+    match command {
+        RuntimeCommand::Call {
+            capability, action, ..
+        } => Some(format!("{capability}.{action}")),
+        RuntimeCommand::Batch { commands } => commands.iter().find_map(native_call),
+        _ => None,
+    }
 }

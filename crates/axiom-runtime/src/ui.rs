@@ -8,11 +8,12 @@ pub struct UiState {
     /// Current logical widget targets, usable by accessibility and native UI tests.
     pub targets: std::collections::BTreeMap<String, egui::Rect>,
     pub textures: std::collections::BTreeMap<String, egui::TextureHandle>,
-    pub numeric_drafts: std::collections::BTreeMap<String, f64>,
-    /// `ui.document` sliders: the value while a drag is held (sent once on release) and the
-    /// last value sent by sliders without a variable (shown until the next change).
+    /// Showcase parameter sliders: (draft value, revision the edit started from). The commit
+    /// sends that revision as `expected_rev`, so a concurrent change to it conflicts.
+    pub numeric_drafts: std::collections::BTreeMap<String, (f64, i64)>,
+    /// `ui.document` sliders: the value while a drag is held (sent once on release). The
+    /// committed value lives in the runtime (`Gameplay::slider_value`).
     pub slider_drafts: std::collections::BTreeMap<String, f64>,
-    pub slider_values: std::collections::BTreeMap<String, f64>,
     pub playing: bool,
     pub console: bool,
     /// Shipped-game chrome (`RunMode::Play { player: Some(_) }`): no developer bar or console.

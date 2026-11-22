@@ -237,3 +237,109 @@ fn unit_inspection_is_paged_and_projected() {
     assert_eq!(first["next_offset"], 2);
     assert_eq!(first["units"][0].as_object().unwrap().len(), 1);
 }
+fn compiled(w: &World) -> CompiledWorld {
+    let mut registry = Registry::core();
+    register(&mut registry);
+    w.compile(&registry).unwrap()
+}
+#[test]
+fn shared_obstacles_merge_with_duplicate_authored_cells_without_exceeding_the_cell_budget() {
+    let (mut s, templates) = setup();
+    let grid = s.session.grid.clone();
+    // Legal on its own: duplicates of one cell up to the list budget.
+    s.session.grid.blocked = vec![[0, 0]; 16384];
+    nav::Grid::new(s.session.grid.clone()).unwrap();
+    let mut scene = axiom_combat::Scene::new(axiom_combat::Config {
+        bounds: axiom_combat::Rect {
+            min: [-1000.0, -1000.0],
+            max: [1000.0, 1000.0],
+        },
+        obstacles: vec![axiom_combat::Rect {
+            min: [-999.0, -999.0],
+            max: [999.0, 999.0],
+        }],
+    });
+    s.set_combat(Some(scene.clone()));
+    assert!(s.last_error.is_none(), "{:?}", s.last_error);
+    assert!(!s.grid.walkable([1, 1]) && !s.grid.walkable([0, 0]));
+    // A real shared layout keeps the authored cells and adds the covered ones.
+    s.session.grid = grid.clone();
+    scene.config.obstacles = vec![axiom_combat::Rect {
+        min: [grid.origin[0], grid.origin[1]],
+        max: [
+            grid.origin[0] + grid.cell_size,
+            grid.origin[1] + grid.cell_size,
+        ],
+    }];
+    s.set_combat(Some(scene));
+    assert!(!s.grid.walkable([0, 0]));
+    for c in &grid.blocked {
+        assert!(!s.grid.walkable(*c));
+    }
+    s.step(&templates);
+}
+#[test]
+fn starting_balance_plus_world_minerals_must_fit_and_delivery_never_wraps() {
+    let mut w = content::demo_world(64).unwrap();
+    let mut registry = Registry::core();
+    register(&mut registry);
+    w.resources.get_mut("rts.session").unwrap()["initial_balance"] = json!([u32::MAX, 0]);
+    let e = format!("{:#}", registry.validate_world(&w).unwrap_err());
+    assert!(e.contains("initial_balance"), "{e}");
+    // A balance raised to the limit (e.g. by a reload) stops delivery instead of wrapping.
+    let (mut s, templates) = setup();
+    let top = u32::MAX - 1;
+    s.initial_economy += u64::from(top - s.balance[0]);
+    s.balance[0] = top;
+    s.gather(TargetArgs {
+        units: Some(vec!["unit/0/0".into()]),
+        target: "mineral/0".into(),
+        engage: false,
+    })
+    .unwrap();
+    for _ in 0..3600 {
+        s.step(&templates);
+        s.validate().unwrap();
+    }
+    assert_eq!(s.balance[0], top);
+    assert_eq!(s.stats.delivered, 0);
+    assert!(s.units[0].carried > 0);
+}
+#[test]
+fn hot_reload_adjusts_the_conservation_baseline_for_added_and_removed_nodes() {
+    let w = content::demo_world(64).unwrap();
+    let (_, templates) = setup();
+    let mut old = Simulation::new(&compiled(&w)).unwrap();
+    old.gather(TargetArgs {
+        units: Some(vec!["unit/0/0".into(), "unit/0/1".into()]),
+        target: "mineral/0".into(),
+        engage: false,
+    })
+    .unwrap();
+    for _ in 0..900 {
+        old.step(&templates);
+    }
+    old.validate().unwrap();
+    assert!(old.stats.harvested > 0);
+    let mut edited = w.clone();
+    let mut extra = edited.entity("mineral/0").unwrap().clone();
+    extra.id = "mineral/extra".into();
+    extra.components.get_mut("core.transform").unwrap()["position"][0] = json!(3.5);
+    extra.components.get_mut("rts.resource").unwrap()["amount"] = json!(77);
+    edited.entities.retain(|e| e.id != "mineral/1");
+    edited.entities.push(extra);
+    let mut next = Simulation::new(&compiled(&edited)).unwrap();
+    next.restore(&old).unwrap();
+    next.validate().unwrap();
+    let removed = old
+        .resources
+        .iter()
+        .find(|r| r.id == "mineral/1")
+        .unwrap()
+        .remaining as u64;
+    assert_eq!(next.initial_economy, old.initial_economy + 77 - removed);
+    for _ in 0..600 {
+        next.step(&templates);
+        next.validate().unwrap();
+    }
+}

@@ -145,6 +145,8 @@ pub struct Simulation {
     pub victory: bool,
     pub defeated: bool,
     pub initial_economy: u64,
+    /// Minerals each faction delivered during the last `step` (gross, before spending).
+    pub delivered_tick: [u32; 2],
     pub spawned: Vec<String>,
     nav_queue: VecDeque<NavJob>,
     cache: VecDeque<CachedPath>,
@@ -197,6 +199,7 @@ impl Simulation {
             victory: false,
             defeated: false,
             initial_economy: 0,
+            delivered_tick: [0; 2],
             spawned: vec![],
             nav_queue: VecDeque::new(),
             cache: VecDeque::new(),
@@ -666,7 +669,18 @@ impl Simulation {
                             if dist(p, bp) <= DELIVER_REACH {
                                 let amount = self.units[i].carried;
                                 let faction = self.units[i].def.faction as usize;
-                                self.balance[faction] += amount;
+                                // World validation bounds start balance plus all minerals;
+                                // a hot reload can still raise it, so never wrap.
+                                let Some(balance) = self.balance[faction].checked_add(amount)
+                                else {
+                                    self.last_error = Some("balance_overflow".into());
+                                    self.units[i].order = Order::Idle;
+                                    self.clear_path(i);
+                                    continue;
+                                };
+                                self.balance[faction] = balance;
+                                self.delivered_tick[faction] =
+                                    self.delivered_tick[faction].saturating_add(amount);
                                 self.stats.delivered += amount as u64;
                                 self.units[i].carried = 0;
                                 self.clear_path(i);
@@ -1345,6 +1359,7 @@ impl Simulation {
         }
     }
     pub fn step(&mut self, templates: &BTreeMap<String, (UnitDef, f32)>) {
+        self.delivered_tick = [0; 2];
         self.tick += 1;
         for u in &mut self.units {
             u.cooldown = u.cooldown.saturating_sub(1);
@@ -1366,9 +1381,18 @@ impl Simulation {
                 .as_ref()
                 .is_none_or(|old| old.config != scene.config)
             {
+                // One mask slot per cell: authored duplicates and shared obstacles merge, so
+                // the list never exceeds width * height (the grid's own cell budget).
                 let mut config = self.session.grid.clone();
-                for z in 0..config.height as i32 {
-                    for x in 0..config.width as i32 {
+                let (width, height) = (config.width as i32, config.height as i32);
+                let mut mask = vec![false; (config.width * config.height) as usize];
+                for c in &config.blocked {
+                    if (0..width).contains(&c[0]) && (0..height).contains(&c[1]) {
+                        mask[(c[1] * width + c[0]) as usize] = true;
+                    }
+                }
+                for z in 0..height {
+                    for x in 0..width {
                         let center = Vec2::new(
                             config.origin[0] + (x as f32 + 0.5) * config.cell_size,
                             config.origin[1] + (z as f32 + 0.5) * config.cell_size,
@@ -1378,14 +1402,22 @@ impl Simulation {
                             .obstacles
                             .iter()
                             .any(|o| !o.clear(center, config.cell_size * 0.49))
-                            && !config.blocked.contains(&[x, z])
                         {
-                            config.blocked.push([x, z]);
+                            mask[(z * width + x) as usize] = true;
                         }
                     }
                 }
-                self.grid = nav::Grid::new(config).expect("validated shared navigation grid");
-                self.cache.clear();
+                config.blocked = (0..height)
+                    .flat_map(|z| (0..width).map(move |x| [x, z]))
+                    .filter(|c| mask[(c[1] * width + c[0]) as usize])
+                    .collect();
+                match nav::Grid::new(config) {
+                    Ok(grid) => {
+                        self.grid = grid;
+                        self.cache.clear();
+                    }
+                    Err(e) => self.last_error = Some(format!("shared_navigation_grid:{e:#}")),
+                }
             }
         }
         self.combat = scene;
@@ -1527,6 +1559,9 @@ impl Simulation {
                 );
             }
         }
+        self.check_conservation()
+    }
+    fn check_conservation(&self) -> Result<()> {
         let total = self.balance.iter().map(|v| *v as u64).sum::<u64>()
             + self
                 .resources
@@ -1616,8 +1651,30 @@ impl Simulation {
                 resource.remaining = previous.remaining;
             }
         }
+        // The conservation baseline follows the edit: new nodes bring their stock, removed
+        // nodes and removed authored units take theirs (remaining / carried) with them.
+        let added = self
+            .resources
+            .iter()
+            .filter(|r| !old.resources.iter().any(|o| o.id == r.id))
+            .map(|r| u64::from(r.remaining))
+            .sum::<u64>();
+        let removed = old
+            .resources
+            .iter()
+            .filter(|o| !self.resources.iter().any(|r| r.id == o.id))
+            .map(|o| u64::from(o.remaining))
+            .sum::<u64>()
+            + old
+                .units
+                .iter()
+                .filter(|o| !self.units.iter().any(|u| u.id == o.id))
+                .map(|o| u64::from(o.carried))
+                .sum::<u64>();
         self.balance = old.balance;
-        self.initial_economy = old.initial_economy;
+        self.initial_economy = (old.initial_economy + added)
+            .checked_sub(removed)
+            .context("RTS economy baseline underflow")?;
         self.stats = old.stats.clone();
         self.ai = old.ai.clone();
         self.tick = old.tick;
@@ -1636,7 +1693,7 @@ impl Simulation {
                 self.request_path(i, goal);
             }
         }
-        Ok(())
+        self.check_conservation()
     }
 }
 /// Workers mine from any cell within this distance of a crystal node.

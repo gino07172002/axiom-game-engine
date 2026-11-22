@@ -573,3 +573,49 @@ fn review_fixes_camera_dry_run_integer_sliders_and_unreachable_cycles() {
     );
     assert!(e.contains("never be reached"), "{e}");
 }
+
+#[test]
+fn a_slider_without_a_variable_keeps_its_committed_value_in_the_runtime() {
+    let mut w = lab();
+    let doc = w.resources.get_mut("ui.document").unwrap();
+    let speed = doc["widgets"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["id"] == "speed")
+        .unwrap();
+    speed.as_object_mut().unwrap().remove("variable");
+    speed["value"] = json!(1.0);
+    let mut r = runtime(w.clone());
+    run(&mut r, 2);
+    let bound = |r: &WorldRuntime| r.observation().metrics["gameplay"]["bindings"]["speed"].clone();
+    assert_eq!(bound(&r), 1.0);
+    let reply = r
+        .command(&RuntimeCommand::Slide {
+            widget: "speed".into(),
+            value: 1.6,
+        })
+        .unwrap();
+    assert_eq!(reply["result"]["speed"], 1.5, "{reply}");
+    assert_eq!(bound(&r), 1.5);
+    // Kept by a data reload and drawn by the GUI from the runtime.
+    r.reconcile(w.clone(), 2).unwrap();
+    assert_eq!(bound(&r), 1.5);
+    // A refused call commits nothing.
+    let doc = w.resources.get_mut("ui.document").unwrap();
+    let speed = doc["widgets"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["id"] == "speed")
+        .unwrap();
+    speed["command"]["args"]["entity"] = json!("stage/floor");
+    let mut r = runtime(w);
+    assert!(r
+        .command(&RuntimeCommand::Slide {
+            widget: "speed".into(),
+            value: 0.5,
+        })
+        .is_err());
+    assert_eq!(bound(&r), 1.0);
+}

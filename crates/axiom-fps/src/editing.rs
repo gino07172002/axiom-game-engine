@@ -23,6 +23,21 @@ pub const PATHS: &[&str] = &[
     "enemies.damage",
     "behavior.attack_interval",
 ];
+/// The object value of `component` on entity `id` (created when absent). An earlier edit of
+/// the same batch may have stored a non-object there: that is a recoverable error.
+fn component_object<'a>(
+    w: &'a mut World,
+    id: &str,
+    component: &str,
+) -> Result<&'a mut serde_json::Map<String, Value>> {
+    w.entity_mut(id)
+        .with_context(|| format!("entity not found {id}"))?
+        .components
+        .entry(component.to_owned())
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .with_context(|| format!("/entities/{id}/components/{component} must be an object"))
+}
 pub fn handle(w: &mut World, kind: &str, args: &Value) -> Result<bool> {
     if !w.capabilities.contains_key("fps") && kind != "make_arena" {
         return Ok(false);
@@ -57,8 +72,9 @@ pub fn handle(w: &mut World, kind: &str, args: &Value) -> Result<bool> {
                         .map(|e| e.id.clone())
                         .collect::<Vec<_>>();
                     if updated.enemies.count < current.len() {
-                        let removed = &current[updated.enemies.count..];
-                        w.entities.retain(|e| !removed.contains(&e.id));
+                        for id in &current[updated.enemies.count..] {
+                            axiom_core::scene_edit::delete(w, id)?;
+                        }
                     } else {
                         let mut next = 0;
                         for _ in current.len()..updated.enemies.count {
@@ -74,61 +90,60 @@ pub fn handle(w: &mut World, kind: &str, args: &Value) -> Result<bool> {
                 }
                 "enemies.health" | "enemies.speed" | "enemies.damage" => {
                     let field = path.strip_prefix("enemies.").unwrap();
-                    for e in &mut w.entities {
-                        if resolved
-                            .entity(&e.id)
-                            .is_some_and(|e| e.components.contains_key("fps.sentinel"))
-                        {
-                            if field == "health" {
-                                e.set(
+                    let sentinels = resolved
+                        .entities
+                        .iter()
+                        .filter(|e| e.components.contains_key("fps.sentinel"))
+                        .map(|e| e.id.clone())
+                        .collect::<Vec<_>>();
+                    for id in &sentinels {
+                        if field == "health" {
+                            w.entity_mut(id)
+                                .with_context(|| format!("entity not found {id}"))?
+                                .set(
                                     "core.health",
                                     Health {
                                         value: updated.enemies.health,
                                         max: updated.enemies.health,
                                     },
                                 )?;
-                            } else {
-                                e.components
-                                    .entry("fps.sentinel".into())
-                                    .or_insert_with(|| json!({}))[field] = value.clone();
-                            }
+                        } else {
+                            component_object(w, id, "fps.sentinel")?
+                                .insert(field.into(), value.clone());
                         }
                     }
                     w.resources
                         .insert("fps.defaults".into(), json!(updated.enemies));
                 }
                 "player.spawn" => {
-                    w.entity_mut(&session.player)
-                        .unwrap()
-                        .components
-                        .entry("core.transform".into())
-                        .or_insert_with(|| json!({}))["position"] = value;
+                    component_object(w, &session.player, "core.transform")?
+                        .insert("position".into(), value);
                 }
                 "player.health" => {
-                    w.entity_mut(&session.player).unwrap().set(
-                        "core.health",
-                        Health {
-                            value: updated.player.health,
-                            max: updated.player.health,
-                        },
-                    )?;
+                    w.entity_mut(&session.player)
+                        .context("missing FPS player")?
+                        .set(
+                            "core.health",
+                            Health {
+                                value: updated.player.health,
+                                max: updated.player.health,
+                            },
+                        )?;
                 }
                 p if p.starts_with("player.") => {
-                    w.entity_mut(&session.player)
-                        .unwrap()
-                        .components
-                        .entry("fps.controller".into())
-                        .or_insert_with(|| json!({}))[p.strip_prefix("player.").unwrap()] = value;
+                    component_object(w, &session.player, "fps.controller")?
+                        .insert(p.strip_prefix("player.").unwrap().into(), value);
                 }
                 p if p.starts_with("weapon.") => {
-                    w.entity_mut(&session.player)
-                        .unwrap()
-                        .components
-                        .entry("fps.weapon".into())
-                        .or_insert_with(|| json!({}))[p.strip_prefix("weapon.").unwrap()] = value;
+                    component_object(w, &session.player, "fps.weapon")?
+                        .insert(p.strip_prefix("weapon.").unwrap().into(), value);
                 }
                 "behavior.attack_interval" => {
-                    w.resources.get_mut("fps.behavior").unwrap()["attack_interval"] = value;
+                    w.resources
+                        .get_mut("fps.behavior")
+                        .and_then(Value::as_object_mut)
+                        .context("/resources/fps.behavior must be an object")?
+                        .insert("attack_interval".into(), value);
                 }
                 p if p.starts_with("arena.") => {
                     w.resources.insert("fps.arena".into(), json!(updated.arena));
@@ -172,15 +187,23 @@ pub fn handle(w: &mut World, kind: &str, args: &Value) -> Result<bool> {
                 id: String,
             }
             let a: Remove = serde_json::from_value(args.clone())?;
-            let before = w.entities.len();
-            w.entities.retain(|e| {
-                e.components
-                    .get("fps.cover")
-                    .and_then(|v| v.get("id"))
-                    .and_then(Value::as_str)
-                    != Some(&a.id)
-            });
-            ensure!(before != w.entities.len(), "obstacle not found");
+            // Resolved components: a prefab may supply `fps.cover`.
+            let covers = content::resolve_prefabs(w)?
+                .entities
+                .iter()
+                .filter(|e| {
+                    e.components
+                        .get("fps.cover")
+                        .and_then(|v| v.get("id"))
+                        .and_then(Value::as_str)
+                        == Some(&a.id)
+                })
+                .map(|e| e.id.clone())
+                .collect::<Vec<_>>();
+            ensure!(!covers.is_empty(), "obstacle not found");
+            for id in &covers {
+                axiom_core::scene_edit::delete(w, id)?;
+            }
             Ok(true)
         }
         "put_obstacle" => {

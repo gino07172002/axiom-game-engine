@@ -590,3 +590,96 @@ fn newly_activated_gameplay_rebases_initial_timers_and_node_end_saves() {
     r.step(&ActionMap::default());
     assert_eq!(obs(&r)["variables"]["signal_received"], true);
 }
+#[test]
+fn committed_scene_flags_win_over_runtime_state_on_reload_and_undo() {
+    let mut r = runtime();
+    let enabled =
+        |r: &WorldRuntime, id: &str| r.state.compiled.enabled[r.state.compiled.indices[id]];
+    // A committed scene switch is visible in observe and in extraction.
+    let mut w = world();
+    w.scenes[1].active = true;
+    r.reconcile(w, 2).unwrap();
+    assert_eq!(obs(&r)["active_scenes"], json!(["platform", "workshop"]));
+    assert!(enabled(&r, "workbench") && enabled(&r, "platform"));
+    // Undo appends the old flags as a new revision.
+    r.reconcile(world(), 3).unwrap();
+    assert_eq!(obs(&r)["active_scenes"], json!(["platform"]));
+    assert!(!enabled(&r, "workbench"));
+    // Runtime progress switches scenes; an edit that leaves the flags alone keeps it.
+    choose(&mut r, "arrival", "help");
+    let mut w = world();
+    w.title = "edited".into();
+    r.reconcile(w, 4).unwrap();
+    assert_eq!(obs(&r)["active_scenes"], json!(["workshop"]));
+    assert!(enabled(&r, "workbench") && !enabled(&r, "platform"));
+}
+#[test]
+fn reachability_skips_native_buttons_and_keeps_proven_endings() {
+    let mut w = world();
+    w.resources.get_mut("ui.document").unwrap()["widgets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"button","id":"radio","text":"title","command":{"kind":"call","capability":"audio","action":"play","args":{}}}));
+    let r = axiom_runtime::narrative::analyze(&w, 4096).unwrap();
+    assert_eq!(r["complete"], false);
+    assert_eq!(r["reachable_endings"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        r["skipped_native_buttons"],
+        json!([{"widget":"radio","call":"audio.play"}])
+    );
+    let clean = axiom_runtime::narrative::analyze(&world(), 4096).unwrap();
+    assert_eq!(clean["skipped_native_buttons"], json!([]));
+}
+#[test]
+fn idle_steps_change_nothing_and_rule_scene_switches_still_sync() {
+    let mut w = world();
+    let program = w.resources.get_mut("behavior.program").unwrap();
+    program["events"]["warp"] = json!({"fields":{}});
+    program["events"]["arm"] = json!({"fields":{}});
+    for rule in [
+        json!({"id":"arm","event":"arm","actions":[{"kind":"delay","ticks":5,"event":"warp"}]}),
+        json!({"id":"warp","event":"warp","actions":[{"kind":"scene","scene":"workshop"}]}),
+    ] {
+        program["rules"].as_array_mut().unwrap().push(rule);
+    }
+    let mut r = WorldRuntime::new(w, 1, RuntimeRegistry::core()).unwrap();
+    let enabled =
+        |r: &WorldRuntime, id: &str| r.state.compiled.enabled[r.state.compiled.indices[id]];
+    let before = obs(&r);
+    let visibility = r.state.compiled.enabled.clone();
+    for _ in 0..30 {
+        r.step(&ActionMap::default());
+    }
+    assert_eq!(obs(&r), before);
+    assert_eq!(r.state.compiled.enabled, visibility);
+    // A delayed rule switches scenes inside a fixed step: visibility follows.
+    r.command(&RuntimeCommand::Emit {
+        event: "arm".into(),
+        fields: BTreeMap::new(),
+    })
+    .unwrap();
+    for _ in 0..4 {
+        r.step(&ActionMap::default());
+    }
+    assert!(enabled(&r, "platform") && !enabled(&r, "workbench"));
+    r.step(&ActionMap::default());
+    assert_eq!(obs(&r)["active_scenes"], json!(["workshop"]));
+    assert!(!enabled(&r, "platform") && enabled(&r, "workbench"));
+}
+#[test]
+fn ui_images_are_read_with_one_bounded_read_and_name_the_image() {
+    let dir = std::env::temp_dir().join(format!("axiom-ui-image-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = dir.join("big.png");
+    std::fs::write(&big, vec![0u8; 4_194_305]).unwrap();
+    let mut w = world();
+    w.resources.get_mut("ui.document").unwrap()["images"]["station"] = json!(big.to_string_lossy());
+    let e = format!(
+        "{:#}",
+        WorldRuntime::new(w, 1, RuntimeRegistry::core())
+            .err()
+            .unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(e.contains("station") && e.contains("exceeds"), "{e}");
+}
