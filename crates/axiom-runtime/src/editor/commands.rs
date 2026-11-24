@@ -870,20 +870,21 @@ impl PrefsSaver {
                 }
             }
         }
-        if self.saved.as_ref() == Some(prefs) {
+        // What the file will hold: the running write's value, else what it holds. Changing
+        // back to the saved value while another value is being written keeps it pending, or
+        // that write would win on shutdown (R8 F10).
+        let target = self.job.as_ref().map(|(_, v, _)| v).or(self.saved.as_ref());
+        if target == Some(prefs) {
             self.pending = None;
             return event;
         }
-        let waiting = self.job.as_ref().is_some_and(|(_, v, _)| v == prefs)
-            || self
-                .retry
-                .as_ref()
-                .is_some_and(|(at, _)| std::time::Instant::now() < *at);
+        let waiting = self
+            .retry
+            .as_ref()
+            .is_some_and(|(at, _)| std::time::Instant::now() < *at);
         if self.job.is_some() || waiting {
             // Written once the running write or the retry delay is over (or on shutdown).
-            if self.job.as_ref().is_none_or(|(_, v, _)| v != prefs)
-                && self.pending.as_ref().is_none_or(|(_, p)| p != prefs)
-            {
+            if self.pending.as_ref().is_none_or(|(_, p)| p != prefs) {
                 self.pending = Some((path.to_owned(), prefs.clone()));
             }
             return event;
@@ -2634,6 +2635,38 @@ mod tests {
         assert_eq!(recovered, Ok(()));
         assert!(Prefs::load(&path).snap);
         assert!(!dir.join("w.editor-prefs.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R8 F10 (recheck): saved A, B being written, changed back to A, then the window
+    /// closes: the file ends with A, not with the write that was running.
+    #[test]
+    fn preferences_changed_back_during_a_write_are_saved_on_close() {
+        let dir = std::env::temp_dir().join(format!("axiom-prefs-aba-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.editor-prefs.json");
+        let a = Prefs::default();
+        write_prefs_file(&path, &a).unwrap();
+        let b = Prefs {
+            snap: true,
+            ..Prefs::default()
+        };
+        let mut saver = PrefsSaver::loaded(a.clone());
+        // B's write is running (held until released).
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (file, value) = (path.clone(), b.clone());
+        let job = crate::jobs::Job::spawn("prefs", "B", PREFS_WRITE_TIMEOUT, move |_| {
+            let _ = wait.recv();
+            write_prefs_file(&file, &value)
+        })
+        .unwrap();
+        saver.job = Some((path.clone(), b.clone(), job));
+        // The person changes back to A while B is written.
+        assert!(saver.tick(&path, &a).is_none());
+        drop(release);
+        saver.flush();
+        assert_eq!(Prefs::load(&path), a);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

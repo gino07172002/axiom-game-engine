@@ -52,6 +52,9 @@ pub(crate) struct MergeState {
     /// The built merge, emitted as a write on the next drawn frame.
     pub write: Option<Action>,
     pub error: Option<String>,
+    /// The running draft-merge commit was asked for by an agent (`editor_view`): its write
+    /// is the agent's, even though it is emitted on a later frame (R8 N1).
+    pub by_agent: bool,
 }
 
 impl MergeState {
@@ -277,6 +280,8 @@ impl Editor {
             }
             Some(MergeSource::Draft) => {
                 let [base, mine, theirs] = prepared.worlds.clone().unwrap();
+                // `remote_command` marks an agent's commit once this returns.
+                self.merge.by_agent = false;
                 self.merge.commit = Some(Job::spawn(
                     "merge",
                     "draft commit",
@@ -328,9 +333,9 @@ impl Editor {
                                 self.set_error(format!("{e:#}"));
                             }
                         } else {
-                            self.close_merge();
-                            self.reset_draft();
-                            self.notice("Merged: the newer revision already has every change");
+                            // Another writer may have committed since the last poll: the
+                            // host confirms the database revision first (R8 F2).
+                            self.merge.write = Some(Action::EmptyMerge { rev });
                         }
                     }
                     Outcome::Done {
@@ -367,6 +372,12 @@ impl Editor {
             }
             return;
         }
+        if let Some(Action::EmptyMerge { rev }) = self.merge.write {
+            // Nothing to write: the draft is dropped once the host confirms `rev`.
+            self.merge.write = None;
+            actions.push(Action::EmptyMerge { rev });
+            return;
+        }
         if let Some(write) = self.merge.write.take() {
             // The stale draft is kept until the merge commits: a refused merge brings it
             // back with its base, ready to merge again.
@@ -381,12 +392,41 @@ impl Editor {
             {
                 self.track_submitted(draft, base, edits);
             }
-            actions.push(write);
+            actions.push(if self.merge.by_agent {
+                Action::ByAgent(Box::new(write))
+            } else {
+                write
+            });
             self.close_merge();
             // The stale draft is replaced by the merge (also when the live Inspector would
             // otherwise keep a dirty draft across the commit).
             self.reset_draft();
             self.notice("Merged draft committed as one revision");
+        }
+    }
+
+    /// Host side of `Action::EmptyMerge`: the database is at `latest`. The stale draft is
+    /// dropped only when nothing moved since the merge was built against `rev`; otherwise
+    /// it stays, and Commit lists the conflicts again once the newer revision is shown.
+    pub(crate) fn confirm_empty_merge(&mut self, rev: i64, latest: i64) {
+        if self.merge.source != Some(MergeSource::Draft) {
+            return;
+        }
+        if self.merge_outdated() {
+            if let Err(e) = self.relist_merge() {
+                self.set_error(format!("{e:#}"));
+            }
+        } else if latest == rev {
+            self.close_merge();
+            self.reset_draft();
+            self.notice("Merged: the newer revision already has every change");
+        } else {
+            self.merge.error = Some(format!(
+                "Revision {latest} was committed while merging; your draft is kept. Commit lists the conflicts against it again."
+            ));
+            self.set_error(format!(
+                "Merge not finished: revision {latest} arrived; the draft is kept"
+            ));
         }
     }
 

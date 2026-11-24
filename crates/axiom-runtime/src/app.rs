@@ -529,14 +529,8 @@ pub fn run(options: RunOptions, registry: RuntimeRegistry, initial: World) -> Re
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let ran = event_loop.run_app(&mut app);
-    // A scenario still being recorded when the window closed is written now.
-    if app.recorder().is_some() {
-        app.finish_recording();
-        if let Some(editor) = &mut app.editor {
-            editor.flush_recording(std::time::Duration::from_secs(10));
-            eprintln!("{}", editor.status);
-        }
-    }
+    // A scenario still being recorded, or one Stop handed to its writer job, is written now.
+    app.close_recording(std::time::Duration::from_secs(10));
     // Edits submitted before the window closed are committed (or reported) before exit.
     let flushed = app.close_writes(crate::writer::SHUTDOWN_FLUSH);
     ran?;
@@ -1561,6 +1555,18 @@ impl App {
         }
     }
 
+    /// The window closed: a recording still running ends, and the recording file being
+    /// written (by this or by an earlier Stop) is waited for up to `limit`, its result
+    /// printed (R8 F11).
+    fn close_recording(&mut self, limit: std::time::Duration) {
+        self.finish_recording();
+        if let Some(editor) = &mut self.editor {
+            if editor.flush_recording(limit) {
+                eprintln!("{}", editor.status);
+            }
+        }
+    }
+
     /// Play ▸ Step: pauses, then advances exactly one fixed step (no input held).
     fn play_step(&mut self) {
         self.ui.playing = false;
@@ -1827,13 +1833,15 @@ impl App {
                 None => None,
             };
             anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
-            // Select / dock / open targets and the command ID are checked before Play
-            // starts: a refused request leaves the editor in the mode it was in.
+            // Select / dock / open targets and the command (ID, argument, drafts) are checked
+            // before Play starts or the dock switches: a refused request leaves the editor as
+            // it was.
             self.editor.as_ref().unwrap().check_remote(
                 &select,
                 dock.as_deref(),
                 open.as_deref(),
-                command.as_deref(),
+                command.as_deref().map(|id| (id, arg.as_deref())),
+                play,
             )?;
             if let Some(play) = play {
                 self.editor_play(play)?;
@@ -2437,6 +2445,17 @@ impl App {
     }
 
     fn editor_action(&mut self, action: editor::Action) -> Result<()> {
+        let action = match action {
+            editor::Action::ByAgent(action) => {
+                // Asked for by an agent on an earlier frame: recorded as the agent's.
+                let requester = std::mem::replace(&mut self.requester, Author::Agent);
+                let result = self.editor_action(*action);
+                self.requester = requester;
+                self.store.set_author(Some(requester));
+                return result;
+            }
+            action => action,
+        };
         let write = matches!(
             action,
             editor::Action::Write { .. }
@@ -2592,6 +2611,14 @@ impl App {
                 }
                 Ok(())
             }
+            editor::Action::EmptyMerge { rev } => {
+                // One indexed read: the editor adopts other writers' revisions on a poll, so
+                // the database decides whether the empty merge still holds (R8 F2).
+                let latest = self.store.revision()?;
+                editor.confirm_empty_merge(rev, latest);
+                Ok(())
+            }
+            editor::Action::ByAgent(action) => self.editor_action(*action),
             editor::Action::PrepareMerge { proposal } => {
                 if let Err(error) = editor::merge::prepare_proposal(editor, &self.store, proposal) {
                     // Shown in the merge window (e.g. the proposal was resolved meanwhile).
@@ -4569,6 +4596,200 @@ mod tests {
         assert!(!editor.restore_submitted(), "nothing left to restore");
     }
 
+    fn editor_view(
+        dock: Option<&str>,
+        play: Option<bool>,
+        command: &str,
+        arg: Option<&str>,
+    ) -> Request {
+        Request::EditorView {
+            select: vec![],
+            focus: false,
+            dock: dock.map(str::to_owned),
+            capture: None,
+            play,
+            open: None,
+            command: Some(command.to_owned()),
+            arg: arg.map(str::to_owned),
+        }
+    }
+
+    /// Frames as `App::frame` runs them: draws, then hands the editor's actions to the host.
+    fn frame_with_actions(app: &mut App, ctx: &egui::Context) {
+        let editor = app.editor.as_mut().unwrap();
+        editor.poll_jobs();
+        let mut actions = vec![];
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| actions = editor.draw(ctx, &app.runtime),
+        );
+        for action in editor::coalesce(actions) {
+            app.editor_action(action).unwrap();
+        }
+    }
+
+    /// A stale Inspector draft: typed on `box`, then an agent commits a revision.
+    fn stale_draft(app: &mut App) {
+        let base = app.editor.as_ref().unwrap().rev;
+        app.editor.as_mut().unwrap().test_type_label("box", "Mine");
+        let mut bridge = Store::open_with(
+            &app.options.db,
+            app.store.registry.clone(),
+            World::empty("x"),
+        )
+        .unwrap();
+        bridge
+            .apply(Some(base), vec![Edit::set("title", json!("AI edit"))])
+            .unwrap();
+        app.reload().unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().rev, base + 1);
+    }
+
+    /// R8 F7 + F6 (recheck): an `editor_view` request the editor refuses changes nothing:
+    /// the command, its argument and the merge source are checked before the dock switches
+    /// or Play starts.
+    #[test]
+    fn a_refused_editor_view_request_switches_no_dock_and_starts_no_play() {
+        let mut app = writer_app("view-refused.sqlite", None);
+        let ctx = egui::Context::default();
+        draw(&mut app, &ctx);
+        stale_draft(&mut app);
+        assert!(!app.editor.as_ref().unwrap().test_dock_shows("history"));
+        let error = app
+            .runtime_request(editor_view(
+                Some("history"),
+                None,
+                "merge.open",
+                Some("proposal:1"),
+            ))
+            .unwrap_err();
+        let response = axiom_core::error_response(&error);
+        assert_eq!(
+            response["diagnostics"][0]["code"], "editor_dirty",
+            "{response}"
+        );
+        draw(&mut app, &ctx);
+        assert!(
+            !app.editor.as_ref().unwrap().test_dock_shows("history"),
+            "the dock did not switch"
+        );
+        // The draft merge itself is the agent's to open, with the dock switch.
+        app.runtime_request(editor_view(
+            Some("history"),
+            None,
+            "merge.open",
+            Some("draft"),
+        ))
+        .unwrap();
+        draw(&mut app, &ctx);
+        assert!(app.editor.as_ref().unwrap().test_dock_shows("history"));
+        app.editor.as_mut().unwrap().close_merge();
+        // A clean editor: an invalid ui.select argument is refused before Play starts.
+        app.editor.as_mut().unwrap().reset_draft();
+        assert!(!app.editor.as_ref().unwrap().dirty());
+        let error = app
+            .runtime_request(editor_view(None, Some(true), "ui.select", Some("nope")))
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("no widget 'nope'"),
+            "{error:#}"
+        );
+        assert!(!app.editor.as_ref().unwrap().previewing, "Play not started");
+        assert!(app.editing());
+    }
+
+    /// R8 N1: a draft merge an agent commits through `editor_view` is built in the
+    /// background and written on a later frame; History records it as the agent's.
+    #[test]
+    fn an_agents_draft_merge_commit_is_recorded_as_the_agents() {
+        let mut app = writer_app("merge-author.sqlite", None);
+        let ctx = egui::Context::default();
+        stale_draft(&mut app);
+        let wait = |app: &mut App, what: &str, done: &dyn Fn(&App) -> bool| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(30);
+            while !done(app) {
+                assert!(Instant::now() < deadline, "{what} never finished");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                frame_with_actions(app, &ctx);
+                drain(app);
+            }
+        };
+        app.runtime_request(editor_view(None, None, "merge.open", Some("draft")))
+            .unwrap();
+        wait(&mut app, "merge listing", &|app| {
+            app.editor.as_ref().unwrap().merge.prepared.is_some()
+        });
+        let base = app.store.revision().unwrap();
+        app.requester = Author::Agent;
+        let committed = app.runtime_request(editor_view(None, None, "merge.commit", None));
+        app.requester = Author::Human;
+        committed.unwrap();
+        wait(&mut app, "merge commit", &|app| {
+            app.editor.as_ref().unwrap().merge.source.is_none()
+        });
+        drain(&mut app);
+        assert_eq!(app.store.revision().unwrap(), base + 1);
+        let rows = app
+            .store
+            .execute(Request::History { limit: Some(1) })
+            .unwrap()["revisions"]
+            .clone();
+        assert_eq!(rows[0]["rev"], base + 1);
+        assert_eq!(rows[0]["author"], "agent", "{rows}");
+        assert_eq!(app.requester, Author::Human);
+    }
+
+    #[test]
+    fn a_refused_draft_never_replaces_unsaved_typing_on_another_object() {
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let mut app = writer_app("draft-other.sqlite", Some(gate.clone()));
+        let base = app.editor.as_ref().unwrap().rev;
+        let held = hold(&gate);
+        let action = app
+            .editor
+            .as_mut()
+            .unwrap()
+            .test_inspector_apply_position([5.0, 1.0, 0.0]);
+        app.editor_action(action).unwrap();
+        wait_ready(&mut app);
+        // While draft A (box) waits, the person types into draft B (marker).
+        app.editor
+            .as_mut()
+            .unwrap()
+            .test_type_label("marker", "Typed B");
+        let mut bridge = Store::open_with(
+            &app.options.db,
+            app.store.registry.clone(),
+            World::empty("x"),
+        )
+        .unwrap();
+        bridge
+            .apply(Some(base), vec![Edit::set("title", json!("AI edit"))])
+            .unwrap();
+        drop(held);
+        drain(&mut app);
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.rev, base + 1);
+        // B stays as typed; A's unsaved edit is reported with its edit batch (R8 F1).
+        assert!(editor.dirty());
+        assert_eq!(
+            editor.test_selected_label(),
+            (Some("marker".into()), Some("Typed B".into()))
+        );
+        assert!(
+            editor.status.contains("Your edit of box was not saved")
+                && editor.status.contains("[5.0,1.0,0.0]"),
+            "{}",
+            editor.status
+        );
+    }
+
     #[test]
     fn undo_queued_behind_a_pending_write_and_blocked_writes_say_why() {
         let gate = Arc::new(std::sync::Mutex::new(()));
@@ -5181,7 +5402,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|j| j["kind"] == "recording"));
-        editor.flush_recording(std::time::Duration::from_secs(30));
+        // The window closes right after Stop: the close path waits for that writer job and
+        // collects its result (R8 F11 recheck), not only a recording still running.
+        app.close_recording(std::time::Duration::from_secs(30));
+        assert!(app.editor.as_ref().unwrap().debug.saving.is_none());
         assert!(app.editing());
         let editor = app.editor.as_ref().unwrap();
         assert!(editor.debug.recorder.is_none());

@@ -676,6 +676,20 @@ fn measure_m10_coedit() {
     );
 }
 
+/// Frames until the draft-merge commit is built; its `EmptyMerge` revision for the host.
+fn empty_merge(h: &mut Harness) -> i64 {
+    let actions = h.wait("draft merge commit", |e| {
+        e.merge.commit.is_none() && e.merge.write.is_none()
+    });
+    actions
+        .iter()
+        .find_map(|a| match a {
+            Action::EmptyMerge { rev } => Some(*rev),
+            _ => None,
+        })
+        .expect("the empty merge asks the host to confirm the revision")
+}
+
 /// R8 F2 + F7: an agent reaches the stale-draft merge through `editor_view` (the generic
 /// dirty-draft refusal does not apply to it, but still to everything else); a merge whose
 /// result is empty is checked against the newer revision before it drops the draft.
@@ -733,9 +747,27 @@ fn agents_merge_a_stale_draft_and_an_outdated_empty_merge_keeps_it() {
     });
     assert!(h.editor.dirty(), "the draft is kept");
     assert_eq!(h.editor.merge.source, Some(merge::MergeSource::Draft));
-    // Listed again against the newest revision, the empty merge drops the draft.
+    // Listed again against the newest revision. Another writer commits before the editor's
+    // next poll: the empty merge is checked against the database, the draft is kept (R8 F2).
     h.editor.remote_command("merge.commit", None).unwrap();
-    h.wait("merge closed", |e| e.merge.source.is_none());
+    acl(&mut s, "set stage/beacon label Theirs2", false);
+    let built = empty_merge(&mut h);
+    assert_eq!(built, rev);
+    h.editor.confirm_empty_merge(built, s.revision().unwrap());
+    assert!(h.editor.dirty(), "the draft is kept");
+    assert_eq!(h.editor.merge.source, Some(merge::MergeSource::Draft));
+    // Once that revision is shown, Commit lists the conflicts again; confirmed at the
+    // database revision, the empty merge drops the draft.
+    let (rev, world) = s.current().unwrap();
+    h.editor.update(rev, world, false);
+    h.editor.remote_command("merge.commit", None).unwrap();
+    h.wait("merge relisted", |e| {
+        e.merge.job.is_none() && e.merge.prepared.as_ref().is_some_and(|p| p.rev == rev)
+    });
+    h.editor.remote_command("merge.commit", None).unwrap();
+    let built = empty_merge(&mut h);
+    h.editor.confirm_empty_merge(built, s.revision().unwrap());
+    assert!(h.editor.merge.source.is_none());
     assert!(!h.editor.dirty());
     assert!(
         h.editor.status.contains("already has every change"),

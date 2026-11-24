@@ -735,6 +735,14 @@ fn remote_graph_open_refuses_to_commit_the_persons_draft() {
         );
     }
     assert_eq!(h.editor.graph.machine.as_deref(), Some("lumi"));
+    // Reopening the open graph only focuses the Graphs tab: allowed, the draft stays
+    // (R8 F3 recheck), through every path and the host's pre-check.
+    h.editor.remote_command("graph.open", Some("lumi")).unwrap();
+    h.editor.remote_open("graph:lumi").unwrap();
+    h.editor
+        .check_remote(&[], None, None, Some(("graph.open", Some("lumi"))), None)
+        .unwrap();
+    assert!(h.editor.graph_unsaved().is_some(), "the draft stays");
     // View-only graph commands still work for the agent.
     h.editor.remote_command("graph.zoom", Some("in")).unwrap();
     // The person's own switch commits the draft (one write, as before).
