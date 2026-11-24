@@ -1300,10 +1300,15 @@ impl RuntimeSystem for AnimationSystem {
                 if p.config.asset == previous.config.asset
                     && p.config.retarget == previous.config.retarget
                 {
-                    // The same playback continues only while its clip exists and the authored
-                    // clip is unchanged; a newly authored clip starts as authored (time 0,
-                    // markers fresh) instead of inheriting the old clip's time.
-                    if active_kept && p.config.clip == previous.config.clip {
+                    // The same playback continues only while its clip exists and the clip that
+                    // would play does not change: the authored clip is unchanged, or the newly
+                    // authored clip is the one already playing (started at runtime). Any other
+                    // newly authored clip starts as authored (time 0, markers fresh) instead of
+                    // inheriting the old clip's time.
+                    if active_kept
+                        && (p.config.clip == previous.config.clip
+                            || p.config.clip == previous.active)
+                    {
                         p.time = previous.time;
                         // Markers already passed do not fire again.
                         p.marker_fresh = previous.marker_fresh;

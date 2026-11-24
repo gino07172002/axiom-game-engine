@@ -122,6 +122,39 @@ fn an_authored_clip_switch_starts_the_new_clip_from_its_head() {
 }
 
 #[test]
+fn authoring_the_clip_already_playing_at_runtime_keeps_its_playback() {
+    // Review R4 N2 (round 3): the reset follows the clip that actually plays. Authoring the
+    // clip `animation.play` already started keeps its time (and passed markers).
+    let authored = |clip: &str| {
+        let mut w = plain();
+        w.resources.get_mut("animation.library").unwrap()["clips"] = json!({
+            "long":{"id":"long","duration":10.0,"tracks":[]},
+            "short":{"id":"short","duration":1.0,"tracks":[]}
+        });
+        let p = player_mut(&mut w, "walker");
+        p["clip"] = json!(clip);
+        p["looping"] = json!(false);
+        w
+    };
+    let mut r = runtime(authored("short"));
+    call(
+        &mut r,
+        "play",
+        json!({"entity":"walker","clip":"long","looping":false}),
+    )
+    .unwrap();
+    run(&mut r, 180);
+    let before = player(&r, "walker");
+    assert_eq!(before["clip"], "long", "{before}");
+    let time = before["time"].as_f64().unwrap();
+    assert!(time > 1.0, "{before}");
+    r.reconcile(authored("long"), 2).unwrap();
+    let after = player(&r, "walker");
+    assert_eq!(after["clip"], "long", "{after}");
+    assert_eq!(after["time"].as_f64().unwrap(), time, "{after}");
+}
+
+#[test]
 fn inspect_and_observe_report_the_controller_clip_and_time() {
     // Review R4 N3: with a controller, the top-level clip / time are the controller state's
     // primary clip, as the gameplay bindings report, not the clip-playback fields.

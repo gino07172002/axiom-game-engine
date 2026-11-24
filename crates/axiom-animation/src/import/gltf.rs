@@ -31,8 +31,31 @@ fn uri(root: &Path, value: &str) -> Result<Vec<u8>> {
         Ok(std::fs::read(path)?)
     }
 }
+/// Reads and parses a .gltf / .glb file. The GLB header's declared length is checked against
+/// the bytes read before the gltf crate sees it: the crate subtracts the 12-byte header from it
+/// unchecked and allocates the result before reading.
+fn open(path: &Path) -> Result<::gltf::Gltf> {
+    use std::io::Read;
+    let mut bytes = vec![];
+    std::fs::File::open(path)?
+        .take(134_217_729)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= 134_217_728, "asset file exceeds 128 MiB");
+    if bytes.starts_with(b"glTF") {
+        let declared = bytes
+            .get(8..12)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        ensure!(
+            declared.is_some_and(|n| (12..=bytes.len()).contains(&n)),
+            "GLB header length {} does not match the {}-byte file",
+            declared.map_or_else(|| "(missing)".into(), |n| n.to_string()),
+            bytes.len()
+        );
+    }
+    Ok(::gltf::Gltf::from_slice(&bytes)?)
+}
 pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
-    let gltf = ::gltf::Gltf::open(path)?;
+    let gltf = open(path)?;
     let doc = &gltf.document;
     let root = path.parent().unwrap_or(Path::new("."));
     ensure!(
@@ -325,6 +348,35 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
     }
     let morphs = morphs.finish(vertices.len())?;
     let mut clips = vec![];
+    // Channels may share accessors and a weights channel copies its times per target, so the
+    // keys are budgeted from accessor counts before anything is collected: per clip the same
+    // 2,000,000 values `Clip::compile_for` allows (times per track never exceed its values in
+    // a valid clip), per asset [`MAX_ANIMATION_KEYS`].
+    let mut asset_keys = 0usize;
+    for animation in doc.animations() {
+        let (mut values, mut times) = (0usize, 0usize);
+        for channel in animation.channels() {
+            let sampler = channel.sampler();
+            let tracks = match channel.target().property() {
+                ::gltf::animation::Property::MorphTargetWeights => morph_nodes
+                    .get(&channel.target().node().index())
+                    .map_or(1, Vec::len),
+                _ => 1,
+            };
+            values = values.saturating_add(sampler.output().count());
+            times = times.saturating_add(sampler.input().count().saturating_mul(tracks));
+        }
+        asset_keys = asset_keys.saturating_add(values).saturating_add(times);
+        ensure!(
+            values <= 2_000_000 && times <= 2_000_000,
+            "glTF animation {}: key budget exceeded ({values} values, {times} times; limit 2000000 each)",
+            animation.index()
+        );
+        ensure!(
+            asset_keys <= MAX_ANIMATION_KEYS,
+            "glTF animations exceed the asset key budget of {MAX_ANIMATION_KEYS}"
+        );
+    }
     for animation in doc.animations() {
         let mut tracks = vec![];
         let mut morph_tracks = vec![];
@@ -510,13 +562,18 @@ fn mesh_targets(
     Ok(out)
 }
 
-/// Largest dense size of one accessor (the total buffer budget).
+/// Animation keys (values and times, over all clips) one asset may hold.
+pub const MAX_ANIMATION_KEYS: usize = 16_000_000;
+
+/// Largest dense size of one accessor the importer reads (the total buffer budget).
 const MAX_ACCESSOR_BYTES: usize = 268_435_456;
 
 /// Checks, with checked arithmetic, everything the gltf crate's accessor readers assume:
 /// buffer views inside their buffers, every accessor (and its sparse indices and values)
 /// non-empty and inside its view with a stride of at least one element, and the dimensions
-/// and component types the readers this importer uses accept.
+/// and component types the readers this importer uses accept. The dense-size budget applies
+/// to the accessors the importer reads (a sparse accessor expands to `count` elements); an
+/// accessor nothing reads is never expanded.
 fn check_accessors(doc: &::gltf::Document, buffers: &[Vec<u8>]) -> Result<()> {
     for view in doc.views() {
         let len = buffers.get(view.buffer().index()).map_or(0, Vec::len);
@@ -533,12 +590,6 @@ fn check_accessors(doc: &::gltf::Document, buffers: &[Vec<u8>]) -> Result<()> {
         let i = a.index();
         let elem = a.size();
         ensure!(a.count() > 0, "glTF accessor {i}: count must be at least 1");
-        ensure!(
-            a.count()
-                .checked_mul(elem)
-                .is_some_and(|n| n <= MAX_ACCESSOR_BYTES),
-            "glTF accessor {i}: exceeds 256 MiB"
-        );
         if let Some(view) = a.view() {
             span(i, "", a.offset(), a.count(), elem, &view)?;
         }
@@ -574,6 +625,13 @@ fn check_accessors(doc: &::gltf::Document, buffers: &[Vec<u8>]) -> Result<()> {
     const FLOAT: &[T] = &[T::F32];
     const NORMALIZED: &[T] = &[T::I8, T::U8, T::I16, T::U16, T::F32];
     let expect = |a: ::gltf::Accessor, what: &str, dims: D, types: &[T]| -> Result<()> {
+        ensure!(
+            a.count()
+                .checked_mul(a.size())
+                .is_some_and(|n| n <= MAX_ACCESSOR_BYTES),
+            "glTF accessor {}: exceeds 256 MiB",
+            a.index()
+        );
         ensure!(
             a.dimensions() == dims && types.contains(&a.data_type()),
             "glTF accessor {} ({what}) must be {dims:?} of {types:?}, found {:?} of {:?}",
