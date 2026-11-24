@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-25 — Claude (Opus 5.5) — integrator: Codex review program (R1–R10, gpt-6.2-sol high) on branch `integ`
+
+**Done:** every engine area reviewed by Codex for general code, AI usability, human handoff and AI–human collaboration (reports in `docs/reviews/codex-2026-11/`). Fixes merged on `integ` (worktree `.claude/worktrees/r1`): round 1 R1–R10, round 2 (rechecks) R1b/R2b/R4b, round 3 (user rule: only our regressions + high) C0 strict-on-write validators, R2c, R4c, R8c, r3x (R3/R5/R6/R7), R9c; final round after the confirmation rechecks: c0f, r9f. Plan + per-item tables: `docs/plan-codex-review.zh-TW.md`. Everything not fixed: `docs/reviews/codex-2026-11/backlog.md`.
+
+**Verification (final integ gate, debug):** fmt + clippy `-D warnings` clean; `cargo test --workspace` 1107 passed / 0 failed / 7 ignored; build ok; editor smoke ok, world + street parity identical, M0 + M1 PASS, package smoke PASS. `combat-smoke-test` and `effects-smoke-test` failed on time: the hidden window's `render_present_acquire_wait` was ~230–260 ms per frame at 04:00 (screen likely off). A/B with the pre-round-3 exe (aca7fea) on the same DB and 300 frames: old 49 s / 161 slow frames, new 44 s / 163 slow frames, so not a code regression; rerun those two with the display on.
+
+**Not verified / open:** round-3 and final-round fixes were not rechecked by Codex (by decision). Items, deferrals and agent-reported unverified points: backlog.md. An `axiom-runtime --lib` run once hung for hours under heavy load and was not reproduced (run with `--test-threads=1` if it recurs).
+
+**Gotchas:** main's working tree holds another session's uncommitted edits in 9 files that integ also changes, so main was not fast-forwarded automatically. Subagents die on session restart: resume them with SendMessage; their uncommitted edits survive in the worktree. Five parallel cargo builds on this machine stretched one gate to ~12 h; keep at most two. Codex recheck prompt builder: scratchpad `codex-review/recheck3.ps1` (template placeholders ID/AREA/SCOPE/BASE/HEAD/EXTRA).
+
 ## 2026-11-20 — Claude (Opus 5.5) — integrator: engine wave 3 (W3a–W3d, Unity-gap features) merged into main
 
 **Done:** plan `docs/plan-engine-wave3.zh-TW.md` (36a9705). Merged in order: W3a WAV / Ogg Vorbis file clips + XInput gamepad bindings (06e1c72), W3b physics joints + sensor enter/exit events + `blend2d` (4b98aed), W3d spot / point light shadows with a 2 spot + 1 point budget (bdd9cb7), W3c FXAA + HDR (`Rgba16Float`) + ACES + bloom (05cba45), W3c follow-up: post/HDR pipelines built on a `jobs::Job` worker instead of the main thread (ce7032f). New demo packs `content/audio-lab`, `content/joint-lab`, `content/shadow-lab`; new docs `docs/input.zh-TW.md`, `docs/post-processing.zh-TW.md`. New crates: `lewton`, `ogg`, `tinyvec` (MIT / BSD / Zlib).

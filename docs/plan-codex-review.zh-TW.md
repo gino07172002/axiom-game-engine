@@ -605,3 +605,11 @@ Gate(debug,worktree `r8c`;同時有另一個 agent 在編譯):`cargo fmt --all -
 Gate(debug,worktree `r3x`):fmt、clippy `-D warnings` 通過;受影響的套件 tweens 14、fsm 13、shared_combat 12、audio_files 6、rts_frontier 10、axiom-rts 全部通過;`effects-smoke-test -Port 4873` 單獨跑 PASS。`axiom-runtime --lib` 在一次負載下的 workspace 測試中卡住數小時(未重現;單獨跑 391 passed,36 s)。整合者連跑發現 `screenshot::order_tests::queued_captures_start_when_the_slot_frees` 3 次中 2 次失敗:測試在取幀槽釋放後就讀 PNG,但最多 `JOB_LIMIT`=2 個編碼 job 仍在寫檔。測試改為先等 `jobs` 清空,之後連跑 8 次通過。完整 `cargo test --workspace` 與 editor / parity / M0 smoke 由整合者在合併後的 integ 上執行(見整合紀錄)。
 
 未驗證:F2、R7-F2 的新測試屬於覆蓋與等價測試,沒有「修前失敗」的意義;其他新測試修前會失敗只靠推理(每個都直接重現 triage 情境),沒有逐一 revert 實跑。R3-F7 (c) 沒有 GPU 端對端測試;同一幀內的多個請求仍拍到同一幀。
+
+## 收斂與收尾
+
+- **收斂決定(使用者)**:第三輪起只修「我們的修正造成的回歸」與「high」,其餘列入 backlog;修完做一次確認複審後收尾。確認複審(C0、R9、R10)仍找到回歸與 high,因此加做一次「最終輪」(c0f、r9f),只修那些項目,之後不再送 Codex 複審。
+- **未經 Codex 複審的修正**:第三輪的 R2、R4、R8、執行期 R3/R5/R6/R7,以及最終輪的 C0、R9/R10。它們只經過修正者 gate 與整合 gate。
+- **Backlog**:所有未修、DEFERRED 與修正者自報未驗證事項集中在 `docs/reviews/codex-2026-11/backlog.md`。
+- **報告**:各輪 Codex 報告(R1–R10、各 recheck、`triage-round3.md`)保存在 `docs/reviews/codex-2026-11/`。
+- **整合時的修正**:r2b 的錄影測試補 `flush_recording`(配合 R8 的背景存檔);R4 的 `unknown_clip` 改為只在寫入時檢查;r2c × r8c 的 `check_remote` 合併為同一個拒絕判斷加上模式檢查;r3x × r2c 的截圖佇列採用 r3x 的 `Loopback` 設計;`screenshot::order_tests` 的測試競態(取幀槽釋放時編碼 job 仍在寫檔)。
