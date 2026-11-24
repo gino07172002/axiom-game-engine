@@ -304,6 +304,8 @@ impl Reload {
         let started = Instant::now();
         let world = runtime.state.compiled.source.clone();
         let registry = runtime.registry_clone();
+        // Entities keep their handles in the rebuilt runtime (its factories see the final ones).
+        let replacing = runtime.replacement(crate::world::GENERATION_HEADROOM);
         let (rev, session) = (runtime.rev, runtime.runtime_session.clone());
         let baseline = self.hashes.clone();
         let first = baseline.is_empty();
@@ -335,7 +337,9 @@ impl Reload {
                 None
             } else {
                 anyhow::ensure!(!p.cancelled(), "asset reload cancelled");
-                Some(WorldRuntime::new(&world, rev, registry)?)
+                Some(WorldRuntime::new_replacing(
+                    &world, rev, registry, replacing,
+                )?)
             };
             p.set_done(total);
             Ok(Built {

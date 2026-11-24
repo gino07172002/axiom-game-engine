@@ -138,6 +138,9 @@ struct App {
     /// and a replacement could not start: edits are refused (and the writer retried), never
     /// committed on the main thread.
     writer_required: bool,
+    /// Tests: how long `reload` takes (as reading and decoding a large revision may).
+    #[cfg(test)]
+    reload_stall: std::time::Duration,
     /// Frames over the 16 ms budget and the phases of the last one (`observe` -> `frame`).
     slow_frames: u64,
     last_slow_frame: Option<serde_json::Value>,
@@ -481,13 +484,14 @@ struct Activation {
     rev: i64,
     job: crate::jobs::Job<Result<WorldRuntime>>,
     timings: ReloadTimings,
+    /// `reload_assets {cancel}` cancelled this build (a retry): it is never adopted, but it
+    /// still ends in `poll_activation`, which retires the runtime off this thread and starts
+    /// a newer revision requested meanwhile.
+    cancelled: bool,
 }
 
 /// Watchdog for one background runtime build.
 const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-/// Entity handle generations left to the running runtime (spawns) while its replacement is
-/// built on a worker; the replacement's handles start above them (`new_replacing`).
-const GENERATION_HEADROOM: u64 = 1 << 32;
 
 /// Main-thread wall-clock phases of applying one new authoring revision (milliseconds).
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
@@ -824,6 +828,8 @@ impl App {
             retry_rev: None,
             reload_waiting: false,
             writer_required: false,
+            #[cfg(test)]
+            reload_stall: std::time::Duration::ZERO,
             slow_frames: 0,
             last_slow_frame: None,
             writes: None,
@@ -1815,7 +1821,7 @@ impl App {
             );
             // Everything that can refuse the request without side effects runs first: a
             // refusal must never leave a queued edit (or a started Play) behind it.
-            let path = match capture {
+            let shot = match capture {
                 Some(name) => {
                     anyhow::ensure!(
                         !name.is_empty()
@@ -1827,15 +1833,27 @@ impl App {
                         "capture name must be 1..64 of [A-Za-z0-9-_.]"
                     );
                     let dir = std::env::current_dir()?.join("artifacts").join("captures");
+                    // The same asynchronous read-back and PNG job as the loopback
+                    // `screenshot` op (the main thread never waits for the GPU or the
+                    // encoder). A NAME under artifacts/captures is replaced, as before. A
+                    // full capture queue refuses the request here, before any edit.
+                    let shot = crate::screenshot::Request {
+                        path: dir.join(format!("{name}.png")),
+                        view: false,
+                        asked: Instant::now(),
+                        reply: None,
+                        overwrite: true,
+                    };
+                    self.shots.check_enqueue(&shot)?;
                     std::fs::create_dir_all(&dir)?;
-                    Some(dir.join(format!("{name}.png")))
+                    Some(shot)
                 }
                 None => None,
             };
             anyhow::ensure!(select.len() <= 64, "editor_view selects at most 64 objects");
-            // Select / dock / open targets and the command (ID, argument, drafts) are checked
-            // before Play starts or the dock switches: a refused request leaves the editor as
-            // it was.
+            // Select / dock / open targets and the command (ID, argument, drafts, and
+            // availability in the mode `play` switches to) are checked before Play starts or
+            // the dock switches: a refused request leaves the editor as it was.
             self.editor.as_ref().unwrap().check_remote(
                 &select,
                 dock.as_deref(),
@@ -1861,18 +1879,16 @@ impl App {
             for action in editor::coalesce(commanded.unwrap_or_default()) {
                 self.editor_action(action)?;
             }
-            if let Some(path) = &path {
-                // The same asynchronous read-back and PNG job as the loopback `screenshot` op
-                // (the main thread never waits for the GPU or the encoder). A NAME under
-                // artifacts/captures is replaced, as before.
-                self.shots.enqueue(crate::screenshot::Request {
-                    path: path.clone(),
-                    view: false,
-                    asked: Instant::now(),
-                    reply: None,
-                    overwrite: true,
-                })?;
-            }
+            let path = match shot {
+                Some(mut shot) => {
+                    let path = shot.path.clone();
+                    shot.asked = Instant::now();
+                    // Checked above; nothing else queues captures in between.
+                    self.shots.enqueue(shot)?;
+                    Some(path)
+                }
+                None => None,
+            };
             return Ok(
                 serde_json::json!({"ok":true,"editor":self.editor.as_ref().unwrap().observation(),"capture":path,"capture_ready":"read back from the next rendered frame, written by a background job"}),
             );
@@ -2024,6 +2040,8 @@ impl App {
         {
             return Ok(());
         }
+        #[cfg(test)]
+        std::thread::sleep(self.reload_stall);
         let started = Instant::now();
         let (rev, world) = self.store.current_shared()?;
         let mut timings = ReloadTimings {
@@ -2125,15 +2143,22 @@ impl App {
     ) -> Result<()> {
         let registry = self.runtime.registry_clone();
         // Handles start above any the running runtime can issue while this builds.
-        let generation = self.runtime.replacement_generation(GENERATION_HEADROOM);
+        // Same-world entities keep their handles; new ones start above any the running
+        // runtime can issue while this builds.
+        let replacing = self.runtime.replacement(crate::world::GENERATION_HEADROOM);
         let job = crate::jobs::Job::spawn(
             "activation",
             format!("revision {rev}"),
             ACTIVATION_TIMEOUT,
-            move |_| WorldRuntime::new_replacing(&*world, rev, registry, generation),
+            move |_| WorldRuntime::new_replacing(&*world, rev, registry, replacing),
         )?;
         timings.request_ms = ms(started);
-        self.activation = Some(Activation { rev, job, timings });
+        self.activation = Some(Activation {
+            rev,
+            job,
+            timings,
+            cancelled: false,
+        });
         Ok(())
     }
 
@@ -2156,6 +2181,7 @@ impl App {
             rev,
             mut timings,
             job,
+            cancelled,
         } = self.activation.take().unwrap();
         self.retry_rev = None;
         timings.build_ms = job.elapsed().as_secs_f64() * 1000.0;
@@ -2168,12 +2194,18 @@ impl App {
             )),
         };
         let previewing = self.editor.as_ref().is_some_and(|e| e.previewing);
-        if previewing || rev != self.runtime.requested_rev {
-            // Superseded by a newer revision (or Play preview pinned one); never adopt it.
+        if previewing || cancelled || rev != self.runtime.requested_rev {
+            // Superseded by a newer revision, cancelled (a retry), or Play preview pinned
+            // one; never adopt it.
             if let Ok(stale) = built {
                 retire(stale);
             }
-            if !previewing && self.runtime.requested_rev != self.runtime.rev {
+            // A newer revision committed while this one was building is started now (it
+            // waited for this build); a cancelled retry of the newest one is not restarted.
+            if !previewing
+                && self.runtime.requested_rev != rev
+                && self.runtime.requested_rev != self.runtime.rev
+            {
                 let started = Instant::now();
                 let (rev, world) = self.store.current_shared()?;
                 let timings = ReloadTimings {
@@ -2227,8 +2259,11 @@ impl App {
             // runtime stays on its live revision), or an editor reload still waiting.
             let mut cancelled = self.asset_reload.cancel();
             if let Some(rev) = self.retry_rev.take() {
-                if self.activation.as_ref().is_some_and(|a| a.rev == rev) {
-                    self.activation.take().unwrap().job.detach();
+                if let Some(retry) = self.activation.as_mut().filter(|a| a.rev == rev) {
+                    // The build cannot stop mid-way; it still ends in `poll_activation`
+                    // (its runtime retired off this thread, a newer revision committed
+                    // meanwhile started there), it is just never adopted.
+                    retry.cancelled = true;
                     cancelled = true;
                 }
             }
@@ -2884,11 +2919,25 @@ impl App {
                 return Some(command);
             }
         }
+        if editor_view {
+            if let Err(error) = self.reload() {
+                let _ = command
+                    .reply
+                    .send(crate::world::request_error_response(&error));
+                return None;
+            }
+        }
+        if std::time::Instant::now() >= command.deadline {
+            // `reload` reads and decodes a newly committed revision on this thread when its
+            // runtime is not rebuilt in the background (Play keeps its pinned runtime, the
+            // editor still follows): the deadline may have passed meanwhile.
+            let _ = command.reply.send(self.expired_reply());
+            return None;
+        }
         let before = self.writes.as_ref().map_or(0, |w| w.next_seq);
         // Editor writes this request makes (`editor_view {command}`) are an agent's.
         self.requester = Author::Agent;
-        let result = if editor_view { self.reload() } else { Ok(()) }
-            .and_then(|_| self.runtime_request(command.request));
+        let result = self.runtime_request(command.request);
         self.requester = Author::Human;
         self.store.set_author(Some(Author::Human));
         match result {
@@ -4271,6 +4320,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         app.finish_activation().unwrap();
         assert_eq!(app.runtime.rev, rev + 1);
@@ -5195,6 +5245,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         let command = |deadline: std::time::Duration| {
             let (reply, response) = std::sync::mpsc::sync_channel(1);
@@ -5288,6 +5339,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         app.finish_activation().unwrap();
         assert_eq!((app.runtime.rev, app.runtime.requested_rev), (rev, rev + 1));
@@ -5729,6 +5781,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         app.finish_activation().unwrap();
         assert_eq!((app.runtime.rev, app.runtime.requested_rev), (rev, rev + 1));
@@ -5761,6 +5814,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         let started = Instant::now();
         let reply = call_through_bridge(&mut app, &address, command(None));
@@ -6022,6 +6076,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         app.finish_activation().unwrap();
         // Protocol: the retry starts, and the same API's cancel stops it.
@@ -6030,9 +6085,9 @@ mod tests {
         assert!(app.activation.is_some());
         let reply = bridge_request(&mut app, reload_request(None, true));
         assert_eq!(reply["cancelled"], true, "{reply}");
-        assert!(app.activation.is_none());
-        app.poll_activation().unwrap();
+        app.finish_activation().unwrap();
         assert_eq!(app.runtime.rev, rev, "a cancelled retry is never adopted");
+        assert!(app.activation.is_none(), "nor restarted");
         // Editor: with an activation in flight, asset.reload waits for it.
         let (release, built) = std::sync::mpsc::channel::<()>();
         let world = app.store.current().unwrap().1;
@@ -6045,6 +6100,7 @@ mod tests {
             })
             .unwrap(),
             timings: ReloadTimings::default(),
+            cancelled: false,
         });
         command(&mut app, "asset.reload", None).unwrap();
         app.poll_asset_reload();
@@ -6068,5 +6124,166 @@ mod tests {
         );
         let reply = bridge_request(&mut app, reload_request(None, true));
         assert_eq!(reply["cancelled"], true);
+    }
+
+    /// N1 / A-F12: an explicit activation retry of rev N is cancelled after rev N+1 was
+    /// committed (it waited for the retry to finish). The cancelled build is not adopted,
+    /// and N+1 still activates without another retry or commit.
+    #[test]
+    fn cancelling_a_superseded_retry_still_activates_the_newer_revision() {
+        let mut app = editor_app();
+        app.background_activation = true;
+        let rev = app.store.revision().unwrap();
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("Retried"))])
+            .unwrap();
+        app.runtime.requested_rev = rev + 1;
+        app.activation = Some(Activation {
+            rev: rev + 1,
+            job: crate::jobs::Job::spawn("activation", "failing", ACTIVATION_TIMEOUT, |_| {
+                Err(anyhow::anyhow!("model file missing"))
+            })
+            .unwrap(),
+            timings: ReloadTimings::default(),
+            cancelled: false,
+        });
+        app.finish_activation().unwrap();
+        assert_eq!((app.runtime.rev, app.runtime.requested_rev), (rev, rev + 1));
+        let reply = bridge_request(&mut app, reload_request(None, false));
+        assert_eq!(reply["retry"], "activation", "{reply}");
+        // The retry's build stays in flight until released.
+        let (release, built) = std::sync::mpsc::channel::<()>();
+        let world = app.store.current().unwrap().1;
+        let registry = app.runtime.registry_clone();
+        app.activation.as_mut().unwrap().job =
+            crate::jobs::Job::spawn("activation", "slow", ACTIVATION_TIMEOUT, move |_| {
+                let _ = built.recv_timeout(std::time::Duration::from_secs(30));
+                WorldRuntime::new(&world, rev + 1, registry)
+            })
+            .unwrap();
+        // An agent commits rev + 2 meanwhile: it waits for the build in flight.
+        app.store
+            .apply(Some(rev + 1), vec![Edit::set("title", json!("Newer"))])
+            .unwrap();
+        app.reload().unwrap();
+        assert_eq!(app.runtime.requested_rev, rev + 2);
+        let reply = bridge_request(&mut app, reload_request(None, true));
+        assert_eq!(reply["cancelled"], true, "{reply}");
+        drop(release);
+        app.finish_activation().unwrap();
+        assert_eq!(app.runtime.rev, rev + 2, "the newer revision activated");
+        assert_eq!(app.runtime.state.compiled.source.title, "Newer");
+        assert_eq!(app.runtime.requested_rev, rev + 2);
+    }
+
+    /// N2 / F4: with the capture queue full, `editor_view {command, capture}` is refused
+    /// before its edit: no write is queued, and revision and entity count stay.
+    #[test]
+    fn a_full_capture_queue_refuses_editor_view_before_its_edit() {
+        let mut app = writer_app("capture-full.sqlite", None);
+        let base = app.editor.as_ref().unwrap().rev;
+        let entities = app.editor.as_ref().unwrap().world.entities.len();
+        let dir = std::env::temp_dir().join(format!("axiom-r2c-shots-{}", std::process::id()));
+        // One capture waiting for its frame and four queued behind it (headless: no frame
+        // ever takes them).
+        for n in 0..5 {
+            app.shots
+                .enqueue(crate::screenshot::Request {
+                    path: dir.join(format!("{n}.png")),
+                    view: false,
+                    asked: Instant::now(),
+                    reply: None,
+                    overwrite: true,
+                })
+                .unwrap();
+        }
+        let request = Request::EditorView {
+            select: vec![],
+            focus: false,
+            dock: None,
+            capture: Some("full".into()),
+            play: None,
+            open: None,
+            command: Some("object.cube".into()),
+            arg: None,
+        };
+        let reply = bridge_request(&mut app, request);
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            reply["error"].as_str().unwrap().contains("already queued"),
+            "{reply}"
+        );
+        drain(&mut app);
+        assert_eq!(app.writes_pending(), 0);
+        assert_eq!(app.store.revision().unwrap(), base);
+        assert_eq!(app.store.current().unwrap().1.entities.len(), entities);
+        assert_eq!(app.editor.as_ref().unwrap().world.entities.len(), entities);
+    }
+
+    /// A-F2: `reload` may read and decode a newly committed revision on this thread (during
+    /// Play the runtime stays pinned). A request whose deadline passes meanwhile is answered
+    /// `runtime_timeout` and never executed.
+    #[test]
+    fn a_request_whose_deadline_passes_during_reload_never_runs() {
+        let mut app = editor_app_with(m4_world());
+        app.editor_play(true).unwrap();
+        let rev = app.store.revision().unwrap();
+        let command = || Request::Command {
+            command: train("squad/base"),
+            expected_rev: None,
+        };
+        app.store
+            .apply(Some(rev), vec![Edit::set("title", json!("External"))])
+            .unwrap();
+        app.reload_stall = std::time::Duration::from_millis(400);
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        let request = crate::bridge::RuntimeRequest {
+            deadline: Instant::now() + std::time::Duration::from_millis(100),
+            request: command(),
+            reply,
+        };
+        assert!(app.handle_command(request).is_none());
+        let reply = response.recv().unwrap();
+        assert_eq!(
+            reply["diagnostics"][0]["code"], "runtime_timeout",
+            "{reply}"
+        );
+        assert_eq!(spent(&app), 0, "not executed");
+        // In time it runs.
+        app.reload_stall = std::time::Duration::ZERO;
+        let reply = bridge_request(&mut app, command());
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(spent(&app), 60);
+    }
+
+    /// Previous round's N1: a registered command that is unavailable in the mode
+    /// `editor_view {play}` switches to is refused before the switch.
+    #[test]
+    fn editor_view_refuses_a_command_unavailable_in_the_mode_it_switches_to() {
+        let mut app = editor_app();
+        let view = |play: bool, command: &str| Request::EditorView {
+            select: vec![],
+            focus: false,
+            dock: None,
+            capture: None,
+            play: Some(play),
+            open: None,
+            command: Some(command.into()),
+            arg: None,
+        };
+        let entities = app.store.current().unwrap().1.entities.len();
+        // An authoring edit is blocked in Play: Play does not start.
+        let reply = bridge_request(&mut app, view(true, "object.cube"));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(!app.editor.as_ref().unwrap().previewing, "{reply}");
+        assert_eq!(app.store.current().unwrap().1.entities.len(), entities);
+        // A Play-only command is blocked in edit mode: Play does not stop.
+        app.editor_play(true).unwrap();
+        let reply = bridge_request(&mut app, view(false, "play.pause"));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(app.editor.as_ref().unwrap().previewing, "{reply}");
+        // Available in the target mode: it runs.
+        let reply = bridge_request(&mut app, view(true, "play.pause"));
+        assert_eq!(reply["ok"], true, "{reply}");
     }
 }

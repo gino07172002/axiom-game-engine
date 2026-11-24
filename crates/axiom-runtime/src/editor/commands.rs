@@ -1092,11 +1092,26 @@ impl Editor {
             .to_owned()
     }
 
+    /// The part of `command_blocked` that depends only on whether Play runs (`playing`).
+    /// `editor_view {play, command}` checks it for the mode it switches to, before Play
+    /// starts or stops.
+    pub(crate) fn mode_blocked(&self, id: &str, playing: bool) -> Option<&'static str> {
+        match id {
+            // Play runs a pinned revision: authoring edits from the editor wait for Stop.
+            _ if playing && CONTENT_COMMANDS.contains(&id) => Some(PLAY_BLOCKED),
+            "play.stop" | "play.pause" | "play.step" if !playing => Some("not playing"),
+            "play.record" if playing && self.debug.recorder.is_none() => {
+                Some("a recording starts with Play: stop Play first")
+            }
+            "play.maximize" if playing => Some("stop Play first"),
+            _ => None,
+        }
+    }
+
     /// Why a command cannot run right now, if it cannot.
     pub(crate) fn command_blocked(&self, id: &str) -> Option<&'static str> {
-        // Play runs a pinned revision: authoring edits from the editor wait for Stop.
-        if self.previewing && CONTENT_COMMANDS.contains(&id) {
-            return Some(PLAY_BLOCKED);
+        if let Some(reason) = self.mode_blocked(id, self.previewing) {
+            return Some(reason);
         }
         if let Some(reason) = self.graph_blocked(id) {
             return reason;
@@ -1114,14 +1129,9 @@ impl Editor {
         let busy = self.dirty() || self.drag.is_some();
         let nothing = self.selected.is_none();
         match id {
-            "play.stop" | "play.pause" | "play.step" if !self.previewing => Some("not playing"),
-            "play.record" if self.previewing && self.debug.recorder.is_none() => {
-                Some("a recording starts with Play: stop Play first")
-            }
             "play.record" if !self.previewing && busy => {
                 Some("apply or reload the inspector draft first")
             }
-            "play.maximize" if self.previewing => Some("stop Play first"),
             "view.screenshot" if self.screenshot_running() => Some("a screenshot is being written"),
             "file.build_game" => self.build_blocked(),
             "game.main_camera" if busy => Some("apply or reload the inspector draft first"),

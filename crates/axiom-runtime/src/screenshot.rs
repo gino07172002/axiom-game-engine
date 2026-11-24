@@ -294,14 +294,26 @@ impl Loopback {
     /// Queues a capture behind the running one (`editor_view {capture}`); it starts when the
     /// slot frees, with its own frame timeout from then on.
     pub fn enqueue(&mut self, request: Request) -> anyhow::Result<()> {
+        self.check_enqueue(&request)?;
         if !self.busy() {
             return self.request(request);
+        }
+        self.queued.push_back(request);
+        Ok(())
+    }
+    /// Whether `enqueue(request)` would be accepted now, without side effects: callers
+    /// check before doing anything the capture belongs to (`editor_view` edits).
+    pub fn check_enqueue(&self, request: &Request) -> anyhow::Result<()> {
+        if !self.busy() {
+            if !request.overwrite && request.path.exists() {
+                anyhow::bail!(exists_error(&request.path));
+            }
+            return Ok(());
         }
         anyhow::ensure!(
             self.queued.len() < QUEUE_LIMIT,
             "{QUEUE_LIMIT} screenshots are already queued; wait for them to be written"
         );
-        self.queued.push_back(request);
         Ok(())
     }
     pub fn request(&mut self, request: Request) -> anyhow::Result<()> {

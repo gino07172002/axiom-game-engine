@@ -2138,6 +2138,8 @@ impl Editor {
     /// `remote_view` (starting Play ends a drag); a command's state-dependent availability is
     /// checked here only when nothing before it changes that state (no Play switch, selection
     /// or open), and always again when it runs.
+    /// A command unavailable in the mode `play` switches to (e.g. an edit during Play) is
+    /// refused too.
     pub(crate) fn check_remote(
         &self,
         select: &[String],
@@ -2148,6 +2150,12 @@ impl Editor {
     ) -> anyhow::Result<()> {
         if let Some((id, arg)) = command {
             self.remote_command_refusal(id, arg)?;
+            if let Some(playing) = play.filter(|&p| p != self.previewing) {
+                if let Some(reason) = self.mode_blocked(id, playing) {
+                    let mode = if playing { "Play" } else { "edit mode" };
+                    anyhow::bail!("{id} is unavailable in {mode}: {reason}");
+                }
+            }
         }
         if !select.is_empty() || open.is_some() {
             self.remote_draft_guard()?;

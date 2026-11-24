@@ -108,6 +108,17 @@ pub struct RuntimeEntityId {
     pub slot: u32,
     pub generation: u64,
 }
+/// Entity handles of a running runtime, taken for its replacement
+/// ([`WorldRuntime::replacement`], [`WorldRuntime::new_replacing`]).
+pub(crate) struct Replacing {
+    first_generation: u64,
+    /// `world.id` of the running runtime: only the same world keeps its handles.
+    world: String,
+    ids: BTreeMap<String, RuntimeEntityId>,
+}
+/// Handle generations left to a running runtime (its spawns) while its replacement is built
+/// on a worker ([`WorldRuntime::replacement`]).
+pub(crate) const GENERATION_HEADROOM: u64 = 1 << 32;
 /// World matrices of `len` slots of `compiled`, parents before children, from each slot's
 /// local matrix (slots outside the transform order stay identity).
 pub(crate) fn compose_matrices(
@@ -1126,31 +1137,46 @@ impl WorldRuntime {
         rev: i64,
         registry: RuntimeRegistry,
     ) -> Result<Self> {
-        Self::build(world, rev, registry, 1)
+        Self::build(world, rev, registry, 1, None)
     }
-    /// The handle generation a replacement for this runtime should start at
+    /// What a replacement for this runtime needs before its system factories run
     /// ([`Self::new_replacing`]). `headroom` leaves generations for entities this runtime
     /// may still spawn while the replacement is built on another thread.
-    pub(crate) fn replacement_generation(&self, headroom: u64) -> u64 {
-        self.state.next_generation.saturating_add(headroom)
+    pub(crate) fn replacement(&self, headroom: u64) -> Replacing {
+        let ids = &self.state.ids;
+        Replacing {
+            first_generation: self.state.next_generation.saturating_add(headroom),
+            world: self.state.compiled.source.id.clone(),
+            ids: self
+                .state
+                .compiled
+                .indices
+                .iter()
+                .map(|(id, &slot)| (id.clone(), ids[slot]))
+                .collect(),
+        }
     }
-    /// A runtime built to replace another one (`adopt`): its entity handles start at
-    /// `first_generation` (from [`Self::replacement_generation`]) before any system factory
-    /// runs, so a handle a factory keeps stays valid when the replacement is adopted for
-    /// another world, and never equals a handle of the replaced runtime.
+    /// A runtime built to replace another one (`adopt`): its final entity handles are set
+    /// before any system factory runs, so a handle a factory keeps stays valid after
+    /// `adopt`. In the same world an entity keeps the handle it has in the replaced runtime
+    /// (the one `transfer_state` carries over); new entities, and every entity of another
+    /// world, get generations from `replacing.first_generation` up, never equal to a handle
+    /// of the replaced runtime.
     pub(crate) fn new_replacing(
         world: impl std::borrow::Borrow<World>,
         rev: i64,
         registry: RuntimeRegistry,
-        first_generation: u64,
+        replacing: Replacing,
     ) -> Result<Self> {
-        Self::build(world, rev, registry, first_generation.max(1))
+        let first = replacing.first_generation.max(1);
+        Self::build(world, rev, registry, first, Some(replacing))
     }
     fn build(
         world: impl std::borrow::Borrow<World>,
         rev: i64,
         registry: RuntimeRegistry,
         first_generation: u64,
+        replacing: Option<Replacing>,
     ) -> Result<Self> {
         let world: &World = world.borrow();
         let started = std::time::Instant::now();
@@ -1180,6 +1206,18 @@ impl WorldRuntime {
         state.contexts = crate::input::Contexts::new(world)?;
         state.combat = crate::combat::Combat::new(world)?;
         state.revision = rev;
+        if let Some(previous) = replacing.filter(|r| r.world == state.compiled.source.id) {
+            // Same world: the handles `transfer_state` carries over, set before the factories.
+            for (slot, entity) in state.compiled.entities.iter().enumerate() {
+                match previous.ids.get(&entity.id) {
+                    Some(&id) => state.ids[slot] = id,
+                    None => {
+                        state.ids[slot].generation = state.next_generation;
+                        state.next_generation += 1;
+                    }
+                }
+            }
+        }
         let mut system_build_ms = vec![];
         let mut systems = vec![];
         for d in state.compiled.schedule.clone() {
@@ -1293,12 +1331,7 @@ impl WorldRuntime {
         let started = std::time::Instant::now();
         self.requested_rev = rev;
         // Built and adopted on this thread: nothing spawns in between, no headroom needed.
-        let next = Self::new_replacing(
-            world,
-            rev,
-            self.registry.clone(),
-            self.replacement_generation(0),
-        );
+        let next = Self::new_replacing(world, rev, self.registry.clone(), self.replacement(0));
         self.adopt(next, prepare, started).map(drop)
     }
     /// Migrates state from this runtime into a replacement built for a new revision (here
@@ -1396,7 +1429,9 @@ impl WorldRuntime {
                     trace.tick = trace.tick.saturating_add(next.state.tick);
                 }
             }
-            next.state.next_generation = self.state.next_generation;
+            // A replacement from `new_replacing` already holds these handles (its system
+            // factories saw them); one built by `new` gets them here.
+            next.state.next_generation = next.state.next_generation.max(self.state.next_generation);
             for e in &next.state.compiled.entities {
                 if let Some(&old) = self.state.compiled.indices.get(&e.id) {
                     let new = next.state.compiled.indices[&e.id];
@@ -1416,8 +1451,12 @@ impl WorldRuntime {
                     }
                 } else {
                     let new = next.state.compiled.indices[&e.id];
-                    next.state.ids[new].generation = next.state.next_generation;
-                    next.state.next_generation += 1;
+                    // A new entity keeps the fresh handle `new_replacing` gave it; one that
+                    // could equal a handle of this runtime (built by `new`) gets another.
+                    if next.state.ids[new].generation < self.state.next_generation {
+                        next.state.ids[new].generation = next.state.next_generation;
+                        next.state.next_generation += 1;
+                    }
                 }
             }
             for (name, table) in &mut next.state.columns {
@@ -1977,7 +2016,7 @@ mod generation_tests {
             world("b"),
             2,
             running.registry_clone(),
-            running.replacement_generation(headroom),
+            running.replacement(headroom),
         );
         // The running runtime spawns while the replacement is being built.
         let template = running.state.compiled.entities[0].clone();
@@ -2000,5 +2039,65 @@ mod generation_tests {
             .unwrap();
         assert!(running.state.resolve(old).is_none());
         assert!(running.state.ids[0].generation >= kept.generation);
+    }
+
+    /// A-F5 (round 3): a hot reload of the same world (a title-only edit, then an entity
+    /// added in front) on the synchronous and the background path. A handle a factory kept
+    /// is the entity's final handle: it resolves, and an entity that carried over keeps the
+    /// handle it had before.
+    #[test]
+    fn a_same_world_hot_reload_keeps_the_handles_its_factories_saw() {
+        let mut running = WorldRuntime::new(world("a"), 1, registry()).unwrap();
+        // Generations move past the first build's (as after spawns in play).
+        let template = running.state.compiled.entities[0].clone();
+        running
+            .state
+            .spawn(&template, "spawned".into(), [1.0, 0.0, 0.0])
+            .unwrap();
+        let boxed = running.state.ids[0];
+        let kept = |r: &WorldRuntime| r.system::<Holder>().unwrap().handle;
+        // Synchronous, title only.
+        let mut titled = world("a");
+        titled.title = "Renamed".into();
+        running.reconcile(titled.clone(), 2).unwrap();
+        assert_eq!(kept(&running), boxed, "the carried-over handle");
+        assert_eq!(running.state.resolve(kept(&running)), Some(0));
+        // Background, title only: the running runtime spawns while it builds.
+        let next = WorldRuntime::new_replacing(
+            &titled,
+            3,
+            running.registry_clone(),
+            running.replacement(GENERATION_HEADROOM),
+        );
+        let spawned = running
+            .state
+            .spawn(&template, "late".into(), [2.0, 0.0, 0.0])
+            .unwrap();
+        running
+            .adopt(next, |_| Ok(()), std::time::Instant::now())
+            .unwrap();
+        assert_eq!(kept(&running), boxed);
+        assert_eq!(running.state.resolve(kept(&running)), Some(0));
+        // A new entity in front: the factory keeps the new entity's fresh handle, which
+        // never equals one the replaced runtime issued; the old entity keeps its handle.
+        let mut added = titled;
+        let mut first = Entity::new("added");
+        first.set("core.transform", Transform::default()).unwrap();
+        added.entities.insert(0, first);
+        let next = WorldRuntime::new_replacing(
+            &added,
+            4,
+            running.registry_clone(),
+            running.replacement(GENERATION_HEADROOM),
+        );
+        running
+            .adopt(next, |_| Ok(()), std::time::Instant::now())
+            .unwrap();
+        let fresh = kept(&running);
+        assert_eq!(running.state.resolve(fresh), Some(0));
+        assert!(fresh.generation > spawned.generation);
+        let slot = running.state.compiled.indices["box"];
+        assert_eq!(running.state.ids[slot], boxed);
+        assert_ne!(fresh, boxed);
     }
 }

@@ -152,6 +152,32 @@ Gate(worktree r2b,debug):`cargo fmt --all` 乾淨;`cargo clippy --workspace --al
 
 未驗證:新測試在修正前會失敗是依程式碼推理(每個測試重現複審描述的序列),沒有逐一 revert 實跑;F9 的 thread spawn 失敗分支無法在測試中觸發,靠閱讀;未做 A/B 量測,不宣稱效能數字。
 
+#### R2 第三輪(確認複審)
+
+輸入:`R2.recheck2.md`。範圍依使用者決定只修回歸(A 段「有問題」)與 `[high]`(C 段 N1、N2);純測試缺口與 medium/low 列為 BACKLOG。worktree `r2c`(基於 `integ` a57a88e)。每項先讀程式碼再判定。
+
+| ID | 判定 | 改動 | 測試 |
+|---|---|---|---|
+| A-F12 / N1 [high] | CONFIRMED(兩點:取消時直接移除 job,`reload_after` 只改了 `requested_rev`,之後的輪詢因 `latest == requested_rev` 提前返回,新版永不建置;`detach()` 在主執行緒丟掉 channel 裡已建好的 runtime) | `Activation` 新增 `cancelled`。`reload_assets {cancel}` 只標記重試的 activation,不再 detach;建置照常結束於 `poll_activation` 的統一完成路徑:不採用、runtime 交給 `retire`,若期間有較新的 revision(`requested_rev != rev`)就在該處開始建置;沒有較新版時不重啟(維持 live 版本,可再顯式重試) | `app::tests::cancelling_a_superseded_retry_still_activates_the_newer_revision`;改寫 `reload_assets_start_and_cancel_agree_while_an_activation_is_involved`(取消後等建置結束、確認未採用也未重啟) |
+| F4 / N2 [high] | CONFIRMED | `screenshot::Loopback::check_enqueue`(無副作用,與 `enqueue` 共用同一判斷):`editor_view` 在驗證 capture 名稱後、Play 與任何編輯之前檢查截圖名額;通過後才建立 `artifacts/captures`。佇列滿時整個請求被拒,不排入寫入 | `app::tests::a_full_capture_queue_refuses_editor_view_before_its_edit`(5 個 capture 佔滿;writes 0、revision 與實體數不變) |
+| A-F2 | CONFIRMED | `handle_command` 在 `reload()` 之後、`runtime_request` 之前重查 deadline,過期回 `expired_reply`(`runtime_timeout` + 兩個版本)且不執行;`editor_view` 的 `reload` 移到同一檢查之前。測試用 `#[cfg(test)] reload_stall` 模擬同步讀取變慢 | `app::tests::a_request_whose_deadline_passes_during_reload_never_runs`(Play 中外部提交、reload 400 ms、期限 100 ms:`runtime_timeout`、`spent` 0;不延遲時照常執行) |
+| A-F5 | CONFIRMED(同步、背景與 asset reload 三條路徑) | `WorldRuntime::replacement(headroom)` 取代 `replacement_generation`,帶 `world.id` 與「entity ID → 目前 handle」;`new_replacing` 在 factory 執行前設定最終 ID:同一世界沿用舊 handle,新實體從 `first_generation` 起取新 generation;跨世界不變。`transfer_state` 的 `next_generation` 改取 max,新實體只在可能與舊值相撞(用 `new` 建的)時才重編。`asset_reload` 的重建也改用 `new_replacing`。`GENERATION_HEADROOM` 移到 `world.rs` 共用 | `world::generation_tests::a_same_world_hot_reload_keeps_the_handles_its_factories_saw`(title-only 同步、背景期間 spawn、前面插入新實體) |
+| A-F9 | CONFIRMED | `writer.rs` 抽出 `run()`:重開庫後、`Store::execute` 前再查一次 `abort` | `writer::tests::a_writer_aborted_while_reopening_never_runs_the_edit`(注入的 `open` 在開庫期間設 abort;revision 不變) |
+| A-F14 | CONFIRMED | 改為轉換「實際值」而非期望值:live `f32` 欄位值先轉成能 round-trip 的最短十進位(0.1、16777216),再以期望值原本的精度比較所有運算子。`eq 0.1` 成立、`gt 0.1` 不成立,且 16777216 `lt` 16777217 成立 | `scenario::tests::float_field_assertions_compare_at_the_columns_precision`(新增 2^24 與相鄰 f32 1.0 / 1.0000001 的 lt/le/gt/ge/eq) |
+| 前輪 N1 | CONFIRMED | `Editor::mode_blocked(id, playing)`:`command_blocked` 中只依 Play 狀態的規則(Play 中的內容命令、`play.stop/pause/step`、`play.record`、`play.maximize`)抽成單一來源;`check_remote` 多收 `play`,模式會切換時以目標模式檢查,在 `editor_play` 之前拒絕 | `app::tests::editor_view_refuses_a_command_unavailable_in_the_mode_it_switches_to`(`play:true`+`object.cube` 不進 Play;Play 中 `play:false`+`play.pause` 不停止) |
+| A-F11 | BACKLOG | 純測試缺口(GUI 啟動 + host 取消/監看的整合測試未經 TCP loopback),行為無誤 | — |
+| 未涵蓋段的 `inexact` 錄製重播 | BACKLOG | 低嚴重性:後續命令依賴漏錄的 batch 前綴時重播可能失敗 | — |
+
+行為變更:取消的重試 activation 會在背景跑完(不採用),期間 runtime 請求照既有規則等待它;`reload_assets` 的 asset 重建與 revision 啟用在同一世界內保留實體 handle(factory 看到的就是最終值)。
+
+範圍外觸碰:`editor/commands.rs`(`mode_blocked` 抽出,`command_blocked` 改呼叫它)、`editor/mod.rs`(`check_remote` 多一個參數)、`asset_reload.rs`(兩行)。
+
+已知殘留:背景建置期間舊 runtime 若讀檔(checkpoint 還原改寫 `ids`)或 spawn 了與新 authoring 實體同 ID 的實體,`transfer_state` 仍以舊 runtime 當下的 handle 為準,factory 保存的 handle 可能失效;這是極少見的交錯,未處理。
+
+Gate(worktree r2c,debug):`cargo fmt --all -- --check` 乾淨;`cargo clippy --workspace --all-targets -- -D warnings` 通過;`cargo test --workspace --no-fail-fast` 一次跑完 77 個 target,1067 passed / 0 failed / 6 ignored(本輪新增或改寫的 9 個測試也先單獨跑過,全過)。`editor-smoke-test -Port 5111` ok(22 s);`editor-world-parity -Port 5113` identical(rev 13);`street-editor-parity -Port 5115` identical(rev 16);`m0-smoke-test -Port 5117` PASS。無渲染改動,不做截圖 A/B。
+
+未驗證:新測試在修正前會失敗是依程式碼推理(每個測試重現複審描述的交錯),沒有逐一 revert 實跑;取消的重試 runtime 由 `retire` 釋放(不在主執行緒)是讀程式碼確認,測試無法觀察釋放所在的執行緒;`replacement()` 在主執行緒複製「entity ID → handle」表(每次背景啟用 / asset reload 一次,與實體數成正比),未量測,不宣稱效能數字。
+
 ### R4 動畫
 
 範圍:`crates/axiom-animation`、`axiom-runtime/src/animation*.rs`。15 項 finding:14 項 CONFIRMED 並修改,1 項延後(F9)。沒有改 axiom-core、CLI、app.rs 或渲染檔案。測試輸入都在程式碼裡產生,沒有加入任何第三方資產。

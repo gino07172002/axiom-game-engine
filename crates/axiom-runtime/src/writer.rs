@@ -86,32 +86,10 @@ impl Writer {
                 while let Ok(op) = inbox.recv() {
                     let _held = gate.as_ref().map(|g| g.lock());
                     let started = Instant::now();
-                    let result = if shared_abort.load(Relaxed) {
-                        Err(anyhow::anyhow!(
-                            "editor writer was stopped before this edit started; it was not saved"
-                        ))
-                    } else {
-                        if store.is_none() {
-                            store = open()
-                                .map_err(|error| {
-                                    eprintln!("editor writer: database not writable: {error:#}")
-                                })
-                                .ok();
-                        }
-                        match &mut store {
-                            Some(store) => {
-                                store.set_author(Some(op.author));
-                                store.execute(op.request)
-                            }
-                            None => Err(axiom_core::Diagnostic::error(
-                                "writer_unavailable",
-                                "/",
-                                "the database is not writable right now (another writer holds it); this edit was not saved, try again",
-                            )),
-                        }
-                    };
+                    let seq = op.seq;
+                    let result = run(&mut store, &open, &shared_abort, op);
                     let done = Finished {
-                        seq: op.seq,
+                        seq,
                         result,
                         ms: started.elapsed().as_secs_f64() * 1000.0,
                     };
@@ -186,6 +164,42 @@ impl Drop for Writer {
         if self.handle.is_some() && !self.shutdown(Duration::from_secs(2)) {
             eprintln!("editor writer did not finish within 2 s; detached");
         }
+    }
+}
+
+/// One request on the writer thread. `store` is `None` after a failed open: it is opened
+/// again first (`open`). `abort` is checked again after that reopen, right before the
+/// request reaches SQLite: the watchdog can give up on this writer while it is opening, and
+/// its interrupt has no connection to stop until the open sets the handle.
+fn run(
+    store: &mut Option<Store>,
+    open: &impl Fn() -> Result<Store>,
+    abort: &AtomicBool,
+    op: Op,
+) -> Result<Value> {
+    let stopped =
+        || anyhow::anyhow!("editor writer was stopped before this edit started; it was not saved");
+    if abort.load(Relaxed) {
+        return Err(stopped());
+    }
+    if store.is_none() {
+        *store = open()
+            .map_err(|error| eprintln!("editor writer: database not writable: {error:#}"))
+            .ok();
+        if abort.load(Relaxed) {
+            return Err(stopped());
+        }
+    }
+    match store {
+        Some(store) => {
+            store.set_author(Some(op.author));
+            store.execute(op.request)
+        }
+        None => Err(axiom_core::Diagnostic::error(
+            "writer_unavailable",
+            "/",
+            "the database is not writable right now (another writer holds it); this edit was not saved, try again",
+        )),
     }
 }
 
@@ -345,5 +359,37 @@ mod tests {
         assert_eq!(done.seq, 7);
         assert!(format!("{:#}", done.result.unwrap_err()).contains("not saved"));
         assert_eq!(main.revision().unwrap(), 1);
+    }
+
+    /// A-F9 (round 3): the watchdog aborts the writer while it is reopening the database
+    /// (no interrupt handle exists yet). The reopen succeeds, but the edit never reaches
+    /// SQLite.
+    #[test]
+    fn a_writer_aborted_while_reopening_never_runs_the_edit() {
+        let path = temp_db("abort-reopen.sqlite");
+        let main = Store::open_with(&path, Registry::core(), World::empty("w")).unwrap();
+        let abort = AtomicBool::new(false);
+        let opened = std::cell::Cell::new(false);
+        let open = || -> Result<Store> {
+            let store = Store::open_with(&path, Registry::core(), World::empty("world"))?;
+            // The watchdog fires during the open.
+            abort.store(true, Relaxed);
+            opened.set(true);
+            Ok(store)
+        };
+        let mut store = None;
+        let op = Op {
+            seq: 1,
+            request: Request::Apply {
+                expected_rev: Some(1),
+                edits: vec![Edit::set("title", json!("never"))],
+            },
+            author: Author::Human,
+        };
+        let error = run(&mut store, &open, &abort, op).unwrap_err();
+        assert!(opened.get(), "the reopen ran");
+        assert!(format!("{error:#}").contains("not saved"), "{error:#}");
+        assert_eq!(main.revision().unwrap(), 1);
+        assert_ne!(main.current_shared().unwrap().1.title, "never");
     }
 }
