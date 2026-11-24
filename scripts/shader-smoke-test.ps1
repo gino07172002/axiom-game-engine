@@ -1,14 +1,18 @@
 #Requires -Version 7.0
 # PowerShell 7 (pwsh) is required: ConvertFrom-Json -AsHashtable does not exist in Windows PowerShell 5.1.
-param([int]$Port = 4422, [switch]$SkipEarlier)
+# -AllowBusyPort skips only the pre-check that -Port is free; the bridge must still belong to
+# the game this script started before the first write. Databases live in this run's artifacts.
+param([int]$Port = 4422, [switch]$SkipEarlier, [switch]$AllowBusyPort)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 . "$PSScriptRoot/env.ps1"
+. "$PSScriptRoot/bridge-owner.ps1"
+Assert-PortFree $Port -Allow:$AllowBusyPort
 $exe = (Resolve-Path 'target/debug/axiom.exe').Path
 $hash = (Get-FileHash -LiteralPath $exe).Hash
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $reportDir = Join-Path $PWD "artifacts/shader-$stamp"
-$db = Join-Path $PWD "data/shader-$stamp.sqlite"
+$db = Join-Path $reportDir 'shader.sqlite'
 New-Item -ItemType Directory -Force $reportDir | Out-Null
 
 function Invoke-ShaderAxiom([string[]]$Arguments) {
@@ -49,6 +53,7 @@ if ($baseline.observation.shader.materials -ne 6) { throw 'Shader lab did not ac
 $process = Start-Process -FilePath $exe -ArgumentList ('--db "{0}" play --start --port {1} --smoke-frames 480 --screenshot "{2}"' -f $db,$Port,"$reportDir/after.png") -WindowStyle Hidden -PassThru -RedirectStandardOutput "$reportDir/live.log" -RedirectStandardError "$reportDir/live-errors.log"
 try {
     $initial = Wait-Shader { param($o) $o.gpu -and $o.shader.materials -eq 6 }
+    Assert-BridgeOwner $Port $process.Id
     $invalid = Set-ShaderSource preview $initial.rev "fn surface(s: SurfaceInput) -> vec4<f32> {`nreturn not_a_variable;`n}"
     if ($invalid.ok -or $invalid.diagnostics[0].code -ne 'invalid_shader' -or $invalid.diagnostics[0].path -ne '/resources/render.shaders/shaders/scan/wgsl') { throw 'Invalid WGSL did not yield a scoped diagnostic' }
     $red = 'fn surface(s: SurfaceInput) -> vec4<f32> { return vec4<f32>(0.95, 0.04, 0.02, 1.0); }'
@@ -76,7 +81,7 @@ $character.components['render.material'] = @{id='mesh'}
 $world.resources['render.shaders'] = @{materials=@{mesh=@{shader='unlit';tint=@(0.8,0.04,0.75,1.0)}}}
 [IO.File]::WriteAllText("$meshPack/world.json", ($world | ConvertTo-Json -Depth 60))
 [IO.File]::WriteAllText("$meshPack/manifest.json", (@{id=$world.id;version=1;world='world.json';capabilities=$world.capabilities} | ConvertTo-Json -Depth 10))
-$mesh = Invoke-ShaderAxiom @('--db',"data/shader-mesh-$stamp.sqlite",'--pack',$meshPack,'play','--start','--port','0','--smoke-frames','32','--screenshot',"$reportDir/mesh.png")
+$mesh = Invoke-ShaderAxiom @('--db',(Join-Path $reportDir 'shader-mesh.sqlite'),'--pack',$meshPack,'play','--start','--port','0','--smoke-frames','32','--screenshot',"$reportDir/mesh.png")
 if ($mesh.observation.shader.materials -ne 1 -or $mesh.observation.animation.players.character.fault) { throw 'Shader did not activate on the GLB' }
 
 Add-Type -AssemblyName System.Drawing.Common
@@ -99,7 +104,7 @@ $after = Count-Pixels "$reportDir/after.png" $redPixels
 $triangles = Count-Pixels "$reportDir/mesh.png" $magentaPixels
 if ($after -lt 100 -or $after -lt $before + 100 -or $triangles -lt 50) { throw "GPU color evidence failed: red $before -> $after, magenta mesh $triangles" }
 
-$rtsDb = "data/shader-rts-$stamp.sqlite"
+$rtsDb = Join-Path $reportDir 'shader-rts.sqlite'
 $rts = Invoke-ShaderAxiom @('--db',$rtsDb,'--pack','content/rts-bench','scenario','examples/rts-functional.scenario.json')
 $rtsGpu = Invoke-ShaderAxiom @('--db',$rtsDb,'play','--start','--port','0','--smoke-frames','8','--screenshot',"$reportDir/rts.png")
 if ($rts.observation.rts.summary.units_total -ne 66 -or $rtsGpu.observation.rts.summary.units_total -ne 64) { throw 'RTS regression' }

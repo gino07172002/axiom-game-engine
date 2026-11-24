@@ -55,8 +55,14 @@ foreach ($group in $groups) {
     $set = @($group.Group)
     "== $($set[0].pack) ($($set[0].build_profile), repeats $($set.Count), entities $($set[0].entities), instances $($set[0].instances))"
     foreach ($name in $metrics.Keys) {
-        $values = @($set | ForEach-Object { [double](& $metrics[$name] $_) })
+        # Missing values (NaN: a report that does not carry this metric) are left out per
+        # metric, and the row says how many reports it is computed from.
+        $values = @($set | ForEach-Object { [double](& $metrics[$name] $_) } | Where-Object { -not [double]::IsNaN($_) })
+        if ($values.Count -eq 0) {
+            '{0,-24} {1,10}   (n=0 of {2})' -f $name, 'n/a', $set.Count
+            continue
+        }
         $sorted = @($values | Sort-Object)
-        '{0,-24} {1,10:N3}   [{2:N3} .. {3:N3}]' -f $name, (Med $values), $sorted[0], $sorted[-1]
+        '{0,-24} {1,10:N3}   [{2:N3} .. {3:N3}]  n={4}' -f $name, (Med $values), $sorted[0], $sorted[-1], $values.Count
     }
 }

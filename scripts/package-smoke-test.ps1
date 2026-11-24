@@ -5,8 +5,8 @@
 # (through `axiom query world` on the player's database) that every resolved asset path lies in
 # the moved copy's content folder. Every child process has a wall-clock limit; on timeout it is
 # killed and the pack, stage and log paths are reported.
-# Negative cases: an external animation asset and --force on a non-game folder are refused and
-# leave nothing behind. Never touches data/ or the real %APPDATA%.
+# Negative cases: an external animation asset, --force on a non-game folder and --force on a
+# build holding a user file inside content\ are refused and leave nothing behind. Never touches data/ or the real %APPDATA%.
 param(
     [switch]$Release,
     [string[]]$Packs = @('plaza', 'adv', 'fps', 'action'),
@@ -162,7 +162,21 @@ $denied = Invoke-Package 'content\adv' $foreign 'foreign' @('--force')
 if ($denied.ok -or "$($denied.error)" -notlike '*not a packaged game folder*') { throw "--force on a non-game folder was not refused: $($denied | ConvertTo-Json -Compress)" }
 if ((Get-Manifest $foreign) -ne $foreignBefore) { throw '--force changed files in a non-game folder' }
 
-$summary = [ordered]@{ok = $true; build = $build; packs = $results; external_refused = $refused.error; force_guard = $denied.error; root = $root }
+# Negative 3 (R9 final N2): a real build with a file the user added inside content\ is not
+# replaced and keeps every file; without that file the same build is replaced.
+$first = $Packs[0]
+$built = Join-Path $root "moved\$first copy"
+$note = Join-Path $built 'content\my notes.txt'
+[IO.File]::WriteAllText($note, 'player notes', (New-Object Text.UTF8Encoding $false))
+$builtBefore = Get-Manifest $built
+$kept = Invoke-Package "content\$first" $built 'nested-note' @('--force')
+if ($kept.ok -or "$($kept.error)" -notlike '*not a packaged game folder*') { throw "--force over a build with a user file in content was not refused: $($kept | ConvertTo-Json -Compress)" }
+if ((Get-Manifest $built) -ne $builtBefore) { throw '--force changed files of a build holding a user file' }
+Remove-Item -LiteralPath $note
+$replaced = Invoke-Package "content\$first" $built 'replace-build' @('--force')
+if (-not $replaced.ok) { throw "--force did not replace an unchanged build: $($replaced | ConvertTo-Json -Compress)" }
+
+$summary = [ordered]@{ok = $true; build = $build; packs = $results; external_refused = $refused.error; force_guard = $denied.error; nested_user_file_guard = $kept.error; root = $root }
 $summary | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $root 'report.json')
 if (-not $Keep) {
     # Keep only the screenshots, logs and the report; the copies hold 100 MB executables each.

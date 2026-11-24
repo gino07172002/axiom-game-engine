@@ -17,6 +17,11 @@ $winlibsUrl = 'https://github.com/brechtsanders/winlibs_mingw/releases/download/
 $winlibsSha256 = '983f680245a3200f9a3b1ced23ed56581d752b1b7cbcc6a0cace924edf9bca0d'
 $rustupUrl = 'https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-pc-windows-gnu/rustup-init.exe'
 $rustupSha256 = 'f6289656ce42e1099f3cbc6f10ef6321dfde54773faf599dd36fd3b1f07d9103'
+# Cache names carry the version and target, so an older unpinned download kept under the old
+# names (winlibs.7z, rustup-init.exe) is neither reused nor deleted: the pinned file is fetched
+# beside it. Change these names together with the URL and hash.
+$winlibsCache = 'winlibs-16.2.0posix-14.0.0-msvcrt-r1.7z'
+$rustupCache = 'rustup-init-1.29.3-x86_64-pc-windows-gnu.exe'
 
 # Downloads $Url to $Path through a temporary file and keeps it only when its SHA-256 equals
 # $Sha256; otherwise deletes the temporary file and stops with the file name and both hashes.
@@ -44,13 +49,13 @@ function Get-VerifiedDownload([string]$Url, [string]$Path, [string]$Sha256) {
 
 if (-not (Test-Path (Join-Path $tools 'mingw64/bin/gcc.exe'))) {
     Write-Host 'Downloading portable GNU build tools to this workspace...'
-    $archive = Join-Path $tools 'winlibs.7z'
+    $archive = Join-Path $tools $winlibsCache
     Get-VerifiedDownload $winlibsUrl $archive $winlibsSha256
     & tar.exe -xf $archive -C $tools
     if ($LASTEXITCODE -ne 0) { throw 'GNU toolchain extraction failed' }
 }
 if (-not (Test-Path (Join-Path $tools 'cargo/bin/rustup.exe'))) {
-    $installer = Join-Path $tools 'rustup-init.exe'
+    $installer = Join-Path $tools $rustupCache
     Get-VerifiedDownload $rustupUrl $installer $rustupSha256
     & $installer -y --profile minimal --default-host x86_64-pc-windows-gnu --default-toolchain stable --no-modify-path
     if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
