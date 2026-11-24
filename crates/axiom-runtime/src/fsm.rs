@@ -252,7 +252,20 @@ pub fn editor_kinds(condition: bool) -> Vec<(&'static str, Value, Value)> {
     let tag = json!({"type":"string","description":"tag of the entities to look for (nearest enabled, living one)"});
     let meters = |max: f64, description: &str| json!({"type":"number","minimum":0.0,"maximum":max,"x-unit":"m","description":description});
     let speed = json!({"type":"number","minimum":0.0,"maximum":100.0,"x-unit":"m/s"});
-    let object = |properties: Value| json!({"type":"object","properties":properties});
+    // Every field is required unless listed in `optional` (a `#[serde(default)]` field).
+    let object_with = |properties: Value, optional: &[&str]| {
+        let required: Vec<String> = properties
+            .as_object()
+            .map(|p| {
+                p.keys()
+                    .filter(|k| !optional.contains(&k.as_str()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({"type":"object","properties":properties,"required":required})
+    };
+    let object = |properties: Value| object_with(properties, &[]);
     if condition {
         vec![
             (
@@ -303,8 +316,9 @@ pub fn editor_kinds(condition: bool) -> Vec<(&'static str, Value, Value)> {
             (
                 "move_toward",
                 json!({"kind":"move_toward","tag":"player","speed":2.0,"stop_within":1.0}),
-                object(
+                object_with(
                     json!({"tag":tag,"speed":speed,"stop_within":meters(1000.0,"stop this far from the target")}),
+                    &["stop_within"],
                 ),
             ),
             (
@@ -341,9 +355,26 @@ pub fn schema_kinds(condition: bool) -> String {
     editor_kinds(condition)
         .iter()
         .map(|(kind, _, schema)| {
+            let required = |field: &str| {
+                schema["required"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|f| f == field))
+            };
+            // Optional fields carry `?`, like the rest of the schema text.
             let fields = schema["properties"]
                 .as_object()
-                .map(|p| p.keys().cloned().collect::<Vec<_>>().join(","))
+                .map(|p| {
+                    p.keys()
+                        .map(|k| {
+                            if required(k) {
+                                k.clone()
+                            } else {
+                                format!("{k}?")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
                 .unwrap_or_default();
             if fields.is_empty() {
                 (*kind).to_owned()

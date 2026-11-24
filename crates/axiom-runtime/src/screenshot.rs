@@ -261,13 +261,22 @@ pub(crate) fn poll(job: &mut Job<Written>) -> Option<Written> {
     }
 }
 
-/// The loopback capture of the host (`App`): one at a time.
+/// Encode jobs that may run at once. Each holds its grabbed frame, so this bounds the memory of
+/// captures taken back to back.
+const JOB_LIMIT: usize = 2;
+
+/// The screenshots of the host (`App`): the loopback `screenshot` op (one at a time) and
+/// `editor_view {capture}` (queued, at most `QUEUE_LIMIT`). One frame read-back at a time; the
+/// next request takes the next frame while earlier PNGs are still encoded (`JOB_LIMIT`).
 #[derive(Default)]
 pub(crate) struct Loopback {
-    /// The waiting request and its id (`next_id`).
+    /// The request waiting for its frame and its id (`next_id`).
     pending: Option<(u64, Request)>,
-    job: Option<(Job<Written>, Request)>,
-    /// `editor_view {capture}` requests waiting for the slot (`enqueue`, at most
+    /// Grabbed frames being cropped, encoded and written (at most `JOB_LIMIT`).
+    jobs: Vec<(Job<Written>, Request)>,
+    /// A loopback `screenshot` op waiting for the frame slot; it goes before editor captures.
+    waiting: Option<Request>,
+    /// `editor_view {capture}` requests waiting for the frame slot (`enqueue`, at most
     /// `QUEUE_LIMIT`): they were written synchronously on the next frame before, so scripts
     /// take captures back to back.
     queued: std::collections::VecDeque<Request>,
@@ -282,42 +291,75 @@ pub(crate) struct Request {
     pub view: bool,
     pub asked: Instant,
     pub reply: Option<SyncSender<Value>>,
-    /// Replace an existing file (`editor_view {capture}` names under artifacts/captures);
-    /// an explicit `screenshot` path never overwrites.
+    /// Replace an existing file: set for `editor_view {capture}` names under
+    /// artifacts/captures, never for the loopback op (an explicit path is never overwritten).
     pub overwrite: bool,
 }
 
-impl Loopback {
-    pub fn busy(&self) -> bool {
-        self.pending.is_some() || self.job.is_some() || !self.queued.is_empty()
+impl Request {
+    /// The loopback `screenshot` op (as opposed to an `editor_view {capture}`).
+    fn is_op(&self) -> bool {
+        !self.overwrite
     }
-    /// Queues a capture behind the running one (`editor_view {capture}`); it starts when the
-    /// slot frees, with its own frame timeout from then on.
-    pub fn enqueue(&mut self, request: Request) -> anyhow::Result<()> {
-        if !self.busy() {
-            return self.request(request);
-        }
+}
+
+impl Loopback {
+    #[cfg(test)]
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+            || !self.jobs.is_empty()
+            || self.waiting.is_some()
+            || !self.queued.is_empty()
+    }
+    /// A frame can be grabbed for a new request now.
+    fn slot_free(&self) -> bool {
+        self.pending.is_none() && self.jobs.len() < JOB_LIMIT
+    }
+    /// Whether `enqueue` accepts another `editor_view {capture}` (checked before the request
+    /// changes anything, so a full queue refuses it without side effects).
+    pub fn can_enqueue(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.queued.len() < QUEUE_LIMIT,
             "{QUEUE_LIMIT} screenshots are already queued; wait for them to be written"
         );
+        Ok(())
+    }
+    /// Queues an `editor_view {capture}`; it takes the first frame once the slot frees (after
+    /// a waiting loopback op), with its own frame timeout from then on.
+    pub fn enqueue(&mut self, request: Request) -> anyhow::Result<()> {
+        if self.slot_free() && self.waiting.is_none() && self.queued.is_empty() {
+            self.pending = Some((next_id(), request));
+            return Ok(());
+        }
+        self.can_enqueue()?;
         self.queued.push_back(request);
         Ok(())
     }
+    /// The loopback `screenshot` op: one at a time; it never waits behind editor captures
+    /// (it takes the next free frame slot before them).
     pub fn request(&mut self, request: Request) -> anyhow::Result<()> {
+        let op_busy = self.pending.as_ref().is_some_and(|(_, p)| p.is_op())
+            || self.jobs.iter().any(|(_, r)| r.is_op())
+            || self.waiting.is_some();
         anyhow::ensure!(
-            !self.busy(),
+            !op_busy,
             "a screenshot is already being captured; one at a time"
         );
         if !request.overwrite && request.path.exists() {
             anyhow::bail!(exists_error(&request.path));
         }
-        self.pending = Some((next_id(), request));
+        if self.slot_free() {
+            self.pending = Some((next_id(), request));
+        } else {
+            self.waiting = Some(request);
+        }
         Ok(())
     }
-    /// The bridge reply of the request just queued.
+    /// The bridge reply of the loopback op just accepted.
     pub fn set_reply(&mut self, reply: SyncSender<Value>) {
-        if let Some((_, pending)) = &mut self.pending {
+        if let Some(waiting) = &mut self.waiting {
+            waiting.reply = Some(reply);
+        } else if let Some((_, pending)) = self.pending.as_mut().filter(|(_, p)| p.is_op()) {
             pending.reply = Some(reply);
         }
     }
@@ -329,9 +371,9 @@ impl Loopback {
     pub fn view(&self) -> bool {
         self.pending.as_ref().is_some_and(|(_, p)| p.view)
     }
-    /// After a rendered frame: hands the frame grabbed for request `id` to the job (`crop`
-    /// already physical). A frame of a request that already ended (timed out, so another
-    /// request may hold the slot now) is dropped.
+    /// After a rendered frame: hands the frame grabbed for request `id` to a job (`crop`
+    /// already physical) and frees the frame slot for the next request. A frame of a request
+    /// that already ended (timed out, so another request may hold the slot now) is dropped.
     pub fn grabbed(&mut self, id: u64, frame: Result<Frame, String>, crop: Option<[u32; 4]>) {
         if self.pending_id() != Some(id) {
             return;
@@ -339,19 +381,16 @@ impl Loopback {
         let Some((_, request)) = self.pending.take() else {
             return;
         };
-        let frame = match frame {
-            Ok(frame) => frame,
-            Err(error) => {
-                self.finish(request, Err(error), 0);
-                return;
-            }
-        };
-        match spawn(request.path.clone(), frame, crop, request.overwrite) {
-            Ok(job) => self.job = Some((job, request)),
-            Err(e) => self.finish(request, Err(format!("could not start the job: {e}")), 0),
+        match frame {
+            Ok(frame) => match spawn(request.path.clone(), frame, crop, request.overwrite) {
+                Ok(job) => self.jobs.push((job, request)),
+                Err(e) => self.finish(request, Err(format!("could not start the job: {e}")), 0),
+            },
+            Err(error) => self.finish(request, Err(error), 0),
         }
+        self.start_queued();
     }
-    /// Every frame: the job's outcome or a pending request that no frame picked up.
+    /// Every frame: finished jobs and a pending request that no frame picked up.
     pub fn poll(&mut self) {
         self.start_queued();
         if self
@@ -366,21 +405,23 @@ impl Loopback {
                 0,
             );
         }
-        let Some((job, _)) = &mut self.job else {
-            return;
-        };
-        let Some(written) = poll(job) else {
-            return;
-        };
-        let (_, request) = self.job.take().expect("checked above");
-        let ms = request.asked.elapsed().as_millis() as u64;
-        self.finish(request, written, ms);
+        let mut i = 0;
+        while i < self.jobs.len() {
+            match poll(&mut self.jobs[i].0) {
+                Some(written) => {
+                    let (_, request) = self.jobs.remove(i);
+                    let ms = request.asked.elapsed().as_millis() as u64;
+                    self.finish(request, written, ms);
+                }
+                None => i += 1,
+            }
+        }
         self.start_queued();
     }
-    /// Moves the next queued capture into the free slot.
+    /// Moves the next request (a waiting loopback op first) into the free frame slot.
     fn start_queued(&mut self) {
-        if self.pending.is_none() && self.job.is_none() {
-            if let Some(mut request) = self.queued.pop_front() {
+        if self.slot_free() {
+            if let Some(mut request) = self.waiting.take().or_else(|| self.queued.pop_front()) {
                 request.asked = Instant::now();
                 self.pending = Some((next_id(), request));
             }
@@ -408,7 +449,7 @@ impl Loopback {
 
 impl Drop for Loopback {
     fn drop(&mut self) {
-        if let Some((job, _)) = &mut self.job {
+        for (job, _) in &mut self.jobs {
             job.shutdown(JOIN_LIMIT);
         }
     }
@@ -600,7 +641,7 @@ mod order_tests {
         assert_ne!(a, b);
         shots.grabbed(a, Ok(frame(10)), None);
         assert!(
-            shots.job.is_none() && shots.pending_id() == Some(b),
+            shots.jobs.is_empty() && shots.pending_id() == Some(b),
             "A's frame is dropped"
         );
         shots.grabbed(b, Ok(frame(20)), None);
@@ -631,19 +672,45 @@ mod order_tests {
         for n in 0..3 {
             shots.enqueue(request(&format!("more-{n}.png"))).unwrap();
         }
+        assert!(shots.can_enqueue().is_err(), "bounded");
         assert!(shots.enqueue(request("over.png")).is_err(), "bounded");
+        assert_eq!(shots.pending_id(), Some(first), "one read-back at a time");
+        // R3 round 3: the loopback op is still accepted while editor captures wait (it
+        // was refused with "one at a time"), and it takes the next frame before them.
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        shots
+            .request(Request {
+                overwrite: false,
+                ..request("op.png")
+            })
+            .unwrap();
+        shots.set_reply(reply);
         assert!(
-            shots.request(request("op.png")).is_err(),
-            "the loopback op waits too"
+            shots
+                .request(Request {
+                    overwrite: false,
+                    ..request("op2.png")
+                })
+                .is_err(),
+            "the op itself is one at a time"
         );
-        assert_eq!(shots.pending_id(), Some(first), "one capture in flight");
+        // The next request gets the very next frame: it does not wait for one.png's encoder.
         shots.grabbed(first, Ok(frame(1)), None);
-        wait_until(&mut shots, |s| s.pending_id().is_some_and(|id| id != first));
+        let op = shots
+            .pending_id()
+            .expect("the op takes the freed slot at once");
+        assert_ne!(op, first);
+        shots.grabbed(op, Ok(frame(9)), None);
+        wait_until(&mut shots, |s| s.pending_id().is_some());
         let second = shots.pending_id().unwrap();
         shots.grabbed(second, Ok(frame(2)), None);
         wait_until(&mut shots, |s| {
             s.pending_id().is_some_and(|id| id != second)
         });
+        // The slot frees while up to JOB_LIMIT encoders still run: wait for the files.
+        wait_until(&mut shots, |s| s.jobs.is_empty());
+        assert_eq!(answer.recv().unwrap()["ok"], true);
+        assert_eq!(pixels(&dir.join("op.png")), vec![9; 8]);
         assert_eq!(pixels(&dir.join("one.png")), vec![1; 8]);
         assert_eq!(pixels(&dir.join("two.png")), vec![2; 8]);
         let _ = std::fs::remove_dir_all(dir);

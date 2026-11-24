@@ -169,6 +169,57 @@ fn hit_burst_beyond_the_event_queue_defers_events_instead_of_freezing() {
 }
 
 #[test]
+fn a_reload_that_changes_the_combat_contract_waits_for_the_event_backlog() {
+    // R5 F1 (round 3): 200 hits leave 72 committed `combat.hit` events in the backlog. A
+    // reload that removes the `combat.hit` export would have dropped them silently; it is
+    // refused while they wait, the old runtime delivers all 200, and an unchanged contract
+    // reloads with the backlog intact.
+    for change_contract in [true, false] {
+        let mut r = WorldRuntime::new(stage(), 1, installed_registry()).unwrap();
+        step(&mut r, 1);
+        let published = |r: &WorldRuntime| {
+            r.observation().metrics["events"]["published"]
+                .as_u64()
+                .unwrap()
+        };
+        let start = published(&r);
+        let combat = r.state.combat.as_mut().unwrap();
+        let hit = combat
+            .scene
+            .attempt("hero", "enemy/guard", 0.1, 5.0, None)
+            .unwrap();
+        combat.submit(vec![hit; 200]).unwrap();
+        step(&mut r, 1);
+        assert_eq!(r.observation().metrics["combat"]["queued_events"], 72);
+        let mut edited = r.state.compiled.source.clone();
+        edited.title = "Contract edit during a combat backlog".into();
+        if change_contract {
+            let lock = edited.packages.as_mut().unwrap();
+            let removed = lock
+                .packages
+                .values_mut()
+                .filter_map(|p| p.exports.events.remove("combat.hit"))
+                .count();
+            assert_eq!(removed, 1);
+            let error = format!("{:#}", r.reconcile(edited, 2).unwrap_err());
+            assert!(error.contains("72 queued combat events"), "{error}");
+            assert_eq!(r.rev, 1, "the old runtime stays active");
+        } else {
+            r.reconcile(edited, 2).unwrap();
+            assert_eq!(r.observation().metrics["combat"]["queued_events"], 72);
+        }
+        step(&mut r, 1);
+        assert_eq!(
+            published(&r) - start,
+            200,
+            "contract change {change_contract}"
+        );
+        assert_eq!(r.observation().metrics["combat"]["queued_events"], 0);
+        assert!(r.observation().metrics["combat"]["error"].is_null());
+    }
+}
+
+#[test]
 fn checked_in_support_scenario_finishes_with_squad_kill_and_hero_damage() {
     let scenario =
         serde_json::from_str(include_str!("../../../examples/m4-support.scenario.json")).unwrap();
@@ -361,4 +412,43 @@ fn activation_rejects_cross_controller_overlap_and_inspection_is_bounded() {
             args: json!({"ids":vec!["hero";129]})
         })
         .is_err());
+}
+#[test]
+fn a_full_grid_with_the_obstacle_budget_builds_its_shared_navigation_on_the_first_step() {
+    // R7 F2 (round 3): a 128x128 RTS grid and 2048 shared obstacles through the real runtime.
+    // The first fixed step merges them into the navigation grid (bounded raster, no panic);
+    // the step time is printed for the record (debug or release as built).
+    let mut w = stage();
+    let session = w.resources.get_mut("rts.session").unwrap();
+    session["grid"] =
+        json!({"width":128,"height":128,"cell_size":1.0,"origin":[-64.0,-64.0],"blocked":[]});
+    let combat = w.resources.get_mut("combat.session").unwrap();
+    combat["bounds"] = json!({"min":[-64.0,-64.0],"max":[64.0,64.0]});
+    let obstacles: Vec<Value> = (0..2048)
+        .map(|i| {
+            let (x, z) = (
+                -60.0 + (i % 64) as f32 * 1.875,
+                20.0 + (i / 64) as f32 * 1.25,
+            );
+            json!({"min":[x, z],"max":[x + 0.6, z + 0.4]})
+        })
+        .collect();
+    combat["obstacles"] = json!(obstacles);
+    let mut r = WorldRuntime::new(w, 1, installed_registry()).unwrap();
+    let started = std::time::Instant::now();
+    step(&mut r, 1);
+    eprintln!(
+        "first RTS step with 2048 shared obstacles on 128x128 ({}): {:.2} ms",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    let sim = &r.system::<axiom_runtime::rts::RtsSystem>().unwrap().sim;
+    assert!(sim.last_error.is_none(), "{:?}", sim.last_error);
+    // Obstacle 0 covers x -60..-59.4, z 20..20.4: cell (4, 84) has its center at (-59.5, 20.5).
+    assert!(!sim.grid.walkable([4, 84]));
+    assert!(sim.grid.walkable([4, 70]));
 }

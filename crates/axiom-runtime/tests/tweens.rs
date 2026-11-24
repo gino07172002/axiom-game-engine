@@ -586,10 +586,10 @@ fn many_finishes_wait_for_the_event_budget() {
 }
 
 #[test]
-fn replay_while_the_previous_finish_is_queued_is_a_retryable_error() {
-    // R5 F14: a player whose on_finish waits in the backlog cannot start a new run (whose
-    // finish would be merged into the queued one); after delivery the same call succeeds
-    // and both finishes are delivered.
+fn replay_while_the_previous_finish_is_queued_queues_both_finishes() {
+    // R5 F14 (round 3): a player whose on_finish waits in the backlog may start a new run;
+    // its finish queues behind the earlier one and both are delivered. Only a player holding
+    // 4 undelivered finishes is refused (retryable).
     let n = axiom_core::tween::MAX_TWEEN_EVENTS_PER_STEP + 6;
     let many: Vec<Value> = (0..n)
         .map(|i| {
@@ -606,24 +606,110 @@ fn replay_while_the_previous_finish_is_queued_is_a_retryable_error() {
     assert_eq!(summary(&r)["queued"], 6);
     let last = format!("t/{}", n - 1);
     let play = json!({"id":last,"clip":"a","restart":true});
-    let error = format!("{:#}", call(&mut r, "play", play.clone()).unwrap_err());
-    assert!(
-        error.contains("previous on_finish is still queued"),
-        "{error}"
-    );
-    // The first player's event was delivered: it may play again.
-    call(
-        &mut r,
-        "play",
-        json!({"id":"t/0","clip":"a","restart":true}),
-    )
-    .unwrap();
+    call(&mut r, "play", play.clone()).unwrap();
+    // speed 100: the 1 s clip finishes within the next step, while its first finish waits.
     steps(&mut r, 1);
     assert_eq!(var(&r, "moves"), n as i64);
-    call(&mut r, "play", play).unwrap();
-    // speed 100: the 1 s clip finishes within the next step.
-    steps(&mut r, 2);
-    assert_eq!(var(&r, "moves"), n as i64 + 2);
+    steps(&mut r, 1);
+    assert_eq!(
+        var(&r, "moves"),
+        n as i64 + 1,
+        "the second finish was queued"
+    );
+    assert_eq!(summary(&r)["fault"], Value::Null);
+}
+
+#[test]
+fn a_binding_replays_a_tween_whose_finish_is_still_queued() {
+    // R5 F14 (round 3): 70 clips finish in one step; `door_moved` (their on_finish) is bound
+    // to `tween.play` on the last player, whose own finish is still in the backlog. The play
+    // runs (no binding fault) and both of its on_finish events arrive.
+    let n = axiom_core::tween::MAX_TWEEN_EVENTS_PER_STEP + 6;
+    let many: Vec<Value> = (0..n)
+        .map(|i| {
+            tweened(
+                &format!("t/{i}"),
+                json!({
+                    "a":yaw_clip(json!({"autoplay":true,"on_finish":"door_moved"})),
+                    "b":yaw_clip(json!({"on_finish":"done","speed":0.5}))
+                }),
+            )
+        })
+        .collect();
+    let mut w = world(Value::Array(many));
+    let last = format!("t/{}", n - 1);
+    let program = w.resources.get_mut("behavior.program").unwrap();
+    program["rules"].as_array_mut().unwrap().push(json!(
+        {"id":"finished","event":"done","actions":[{"kind":"add","variable":"level","value":{"kind":"literal","value":1}}]}
+    ));
+    w.resources.get_mut("runtime.bindings").unwrap()["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"event":"door_moved","calls":[{"kind":"call","capability":"tween","action":"play","args":{"id":last,"clip":"b"}}]}));
+    let mut r = runtime(w);
+    while var(&r, "moves") == 0 {
+        steps(&mut r, 1);
+    }
+    assert_eq!(
+        summary(&r)["queued"],
+        6,
+        "the last player's finish is in the backlog"
+    );
+    assert_eq!(
+        r.observation().metrics["bindings"]["fault"],
+        Value::Null,
+        "the bound play ran"
+    );
+    steps(&mut r, 1);
+    assert_eq!(var(&r, "moves"), n as i64, "every `a` finish arrived");
+    // `b` plays 2 s; then its own on_finish arrives.
+    steps(&mut r, 300);
+    assert_eq!(var(&r, "level"), 1);
+    assert_eq!(r.observation().metrics["bindings"]["fault"], Value::Null);
+    assert_eq!(summary(&r)["fault"], Value::Null);
+}
+
+#[test]
+fn a_player_holding_four_queued_finishes_refuses_another_play() {
+    // Bounded backlog: 4 undelivered finishes per player, then a retryable error.
+    let n = axiom_core::tween::MAX_TWEEN_EVENTS_PER_STEP * 5 + 1;
+    let many: Vec<Value> = (0..n)
+        .map(|i| {
+            tweened(
+                &format!("t/{i}"),
+                json!({"a":yaw_clip(json!({"on_finish":"door_moved","speed":100.0}))}),
+            )
+        })
+        .collect();
+    let mut r = runtime(world(Value::Array(many)));
+    // Every round (two steps: speed 100 runs the 1 s clip in 0.83 s per step) all players
+    // finish again: the backlog grows faster than 64 per step.
+    let (mut refused, mut played) = (None, 0);
+    for round in 0..8 {
+        for i in 0..n {
+            let id = format!("t/{i}");
+            match call(&mut r, "play", json!({"id":id,"clip":"a","restart":true})) {
+                Ok(_) => played += 1,
+                Err(e) => {
+                    refused = Some(format!("round {round} {id}: {e:#}"));
+                    break;
+                }
+            }
+        }
+        if refused.is_some() {
+            break;
+        }
+        steps(&mut r, 2);
+    }
+    let refused = refused.expect("the last player reached its limit");
+    assert!(
+        refused.contains("earlier on_finish events are still queued"),
+        "{refused}"
+    );
+    // Nothing was dropped: every accepted run finishes once and its on_finish arrives.
+    steps(&mut r, 60);
+    assert_eq!(var(&r, "moves"), played);
+    assert_eq!(summary(&r)["queued"], 0);
 }
 
 #[test]

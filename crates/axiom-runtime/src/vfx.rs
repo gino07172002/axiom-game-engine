@@ -451,6 +451,11 @@ impl RuntimeSystem for VfxSystem {
     fn as_any(&self) -> &dyn Any {
         self
     }
+    /// Tests swap the prebuilt mask table (`extract_and_inspect_use_the_prebuilt_mask_table`).
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
     fn step(&mut self, state: &mut RuntimeState, _input: &ActionMap) {
         let mut matrices = None;
         for (id, e) in &self.library.emitters {
@@ -699,8 +704,12 @@ mod tests {
             reference
         );
         let origin = Vec3::new(1.0, 2.0, 3.0);
-        for i in [0, 1, 17, 818, 2047] {
-            let a = evaluate(&e, i, 1.25, origin);
+        for i in 0..e.count {
+            // The old scan, independent of `mask_pixels`: the (i % set)-th set pixel. A
+            // one-entry table makes `evaluate_masked` use exactly that pixel.
+            let scanned = reference[i as usize % reference.len()];
+            let old = [(scanned.0 as u16, scanned.1 as u16)];
+            let a = evaluate_masked(&e, &old, i, 1.25, origin);
             let b = evaluate_masked(&e, &table, i, 1.25, origin);
             assert_eq!(
                 bytemuck::bytes_of(&a),
@@ -708,6 +717,71 @@ mod tests {
                 "particle {i}"
             );
         }
+    }
+
+    /// R3 round 3 (F4): `extract` (every particle) and `vfx.inspect` read the emitter's
+    /// prebuilt table (`Running.mask`) instead of scanning the mask per particle: with the
+    /// table swapped for a different one, every output follows the table.
+    #[test]
+    fn extract_and_inspect_use_the_prebuilt_mask_table() {
+        let mask: Vec<String> = (0..64)
+            .map(|y| {
+                (0..64)
+                    .map(|x| if (x * 7 + y * 3) % 5 == 0 { '1' } else { '0' })
+                    .collect()
+            })
+            .collect();
+        let e = Emitter {
+            count: 2048,
+            field: "texture".into(),
+            texture_mask: Some(mask.clone()),
+            ..Emitter::default()
+        };
+        let mut world: Value =
+            serde_json::from_str(include_str!("../../../content/two-cameras/world.json")).unwrap();
+        world["capabilities"]["vfx"] = json!(1);
+        world["capabilities"]["animation"] = json!(1);
+        let systems = world["systems"].as_array_mut().unwrap();
+        systems.push(json!("animation.evaluate"));
+        systems.push(json!("vfx.simulate"));
+        world["resources"]["animation.library"] = json!({"assets":{}});
+        world["resources"]["vfx.library"] = json!({"emitters":{"fx":e}});
+        let world: axiom_core::World = serde_json::from_value(world).unwrap();
+        let mut runtime = crate::WorldRuntime::new(world, 1, crate::installed_registry()).unwrap();
+        // A table the per-particle scan would never produce: the set pixels reversed.
+        let mut swapped = mask_pixels(&mask);
+        swapped.reverse();
+        let system = runtime.system_mut::<VfxSystem>().unwrap();
+        system.running.get_mut("fx").unwrap().mask = swapped.clone();
+        let time = system.running["fx"].time;
+        let frame = runtime.render_frame();
+        let batch = frame.vfx.batches.iter().find(|b| b.id == "fx").unwrap();
+        assert_eq!(batch.particles.len(), 2048);
+        let mut differs = 0;
+        for (i, p) in batch.particles.iter().enumerate() {
+            let expected = evaluate_masked(&e, &swapped, i as u32, time, batch.origin);
+            assert_eq!(bytemuck::bytes_of(p), bytemuck::bytes_of(&expected), "{i}");
+            differs += usize::from(
+                bytemuck::bytes_of(p)
+                    != bytemuck::bytes_of(&evaluate(&e, i as u32, time, batch.origin)),
+            );
+        }
+        assert!(
+            differs > 1000,
+            "the swapped table changes the output ({differs})"
+        );
+        let inspected = runtime
+            .command(&axiom_core::gameplay::RuntimeCommand::Call {
+                capability: "vfx".into(),
+                action: "inspect".into(),
+                args: json!({"id":"fx"}),
+            })
+            .unwrap();
+        let sample = inspected["result"]["cpu_reference_sample"].clone();
+        let expected: Vec<[f32; 4]> = (0..8)
+            .map(|i| evaluate_masked(&e, &swapped, i, time, batch.origin).position_size)
+            .collect();
+        assert_eq!(sample, json!(expected));
     }
 
     /// Without curves a ribbon keeps its constant width / colour; with them the trail runs

@@ -20,6 +20,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
 };
 
+/// Undelivered `on_finish` events one player may hold (finished runs waiting for the
+/// per-step event budget).
+const QUEUED_PER_PLAYER: u8 = 4;
+
 /// Components listed with clip/time/state in `observe` (counts are always complete).
 const OBSERVED: usize = 32;
 
@@ -74,8 +78,10 @@ struct Player {
     playing: bool,
     /// The current clip's values were written at least once (re-applied after hot reload).
     applied: bool,
-    /// Waiting in the `on_finish` queue.
-    queued: bool,
+    /// Finished runs of this player whose `on_finish` waits in the queue (at most
+    /// `QUEUED_PER_PLAYER`: `play` and `seek` refuse at the limit, and a playing player holds fewer,
+    /// so a finish is never dropped).
+    queued: u8,
 }
 
 struct EventInfo {
@@ -93,8 +99,8 @@ pub struct TweenSystem {
     values: Vec<f32>,
     eases: Vec<Ease>,
     events: Vec<EventInfo>,
-    /// (player, clip) of finished clips that emit `on_finish` (capacity = players: a player
-    /// waits at most once).
+    /// (player, clip) of finished clips that emit `on_finish` (at most `QUEUED_PER_PLAYER`
+    /// per player).
     queue: VecDeque<(usize, usize)>,
     emitted: u64,
     scanned: usize,
@@ -345,7 +351,7 @@ impl TweenSystem {
                 forward: true,
                 playing: autoplay.is_some() && def.enabled,
                 applied: false,
-                queued: false,
+                queued: 0,
             });
             system.ids.push(e.id.clone());
         }
@@ -629,8 +635,8 @@ impl RuntimeSystem for TweenSystem {
             (player.time, player.forward) = (time, forward);
             if finished {
                 player.playing = false;
-                if clip.on_finish.is_some() && !player.queued {
-                    player.queued = true;
+                if clip.on_finish.is_some() {
+                    player.queued = player.queued.saturating_add(1);
                     self.queue.push_back((p, c));
                 }
             }
@@ -643,7 +649,7 @@ impl RuntimeSystem for TweenSystem {
             let Some((p, c)) = self.queue.pop_front() else {
                 break;
             };
-            self.players[p].queued = false;
+            self.players[p].queued = self.players[p].queued.saturating_sub(1);
             self.emit(state, p, c);
         }
         state.sync_scenes();
@@ -696,8 +702,8 @@ impl RuntimeSystem for TweenSystem {
             let Ok(c) = self.clip_index(p, &old.clips[oc].name) else {
                 continue;
             };
-            if self.clips[c].def == old.clips[oc].def && !self.players[p].queued {
-                self.players[p].queued = true;
+            if self.clips[c].def == old.clips[oc].def {
+                self.players[p].queued = self.players[p].queued.saturating_add(1);
                 self.queue.push_back((p, c));
             }
         }
@@ -738,12 +744,17 @@ impl RuntimeSystem for TweenSystem {
                         .and_then(Value::as_str)
                         .context("tween.play needs {\"id\":..,\"clip\":NAME}")?;
                     let c = self.clip_index(p, name)?;
-                    // One queued on_finish per player: a new run that could finish before the
-                    // backlog delivers the last one would lose its event. Refuse (retryable).
-                    if self.players[p].queued && self.clips[c].on_finish.is_some() {
+                    // A run that finishes while earlier finishes of this player still wait
+                    // queues its own on_finish behind them (bindings may replay a door from
+                    // its own event during a backlog). Only a player already holding
+                    // `QUEUED_PER_PLAYER` undelivered finishes is refused (retryable); while
+                    // it plays it holds fewer, so its finish always has room.
+                    if self.players[p].queued >= QUEUED_PER_PLAYER
+                        && self.clips[c].on_finish.is_some()
+                    {
                         let ahead = self.queue.iter().position(|&(q, _)| q == p).unwrap_or(0);
                         bail!(
-                            "{}: the previous on_finish is still queued ({} event(s) ahead, {MAX_TWEEN_EVENTS_PER_STEP} delivered per step); retry tween.play on a later step",
+                            "{}: {QUEUED_PER_PLAYER} earlier on_finish events are still queued ({} event(s) ahead, {MAX_TWEEN_EVENTS_PER_STEP} delivered per step); retry tween.play on a later step",
                             self.ids[p],
                             ahead
                         );
@@ -783,6 +794,15 @@ impl RuntimeSystem for TweenSystem {
                             format!("{} has no current clip; pass \"clip\"", self.ids[p])
                         })?,
                     };
+                    // `seek` may switch a playing player to a clip with on_finish: the same
+                    // limit as `play`, so that run's finish has room too.
+                    ensure!(
+                        self.players[p].queued < QUEUED_PER_PLAYER
+                            || self.clips[c].on_finish.is_none()
+                            || !self.players[p].playing,
+                        "{}: {QUEUED_PER_PLAYER} earlier on_finish events are still queued; retry tween.seek on a later step",
+                        self.ids[p]
+                    );
                     let length = self.clips[c].length;
                     ensure!(
                         time.is_finite() && (0.0..=length).contains(&time),

@@ -300,6 +300,21 @@ fn public_schema_lists_the_editor_kinds_and_state_fields() {
             assert!(schema.contains(kind), "{kind} missing from {schema}");
         }
     }
+    // R5 F15 (round 3): `stop_within` is optional (`#[serde(default)]`) and keeps its `?`;
+    // every other action / condition field is required.
+    let actions = axiom_runtime::fsm::schema_kinds(false);
+    let toward = actions
+        .split('|')
+        .find(|k| k.starts_with("move_toward{"))
+        .unwrap();
+    let mut fields: Vec<&str> = toward["move_toward{".len()..toward.len() - 1]
+        .split(',')
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["speed", "stop_within?", "tag"], "{actions}");
+    assert_eq!(actions.matches('?').count(), 1, "{actions}");
+    assert!(!axiom_runtime::fsm::schema_kinds(true).contains('?'));
+    assert!(schema.contains("stop_within?"), "{schema}");
     for field in ["clip", "clip_loop", "emit", "radius", "stop_within"] {
         let agent = registry.authoring.components["fsm.agent"]
             .schema

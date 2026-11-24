@@ -175,26 +175,34 @@ fn bytes(format: wgpu::TextureFormat, size: [u32; 2], mips: u32) -> u64 {
 }
 
 /// Viewport of normalized `rect` on a `size` target, kept inside it (wgpu validates bounds:
-/// `x + w <= width` in f32). Shared by every pass that draws a camera view
-/// (`render::pixel_rect`).
+/// `x + w <= width` in f32, `w > 0`). Shared by every pass that draws a camera view
+/// (`render::pixel_rect`). A rectangle inside the target keeps its plain `rect * size`
+/// values, also below one pixel: the projection aspect and the pointer ray
+/// (`WorldRuntime::pointer_ray`) both use `rect * size`.
 pub(crate) fn viewport(rect: [f32; 4], size: [u32; 2]) -> [f32; 4] {
-    let (w, h) = (size[0] as f32, size[1] as f32);
-    let x = (rect[0] * w).clamp(0.0, w - 1.0);
-    let y = (rect[1] * h).clamp(0.0, h - 1.0);
-    // `x + (w - x)` can round above `w`: step the extent down until the sum fits.
-    let fit = |start: f32, extent: f32, limit: f32| {
-        let mut extent = extent;
-        while start + extent > limit && extent > 1.0 {
+    let axis = |start: f32, extent: f32, limit: f32| {
+        // The largest float below `limit`, so a positive extent always fits after `start`.
+        let last = f32::from_bits(limit.max(1.0).to_bits() - 1);
+        let start = (start * limit).clamp(0.0, last);
+        let room = limit - start;
+        let mut extent = (extent * limit).min(room);
+        if extent.is_nan() || extent <= 0.0 {
+            extent = room;
+        }
+        // `start + extent` can round above `limit`: fall back to the exact remainder (exact
+        // when `start >= limit / 2`), then step down. Below `limit / 2` the extent exceeds
+        // `limit / 2` and each step removes at least half an ulp of `limit`.
+        if start + extent > limit {
+            extent = room;
+        }
+        while start + extent > limit && extent > 0.0 {
             extent = f32::from_bits(extent.to_bits() - 1);
         }
-        extent
+        (start, extent)
     };
-    [
-        x,
-        y,
-        fit(x, (rect[2] * w).clamp(1.0, w - x), w),
-        fit(y, (rect[3] * h).clamp(1.0, h - y), h),
-    ]
+    let (x, w) = axis(rect[0], rect[2], size[0] as f32);
+    let (y, h) = axis(rect[1], rect[3], size[1] as f32);
+    [x, y, w, h]
 }
 
 impl Finish {
@@ -782,7 +790,20 @@ mod tests {
             [3.5, 2.5, 3.5, 2.5]
         );
         let tiny = viewport([0.999, 0.0, 0.0001, 1.0], [30, 17]);
-        assert!(tiny[0] + tiny[2] <= 30.0 && tiny[2] >= 1.0 - 1e-6);
+        assert!(tiny[0] + tiny[2] <= 30.0 && tiny[2] > 0.0);
+        // R3 round 3: a sub-pixel view keeps its size and position (no 1 px minimum, no
+        // shift to `w - 1`), so the projection matches the pointer ray (`rect * size`).
+        assert_eq!(
+            viewport([0.0, 0.0, 0.001, 0.001], [640, 480]),
+            [0.0, 0.0, 0.001 * 640.0, 0.001 * 480.0]
+        );
+        let [x, y, w, h] = viewport([0.999, 0.999, 0.001, 0.001], [640, 480]);
+        assert_eq!((x, y), (0.999 * 640.0, 0.999 * 480.0));
+        assert!(
+            (w - 0.64).abs() < 1e-4 && (h - 0.48).abs() < 1e-4,
+            "{w} {h}"
+        );
+        assert!(x + w <= 640.0 && y + h <= 480.0);
     }
 
     /// GPU time of each pass at 1920x1080 (`cargo test -p axiom-runtime --lib

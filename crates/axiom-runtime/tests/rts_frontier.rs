@@ -393,3 +393,52 @@ fn delivery_events_report_gross_minerals_when_the_opponent_spends_in_the_same_ti
     assert_eq!(s.delivered_tick[f as usize], 5);
     assert!(s.balance[f as usize] < balance + 5);
 }
+
+/// R7 F3 (round 3): a reload whose transferred balance plus the world's minerals no longer
+/// fits a u32 is refused (the old revision keeps running) instead of going live with
+/// deliveries that would stop at `balance_overflow`.
+#[test]
+fn a_reload_that_would_overflow_a_balance_is_refused() {
+    let mut r = frontier();
+    run(&mut r, 2);
+    let s = &mut r.system_mut::<RtsSystem>().unwrap().sim;
+    let minerals: u64 = s.resources.iter().map(|n| u64::from(n.remaining)).sum();
+    let carried: u64 = s
+        .units
+        .iter()
+        .filter(|u| u.def.faction == 0)
+        .map(|u| u64::from(u.carried))
+        .sum();
+    // Exactly at the limit: the reload is accepted.
+    let top = u32::MAX - (minerals + carried) as u32;
+    s.initial_economy += u64::from(top - s.balance[0]);
+    s.balance[0] = top;
+    let world = r.state.compiled.source.clone();
+    r.reconcile(world.clone(), 2).unwrap();
+    assert_eq!(sim(&r).balance[0], top);
+    // One more mineral (a new node of 1) in the new revision: refused, old state kept.
+    let mut edited = world;
+    let node = edited
+        .entities
+        .iter()
+        .find(|e| e.components.contains_key("rts.resource"))
+        .unwrap();
+    let id = node.id.clone();
+    // An existing node keeps its remaining amount on reload; a new node brings its stock.
+    let mut extra = edited.entity(&id).unwrap().clone();
+    extra.id = "mineral/extra".into();
+    let x = extra.components["core.transform"]["position"][0]
+        .as_f64()
+        .unwrap();
+    extra.components.get_mut("core.transform").unwrap()["position"][0] = json!(x + 1.5);
+    extra.components.get_mut("rts.resource").unwrap()["amount"] = json!(1);
+    edited.entities.push(extra);
+    if let Some(scene) = edited.scenes.iter_mut().find(|s| s.entities.contains(&id)) {
+        scene.entities.push("mineral/extra".into());
+    }
+    let error = format!("{:#}", r.reconcile(edited, 3).unwrap_err());
+    assert!(error.contains("exceeds"), "{error}");
+    assert_eq!(r.rev, 2);
+    assert_eq!(sim(&r).balance[0], top);
+    run(&mut r, 1);
+}

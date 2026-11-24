@@ -73,9 +73,8 @@ fn fnv1a(text: &str) -> u64 {
     h.max(1)
 }
 
-/// The encoded bytes of a file clip (bounded) and its cache text: content hash and gain, so
-/// the same file under two paths is decoded once and a changed file is decoded again.
-fn file_key(file: &ClipFile) -> Result<(String, Vec<u8>)> {
+/// The encoded bytes of a file clip (bounded by `MAX_FILE_BYTES`).
+fn file_bytes(file: &ClipFile) -> Result<Vec<u8>> {
     let path = std::path::Path::new(&file.path);
     let size = std::fs::metadata(path)
         .with_context(|| format!("audio file {} not found", file.path))?
@@ -96,23 +95,37 @@ fn file_key(file: &ClipFile) -> Result<(String, Vec<u8>)> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(too_big(bytes.len() as u64));
     }
-    let hex: String = Sha256::digest(&bytes)
+    Ok(bytes)
+}
+
+/// The cache text of a file clip: content hash (SHA-256) and gain, so the same file under two
+/// paths is decoded once and a changed file is decoded again.
+fn file_text(file: &ClipFile, bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    Ok((
-        format!("file:{hex}:gain:{:08x}", file.gain.to_bits()),
-        bytes,
-    ))
+    format!("file:{hex}:gain:{:08x}", file.gain.to_bits())
+}
+
+/// Fast 64-bit content fingerprint (foldhash, fixed seed) that confirms a file still holds
+/// what its remembered SHA-256 text was computed from. Not cryptographic: it only has to
+/// tell a replaced file from the one hashed before under the same stamp.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = foldhash::quality::FixedState::with_seed(0).build_hasher();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 /// What a file looked like when its cache text was computed: path, size, modification time
 /// and gain bits.
 type FileStamp = (String, u64, std::time::SystemTime, u32);
-/// Cache texts of files by stamp (bounded), so a runtime build whose files are unchanged since
-/// they were decoded costs one `metadata` call per file instead of reading and hashing it.
-/// A changed file has a new size or modification time and is read and hashed again.
-static FILE_TEXTS: Mutex<BTreeMap<FileStamp, String>> = Mutex::new(BTreeMap::new());
+/// Cache texts of files by stamp, with the content fingerprint they were computed from
+/// (bounded). A build reads every file (the content is always checked, so a replaced file
+/// with the same size and modification time is decoded again) but skips the SHA-256 when
+/// the stamp and the fingerprint both match.
+static FILE_TEXTS: Mutex<BTreeMap<FileStamp, (u64, String)>> = Mutex::new(BTreeMap::new());
 const FILE_TEXTS_MAX: usize = 256;
 
 fn file_stamp(file: &ClipFile) -> Option<FileStamp> {
@@ -134,41 +147,39 @@ pub(crate) fn cached_clip(clip: &AudioClip) -> Result<(u64, Arc<[i16]>, Option<F
     fn poisoned<T>(_: T) -> anyhow::Error {
         anyhow::anyhow!("audio clip cache lock poisoned")
     }
-    // Unchanged file already decoded: no read, no hash. Stamped before reading, so a file
-    // replaced during the read is read again next time.
-    let stamp = clip.file.as_ref().and_then(file_stamp);
-    if let Some(stamp) = &stamp {
-        let known = FILE_TEXTS.lock().map_err(poisoned)?.get(stamp).cloned();
-        if let Some(text) = known {
-            let key = fnv1a(&text);
-            if let Some(e) = CLIP_CACHE
-                .lock()
-                .map_err(poisoned)?
-                .get(&key)
-                .filter(|e| e.text == text)
-            {
-                let mut file = e.file.clone();
-                if let (Some(info), Some(f)) = (file.as_mut(), &clip.file) {
-                    info.path.clone_from(&f.path);
-                }
-                return Ok((key, e.pcm.clone(), file));
-            }
-        }
-    }
     let (text, bytes) = match &clip.file {
         Some(file) => {
-            let (text, bytes) = file_key(file)?;
+            // Stamped before reading, so a file replaced during the read is hashed again.
+            let stamp = file_stamp(file);
+            let bytes = file_bytes(file)?;
+            let print = fingerprint(&bytes);
+            let known = match &stamp {
+                Some(stamp) => FILE_TEXTS
+                    .lock()
+                    .map_err(poisoned)?
+                    .get(stamp)
+                    .filter(|(p, _)| *p == print)
+                    .map(|(_, text)| text.clone()),
+                None => None,
+            };
+            let text = match known {
+                Some(text) => text,
+                None => {
+                    let text = file_text(file, &bytes);
+                    if let Some(stamp) = stamp {
+                        let mut texts = FILE_TEXTS.lock().map_err(poisoned)?;
+                        if texts.len() >= FILE_TEXTS_MAX {
+                            texts.clear();
+                        }
+                        texts.insert(stamp, (print, text.clone()));
+                    }
+                    text
+                }
+            };
             (text, Some(bytes))
         }
         None => (serde_json::to_string(clip)?, None),
     };
-    if let Some(stamp) = stamp {
-        let mut texts = FILE_TEXTS.lock().map_err(poisoned)?;
-        if texts.len() >= FILE_TEXTS_MAX {
-            texts.clear();
-        }
-        texts.insert(stamp, text.clone());
-    }
     let key = fnv1a(&text);
     let found = |e: &CacheEntry| {
         let file = e.file.clone().map(|mut info| {
@@ -942,4 +953,62 @@ pub fn register(r: &mut RuntimeRegistry) {
     r.factories.insert("audio.spatial".into(), |state| {
         Ok(Box::new(AudioSpatialSystem::new(state)?))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cost of the file check per cached build of one 5.8 MB file (`cargo test -p
+    /// axiom-runtime --lib measure_file_check -- --ignored --nocapture`): metadata only (round 1,
+    /// no content check), read + SipHash fingerprint (now), read + SHA-256 (before round 1).
+    /// Medians of 9 runs; the file is in the OS cache after the first read.
+    #[test]
+    #[ignore]
+    fn measure_file_check() {
+        let dir = std::env::temp_dir().join(format!("axiom-audio-measure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.wav");
+        let samples: Vec<f32> = (0..2_880_000)
+            .map(|i| (i as f32 * 0.01).sin() * 0.5)
+            .collect();
+        std::fs::write(
+            &path,
+            crate::audio_file::encode_wav(&samples, 2, 44_100, 16, false),
+        )
+        .unwrap();
+        let file = ClipFile {
+            path: path.to_string_lossy().into_owned(),
+            gain: 1.0,
+        };
+        let median = |f: &dyn Fn()| {
+            let mut t: Vec<f64> = (0..9)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    f();
+                    s.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            t.sort_by(f64::total_cmp);
+            t[4]
+        };
+        let stamp = median(&|| {
+            file_stamp(&file).unwrap();
+        });
+        let read = median(&|| {
+            file_bytes(&file).unwrap();
+        });
+        let print = median(&|| {
+            fingerprint(&file_bytes(&file).unwrap());
+        });
+        let sha = median(&|| {
+            file_text(&file, &file_bytes(&file).unwrap());
+        });
+        eprintln!(
+            "file check of {} bytes ({}): stamp {stamp:.3} ms, read {read:.2} ms, read+fingerprint {print:.2} ms, read+sha256 {sha:.2} ms",
+            std::fs::metadata(&path).unwrap().len(),
+            if cfg!(debug_assertions) { "debug" } else { "release" }
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
