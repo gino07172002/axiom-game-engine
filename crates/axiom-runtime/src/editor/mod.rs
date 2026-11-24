@@ -166,6 +166,8 @@ pub(crate) fn entity_in_path(path: &str, world: &World) -> Option<String> {
     world.entity(&id).map(|e| e.id.clone())
 }
 
+/// What File ▸ Verify World's job returns: `Registry::verify` (entities, diagnostics).
+type VerifyResult = anyhow::Result<(usize, Vec<Value>)>;
 /// Watchdog of File ▸ Verify World.
 const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -604,8 +606,8 @@ pub(crate) struct Editor {
     pub(crate) scenario_results: std::collections::BTreeMap<String, Value>,
     /// The scenario running on a worker thread (at most one).
     pub(crate) scenario_job: Option<crate::jobs::Job<Value>>,
-    /// File ▸ Verify World: (revision, compile job of the shown world).
-    verify_job: Option<(i64, crate::jobs::Job<anyhow::Result<usize>>)>,
+    /// File ▸ Verify World: (revision, verify job of the shown world: entities, diagnostics).
+    verify_job: Option<(i64, crate::jobs::Job<VerifyResult>)>,
     /// Summary of the last finished background job (observation).
     last_job: Option<Value>,
     material: Option<assets::MaterialDraft>,
@@ -2637,7 +2639,7 @@ impl Editor {
             "verify",
             format!("revision {rev}"),
             VERIFY_TIMEOUT,
-            move |_| Ok(world.compile(&registry)?.len()),
+            move |_| registry.verify(&world),
         )?;
         self.verify_job = Some((rev, job));
         self.notice(format!("Verifying revision {rev}…"));
@@ -2655,11 +2657,35 @@ impl Editor {
         self.verify_job = None;
         match outcome {
             crate::jobs::Outcome::Done {
-                value: Ok(entities),
+                value: Ok((entities, diagnostics)),
                 stop: None,
-            } => self.notice(format!(
+            } if diagnostics.is_empty() => self.notice(format!(
                 "Verify passed · revision {rev} · {entities} entities"
             )),
+            // The same warnings protocol `verify` lists for this revision: one Console
+            // entry each, linked to the object, and a count in the status line.
+            crate::jobs::Outcome::Done {
+                value: Ok((entities, diagnostics)),
+                stop: None,
+            } => {
+                for d in &diagnostics {
+                    let path = d["path"].as_str().unwrap_or_default();
+                    let entity = entity_in_path(path, &self.world);
+                    let text = format!(
+                        "Verify revision {rev}: warning {} at {path}: {}",
+                        d["code"].as_str().unwrap_or_default(),
+                        d["message"].as_str().unwrap_or_default()
+                    );
+                    self.console_log(debug::Level::Warn, &text, entity);
+                }
+                let first = &diagnostics[0];
+                self.notice(format!(
+                    "Verify passed with {} warning(s) · revision {rev} · {entities} entities · {} at {} (see Console)",
+                    diagnostics.len(),
+                    first["code"].as_str().unwrap_or_default(),
+                    first["path"].as_str().unwrap_or_default()
+                ));
+            }
             crate::jobs::Outcome::Done {
                 value: Err(error), ..
             } => self.problem(&error),

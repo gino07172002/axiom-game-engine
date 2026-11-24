@@ -87,16 +87,28 @@ fn object_form<T: serde::de::DeserializeOwned + Serialize>(
     let t: T = serde_json::from_value(v.clone()).ok()?;
     let want = serde_json::to_value(&t).ok().filter(Value::is_object)?;
     match inherited.filter(|b| b.is_object()) {
-        Some(base) => Some(replacing_override::<T>(&want, base).unwrap_or(want)),
+        Some(base) => Some(replacing_override::<T>(&want, base, v).unwrap_or(want)),
         None => v.is_array().then_some(want),
     }
 }
 /// An override that, merged into `base` with `merge_json`, decodes to the same `T` as `want`
-/// (an object form). `None` when some inherited field has no fill that reads as the default.
+/// (an object form of `stored`). `None` when some inherited field has no fill that reads as
+/// the value `want` leaves out.
 fn replacing_override<T: serde::de::DeserializeOwned + Serialize>(
     want: &Value,
     base: &Value,
+    stored: &Value,
 ) -> Option<Value> {
+    /// Most scalars of the stored value tried as fills (a bounded cost per legacy pair).
+    const MAX_STORED_FILLS: usize = 64;
+    fn scalars(v: &Value, out: &mut Vec<Value>) {
+        match v {
+            Value::Array(items) => items.iter().for_each(|i| scalars(i, out)),
+            Value::Object(fields) => fields.values().for_each(|i| scalars(i, out)),
+            _ if out.len() < MAX_STORED_FILLS && !out.contains(v) => out.push(v.clone()),
+            _ => {}
+        }
+    }
     fn omitted(over: &Value, base: &Value, at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
         let (Some(over), Some(base)) = (over.as_object(), base.as_object()) else {
             return;
@@ -133,17 +145,23 @@ fn replacing_override<T: serde::de::DeserializeOwned + Serialize>(
     };
     let mut paths = vec![];
     omitted(want, base, &mut vec![], &mut paths);
+    // Fills: values that read as a serde default, then the stored value's own scalars. A
+    // field serialization skips at a custom default (e.g. `camera.follow` `input.drag_yaw`
+    // 360) is left out of `want` even when the stored value spelled it; its stored value
+    // is the fill that keeps it.
+    let mut fills = vec![json!(null), json!(false), json!(""), json!([]), json!(0)];
+    if !paths.is_empty() {
+        scalars(stored, &mut fills);
+    }
     let mut over = want.clone();
     for path in &paths {
         // Fields decode independently: try each fill alone, inheriting the others.
-        let fill = [json!(null), json!(false), json!(""), json!([]), json!(0)]
-            .into_iter()
-            .find(|candidate| {
-                let mut probe = want.clone();
-                put(&mut probe, path, candidate.clone());
-                decoded(&probe).is_some_and(|got| get(&got, path) == get(want, path))
-            })?;
-        put(&mut over, path, fill);
+        let fill = fills.iter().find(|candidate| {
+            let mut probe = want.clone();
+            put(&mut probe, path, (*candidate).clone());
+            decoded(&probe).is_some_and(|got| get(&got, path) == get(want, path))
+        })?;
+        put(&mut over, path, fill.clone());
     }
     (decoded(&over)? == *want).then_some(over)
 }
@@ -879,6 +897,16 @@ impl Registry {
             f(next, previous)?;
         }
         Ok(())
+    }
+    /// What `verify` checks of `w`: compiles it (the error when it does not compile) and
+    /// returns the compiled entity count with the diagnostics a readable revision still
+    /// reports (deprecations, and `write_warnings`: rules newer than the revision are
+    /// reported, not enforced). Protocol `verify` and the editor's Verify World share it.
+    pub fn verify(&self, w: &World) -> Result<(usize, Vec<Value>)> {
+        let entities = w.compile(self)?.len();
+        let mut diagnostics = crate::camera::deprecations(w);
+        diagnostics.extend(self.write_warnings(w));
+        Ok((entities, diagnostics))
     }
     /// Strict-on-write rules `w` breaks, as `verify` warnings (never an error: the revision
     /// is stored and stays readable; the next write that touches the data must fix it).

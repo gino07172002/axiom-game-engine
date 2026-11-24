@@ -270,3 +270,36 @@ fn decoding_rewrites_only_registered_object_types() {
     assert_eq!(world.resources["custom.list"], json!([1, 2]));
     assert!(world.resources["audio.library"].is_object());
 }
+
+/// Final round C0 R1-6.2-F3: an override of a legacy pair that spelled a value equal to a
+/// default serialization skips (`camera.follow` `input.drag_yaw` 360) keeps it instead of
+/// inheriting the prefab's value.
+#[test]
+fn a_legacy_override_keeps_an_explicit_value_serialization_skips() {
+    // CameraFollow in field order, with input {drag, drag_yaw}.
+    let array = |drag_yaw: f64| {
+        json!(["hero", null, 5.0, 1.0, 12.0, 0.0, 20.0, -30.0, 75.0, 1.5, 0.1, 0.1,
+            {"drag": true, "drag_yaw": drag_yaw}, {}, true])
+    };
+    let mut raw = json!(World::empty("cams"));
+    raw["capabilities"]["camera"] = json!(1);
+    raw["prefabs"] = json!({
+        "old_cam": {"components": {"camera.follow": array(720.0)}},
+        "cam": {"components": {"camera.follow": {"target": "hero", "input": {"drag": true, "drag_yaw": 720.0}}}}
+    });
+    raw["entities"] = json!([
+        // Object override of an array prefab value.
+        {"id": "a", "prefab": "old_cam", "components": {"camera.follow":
+            {"target": "hero", "input": {"drag": true, "drag_yaw": 360.0}}}},
+        // Array override of an object prefab value.
+        {"id": "b", "prefab": "cam", "components": {"camera.follow": array(360.0)}}
+    ]);
+    let world = Registry::core().decode(raw).unwrap();
+    for id in ["a", "b"] {
+        let resolved = world.resolved_components(world.entity(id).unwrap());
+        let follow: axiom_core::camera::CameraFollow =
+            serde_json::from_value(resolved["camera.follow"].clone()).unwrap();
+        assert_eq!(follow.input.drag_yaw, 360.0, "{id}: {follow:?}");
+        assert!(follow.input.drag, "{id}");
+    }
+}

@@ -607,7 +607,7 @@ pub(crate) fn prepare_proposal(editor: &mut Editor, store: &Store, id: i64) -> a
         MERGE_TIMEOUT,
         move |_| {
             let base = registry.decode(serde_json::from_str(&raw)?)?;
-            let edits: Vec<Edit> = serde_json::from_str(&edits)?;
+            let edits = ops::stored_edits(&edits, &registry)?;
             let mine = ops::apply_edits(&base, &edits, &registry)?;
             Ok(Prepared {
                 view: ops::merge_view(&base, &mine, &theirs),

@@ -527,8 +527,28 @@ fn emitted_events(w: &World, defs: &Machines) -> Result<BTreeMap<String, bool>> 
 }
 
 /// `fsm.agent` radius range, a rule added after agents were already stored: strict on write
-/// (see `validate_world`).
+/// (see `validate_world`). Prefab values are checked too, so a prefab no entity
+/// instantiates yet cannot store a radius its first instance would be refused for.
 fn validate_radius(w: &World) -> Result<()> {
+    let out_of_range = |r: f64| !(r.is_finite() && (0.05..=5.0).contains(&r));
+    for (id, prefab) in &w.prefabs {
+        // A prefab value may be partial (instances add the rest): only its radius counts.
+        let radius = prefab
+            .components
+            .get("fsm.agent")
+            .and_then(|a| a.get("radius"))
+            .and_then(Value::as_f64);
+        if radius.is_some_and(out_of_range) {
+            return Err(Diagnostic::error(
+                "invalid_value",
+                format!(
+                    "/prefabs/{}/components/fsm.agent/radius",
+                    axiom_core::local::escape(id)
+                ),
+                "fsm.agent radius must be 0.05..5",
+            ));
+        }
+    }
     for e in &w.entities {
         let c = w.resolved_components(e);
         let Some(raw) = c.get("fsm.agent") else {

@@ -160,7 +160,11 @@ impl Store {
     /// A proposal's base revision, edits and status.
     pub fn proposal_edits(&self, id: i64) -> Result<(i64, Vec<Edit>, String)> {
         let (base, edits, status) = self.proposal_raw(id)?;
-        Ok((base, serde_json::from_str(&edits)?, status))
+        Ok((
+            base,
+            crate::ops::stored_edits(&edits, &self.registry)?,
+            status,
+        ))
     }
     /// `proposal_edits` with the edits still as stored JSON (decode them off the main thread).
     pub fn proposal_raw(&self, id: i64) -> Result<(i64, String, String)> {
@@ -256,12 +260,9 @@ impl Store {
     /// The `verify` response for one snapshot `(rev, w)`. Callers that also simulate or
     /// measure that world pass the same snapshot, so every part of the answer is about `rev`.
     pub fn verify_world(&self, rev: i64, w: &World) -> Result<Value> {
-        let c = w.compile(&self.registry)?;
-        // Rules newer than this revision are reported, not enforced: it stays readable.
-        let mut diagnostics = crate::camera::deprecations(w);
-        diagnostics.extend(self.registry.write_warnings(w));
+        let (entities, diagnostics) = self.registry.verify(w)?;
         Ok(
-            json!({"ok":true,"rev":rev,"schema_version":2,"entities":c.len(),"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":diagnostics}),
+            json!({"ok":true,"rev":rev,"schema_version":2,"entities":entities,"checks":["capabilities","typed_components","resources","references","prefabs","scene_membership","parent_cycles","system_schedule","budgets","package_constraints"],"diagnostics":diagnostics}),
         )
     }
     pub fn current(&self) -> Result<(i64, World)> {
@@ -568,7 +569,7 @@ impl Store {
                 } else {
                     base
                 };
-                let mut edits: Vec<Edit> = serde_json::from_str(&edits)?;
+                let mut edits = crate::ops::stored_edits(&edits, &self.registry)?;
                 let stored = edits.clone();
                 let budget = |e| Self::split_hint(&tx, &self.registry, id, base, &stored, e);
                 // Each `set_where` must still select, on the reviewed base revision, exactly
@@ -593,7 +594,7 @@ impl Store {
                             ),
                         ));
                     };
-                    let reviewed: Vec<Vec<String>> = serde_json::from_str(&targets)?;
+                    let reviewed = serde_json::from_str::<StoredTargets>(&targets)?.into_digests();
                     let raw: String =
                         tx.query_row("SELECT world FROM revisions WHERE rev=?1", [base], |r| {
                             r.get(0)
@@ -891,15 +892,15 @@ impl Store {
         }
         Ok(false)
     }
-    /// The targets (sorted paths) each `set_where` of `edits` selects when the batch is
-    /// replayed in order on `world`. Replays with the review budget: the commit enforces
-    /// the shared one.
+    /// The selection (digest of the sorted target paths) each `set_where` of `edits` makes
+    /// when the batch is replayed in order on `world`. Replays with the review budget: the
+    /// commit enforces the shared one.
     fn set_where_targets(
         registry: &Registry,
         mut world: World,
         edits: &[Edit],
-    ) -> Result<Vec<Vec<String>>> {
-        let mut budget = crate::ops::review_budget(edits.len());
+    ) -> Result<Vec<TargetDigest>> {
+        let mut budget = crate::ops::MAX_REVIEW_BYTES;
         let mut out = vec![];
         for edit in edits {
             if let Edit::Core(CoreEdit::SetWhere { select, .. }) = edit {
@@ -908,7 +909,7 @@ impl Store {
                         .into_iter()
                         .map(|(t, _)| t.path())
                         .collect();
-                out.push(targets.into_iter().collect());
+                out.push(TargetDigest::of(&targets));
             }
             edit.clone()
                 .apply_budgeted(&mut world, registry, &mut budget)?;
@@ -952,21 +953,52 @@ impl Store {
             let world = registry.decode(serde_json::from_str(&raw)?)?;
             Ok(crate::ops::review_edits(&world, edits, registry)?.1)
         })();
-        let (total, size) = match used {
-            // The largest batch size whose consecutive batches all fit one budget.
-            Ok(used) => (
-                used.iter().sum::<usize>(),
-                (1..=edits.len())
-                    .rev()
-                    .find(|&k| used.chunks(k).all(|c| c.iter().sum::<usize>() <= MAX))
-                    .unwrap_or(1),
-            ),
-            Err(_) => (0, 1),
+        let used = match used {
+            Ok(used) => used,
+            // Beyond what a review may expand: nothing to measure a split with.
+            Err(e)
+                if e.downcast_ref::<Diagnostic>()
+                    .is_some_and(|d| d.code == "budget_exceeded") =>
+            {
+                return Some(Diagnostic::error(
+                    "budget_exceeded",
+                    "/id",
+                    format!(
+                        "proposal {id} exceeds the batch budget and cannot be split automatically ({e:#}). It stays pending; reject it and propose the change again in batches whose set_where edits each expand to at most {MAX} bytes in total"
+                    ),
+                ))
+            }
+            // The replay fails for another reason: the caller reports its own error.
+            Err(_) => return None,
         };
+        let total = used.iter().sum::<usize>();
         if cause.is_none() && total <= MAX {
             return None;
         }
         let cause = cause.map(|e| format!(" ({e:#})")).unwrap_or_default();
+        // An edit that alone expands beyond one batch's budget: no split helps.
+        let alone: Vec<String> = used
+            .iter()
+            .enumerate()
+            .filter(|(_, &u)| u > MAX)
+            .map(|(i, u)| format!("/edits/{i} ({u} bytes)"))
+            .collect();
+        if !alone.is_empty() {
+            return Some(Diagnostic::error(
+                "budget_exceeded",
+                "/id",
+                format!(
+                    "proposal {id} exceeds the batch budget: {} alone expand(s) beyond the {MAX} set_where bytes a batch may expand, so splitting the batch cannot help (it was stored before that limit applied). It stays pending and `proposal_diff {id}` still shows it; propose that change again with a narrower selector (fewer matches, e.g. select.limit or a more specific filter) or a smaller value, and reject this one{cause}",
+                    alone.join(", ")
+                ),
+            ));
+        }
+        // The largest batch size whose consecutive batches all fit one budget (every edit
+        // fits alone here, so 1 always does).
+        let size = (1..=edits.len())
+            .rev()
+            .find(|&k| used.chunks(k).all(|c| c.iter().sum::<usize>() <= MAX))
+            .unwrap_or(1);
         Some(Diagnostic::error(
             "budget_exceeded",
             "/id",
@@ -1052,6 +1084,48 @@ fn ensure_same(id: &str, a: &str, b: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+/// What one `set_where` of a proposal selected on its base revision (`proposals.targets`):
+/// how many targets and a SHA-256 of their sorted paths. Approval only asks whether the
+/// selection is the same, so the record stays under 100 bytes per selector however many
+/// objects it matched (a proposal has at most 256 edits).
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetDigest {
+    count: usize,
+    sha256: String,
+}
+impl TargetDigest {
+    fn of<'a>(paths: impl IntoIterator<Item = &'a String>) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut count = 0;
+        for path in paths {
+            // Length-prefixed, so no two path lists hash the same bytes.
+            hash.update((path.len() as u64).to_le_bytes());
+            hash.update(path.as_bytes());
+            count += 1;
+        }
+        Self {
+            count,
+            sha256: format!("{:x}", hash.finalize()),
+        }
+    }
+}
+/// A stored `proposals.targets`: digests, or the full sorted paths an earlier build wrote.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredTargets {
+    Digests(Vec<TargetDigest>),
+    Paths(Vec<Vec<String>>),
+}
+impl StoredTargets {
+    fn into_digests(self) -> Vec<TargetDigest> {
+        match self {
+            Self::Digests(d) => d,
+            Self::Paths(p) => p.iter().map(TargetDigest::of).collect(),
+        }
+    }
 }
 /// Whether `edit` selects its targets when it is applied (`set_where`).
 fn is_set_where(edit: &Edit) -> bool {
