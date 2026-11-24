@@ -17,8 +17,8 @@ use std::sync::Mutex;
 const NO_DIALOG: &str = "AXIOM_PLAYER_NO_DIALOG";
 
 /// Where a failure is reported: `%APPDATA%\Axiom\<id>\crash.log` (or beside `--db`) once the
-/// id is known.
-static CRASH_LOG: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// id is known, and the database path no crash log may ever take (it may not exist yet).
+static CRASH_LOG: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
 
 #[derive(Default)]
 struct Args {
@@ -49,7 +49,7 @@ fn run() -> Result<()> {
     let dir = exe.parent().context("player executable has no directory")?;
     let game = read_game(dir)?;
     let (db, crash_log) = locations(args.db, &game.id, std::env::var_os("APPDATA"))?;
-    *CRASH_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(crash_log);
+    *CRASH_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some((crash_log, db.clone()));
     if let Some(parent) = db.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create database directory {}", parent.display()))?;
@@ -163,11 +163,10 @@ fn locations(
 
 /// Writes the crash log (best effort) and tells the person, since there is no console.
 fn report(message: &str) {
-    let log = CRASH_LOG
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_else(|| std::env::temp_dir().join("axiom-player-crash.log"));
+    let (log, db) = CRASH_LOG.lock().ok().and_then(|g| g.clone()).map_or_else(
+        || (std::env::temp_dir().join("axiom-player-crash.log"), None),
+        |(log, db)| (log, Some(db)),
+    );
     let when = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -183,7 +182,7 @@ fn report(message: &str) {
         .map(std::fs::create_dir_all)
         .transpose()
         .ok()
-        .and_then(|_| write_log(&log, body.as_bytes()));
+        .and_then(|_| write_log(&log, db.as_deref(), body.as_bytes()));
     eprintln!("axiom-player: {message}");
     if std::env::var_os(NO_DIALOG).is_some_and(|v| v == "1") {
         return;
@@ -200,22 +199,25 @@ const LOG_HEADER: &[u8] = b"axiom-player ";
 
 /// Writes `body` (which starts with [`LOG_HEADER`]) to `path`, or to `<stem>-<n>.<ext>`
 /// beside it when `path` holds something other than an earlier crash log (a database, for
-/// example). Returns where it was written.
-fn write_log(path: &Path, body: &[u8]) -> Option<PathBuf> {
-    if replace_log(path, body).ok()? {
-        return Some(path.to_path_buf());
-    }
+/// example). No candidate ever has the file name of `db` (compared ignoring ASCII case), even
+/// when that database does not exist yet: a later launch with the same `--db` must be able to
+/// create it. Returns where it was written.
+fn write_log(path: &Path, db: Option<&Path>, body: &[u8]) -> Option<PathBuf> {
+    let avoid = db.and_then(Path::file_name);
     let stem = path.file_stem()?.to_string_lossy().into_owned();
     let ext = path
         .extension()
         .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
-    (1..=16).find_map(|n| {
-        let candidate = path.with_file_name(format!("{stem}-{n}{ext}"));
-        replace_log(&candidate, body)
-            .ok()
-            .filter(|&w| w)
-            .map(|_| candidate)
-    })
+    std::iter::once(path.to_path_buf())
+        .chain((1..=16).map(|n| path.with_file_name(format!("{stem}-{n}{ext}"))))
+        .filter(|candidate| {
+            !avoid.is_some_and(|a| {
+                candidate
+                    .file_name()
+                    .is_some_and(|c| c.eq_ignore_ascii_case(a))
+            })
+        })
+        .find(|candidate| replace_log(candidate, body).is_ok_and(|w| w))
 }
 
 /// Creates `path`, or overwrites it only when it is an earlier crash log (checked on the same
@@ -386,7 +388,7 @@ mod tests {
         );
         let body = b"axiom-player 0.0.0\r\nerror: boom\r\n";
         // Even pointed straight at the database, the log goes elsewhere.
-        let written = write_log(&db, body).unwrap();
+        let written = write_log(&db, None, body).unwrap();
         assert_ne!(written, db);
         assert_eq!(
             std::fs::read(&db).unwrap(),
@@ -397,7 +399,7 @@ mod tests {
         // An empty foreign file is not a crash log either.
         let empty = dir.join("empty.log");
         std::fs::write(&empty, b"").unwrap();
-        assert_ne!(write_log(&empty, body).unwrap(), empty);
+        assert_ne!(write_log(&empty, None, body).unwrap(), empty);
         assert!(std::fs::read(&empty).unwrap().is_empty());
         // An earlier crash log is replaced in place.
         let old = dir.join("player-crash.log");
@@ -406,8 +408,48 @@ mod tests {
             b"axiom-player 0.0.0\r\nerror: an older and much longer message\r\n",
         )
         .unwrap();
-        assert_eq!(write_log(&old, body).unwrap(), old);
+        assert_eq!(write_log(&old, None, body).unwrap(), old);
         assert_eq!(std::fs::read(&old).unwrap(), body);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // R9 round 4 N3: a `--db` that does not exist yet is never taken by a fallback crash-log
+    // name, so the same command works once the failure is fixed.
+    #[test]
+    fn fallback_crash_log_never_takes_a_database_that_does_not_exist_yet() {
+        let dir = scratch("n3");
+        std::fs::write(dir.join("crash.log"), b"my own notes").unwrap();
+        for name in ["crash-1.log", "CRASH-1.LOG"] {
+            let db = dir.join(name);
+            let (_, log) = locations(Some(db.clone()), "adv-demo", None).unwrap();
+            assert_eq!(log, dir.join("crash.log"));
+            let body = b"axiom-player 0.0.0\r\nerror: pack failed to load\r\n";
+            let written = write_log(&log, Some(&db), body).unwrap();
+            assert!(
+                !written
+                    .file_name()
+                    .unwrap()
+                    .eq_ignore_ascii_case(db.file_name().unwrap()),
+                "{written:?} took the database name"
+            );
+            assert!(
+                !db.exists(),
+                "the database path was created by the crash log"
+            );
+            assert_eq!(std::fs::read(&written).unwrap(), body);
+            assert_eq!(
+                std::fs::read(dir.join("crash.log")).unwrap(),
+                b"my own notes"
+            );
+            // The retry with the same --db can create its database.
+            drop(axiom_core::Store::open(&db).expect("retry opens the database"));
+            for sidecar in ["", "-wal", "-shm"] {
+                let mut p = db.clone().into_os_string();
+                p.push(sidecar);
+                let _ = std::fs::remove_file(p);
+            }
+            std::fs::remove_file(&written).unwrap();
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

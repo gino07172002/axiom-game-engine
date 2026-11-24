@@ -22,13 +22,18 @@ param(
     [string]$EditorSelectPrefix = '',
     [int]$Port = 4471,
     [string]$Exe = 'target/release/axiom.exe',
-    [string]$Out = ''
+    [string]$Out = '',
+    # Skips only the pre-check that -Port is free; the bridge must still belong to the editor
+    # this script started before the first edit is sent.
+    [switch]$AllowBusyPort
 )
 $ErrorActionPreference = 'Stop'
 $pos = [double[]]($Position.Split(","))
 $shaderText = if ($ShaderFile) { [IO.File]::ReadAllText((Resolve-Path $ShaderFile).Path) } else { '' }
 Set-Location (Join-Path $PSScriptRoot '..')
 . "$PSScriptRoot/env.ps1"
+. "$PSScriptRoot/bridge-owner.ps1"
+Assert-PortFree $Port -Allow:$AllowBusyPort
 $exePath = (Resolve-Path $Exe).Path
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $dir = Join-Path $PWD "artifacts/perf-scratch/live-$stamp"
@@ -65,6 +70,7 @@ $null = $process.Handle
 $rows = @()
 try {
     $obs = Wait-Observation { param($o) $o.gpu -and $o.editor.mode -eq 'edit' }
+    Assert-BridgeOwner $Port $process.Id
     $rev = [int64]$obs.rev
     for ($i = 0; $i -le $Edits; $i++) {
         $p = @(($pos[0] + 0.001 * ($i + 1)), $pos[1], $pos[2])

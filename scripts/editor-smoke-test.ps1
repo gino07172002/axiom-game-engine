@@ -1,11 +1,15 @@
-param([int]$Port = 4452)
+# -AllowBusyPort skips only the pre-check that -Port is free; the bridge must still belong to
+# the editor this script started before the first write.
+param([int]$Port = 4452, [switch]$AllowBusyPort)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 . "$PSScriptRoot/env.ps1"
+. "$PSScriptRoot/bridge-owner.ps1"
+Assert-PortFree $Port -Allow:$AllowBusyPort
 $exe = (Resolve-Path 'target/debug/axiom.exe').Path
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $dir = Join-Path $PWD "artifacts/editor-$stamp"
-$db = Join-Path $PWD "data/editor-smoke-$stamp.sqlite"
+$db = Join-Path $dir 'editor-smoke.sqlite'
 New-Item -ItemType Directory -Force $dir | Out-Null
 
 function Invoke-EditorAxiom([string[]]$Arguments) {
@@ -44,6 +48,7 @@ $process = Start-Process -FilePath $exe -ArgumentList ('--db "{0}" editor --port
 $null = $process.Handle
 try {
     $initial = Wait-Editor { param($o) $o.gpu -and $o.editor.mode -eq 'edit' }
+    Assert-BridgeOwner $Port $process.Id
     $discovery = Send-Editor @{op='discover';topic='editor'}
     if ($discovery.schema.read.op -ne 'scene_tree') { throw 'Editor topic is missing' }
     $paged = Send-Editor @{op='scene_tree';query=@{limit=1;max_bytes=256}}

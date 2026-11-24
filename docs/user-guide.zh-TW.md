@@ -47,14 +47,14 @@ cargo build -p axiom -p axiom-player
 .\target\debug\axiom.exe package --pack content\adv --out D:\dist\adv
 ```
 
-資料夾內容:`<作品名>.exe`、`game.json`(format 1:`id`、`title`、`pack`、`exe`)、`.axiom-build`(打包器的建置標記,記錄 `game.json` 的 SHA-256)、`content\`。玩家雙擊執行檔即可:沒有主控台視窗、沒有開發工具列與控制台(Tab 無效)、不開 loopback 連接埠,視窗標題是作品名,執行檔內嵌 Axiom 圖示。每次啟動都重新匯入 `content\`,資料庫、`saves\` 與 `crash.log` 位於 `%APPDATA%\Axiom\<id>\`,遊戲資料夾本身不會被寫入。Esc 暫停(畫面上方顯示 `PAUSED · ESC`),內容 UI(`ui.document`、存讀檔按鈕)照常顯示。
+資料夾內容:`<作品名>.exe`、`game.json`(format 1:`id`、`title`、`pack`、`exe`)、`.axiom-build`(打包器的建置標記,記錄 `game.json` 的 SHA-256 與這次寫出的所有檔案的雜湊摘要)、`content\`。玩家雙擊執行檔即可:沒有主控台視窗、沒有開發工具列與控制台(Tab 無效)、不開 loopback 連接埠,視窗標題是作品名,執行檔內嵌 Axiom 圖示。每次啟動都重新匯入 `content\`,資料庫、`saves\` 與 `crash.log` 位於 `%APPDATA%\Axiom\<id>\`,遊戲資料夾本身不會被寫入。Esc 暫停(畫面上方顯示 `PAUSED · ESC`),內容 UI(`ui.document`、存讀檔按鈕)照常顯示。
 
-啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(給了 `--db` 時寫在資料庫旁,此時不需要 `APPDATA`;資料庫本身叫 `crash.log` 時改名為 `player-crash.log`,而且日誌只覆寫先前的 crash log,遇到其他既有檔案就改寫同名加 `-<n>` 的新檔(例如 `crash-1.log`);還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
+啟動失敗時沒有主控台可看:錯誤寫入 `%APPDATA%\Axiom\<id>\crash.log`(給了 `--db` 時寫在資料庫旁,此時不需要 `APPDATA`;資料庫本身叫 `crash.log` 時改名為 `player-crash.log`,而且日誌只覆寫先前的 crash log,遇到其他既有檔案就改寫同名加 `-<n>` 的新檔(例如 `crash-1.log`);備用檔名也絕不使用 `--db` 指定的檔名,即使該資料庫還沒建立;還不知道 id 時寫 `%TEMP%\axiom-player-crash.log`)並跳出訊息框,程序以非零碼結束。自動化測試用的參數:`--smoke-frames N --screenshot PATH --db PATH --port P`;設環境變數 `AXIOM_PLAYER_NO_DIALOG=1` 可略過訊息框。
 
 ### 打包報告、外部素材與編輯器
 
 - `package` 的 JSON 報告列出每個檔案(相對路徑、大小、SHA-256,含 `game.json`)、`pack_digest`(出貨 pack 檔案的雜湊;`--expected-pack-digest HEX` 或編輯器的 `expected_pack_digest` 要求與審核過的值相同,不同就不發佈)、`skipped`(前 32 項,總數在 `skipped_total`;預設排除 `build/`、`.git/`、`*.acl`、`*.blend`、`*.blend1`、`*.py`、`*.ps1`,可用 `--exclude dir/|*.ext|相對路徑` 追加)、`unreferenced`(有複製但看不出被引用的檔,只是警告)與 `warnings`。相同輸入兩次打包,檔案清單與雜湊相同。
-- pack 引用了 pack 以外的檔案(例如動畫素材 `external: true`)時,打包在寫入任何東西之前失敗並列出這些檔案;請把素材搬進 pack、用相對路徑。輸出先寫到本次建置自己建立的 `<輸出>.partial-<pid>-<n>`,驗證通過才改名;失敗或取消時只刪這個目錄,不留半成品(程序被強制結束時可能殘留,需手動刪除)。同一個輸出一次只允許一個建置。已存在的輸出要加 `--force`,而且只會取代證實是先前打包出來的資料夾:不能是連結或 junction(輸出路徑最後一層本身就是 junction 也一樣拒絕,不會解析到目標),要有合法的 `game.json`、與它雜湊相符的 `.axiom-build` 標記、`exe` 與 `content\`,而且沒有其他檔案;否則一律拒絕、不動任何檔案(較舊版本打包、沒有標記的資料夾請手動刪除):舊版先移到 `<輸出>.old-*`,新版就位後才刪除,失敗時移回。建置期間才出現的同名目錄,沒有 `--force` 就不會被覆蓋。玩家程式啟動時也會確認 `pack` 的實際位置在遊戲資料夾內,且沒有 `external` 動畫素材。
+- pack 引用了 pack 以外的檔案(例如動畫素材 `external: true`)時,打包在寫入任何東西之前失敗並列出這些檔案;請把素材搬進 pack、用相對路徑。輸出先寫到本次建置自己建立的 `<輸出>.partial-<pid>-<n>`,驗證通過才改名;失敗或取消時只刪這個目錄,不留半成品(程序被強制結束時可能殘留,需手動刪除)。同一個輸出一次只允許一個建置。已存在的輸出要加 `--force`,而且只會取代證實是先前打包出來的資料夾:不能是連結或 junction(輸出路徑最後一層本身就是 junction 也一樣拒絕,不會解析到目標),要有合法的 `game.json`、與它雜湊相符的 `.axiom-build` 標記、`exe` 與 `content\`,根目錄沒有其他檔案,而且包括 `content\` 在內每個檔案都和打包時一樣(新增或修改過任何檔案,例如 `content\my notes.txt`,都算使用者資料);否則一律拒絕、不動任何檔案(較舊版本打包、沒有新版標記的資料夾請手動刪除)。取代前會重新讀取並雜湊舊成品的所有檔案;輸出路徑在 Windows 上只差大小寫、實際開到來源 pack 所在資料夾時視為重疊而拒絕。取代時舊版先移到 `<輸出>.old-*`,新版就位後才刪除,失敗時移回。建置期間才出現的同名目錄,沒有 `--force` 就不會被覆蓋。玩家程式啟動時也會確認 `pack` 的實際位置在遊戲資料夾內,且沒有 `external` 動畫素材。
 - 編輯器以 `--pack` 開啟時,`File > Build Game…` 在背景做同一件事(進度、取消、完成後 Open folder);打包的是磁碟上的 pack,只存在編輯器資料庫的修改不會包含。
 - 輸出不要放在 repo 裡提交(`/dist/` 已忽略);含第三方素材的作品不要公開上傳。
 - 驗證:`scripts\package-smoke-test.ps1 [-Release]` 打包 plaza、adv、fps、action,複製到別處後用隔離的 APPDATA 執行玩家程式並截圖,另含外部素材與 `--force` 的拒絕案例。
@@ -116,7 +116,7 @@ Checkpoint 採嚴格內容相容檢查；v0.4 亦接受已知的 v0.3.0／v0.3.1
 
 ```powershell
 .\target\debug\axiom.exe discover acl                      # 文法
-.\target\debug\axiom.exe --db data/lab.sqlite --pack content/behavior-lab acl -e "spawn enemy.basic count=10 id=enemy/{i} at=0,0,0 step=2,0,0 tag=enemy"
+.\target\debug\axiom.exe --db data/lab.sqlite --pack content/behavior-lab acl -e "spawn enemy.basic count=10 id=enemy/{i} from=6 at=0,0,0 step=2,0,0 tag=enemy"   # 種子已有 enemy/0..5,從 6 開始
 .\target\debug\axiom.exe --db data/lab.sqlite acl -e "set enemy/* core.health/value 40 where core.transform/position/0>=10"
 .\target\debug\axiom.exe --db data/lab.sqlite acl -e "select entities[tag=enemy] where core.health/value<50 fields core.health/value limit 5"
 .\target\debug\axiom.exe --db data/lab.sqlite acl -e "inspect enemy/3"

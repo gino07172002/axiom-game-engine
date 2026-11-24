@@ -19,10 +19,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Written into every output; the player reads it.
 pub const GAME_FILE: &str = "game.json";
-/// Written by the packager beside `game.json` (it records that file's SHA-256); `--force`
-/// replaces only folders whose marker matches their `game.json`.
+/// Written by the packager beside `game.json` (it records that file's SHA-256 and a digest of
+/// every file the build wrote); `--force` replaces only folders whose files still match it.
 pub const BUILD_MARKER: &str = ".axiom-build";
 const MAX_MARKER: usize = 1024;
+/// Format 2 adds `files_sha256`; a format-1 marker cannot prove the content is unchanged.
+const MARKER_FORMAT: u32 = 2;
 pub const CONTENT_DIR: &str = "content";
 pub const FORMAT: u32 = 1;
 /// Largest `game.json` the packager writes and the player reads.
@@ -226,8 +228,14 @@ pub fn package(
     }
 
     let out = output_path(&options.out)?;
+    // `out` keeps its last component as written (so a link there is inspected as itself); the
+    // overlap check also uses the folder it really opens, which on Windows may be spelled
+    // differently (a case alias of an existing build) or be a link's target.
+    let opened = normalized(&out)?;
     ensure!(
-        !out.starts_with(&pack) && !pack.starts_with(&out),
+        [&out, &opened]
+            .iter()
+            .all(|o| !o.starts_with(&pack) && !pack.starts_with(o)),
         "output must not overlap the pack directory"
     );
     if let Some(meta) = existing(&out)? {
@@ -236,7 +244,7 @@ pub fn package(
             "output {} exists; pass --force to replace it",
             shown(&out)
         );
-        game_folder(&out, &meta)?;
+        game_folder(&out, &meta, progress)?;
     }
     progress.check()?;
     let parent = out
@@ -349,8 +357,8 @@ fn existing(path: &Path) -> Result<Option<std::fs::Metadata>> {
 
 /// `--force` replaces only a folder proven to be this packager's output; anything else is
 /// refused and left untouched.
-fn game_folder(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
-    proven_build(out, meta).with_context(|| {
+fn game_folder(out: &Path, meta: &std::fs::Metadata, progress: &Progress) -> Result<()> {
+    proven_build(out, meta, progress).with_context(|| {
         format!(
             "refusing to replace {}: it is not a packaged game folder written by `axiom package` \
              (remove it yourself or choose another output)",
@@ -359,24 +367,58 @@ fn game_folder(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
     })
 }
 
-/// The bytes of [`BUILD_MARKER`] for a build whose `game.json` is `game_bytes`.
-fn marker_bytes(game_bytes: &[u8]) -> Vec<u8> {
+/// The bytes of [`BUILD_MARKER`] for a build whose `game.json` is `game_bytes` and whose
+/// files (everything but the marker) hash to `files_sha256` (see [`files_digest`]).
+fn marker_bytes(game_bytes: &[u8], files_sha256: &str) -> Vec<u8> {
+    format!("{}{files_sha256}\"}}\n", marker_head(game_bytes)).into_bytes()
+}
+
+/// The part of the marker that depends only on `game.json` (checked before any hashing).
+fn marker_head(game_bytes: &[u8]) -> String {
     format!(
-        "{{\"format\":{FORMAT},\"game_sha256\":\"{:x}\"}}\n",
+        "{{\"format\":{MARKER_FORMAT},\"game_sha256\":\"{:x}\",\"files_sha256\":\"",
         Sha256::digest(game_bytes)
     )
-    .into_bytes()
+}
+
+/// SHA-256 over the sorted `path\tsha256\n` lines of a build's files (slash paths relative to
+/// the output folder, marker excluded).
+fn files_digest(files: &BTreeMap<String, String>) -> String {
+    let mut digest = Sha256::new();
+    for (path, hash) in files {
+        digest.update(format!("{path}\t{hash}\n"));
+    }
+    format!("{:x}", digest.finalize())
+}
+
+/// SHA-256 of a plain file, streamed; cancellation is checked between chunks.
+fn hash_file(path: &Path, buffer: &mut [u8], progress: &Progress) -> Result<String> {
+    let mut input = std::fs::File::open(path).with_context(|| format!("read {}", shown(path)))?;
+    let mut hasher = Sha256::new();
+    loop {
+        progress.check()?;
+        let n = input
+            .read(buffer)
+            .with_context(|| format!("read {}", shown(path)))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// A plain directory (no link or junction) whose valid `game.json` matches the build marker,
-/// whose executable and pack directory exist, and which holds nothing else.
-fn proven_build(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
+/// whose executable and pack directory exist, which holds nothing else at its root, and whose
+/// files (pack included, walked with the packager's bounds) are exactly the ones the build
+/// wrote: a file added or changed anywhere (`content\my notes.txt`) refuses the replacement.
+fn proven_build(out: &Path, meta: &std::fs::Metadata, progress: &Progress) -> Result<()> {
     ensure!(meta.is_dir() && !is_link(meta), "not a plain directory");
     let game_bytes = read_plain_file(&out.join(GAME_FILE), MAX_GAME_FILE)?;
     let game = GameManifest::parse(&game_bytes)?;
     let marker = read_plain_file(&out.join(BUILD_MARKER), MAX_MARKER)?;
     ensure!(
-        marker == marker_bytes(&game_bytes),
+        marker.starts_with(marker_head(&game_bytes).as_bytes()),
         "{BUILD_MARKER} does not match {GAME_FILE}"
     );
     ensure!(!game.exe.is_empty(), "{GAME_FILE} names no executable");
@@ -404,7 +446,7 @@ fn proven_build(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
         std::ffi::OsString::from(GAME_FILE),
         BUILD_MARKER.into(),
         game.exe.clone().into(),
-        pack_root,
+        pack_root.clone(),
     ];
     for entry in std::fs::read_dir(out)?.take(allowed.len() + 1) {
         let name = entry?.file_name();
@@ -414,7 +456,42 @@ fn proven_build(out: &Path, meta: &std::fs::Metadata) -> Result<()> {
             name.to_string_lossy()
         );
     }
+    let digest = build_files_digest(out, &pack_root, &game.exe, &game_bytes, progress)?;
+    ensure!(
+        marker == marker_bytes(&game_bytes, &digest),
+        "its files were added to or changed since the build (for example inside {})",
+        pack_root.to_string_lossy()
+    );
     Ok(())
+}
+
+/// [`files_digest`] of an existing build folder: the pack walked with the packager's bounds
+/// (links refused), plus the executable and `game.json`.
+fn build_files_digest(
+    out: &Path,
+    pack_root: &std::ffi::OsStr,
+    exe: &str,
+    game_bytes: &[u8],
+    progress: &Progress,
+) -> Result<String> {
+    let pack = out.join(pack_root);
+    let walk = collect(&pack, &[], progress)?;
+    let mut buffer = vec![0u8; COPY_CHUNK];
+    let prefix = pack_root.to_string_lossy();
+    let mut files = BTreeMap::new();
+    for relative in &walk.files {
+        let hash = hash_file(&pack.join(relative), &mut buffer, progress)?;
+        files.insert(format!("{prefix}/{}", slash(relative)), hash);
+    }
+    files.insert(
+        exe.to_string(),
+        hash_file(&out.join(exe), &mut buffer, progress)?,
+    );
+    files.insert(
+        GAME_FILE.to_string(),
+        format!("{:x}", Sha256::digest(game_bytes)),
+    );
+    Ok(files_digest(&files))
 }
 
 /// Reads a regular file (never a link) of at most `limit` bytes.
@@ -512,7 +589,8 @@ fn publish(staging: &Path, out: &Path, force: bool, progress: &Progress) -> Resu
         "output {} appeared during the build; pass --force to replace it",
         shown(out)
     );
-    game_folder(out, &meta)?;
+    // Past the cancellation cut-off: this re-validation runs to completion.
+    game_folder(out, &meta, &Progress::default())?;
     let backup = unique_sibling(out, "old", |p| rename_noreplace(out, p))
         .with_context(|| format!("move the previous build {} aside", shown(out)))?;
     if let Err(error) = rename_noreplace(staging, out) {
@@ -597,7 +675,16 @@ fn build(
         json!({"path":GAME_FILE,"bytes":size,"sha256":format!("{:x}", Sha256::digest(game_bytes))}),
     );
     progress.done.fetch_add(1, Ordering::Relaxed);
-    let marker = marker_bytes(game_bytes);
+    let written: BTreeMap<String, String> = files
+        .iter()
+        .map(|f| {
+            (
+                f["path"].as_str().unwrap_or_default().to_string(),
+                f["sha256"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    let marker = marker_bytes(game_bytes, &files_digest(&written));
     let size = marker.len() as u64;
     ensure!(size <= remaining, "output exceeds the 4 GiB budget");
     remaining -= size;
@@ -1632,8 +1719,16 @@ mod tests {
         .to_bytes()
         .unwrap();
         std::fs::write(out.join(GAME_FILE), &game).unwrap();
-        std::fs::write(out.join(BUILD_MARKER), marker_bytes(&game)).unwrap();
         std::fs::write(out.join("Game.exe"), b"stub").unwrap();
+        let digest = build_files_digest(
+            out,
+            CONTENT_DIR.as_ref(),
+            "Game.exe",
+            &game,
+            &Progress::default(),
+        )
+        .unwrap();
+        std::fs::write(out.join(BUILD_MARKER), marker_bytes(&game, &digest)).unwrap();
         game
     }
 
@@ -1699,6 +1794,36 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
+    // R9 round 4 N1: on Windows `GAME` opens the existing build `Game`; packaging that build's
+    // own `content` into the case alias with --force is an overlap and changes nothing.
+    #[cfg(windows)]
+    #[test]
+    fn force_refuses_a_case_alias_of_the_source_build() {
+        let registry = crate::installed_registry().authoring;
+        let (base, player) = scratch("case");
+        let pack = two_cameras(&base);
+        let game = base.join("Game");
+        package(
+            &registry,
+            &options(&pack, &game, &player),
+            &Progress::default(),
+        )
+        .unwrap();
+        let before = snapshot(&game);
+        let mut opts = options(&game.join(CONTENT_DIR), &base.join("GAME"), &player);
+        opts.force = true;
+        let error = package(&registry, &opts, &Progress::default()).unwrap_err();
+        assert!(error.to_string().contains("overlap"), "{error:#}");
+        assert_eq!(snapshot(&game), before, "the source build changed");
+        let names: Vec<_> = std::fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(names.contains(&"Game".into()), "{names:?}");
+        assert!(leftovers(&base).is_empty(), "{:?}", leftovers(&base));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     // R9 N2: --force replaces only folders proven to be a build (valid game.json, matching
     // marker, executable, content, nothing else). Every other folder keeps every file.
     #[test]
@@ -1710,7 +1835,7 @@ mod tests {
         package(&registry, &opts, &Progress::default()).unwrap();
         opts.force = true;
         type Case = (&'static str, fn(&Path));
-        let cases: [Case; 5] = [
+        let cases: [Case; 8] = [
             ("empty-game-json", |d| {
                 std::fs::write(d.join(GAME_FILE), "").unwrap();
                 std::fs::write(d.join("keep.txt"), "work").unwrap();
@@ -1730,6 +1855,21 @@ mod tests {
             }),
             ("extra-file", |d| {
                 std::fs::write(d.join("my notes.txt"), "work").unwrap();
+            }),
+            // R9 round 4 N2: files added or changed inside `content` are user data too.
+            ("nested-extra-file", |d| {
+                std::fs::write(d.join(CONTENT_DIR).join("my notes.txt"), "work").unwrap();
+            }),
+            ("deep-extra-file", |d| {
+                let dir = d.join(CONTENT_DIR).join("notes").join("today");
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("draft.md"), "work").unwrap();
+            }),
+            ("changed-content-file", |d| {
+                let world = d.join(CONTENT_DIR).join("world.json");
+                let mut bytes = std::fs::read(&world).unwrap();
+                bytes.extend_from_slice(b"\n");
+                std::fs::write(world, bytes).unwrap();
             }),
         ];
         for (name, prepare) in cases {

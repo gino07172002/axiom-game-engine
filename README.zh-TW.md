@@ -61,7 +61,7 @@ ok rev=3 restored_from=1
 
 | 領域 | 內容 |
 |---|---|
-| **編輯協定** | 具型別的 JSON 請求(`select`、`preview`、`apply`、`undo`、`diff`、`history`、`discover`),以及 **ACL**:一種逐行的精簡指令語言，會編譯成同一套請求。寫入可帶 `expected_rev`(CAS)。`apply` 與 `undo` 另可帶 request ID(`--request-id`),持久化 receipt 讓重送回傳第一次的結果，不會提交兩次;ACL、`select` 等其他請求不接受 request ID。 |
+| **編輯協定** | 具型別的 JSON 請求(`select`、`preview`、`apply`、`undo`、`diff`、`history`、`discover`),以及 **ACL**:一種逐行的精簡指令語言，會編譯成同一套請求。寫入可帶 `expected_rev`(CAS)。`apply` 與 `undo` 另可帶 request ID(`--request-id`),持久化 receipt 讓重送回傳第一次的結果，不會提交兩次。即時 `command`、`save`、`load` 搭配 `--runtime-session` 也可帶 request ID,只在該執行中的 host session 去重;ACL、`select` 與其他請求不接受 request ID。 |
 | **查詢** | ID 萬用字元、tag 與 component 篩選、能看到 prefab 繼承值的 `where` 條件、欄位投影、cursor 與位元組預算。輸出可選 JSON 或精簡行格式。 |
 | **批次修改** | `set_where` 以一個 revision 修改所有符合的物件。`spawn` 可以把 prefab 實例化 N 次。所有修改都會依 component／resource schema 驗證。 |
 | **執行層** | 120 Hz 固定步進、帶 generation 檢查的 entity handle、具型別的 component 欄、跨 revision 保留狀態的熱重載。 |
@@ -108,10 +108,10 @@ Agent 只需要 `axiom` 執行檔。典型流程:
 
 1. **探索**:`axiom discover acl`(文法)、`axiom discover local`(JSON schema)、`axiom schema components`。加上 `--if-hash` 可以略過沒有變動的 schema。
 2. **只讀需要的部分**:`axiom acl -e "select … where … fields … limit N"`。
-3. **一筆交易完成修改**,以讀到的 revision `R` 保護:先 `axiom acl --preview --expected-rev R script.acl`,再 `axiom acl --expected-rev R script.acl`。多行編輯腳本會合成一個 revision。遇到 `revision_conflict` 表示 `R` 之後有人提交：重新讀取、重新預覽後再提交，提交才不會改到預覽沒看到的物件。
-   - **重試**:`apply` 與 `undo` 接受 `--request-id ID`,以相同 ID 重送相同請求會回傳已儲存的結果，不會提交兩次，例如 `axiom --request-id fix-42 apply edit.json`(檔案內帶 `expected_rev`)。ACL、`select` 等其他請求會拒絕 request ID。ACL 回覆遺失時，先用 `axiom acl -e "history 5"`(與 `diff A B`)確認自己的 revision 是否已提交，再決定是否重送。
+3. **一筆交易完成修改**,以讀到的 revision `R` 保護:先 `axiom acl --preview --expected-rev R script.acl`,再 `axiom acl --expected-rev R script.acl`。多行編輯腳本會合成一個 revision。遇到 `revision_conflict` 表示 `R` 之後有人提交：重新讀取、重新預覽後再提交，提交才會套用在預覽所用的同一個基準 revision 上。預覽只列出前幾筆變更(其餘只顯示筆數);需要看到每個被改的物件時，提交後用 `axiom diff A B` 分頁讀取，或把腳本縮小。
+   - **重試**:`apply` 與 `undo` 接受 `--request-id ID`,以相同 ID 重送相同請求會回傳已儲存的結果，不會提交兩次，例如 `axiom --request-id fix-42 apply edit.json`(檔案內帶 `expected_rev`)。經 `--connect` 送出的即時 `command`、`save`、`load` 也接受它，但要同時帶 `--runtime-session`(從 `observe` 取得),receipt 只存在該執行中的 host session。ACL、`select` 與其他請求會拒絕 request ID。ACL 回覆遺失時，先用 `axiom acl -e "history 5"`(與 `diff A B`)確認自己的 revision 是否已提交，再決定是否重送。
 4. **不看畫面也能驗證**:`axiom scenario file.json`、`axiom call fsm.inspect '{"id":"…"}' --ticks 600`、`axiom verify --measure 5`。
-5. **即時觀察**:`axiom --connect 127.0.0.1:4242 observe-delta --field /rev --field /requested_rev --field /activation --field /activation_error`,之後帶上一個回覆的 `--cursor CURSOR` 重送，只取得變更。執行中的遊戲會自動載入新的 revision;`requested_rev` 大於 `rev` 表示新 revision 仍在啟用，`activation: "activation_failed"` 加上 `activation_error` 表示新 revision 被拒、舊的繼續執行(沒有錯誤時 `activation_error` 會列在 `missing_fields`)。
+5. **即時觀察**:`axiom --connect 127.0.0.1:4242 observe-delta --field /rev --field /requested_rev --field /activation --field /activation_error`,之後帶上一個回覆的 `--cursor CURSOR` 重送，只取得變更。執行中的遊戲會自動載入新的 revision。先看 `activation`:`"activation_failed"` 加上 `activation_error` 表示新 revision 被拒、舊的繼續執行(此時 `requested_rev` 也會大於 `rev`);不是失敗時,`requested_rev` 大於 `rev` 才表示新 revision 仍在啟用(沒有錯誤時 `activation_error` 會列在 `missing_fields`)。
 6. **還原**:`axiom undo REV --expected-rev R` 會追加一個還原 `REV` 的 revision;若你確認過的 revision `R` 之後還有提交就拒絕。不會改寫歷史。
 
 ACL 速查(完整文法請執行 `axiom discover acl`):

@@ -2,50 +2,21 @@
 # street-editor-parity.ps1). Dot-source after $Port is set; Send-Editor talks to that port.
 # Every path is absolute: the callers pass folders under their own repository root.
 
-# One JSONL request to the loopback bridge on $Port; returns the parsed reply.
-function Send-Editor($Request) {
+. "$PSScriptRoot/bridge-owner.ps1"
+
+# One JSONL request to the loopback bridge on $Port; returns the parsed reply. The default read
+# timeout covers ordinary requests; `screenshot` passes a longer one (see Save-Capture).
+function Send-Editor($Request, [int]$TimeoutMs = 30000) {
     $client = [Net.Sockets.TcpClient]::new()
     try {
         $client.Connect('127.0.0.1', $Port)
-        $client.ReceiveTimeout = 30000
+        $client.ReceiveTimeout = $TimeoutMs
         $stream = $client.GetStream()
         $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false), 1024, $true)
         $writer.AutoFlush = $true
         $writer.WriteLine(($Request | ConvertTo-Json -Compress -Depth 30))
         [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false)).ReadLine() | ConvertFrom-Json
     } finally { $client.Dispose() }
-}
-
-# True when something already accepts connections on 127.0.0.1:$P.
-function Test-PortAnswers([int]$P) {
-    $client = [Net.Sockets.TcpClient]::new()
-    try {
-        $connect = $client.ConnectAsync('127.0.0.1', $P)
-        return ($connect.Wait(500) -and $client.Connected)
-    } catch { return $false } finally { $client.Dispose() }
-}
-
-# Refuses a port that already answers: a running editor or game there would receive the writes.
-function Assert-PortFree([int]$P, [switch]$Allow) {
-    if ($Allow) { return }
-    if (Test-PortAnswers $P) {
-        throw "port $P already answers (another editor or game?); nothing was started or written. Pick a free -Port (-AllowBusyPort skips only this pre-check)."
-    }
-}
-
-# Process IDs listening on TCP port $P (empty when none).
-function Get-PortOwners([int]$P) {
-    @(Get-NetTCPConnection -LocalPort $P -State Listen -ErrorAction SilentlyContinue |
-        ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)
-}
-
-# The bridge on $P must belong to process $Id (the editor this script started) and to no other
-# process; checked before the first write.
-function Assert-BridgeOwner([int]$P, [int]$Id) {
-    $owners = @(Get-PortOwners $P)
-    if ($owners.Count -ne 1 -or $owners[0] -ne $Id) {
-        throw "the bridge on port $P belongs to process(es) [$($owners -join ', ')], not to the editor this script started (pid $Id); no write was sent."
-    }
 }
 
 # A new, empty folder for this run under $Parent (never reused, so stale files cannot pass).
@@ -59,10 +30,19 @@ function New-RunFolder([string]$Parent) {
 # Captures the editor window to $Folder\$Name.png through the loopback `screenshot` op, which
 # answers once the PNG is written (read back asynchronously, never on the main thread); fails
 # unless the reply is ok and the file exists and is not empty. Returns the path.
+# The bridge waits up to 32 s (SCREENSHOT_WAIT) plus a 1 s reply grace, so the read timeout is
+# 40 s. The op refuses while another capture is in flight (unlike `editor_view {capture}`, it
+# does not queue): that refusal is retried until a 60 s wall-clock deadline.
 function Save-Capture([string]$Folder, [string]$Name) {
     $path = Join-Path $Folder "$Name.png"
-    $shot = Send-Editor @{ op = 'screenshot'; path = $path }
-    if (-not $shot.ok) { throw "screenshot ${Name}: $($shot | ConvertTo-Json -Depth 10 -Compress)" }
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $shot = Send-Editor @{ op = 'screenshot'; path = $path } -TimeoutMs 40000
+        $text = $shot | ConvertTo-Json -Depth 10 -Compress
+        if ($shot.ok -or $text -notmatch 'already being captured' -or $deadline.Elapsed.TotalSeconds -ge 60) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $shot.ok) { throw "screenshot ${Name}: $text" }
     if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
         throw "screenshot ${Name}: the reply was ok but $path is missing or empty"
     }
