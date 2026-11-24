@@ -2080,20 +2080,29 @@ impl Editor {
 
     /// What `remote_view` and `remote_open` would refuse (and an unknown `command`), without
     /// changing anything: the host checks a whole `editor_view` request with it before any
-    /// side effect (Play). The gizmo-drag condition is left to `remote_view` (starting Play
-    /// ends a drag), and a command's state-dependent availability to running it.
+    /// side effect (Play). A command unavailable in the mode `play` switches to (e.g. an
+    /// edit during Play) is refused here too. The gizmo-drag condition is left to
+    /// `remote_view` (starting Play ends a drag), and a command's other state-dependent
+    /// availability to running it.
     pub(crate) fn check_remote(
         &self,
         select: &[String],
         dock: Option<&str>,
         open: Option<&str>,
         command: Option<&str>,
+        play: Option<bool>,
     ) -> anyhow::Result<()> {
         if let Some(id) = command {
             anyhow::ensure!(
                 commands::command(id).is_some(),
                 "unknown editor command {id}; see discover editor (commands)"
             );
+            if let Some(playing) = play.filter(|&p| p != self.previewing) {
+                if let Some(reason) = self.mode_blocked(id, playing) {
+                    let mode = if playing { "Play" } else { "edit mode" };
+                    anyhow::bail!("{id} is unavailable in {mode}: {reason}");
+                }
+            }
         }
         // The same draft rules as `remote_view` (a selection change), `remote_open` and
         // `remote_command` (the draft-merge commands keep their own preconditions), checked

@@ -345,13 +345,18 @@ fn compare(label: &str, actual: &Value, op: axiom_core::local::Op, value: &Value
     );
     Ok(())
 }
-/// `value` with every number rounded to `f32` (as the typed column stores it).
-fn as_f32_precision(value: &Value) -> Value {
+/// A live `f32` value (read back as the nearest f64, 0.1 -> 0.100000001…) as the shortest
+/// decimal that round-trips through `f32` (0.1; 16777216), the number an author writes for
+/// it. Every operator compares that with the expected value as written: `eq 0.1` holds for a
+/// stored 0.1 while `gt 0.1` does not, and an ordered threshold keeps its precision
+/// (16777216 `lt` 16777217 holds although 16777217 rounds to 16777216 in `f32`).
+fn as_written_f32(value: &Value) -> Value {
     match value {
         Value::Number(n) => n
             .as_f64()
-            .map_or_else(|| value.clone(), |v| json!(v as f32)),
-        Value::Array(items) => Value::Array(items.iter().map(as_f32_precision).collect()),
+            .and_then(|v| (v as f32).to_string().parse::<f64>().ok())
+            .map_or_else(|| value.clone(), |v| json!(v)),
+        Value::Array(items) => Value::Array(items.iter().map(as_written_f32).collect()),
         other => other.clone(),
     }
 }
@@ -415,17 +420,17 @@ fn check(runtime: &mut WorldRuntime, a: &Assertion) -> Result<Value> {
             .pointer(&pointer)
             .cloned()
             .with_context(|| format!("field {pointer} missing on {entity}"))?;
-        // A live `f32` column reads back as the nearest f64 of its f32 (0.1 -> 0.100000001…):
-        // the expected value is compared at the same precision.
-        let expected = if single
+        // A live `f32` column is compared as the decimal written for it (`as_written_f32`);
+        // the expected value keeps its own precision.
+        let compared = if single
             .iter()
             .any(|p| pointer == *p || pointer.starts_with(&format!("{p}/")))
         {
-            as_f32_precision(value)
+            as_written_f32(&actual)
         } else {
-            value.clone()
+            actual.clone()
         };
-        compare(&format!("{entity}{pointer}"), &actual, *op, &expected)?;
+        compare(&format!("{entity}{pointer}"), &compared, *op, value)?;
         return Ok(json!({"assertion":a,"actual":actual,"passed":true}));
     }
     if let Assertion::Call {
@@ -614,13 +619,38 @@ mod tests {
         let mut a = axiom_core::Entity::new("a");
         a.set("game.stats", json!({"speed":0.1,"aim":[0.1,0.2,0.3]}))
             .unwrap();
-        w.entities = vec![a];
+        // 2^24 (16777217 is not an f32) and two adjacent f32 values (1.0, 1.0000001).
+        let mut b = axiom_core::Entity::new("b");
+        b.set(
+            "game.stats",
+            json!({"speed":16_777_216.0,"aim":[1.0,1.000_000_1,0.0]}),
+        )
+        .unwrap();
+        w.entities = vec![a, b];
         let mut runtime = WorldRuntime::new(w, 1, crate::world::RuntimeRegistry::core()).unwrap();
-        let assertion = |field: &str, op: &str, value: Value| -> Assertion {
-            serde_json::from_value(json!({"kind":"field","entity":"a",
+        let on = |entity: &str, field: &str, op: &str, value: Value| -> Assertion {
+            serde_json::from_value(json!({"kind":"field","entity":entity,
                 "field":field,"op":op,"value":value}))
             .unwrap()
         };
+        // A-F14 (round 3): ordered comparisons keep the threshold's precision.
+        let (speed, aim) = ("/components/game.stats/speed", "/components/game.stats/aim");
+        for (field, op, value, holds) in [
+            (speed.to_owned(), "lt", json!(16_777_217), true),
+            (speed.to_owned(), "le", json!(16_777_216), true),
+            (speed.to_owned(), "gt", json!(16_777_215), true),
+            (speed.to_owned(), "eq", json!(16_777_217), false),
+            (speed.to_owned(), "ge", json!(16_777_217), false),
+            (format!("{aim}/0"), "lt", json!(1.000_000_1), true),
+            (format!("{aim}/0"), "eq", json!(1.000_000_1), false),
+            (format!("{aim}/1"), "gt", json!(1.0), true),
+            (format!("{aim}/1"), "eq", json!(1.000_000_1), true),
+            (format!("{aim}/1"), "le", json!(1.0), false),
+        ] {
+            let result = check(&mut runtime, &on("b", &field, op, value.clone()));
+            assert_eq!(result.is_ok(), holds, "{field} {op} {value}: {result:?}");
+        }
+        let assertion = |field: &str, op: &str, value: Value| on("a", field, op, value);
         for (field, op, value) in [
             ("/components/game.stats/speed", "eq", json!(0.1)),
             ("/components/game.stats/speed", "le", json!(0.1)),
