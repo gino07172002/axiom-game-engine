@@ -465,3 +465,38 @@ fn fsm_worlds_stored_before_the_fsm_rules_open_repair_and_undo() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Final round C0 R5-F2: a new prefab no entity instantiates yet is checked too, so an
+/// out-of-range radius is refused when it is written, not when it is first instantiated.
+#[test]
+fn an_uninstantiated_prefab_with_an_out_of_range_radius_is_refused_on_write() {
+    use axiom_core::{CoreEdit, Edit, Request, Store};
+    let registry = axiom_runtime::installed_registry();
+    let mut store = Store::memory_with(registry.authoring.clone(), lab()).unwrap();
+    let rev = store.revision().unwrap();
+    let prefab = |radius: f64| {
+        Edit::Core(CoreEdit::PutPrefab {
+            id: "enemy.unused".into(),
+            prefab: serde_json::from_value(
+                json!({"components":{"fsm.agent":{"machine":"enemy.basic","radius":radius}}}),
+            )
+            .unwrap(),
+        })
+    };
+    let error = store
+        .execute(Request::Apply {
+            expected_rev: Some(rev),
+            edits: vec![prefab(9.0)],
+        })
+        .unwrap_err();
+    let error = format!("{error:#}");
+    assert!(error.contains("radius must be 0.05..5"), "{error}");
+    assert_eq!(store.revision().unwrap(), rev, "nothing committed");
+    let applied = store
+        .execute(Request::Apply {
+            expected_rev: Some(rev),
+            edits: vec![prefab(0.5)],
+        })
+        .unwrap();
+    assert_eq!(applied["rev"], rev + 1, "{applied}");
+}

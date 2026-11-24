@@ -326,7 +326,7 @@ pub(crate) fn load(editor: &mut Editor, store: &Store, source: GhostSource) -> a
             anyhow::ensure!(status == "pending", "proposal {id} is already {status}");
             let before: Arc<World> = editor.world.clone();
             Job::spawn("ghosts", source.name(), GHOST_TIMEOUT, move |_| {
-                let edits: Vec<axiom_core::Edit> = serde_json::from_str(&edits)?;
+                let edits = axiom_core::ops::stored_edits(&edits, &registry)?;
                 let after = axiom_core::ops::apply_edits(&before, &edits, &registry)?;
                 ghost_boxes(&before, &after, &registry)
             })?

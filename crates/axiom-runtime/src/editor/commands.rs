@@ -2611,6 +2611,43 @@ mod tests {
         assert!(editor.run_command("file.verify").is_err());
     }
 
+    /// Final round C0 N3: Verify World reports the warnings protocol `verify` lists for the
+    /// same revision (strict-on-write rules the stored world breaks), not "passed".
+    #[test]
+    fn verify_reports_the_same_warnings_as_protocol_verify() {
+        let (mut editor, _) = fixture();
+        let mut registry = crate::installed_registry().authoring;
+        registry.strict_world_validators.push(|_| {
+            Err(axiom_core::Diagnostic::error(
+                "demo_rule",
+                "/resources",
+                "a rule newer than this revision",
+            ))
+        });
+        // The diagnostics protocol `verify` (`Store::verify_world`) lists for this world.
+        let (_, expected) = registry.verify(&editor.world).unwrap();
+        assert_eq!(expected.len(), 1, "{expected:?}");
+        editor.set_component_hints(&registry);
+        editor.run_command("file.verify").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while editor.verify_job.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "verify never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            editor.poll_jobs();
+        }
+        assert!(
+            editor
+                .status
+                .starts_with("Verify passed with 1 warning(s) · revision 1 ·")
+                && editor.status.contains("demo_rule"),
+            "{}",
+            editor.status
+        );
+    }
+
     /// R8 F10: preferences are written by a background job; a failed write is reported,
     /// kept pending and retried, never marked as saved.
     #[test]

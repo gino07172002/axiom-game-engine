@@ -508,35 +508,67 @@ pub fn apply_edits(base: &World, edits: &[Edit], registry: &Registry) -> Result<
     Ok(next)
 }
 
-/// `set_where` expansion bytes a review of a stored batch of `edits` may draw: each edit's
-/// own `MAX_SET_WHERE_BYTES`, the limit proposals were stored under before batches shared
-/// one budget. Only read-only review (`proposal_diff`, `conflicts`) uses it; committing a
-/// batch always draws from the shared budget.
-pub fn review_budget(edits: usize) -> usize {
-    crate::local::MAX_SET_WHERE_BYTES.saturating_mul(edits.max(1))
-}
+/// `set_where` expansion bytes a review of one stored batch may draw, whatever its length:
+/// a fixed bound on what replaying an old proposal can allocate. It is above the shared
+/// commit budget (`MAX_SET_WHERE_BYTES`), so a proposal stored before its batch shared one
+/// budget stays reviewable unless it is far over it.
+pub const MAX_REVIEW_BYTES: usize = 4 * crate::local::MAX_SET_WHERE_BYTES;
 
-/// `apply_edits` for reviewing a stored proposal: the batch draws from `review_budget`, so a
-/// proposal stored before the shared budget stays reviewable. Returns the world and the
-/// expansion bytes each edit used.
+/// `apply_edits` for reviewing a stored proposal (`proposal_diff`, `conflicts`, approval
+/// checks and hints; a commit always draws from the shared budget): the batch draws from
+/// `MAX_REVIEW_BYTES`, so a proposal stored before the shared budget stays reviewable
+/// while what a review allocates stays bounded. Returns the world and the
+/// expansion bytes each edit used. A batch beyond the review bound is a recoverable
+/// `budget_exceeded` at `/edits/N`, before that edit copies anything.
 pub fn review_edits(
     base: &World,
     edits: &[Edit],
     registry: &Registry,
 ) -> Result<(World, Vec<usize>)> {
     let mut next = base.clone();
-    let mut budget = review_budget(edits.len());
+    let mut budget = MAX_REVIEW_BYTES;
     let mut used = Vec::with_capacity(edits.len());
     for (i, edit) in edits.iter().enumerate() {
         let before = budget;
-        crate::local::at(
-            &format!("/edits/{i}"),
-            edit.clone()
-                .apply_budgeted(&mut next, registry, &mut budget),
-        )?;
+        let applied = edit
+            .clone()
+            .apply_budgeted(&mut next, registry, &mut budget)
+            .map_err(|e| {
+                if e.downcast_ref::<Diagnostic>()
+                    .is_some_and(|d| d.code == "budget_exceeded")
+                {
+                    Diagnostic::error(
+                        "budget_exceeded",
+                        format!("/edits/{i}"),
+                        format!(
+                            "reviewing this stored batch would expand set_where values beyond the review limit of {MAX_REVIEW_BYTES} bytes at edit {i}; it cannot be reviewed or approved as stored: reject it and propose the change again in smaller batches (narrower selectors or smaller values)"
+                        ),
+                    )
+                } else {
+                    e
+                }
+            });
+        crate::local::at(&format!("/edits/{i}"), applied)?;
         used.push(before - budget);
     }
     Ok((next, used))
+}
+
+/// The edits of a stored proposal. A `replace_world` stored before validation refused legacy
+/// forms (e.g. `audio.library: []`) is read like a stored revision (`Registry::decode`), so
+/// the proposal still reviews and approves as it was previewed; the approval still validates
+/// the normalized world. New requests keep `decode_new` (`Edit::apply`).
+pub fn stored_edits(raw: &str, registry: &Registry) -> Result<Vec<Edit>> {
+    let mut edits: Vec<Edit> = serde_json::from_str(raw)?;
+    for edit in &mut edits {
+        if let Edit::Core(CoreEdit::ReplaceWorld { world }) = edit {
+            // An undecodable world is left as stored: applying it reports the error.
+            if let Ok(normalized) = registry.decode(world.clone()) {
+                *world = serde_json::to_value(&normalized)?;
+            }
+        }
+    }
+    Ok(edits)
 }
 
 /// The edit batch that commits the merge on `theirs` as one revision (empty when the merge

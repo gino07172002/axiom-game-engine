@@ -424,14 +424,14 @@ fn a_proposal_whose_selector_now_resolves_differently_is_not_approved() {
             r.get(0)
         })
         .unwrap();
-    let recorded: Vec<Vec<String>> = serde_json::from_str(&recorded).unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].len(), 2, "both counters: {recorded:?}");
+    let recorded: Value = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(recorded.as_array().unwrap().len(), 1, "{recorded}");
+    assert_eq!(recorded[0]["count"], 2, "both counters: {recorded}");
     // Simulate a change of selector semantics after review: the recorded preview selected
-    // only the first of them.
+    // only the first of them (in the full-path form an earlier build stored).
     raw.execute(
         "UPDATE proposals SET targets=?2 WHERE id=?1",
-        rusqlite::params![id, json!([[recorded[0][0]]]).to_string()],
+        rusqlite::params![id, json!([["/entities/@a"]]).to_string()],
     )
     .unwrap();
     let refused = resolve(&mut s, id, true, false).unwrap_err();
@@ -492,6 +492,200 @@ fn a_large_proposal_stored_before_the_shared_budget_stays_reviewable() {
     assert_eq!(status(&mut s, id), "pending");
     assert_eq!(s.revision().unwrap(), 1);
     assert!(s.proposal_conflicts(id).is_ok(), "conflicts are listed too");
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Final round C0 N2: `targets` stores one bounded digest per selector, not every path; the
+/// full-path form an earlier build stored still approves when it matches.
+#[test]
+fn recorded_targets_stay_small_however_many_objects_a_selector_matches() {
+    let mut world = World::empty("many");
+    for i in 0..2000 {
+        world
+            .entities
+            .push(Entity::new(format!("enemy/{}/{i:04}", "x".repeat(100))));
+    }
+    let (path, mut s, raw) = file_store("digest", world);
+    let edit = json!({"kind":"set_where","select":{"from":"entities","id_glob":"enemy/*"},"field":"/label","value":"X"});
+    let proposed = s
+        .execute(Request::Propose {
+            expected_rev: Some(1),
+            edits: serde_json::from_value(json!(vec![edit.clone(); 16])).unwrap(),
+            note: String::new(),
+        })
+        .unwrap();
+    let id = proposed["proposal"].as_i64().unwrap();
+    let recorded: String = raw
+        .query_row("SELECT targets FROM proposals WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    // 16 selectors x 2000 paths of ~118 bytes would be ~3.8 MB.
+    assert!(recorded.len() < 16 * 100, "{} bytes", recorded.len());
+    assert_eq!(
+        serde_json::from_str::<Value>(&recorded).unwrap()[15]["count"],
+        2000
+    );
+    let approved = resolve(&mut s, id, true, false).unwrap();
+    assert_eq!(approved["rev"], 2, "{approved}");
+    // A proposal whose targets were stored as full sorted paths (the earlier form) and
+    // still match approves too.
+    let one = format!("enemy/{}/0001", "x".repeat(100));
+    let edits = json!([{"kind":"set_where","select":{"from":"entities","ids":[one]},"field":"/label","value":"Y"}]);
+    let proposed = s
+        .execute(Request::Propose {
+            expected_rev: Some(2),
+            edits: serde_json::from_value(edits).unwrap(),
+            note: String::new(),
+        })
+        .unwrap();
+    let id = proposed["proposal"].as_i64().unwrap();
+    let full = json!([[format!("/entities/@enemy~1{}~10001", "x".repeat(100))]]);
+    raw.execute(
+        "UPDATE proposals SET targets=?2 WHERE id=?1",
+        rusqlite::params![id, full.to_string()],
+    )
+    .unwrap();
+    let approved = resolve(&mut s, id, true, false).unwrap();
+    assert_eq!(approved["rev"], 3, "{approved}");
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Final round C0 R1-6.2-F6: a stored edit that alone expands beyond one batch's budget is
+/// not told to split into batches of one edit (that cannot help).
+#[test]
+fn a_stored_edit_over_the_budget_by_itself_asks_for_a_narrower_change() {
+    let mut world = World::empty("alone");
+    world.component_schemas.insert(
+        "game.note".into(),
+        serde_json::from_value(json!({"fields":{"a":{"ty":"string"},"b":{"ty":"string"}}}))
+            .unwrap(),
+    );
+    for i in 0..4096 {
+        world.entities.push(Entity::new(format!("e{i:04}")));
+    }
+    let (path, mut s, raw) = file_store("alone", world);
+    // 4096 x ~6 KB = ~24.6 MB > 16 MiB in one edit, which a build with no budget stored.
+    let edit = json!({"kind":"set_where","select":{"from":"entities","id_glob":"e*"},
+        "field":"/components/game.note","value":{"a":"x".repeat(3000),"b":"y".repeat(3000)}});
+    let id = insert_legacy_proposal(&raw, &json!([edit]));
+    let page = s
+        .execute(Request::ProposalDiff {
+            id,
+            offset: 0,
+            limit: Some(1),
+        })
+        .expect("within the review bound it stays reviewable");
+    assert_eq!(page["total_changes"], 4096, "{page}");
+    let refused = resolve(&mut s, id, true, false).unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "budget_exceeded",
+        "{refused}"
+    );
+    let text = refused.to_string();
+    assert!(text.contains("/edits/0"), "{text}");
+    assert!(text.contains("narrower selector"), "{text}");
+    assert!(!text.contains("batches of at most"), "{text}");
+    assert_eq!(status(&mut s, id), "pending");
+    assert_eq!(s.revision().unwrap(), 1);
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Final round C0 N1: reviewing a stored proposal expands at most `MAX_REVIEW_BYTES` however
+/// many edits it has, and says so recoverably instead of allocating the whole expansion.
+#[test]
+fn reviewing_an_old_proposal_is_bounded_whatever_its_length() {
+    let mut world = World::empty("review");
+    world.component_schemas.insert(
+        "game.note".into(),
+        serde_json::from_value(json!({"fields":{"a":{"ty":"string"},"b":{"ty":"string"},"c":{"ty":"string"},"d":{"ty":"string"}}})).unwrap(),
+    );
+    for i in 0..1024 {
+        world.entities.push(Entity::new(format!("e{i:04}")));
+    }
+    let (path, mut s, raw) = file_store("review-bound", world);
+    // 6 edits of 1024 x ~16 KB = ~16 MiB each: each fit its own old budget, ~96 MiB total
+    // is beyond the 64 MiB review bound (the old review budget allowed 6 x 16 MiB).
+    let edit = json!({"kind":"set_where","select":{"from":"entities","id_glob":"e*"},
+        "field":"/components/game.note","value":{"a":"a".repeat(4000),"b":"b".repeat(4000),"c":"c".repeat(4000),"d":"d".repeat(4000)}});
+    let id = insert_legacy_proposal(&raw, &json!(vec![edit; 6]));
+    let refused = s
+        .execute(Request::ProposalDiff {
+            id,
+            offset: 0,
+            limit: Some(1),
+        })
+        .map_err(|e| error_response(&e))
+        .unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "budget_exceeded",
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("review limit"), "{refused}");
+    assert!(s.proposal_conflicts(id).is_err());
+    let refused = resolve(&mut s, id, true, false).unwrap_err();
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "budget_exceeded",
+        "{refused}"
+    );
+    assert!(
+        refused
+            .to_string()
+            .contains("cannot be split automatically"),
+        "{refused}"
+    );
+    assert_eq!(status(&mut s, id), "pending");
+    assert_eq!(s.revision().unwrap(), 1);
+    drop((s, raw));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Final round C0 N4: a `replace_world` proposal stored before validation refused legacy
+/// array forms still reviews and approves as it was previewed (normalized), while a new
+/// proposal of the same edit is refused.
+#[test]
+fn an_old_replace_world_proposal_keeps_its_compatible_decoding() {
+    let (path, mut s, raw) = file_store("replace", World::empty("before"));
+    let mut legacy = json!(World::empty("after"));
+    legacy["capabilities"]["audio"] = json!(1);
+    legacy["resources"]["audio.library"] = json!([]);
+    let edits = json!([{"kind":"replace_world","world":legacy}]);
+    let id = insert_legacy_proposal(&raw, &edits);
+    let page = s
+        .execute(Request::ProposalDiff {
+            id,
+            offset: 0,
+            limit: Some(128),
+        })
+        .unwrap();
+    let text = page.to_string();
+    assert!(text.contains("audio.library"), "{text}");
+    assert!(
+        !text.contains("\"after\":[]"),
+        "the review shows the normalized object, not the stored array: {text}"
+    );
+    let approved = resolve(&mut s, id, true, false).unwrap();
+    assert_eq!(approved["rev"], 2, "{approved}");
+    let world = s.current().unwrap().1;
+    assert_eq!(
+        world.resources["audio.library"],
+        json!({"cues":{},"clips":{}})
+    );
+    // New requests stay strict.
+    let refused = s
+        .execute(Request::Propose {
+            expected_rev: Some(2),
+            edits: serde_json::from_value(edits).unwrap(),
+            note: String::new(),
+        })
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("not an array"),
+        "{refused:#}"
+    );
     drop((s, raw));
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
