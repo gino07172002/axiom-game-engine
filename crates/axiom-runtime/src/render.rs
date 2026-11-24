@@ -1616,6 +1616,22 @@ mod tests {
             (left, scissor),
             ([0.0, 0.0, 480.5, 541.0], [0, 0, 481, 541])
         );
+        // R3 round 3: a sub-pixel view keeps `rect * size` (the pointer ray's rectangle), so
+        // its projection aspect is `(W * w) / (H * h)`; only the scissor is at least 1 px.
+        let (tiny, scissor) = super::pixel_rect([0.0, 0.0, 0.001, 0.001], 640, 480);
+        assert_eq!(
+            (tiny, scissor),
+            ([0.0, 0.0, 0.001 * 640.0, 0.001 * 480.0], [0, 0, 1, 1])
+        );
+        for rect in [
+            [0.0, 0.0, 0.001, 0.003],
+            [0.25, 0.1, 0.5, 0.3],
+            [0.1234567, 0.7654321, 0.8765433, 0.2345679],
+        ] {
+            let ([_, _, w, h], _) = super::pixel_rect(rect, 1440, 900);
+            let expected = (1440.0 * rect[2]) / (900.0 * rect[3]);
+            assert!((w / h - expected).abs() <= expected * 1e-5, "{rect:?}");
+        }
     }
 
     /// The authored sky is drawn after opaque geometry with `LessEqual`: at depth 1.0 it only

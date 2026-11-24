@@ -135,6 +135,10 @@ impl Events {
             }
         }
     }
+    /// Same event contracts and consumers as `other`.
+    pub fn same_contract(&self, other: &Self) -> bool {
+        self.specs == other.specs && self.routes == other.routes
+    }
     pub fn transfer(&mut self, old: &Self) -> Result<()> {
         ensure!(old.pending.is_empty() || (self.specs==old.specs && self.routes==old.routes),
             "pending events require the same contract graph; repair the consumer before changing contracts");

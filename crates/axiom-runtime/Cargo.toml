@@ -27,6 +27,9 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 png = "0.17"
 sha2 = "0.10"
+# Fast fixed-seed content fingerprint of audio files (spatial_audio.rs). Zlib; already built
+# for hashbrown, so no new download or build time.
+foldhash = "0.2"
 # Ogg Vorbis decoding of file-backed audio clips (pure Rust, MIT OR Apache-2.0; default
 # feature `ogg` = the Ogg container, no async).
 lewton = "0.10"

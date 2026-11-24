@@ -402,3 +402,131 @@ fn a_stored_world_over_the_balance_limit_opens_repairs_and_undoes() {
     drop(reopened);
     let _ = std::fs::remove_dir_all(&dir);
 }
+#[test]
+fn restore_refuses_a_transferred_balance_that_no_longer_fits_with_the_minerals() {
+    // R7 F3 (round 3): the old run's balance carries over on reload; with every node still
+    // minable it must fit a u32 together with the minerals and what the workers carry.
+    let w = content::demo_world(64).unwrap();
+    let mut old = Simulation::new(&compiled(&w)).unwrap();
+    let minerals: u64 = old.resources.iter().map(|r| u64::from(r.remaining)).sum();
+    let top = u32::MAX - minerals as u32;
+    old.initial_economy += u64::from(top - old.balance[1]);
+    old.balance[1] = top;
+    let mut same = Simulation::new(&compiled(&w)).unwrap();
+    same.restore(&old).unwrap();
+    assert_eq!(same.balance[1], top);
+    old.initial_economy += 1;
+    old.balance[1] = top + 1;
+    let mut over = Simulation::new(&compiled(&w)).unwrap();
+    let error = format!("{:#}", over.restore(&old).unwrap_err());
+    assert!(
+        error.contains("faction 1") && error.contains("exceeds"),
+        "{error}"
+    );
+}
+#[test]
+fn shared_obstacle_cells_match_the_full_scan_and_stay_bounded() {
+    // R7 F2 (round 3): the per-obstacle raster gives the same mask as testing every cell
+    // against every obstacle, for odd sizes, cell sizes, sub-cell and huge rectangles, and
+    // rectangles partly or fully outside the grid.
+    let mut seed = 0x2545_f491_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32
+    };
+    for (width, height, cell_size) in [(128, 128, 1.0), (37, 91, 0.5), (4, 4, 4.0), (100, 64, 1.3)]
+    {
+        let config = nav::GridConfig {
+            width,
+            height,
+            cell_size,
+            origin: [-20.0, -11.5],
+            blocked: vec![],
+        };
+        let extent = [width as f32 * cell_size, height as f32 * cell_size];
+        let mut obstacles = vec![
+            axiom_combat::Rect {
+                min: [-1000.0, -1000.0],
+                max: [-999.0, 1000.0],
+            },
+            axiom_combat::Rect {
+                min: [-19.9, -11.4],
+                max: [-19.8, -11.3],
+            },
+            axiom_combat::Rect {
+                min: [-20.0, -11.5],
+                max: [-20.0 + cell_size, -11.5 + cell_size],
+            },
+        ];
+        for _ in 0..300 {
+            let size = if next() < 0.1 { 30.0 } else { 3.0 };
+            let x = -25.0 + next() * (extent[0] + 10.0);
+            let z = -16.5 + next() * (extent[1] + 10.0);
+            obstacles.push(axiom_combat::Rect {
+                min: [x, z],
+                max: [x + next() * size, z + next() * size],
+            });
+        }
+        let mut fast = vec![false; (width * height) as usize];
+        simulation::shared_obstacle_mask(&config, &obstacles, &mut fast);
+        for z in 0..height as i32 {
+            for x in 0..width as i32 {
+                let center = glam::Vec2::new(
+                    config.origin[0] + (x as f32 + 0.5) * cell_size,
+                    config.origin[1] + (z as f32 + 0.5) * cell_size,
+                );
+                let full = obstacles.iter().any(|o| !o.clear(center, cell_size * 0.49));
+                assert_eq!(
+                    fast[(z * width as i32 + x) as usize],
+                    full,
+                    "{width}x{height} cell {x},{z}"
+                );
+            }
+        }
+    }
+    // The budget case: 128x128 cells, 2048 obstacles of up to the whole grid. Timed for the
+    // record (debug or release as built); the old scan ran 16384 x 2048 distance tests.
+    let config = nav::GridConfig {
+        width: 128,
+        height: 128,
+        cell_size: 1.0,
+        origin: [-64.0, -64.0],
+        blocked: vec![],
+    };
+    let obstacles: Vec<_> = (0..2048)
+        .map(|i| {
+            let (a, b) = (next() * 128.0 - 64.0, next() * 128.0 - 64.0);
+            let size = if i % 8 == 0 { 128.0 } else { 4.0 };
+            axiom_combat::Rect {
+                min: [a, b],
+                max: [a + next() * size, b + next() * size],
+            }
+        })
+        .collect();
+    let mut mask = vec![false; 128 * 128];
+    let started = std::time::Instant::now();
+    simulation::shared_obstacle_mask(&config, &obstacles, &mut mask);
+    let fast = started.elapsed();
+    let started = std::time::Instant::now();
+    let mut full = vec![false; 128 * 128];
+    for z in 0..128 {
+        for x in 0..128 {
+            let center = glam::Vec2::new(-64.0 + x as f32 + 0.5, -64.0 + z as f32 + 0.5);
+            full[z * 128 + x] = obstacles.iter().any(|o| !o.clear(center, 0.49));
+        }
+    }
+    let scan = started.elapsed();
+    assert_eq!(mask, full);
+    eprintln!(
+        "shared obstacle mask 128x128 / 2048 obstacles ({}): raster {:.2} ms, full scan {:.2} ms",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        fast.as_secs_f64() * 1000.0,
+        scan.as_secs_f64() * 1000.0
+    );
+}

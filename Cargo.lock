@@ -315,6 +315,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_dock",
+ "foldhash 0.2.0",
  "glam",
  "lewton",
  "naga",

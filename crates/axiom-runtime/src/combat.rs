@@ -77,6 +77,10 @@ impl Combat {
             "pending":self.pending.len(),"queued_events":self.outbox.len(),"error":self.error,
             "sequence":self.sequence,"recent":self.history.iter().rev().take(12).collect::<Vec<_>>()})
     }
+    /// Committed combat events still waiting for room on the event bus.
+    pub fn queued_events(&self) -> usize {
+        self.outbox.len()
+    }
     pub fn inherit(&mut self, old: &Self) {
         self.history = old.history.clone();
         self.outbox = old.outbox.clone();
@@ -107,6 +111,14 @@ pub fn snapshot(state: &mut RuntimeState, bodies: Vec<Body>) {
 fn flush(combat: &mut Combat, events: &mut crate::events::Events) {
     let room = events.room().min(combat.outbox.len());
     for (event, tick, fields) in combat.outbox.drain(..room) {
+        if !events.owns(event) {
+            // Only queued while owned; a reload that changes the contract is refused while
+            // events wait, so this is a broken invariant: say so instead of dropping quietly.
+            combat.error = Some(format!(
+                "combat event {event} of tick {tick} lost its contract and was not delivered"
+            ));
+            continue;
+        }
         events.publish("combat.resolve", event, tick, fields);
     }
 }

@@ -1510,6 +1510,18 @@ impl WorldRuntime {
                     system.transfer(old.as_ref(), &self.state, &mut next.state)?;
                 }
             }
+            // Combat events whose damage already committed wait for bus room; they may only
+            // move into the same contract graph (as `Events::transfer` requires of a pending
+            // batch), never be dropped by a reload.
+            if let Some(old) = &self.state.combat {
+                let queued = old.queued_events();
+                ensure!(
+                    queued == 0
+                        || (next.state.combat.is_some()
+                            && next.state.events.same_contract(&self.state.events)),
+                    "{queued} queued combat events require the same contract graph and combat.session; repair the consumer before changing contracts"
+                );
+            }
             if let (Some(old), Some(new)) = (&self.state.combat, &mut next.state.combat) {
                 new.inherit(old);
             }

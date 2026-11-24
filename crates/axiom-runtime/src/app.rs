@@ -52,6 +52,29 @@ fn retire<T: Send + 'static>(value: T) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: the next material pipeline preparation fails as the GPU would reject it.
+    static FAIL_SHADER_PIPELINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Material pipelines of a runtime about to go live (headless: nothing to prepare). An error
+/// keeps the last good runtime active (`activation_failed`).
+fn prepare_gpu(renderer: &mut Option<Renderer>, next: &WorldRuntime) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_SHADER_PIPELINE.with(|f| f.get()) {
+        return Err(axiom_core::Diagnostic::error(
+            "shader_pipeline",
+            "/resources/render.shaders/shaders",
+            "injected GPU pipeline failure (test)",
+        ));
+    }
+    if let Some(renderer) = renderer {
+        renderer.prepare_shaders(next.shaders())?;
+    }
+    Ok(())
+}
+
 pub struct RunOptions {
     pub mode: RunMode,
     pub load_slot: Option<String>,
@@ -99,8 +122,8 @@ struct App {
     accumulator: f32,
     poll_elapsed: f32,
     frames: u32,
-    /// Loopback `screenshot` op and `editor_view {capture}`: one capture at a time, read back
-    /// asynchronously and written by a background job.
+    /// Loopback `screenshot` op (one at a time) and queued `editor_view {capture}`s: one
+    /// read-back at a time, each PNG written by a bounded background job.
     shots: crate::screenshot::Loopback,
     /// Who the screenshot read-back in flight (or about to be recorded) belongs to.
     grab_owner: Option<GrabOwner>,
@@ -1832,6 +1855,8 @@ impl App {
                             && !name.contains(".."),
                         "capture name must be 1..64 of [A-Za-z0-9-_.]"
                     );
+                    // A full capture queue refuses before any command runs.
+                    self.shots.can_enqueue()?;
                     let dir = std::env::current_dir()?.join("artifacts").join("captures");
                     // The same asynchronous read-back and PNG job as the loopback
                     // `screenshot` op (the main thread never waits for the GPU or the
@@ -1844,7 +1869,6 @@ impl App {
                         reply: None,
                         overwrite: true,
                     };
-                    self.shots.check_enqueue(&shot)?;
                     std::fs::create_dir_all(&dir)?;
                     Some(shot)
                 }
@@ -2102,12 +2126,9 @@ impl App {
                 return Ok(());
             }
             let renderer = &mut self.renderer;
-            let result = self.runtime.reconcile_checked(&*world, rev, |next| {
-                if let Some(renderer) = renderer {
-                    renderer.prepare_shaders(next.shaders())?;
-                }
-                Ok(())
-            });
+            let result = self
+                .runtime
+                .reconcile_checked(&*world, rev, |next| prepare_gpu(renderer, next));
             if let Err(error) = result {
                 timings.activation_failed = true;
                 timings.total_ms = ms(started);
@@ -2221,16 +2242,9 @@ impl App {
         }
         let started = Instant::now();
         let renderer = &mut self.renderer;
-        let adopted = self.runtime.adopt(
-            built,
-            |next| {
-                if let Some(renderer) = renderer {
-                    renderer.prepare_shaders(next.shaders())?;
-                }
-                Ok(())
-            },
-            started,
-        );
+        let adopted = self
+            .runtime
+            .adopt(built, |next| prepare_gpu(renderer, next), started);
         timings.adopt_ms = ms(started);
         timings.total_ms = timings.request_ms + timings.adopt_ms;
         match adopted {
@@ -2314,12 +2328,9 @@ impl App {
             return Ok(Some(rev));
         }
         let renderer = &mut self.renderer;
-        let result = self.runtime.reconcile_checked(&*world, rev, |next| {
-            if let Some(renderer) = renderer {
-                renderer.prepare_shaders(next.shaders())?;
-            }
-            Ok(())
-        });
+        let result = self
+            .runtime
+            .reconcile_checked(&*world, rev, |next| prepare_gpu(renderer, next));
         timings.total_ms = ms(started);
         match result {
             Ok(()) => {
@@ -2399,16 +2410,9 @@ impl App {
             crate::asset_reload::Decision::Adopt(next) => {
                 let started = Instant::now();
                 let renderer = &mut self.renderer;
-                let adopted = self.runtime.adopt(
-                    Ok(*next),
-                    |next| {
-                        if let Some(renderer) = renderer {
-                            renderer.prepare_shaders(next.shaders())?;
-                        }
-                        Ok(())
-                    },
-                    started,
-                );
+                let adopted =
+                    self.runtime
+                        .adopt(Ok(*next), |next| prepare_gpu(renderer, next), started);
                 let adopt_ms = ms(started);
                 match adopted {
                     Ok(old) => {
@@ -2763,9 +2767,7 @@ impl App {
 
     fn prepare_runtime(&mut self, world: World, rev: i64) -> Result<WorldRuntime> {
         let next = WorldRuntime::new(world, rev, self.runtime.registry_clone())?;
-        if let Some(renderer) = &mut self.renderer {
-            renderer.prepare_shaders(next.shaders())?;
-        }
+        prepare_gpu(&mut self.renderer, &next)?;
         Ok(next)
     }
 
@@ -4334,6 +4336,45 @@ mod tests {
             .contains("activation failed"));
     }
 
+    /// R3 round 3 (F2): a revision whose material pipelines the GPU rejects (`shader_pipeline`,
+    /// past the CPU pre-commit checks) is committed but never goes live: the last good runtime
+    /// stays active and reports the diagnostic, on the synchronous and the background path;
+    /// the next good revision goes live.
+    #[test]
+    fn a_gpu_pipeline_failure_keeps_the_last_good_revision_active() {
+        for background in [false, true] {
+            let mut app = editor_app();
+            app.background_activation = background;
+            let rev = app.store.revision().unwrap();
+            app.reload().unwrap();
+            app.finish_activation().unwrap();
+            assert_eq!(app.runtime.rev, rev);
+            app.store
+                .apply(Some(rev), vec![Edit::set("title", json!("Bad pipeline"))])
+                .unwrap();
+            FAIL_SHADER_PIPELINE.with(|f| f.set(true));
+            app.reload().unwrap();
+            app.finish_activation().unwrap();
+            FAIL_SHADER_PIPELINE.with(|f| f.set(false));
+            assert_eq!(app.runtime.rev, rev, "background {background}");
+            let observed = app.observation();
+            assert_eq!(observed.activation, "activation_failed");
+            let error = app.runtime.activation_error.clone().expect("reported");
+            assert_eq!(
+                error["diagnostics"][0]["code"], "shader_pipeline",
+                "{error}"
+            );
+            assert!(app.last_reload.unwrap().activation_failed);
+            app.store
+                .apply(Some(rev + 1), vec![Edit::set("title", json!("Repaired"))])
+                .unwrap();
+            app.reload().unwrap();
+            app.finish_activation().unwrap();
+            assert_eq!(app.runtime.rev, rev + 2, "background {background}");
+            assert_eq!(app.observation().activation, "applied");
+        }
+    }
+
     #[test]
     fn external_revision_change_list_is_computed_off_the_main_thread() {
         let mut app = editor_app();
@@ -5224,6 +5265,55 @@ mod tests {
         assert_eq!(app.writes_pending(), 0);
         assert_eq!(app.store.revision().unwrap(), base);
         assert_eq!(app.store.current().unwrap().1.entities.len(), entities);
+    }
+
+    /// R3 round 3: a full capture queue refuses `editor_view {command, capture}` before the
+    /// command runs (it used to fail after the edit was queued, replying with an error while
+    /// the edit still landed).
+    #[test]
+    fn a_full_capture_queue_refuses_editor_view_before_its_command() {
+        let mut app = writer_app("capture-full.sqlite", None);
+        let base = app.editor.as_ref().unwrap().rev;
+        let entities = app.editor.as_ref().unwrap().world.entities.len();
+        let dir = std::env::temp_dir().join(format!("axiom-capture-full-{}", std::process::id()));
+        while app.shots.can_enqueue().is_ok() {
+            app.shots
+                .enqueue(crate::screenshot::Request {
+                    path: dir.join("held.png"),
+                    view: false,
+                    asked: Instant::now(),
+                    reply: None,
+                    overwrite: true,
+                })
+                .unwrap();
+        }
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        let request = crate::bridge::RuntimeRequest {
+            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            request: Request::EditorView {
+                select: vec![],
+                focus: false,
+                dock: None,
+                capture: Some("after-cube".into()),
+                play: None,
+                open: None,
+                command: Some("object.cube".into()),
+                arg: None,
+            },
+            reply,
+        };
+        assert!(app.handle_command(request).is_none());
+        let reply = response.recv().unwrap();
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            reply["error"].as_str().unwrap().contains("already queued"),
+            "{reply}"
+        );
+        drain(&mut app);
+        assert_eq!(app.writes_pending(), 0);
+        assert_eq!(app.store.revision().unwrap(), base);
+        assert_eq!(app.store.current().unwrap().1.entities.len(), entities);
+        assert_eq!(app.editor.as_ref().unwrap().world.entities.len(), entities);
     }
 
     #[test]

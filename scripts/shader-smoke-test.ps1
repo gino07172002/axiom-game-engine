@@ -112,10 +112,10 @@ $undo = Invoke-ShaderAxiom @('--db',$db,'undo',"$($initial.rev)",'--expected-rev
 if (-not $undo.ok -or (Get-FileHash -LiteralPath $exe).Hash -ne $hash) { throw 'Shader undo or executable consistency failed' }
 [ordered]@{
     ok=$true;exe_sha256=$hash;gpu=$baseline.gpu;earlier_regressions=(-not $SkipEarlier);
-    baseline=$initial;cpu_diagnostic=$invalid;valid_hot_reload=$active;failed_gpu_activation=$retained;
+    baseline=$initial;cpu_diagnostic=$invalid;valid_hot_reload=$active;pre_commit_rejection=$failure;retained_active=$retained;
     mesh=$mesh.observation;undo=$undo;rts=$rts.observation.rts.summary;
     pixels=@{red_before=$before;red_after=$after;magenta_mesh=$triangles};
     screenshots=@{before="$reportDir/before.png";after="$reportDir/after.png";mesh="$reportDir/mesh.png";rts="$reportDir/rts.png"}
 } | ConvertTo-Json -Depth 40 | Set-Content -Encoding utf8 "$reportDir/report.json"
 Copy-Item -LiteralPath "$reportDir/report.json" -Destination 'artifacts/shader-validation.json'
-Write-Host "PASS shader assets, live replacement, last-good GPU pipeline, mesh material and regressions. Report: $reportDir/report.json"
+Write-Host "PASS shader assets, live replacement, pre-commit shader rejection with the last good revision kept, mesh material and regressions. Report: $reportDir/report.json"

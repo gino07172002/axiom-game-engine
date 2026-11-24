@@ -1391,22 +1391,7 @@ impl Simulation {
                         mask[(c[1] * width + c[0]) as usize] = true;
                     }
                 }
-                for z in 0..height {
-                    for x in 0..width {
-                        let center = Vec2::new(
-                            config.origin[0] + (x as f32 + 0.5) * config.cell_size,
-                            config.origin[1] + (z as f32 + 0.5) * config.cell_size,
-                        );
-                        if scene
-                            .config
-                            .obstacles
-                            .iter()
-                            .any(|o| !o.clear(center, config.cell_size * 0.49))
-                        {
-                            mask[(z * width + x) as usize] = true;
-                        }
-                    }
-                }
+                shared_obstacle_mask(&config, &scene.config.obstacles, &mut mask);
                 config.blocked = (0..height)
                     .flat_map(|z| (0..width).map(move |x| [x, z]))
                     .filter(|c| mask[(c[1] * width + c[0]) as usize])
@@ -1672,6 +1657,28 @@ impl Simulation {
                 .map(|o| u64::from(o.carried))
                 .sum::<u64>();
         self.balance = old.balance;
+        // Either faction may mine every node: its carried balance plus every remaining node
+        // plus what its workers carry must still fit a u32, or a later delivery would stop
+        // (`balance_overflow`). Refuse the reload instead; the old revision stays active.
+        let minerals = self
+            .resources
+            .iter()
+            .map(|r| u64::from(r.remaining))
+            .sum::<u64>();
+        for (faction, balance) in self.balance.iter().enumerate() {
+            let carried = self
+                .units
+                .iter()
+                .filter(|u| usize::from(u.def.faction) == faction)
+                .map(|u| u64::from(u.carried))
+                .sum::<u64>();
+            let total = u64::from(*balance) + minerals + carried;
+            ensure!(
+                total <= u64::from(u32::MAX),
+                "faction {faction} balance {balance} plus {minerals} minerals and {carried} carried exceeds {} after reload; lower the minerals or restart RTS",
+                u32::MAX
+            );
+        }
         self.initial_economy = (old.initial_economy + added)
             .checked_sub(removed)
             .context("RTS economy baseline underflow")?;
@@ -1696,6 +1703,89 @@ impl Simulation {
         self.check_conservation()
     }
 }
+/// Marks the cells of `config` that a shared combat obstacle covers: a cell whose center lies
+/// closer than `0.49 * cell_size` to an obstacle (`Rect::clear`). Each obstacle only visits
+/// the cells around its rectangle: cells whose center is inside it are filled through a 2D
+/// difference array, and only the border ring around them runs the exact distance test. The
+/// cost is O(cells + obstacles × border) instead of O(cells × obstacles) (16384 × 2048 tests
+/// at the budget), with the same mask: every cell outside an obstacle's ring is clear of it,
+/// every cell inside is covered (distance 0).
+pub fn shared_obstacle_mask(
+    config: &nav::GridConfig,
+    obstacles: &[axiom_combat::Rect],
+    mask: &mut [bool],
+) {
+    let (width, height) = (config.width as i32, config.height as i32);
+    let size = config.cell_size;
+    let radius = size * 0.49;
+    // Cell index whose center is at or around `p` on one axis (rounding is covered by the
+    // one-cell margins below).
+    let cell = |p: f32, origin: f32| (p - origin) / size - 0.5;
+    let mut fill = vec![0_i32; ((width + 1) * (height + 1)) as usize];
+    let at = |x: i32, z: i32| (z * (width + 1) + x) as usize;
+    for o in obstacles {
+        // Candidate cells: centers within `radius` of the rectangle, plus one cell each side.
+        let span = |lo: f32, hi: f32, origin: f32, n: i32| {
+            let a = (cell(lo - radius, origin).floor() as i32)
+                .saturating_sub(1)
+                .max(0);
+            let b = (cell(hi + radius, origin).ceil() as i32)
+                .saturating_add(1)
+                .min(n - 1);
+            (a, b)
+        };
+        let (x0, x1) = span(o.min[0], o.max[0], config.origin[0], width);
+        let (z0, z1) = span(o.min[1], o.max[1], config.origin[1], height);
+        if x0 > x1 || z0 > z1 {
+            continue;
+        }
+        // Interior: centers inside the rectangle, one cell in from the rounded bounds.
+        let inner = |lo: f32, hi: f32, origin: f32, a: i32, b: i32| {
+            let s = (cell(lo, origin).ceil() as i32).saturating_add(1).max(a);
+            let e = (cell(hi, origin).floor() as i32).saturating_sub(1).min(b);
+            (s, e)
+        };
+        let (ix0, ix1) = inner(o.min[0], o.max[0], config.origin[0], x0, x1);
+        let (iz0, iz1) = inner(o.min[1], o.max[1], config.origin[1], z0, z1);
+        let interior = ix0 <= ix1 && iz0 <= iz1;
+        if interior {
+            fill[at(ix0, iz0)] += 1;
+            fill[at(ix1 + 1, iz0)] -= 1;
+            fill[at(ix0, iz1 + 1)] -= 1;
+            fill[at(ix1 + 1, iz1 + 1)] += 1;
+        }
+        let mut test = |x: i32, z: i32| {
+            let center = Vec2::new(
+                config.origin[0] + (x as f32 + 0.5) * size,
+                config.origin[1] + (z as f32 + 0.5) * size,
+            );
+            if !o.clear(center, radius) {
+                mask[(z * width + x) as usize] = true;
+            }
+        };
+        for z in z0..=z1 {
+            if interior && (iz0..=iz1).contains(&z) {
+                (x0..ix0).chain(ix1 + 1..=x1).for_each(|x| test(x, z));
+            } else {
+                (x0..=x1).for_each(|x| test(x, z));
+            }
+        }
+    }
+    for z in 0..height {
+        let mut row = 0;
+        for x in 0..width {
+            // Running 2D prefix sum of the difference array: `fill[at(x, z)]` becomes the
+            // number of interiors covering cell (x, z).
+            row += fill[at(x, z)];
+            let above = if z > 0 { fill[at(x, z - 1)] } else { 0 };
+            fill[at(x, z)] = row + above;
+            if fill[at(x, z)] > 0 {
+                mask[(z * width + x) as usize] = true;
+            }
+        }
+    }
+}
+
 /// Workers mine from any cell within this distance of a crystal node.
 const GATHER_REACH: f32 = 1.6;
 /// Workers deliver from any cell within this distance of a depot center (covers the ring of

@@ -177,36 +177,50 @@ fn changed_file_content_restarts_and_old_paths_still_work_after_reload() {
     );
 }
 
-/// A runtime build whose file is unchanged since it was decoded does not read it again (the
-/// editor builds Play runtimes on its main thread): with the file locked against reading,
-/// the build still succeeds from the cache.
-#[cfg(windows)]
+/// R6 F6 (round 3): every build checks the file content. A file replaced by another of the
+/// same size whose modification time is put back (a copy that preserves times, a restored
+/// backup) is decoded again; round 1 keyed the cache on (path, size, mtime) alone and
+/// returned the old PCM.
 #[test]
-fn an_unchanged_decoded_file_is_not_read_again_by_the_next_build() {
-    use std::os::windows::fs::OpenOptionsExt;
-    let root = pack("unread", json!({"hum":{"file":{"path":"sounds/hum.wav"}}}));
-    std::fs::write(
-        root.join("sounds/hum.wav"),
-        encode_wav(&sine(130.0, 22_050, 0.7, 1), 1, 22_050, 16, false),
-    )
-    .unwrap();
+fn a_replaced_file_with_the_same_size_and_time_is_decoded_again() {
+    let root = pack(
+        "replaced",
+        json!({"hum":{"file":{"path":"sounds/hum.wav"}}}),
+    );
+    let file = root.join("sounds/hum.wav");
+    let a = encode_wav(&sine(130.0, 22_050, 0.7, 1), 1, 22_050, 16, false);
+    // Same sample count and header at twice the rate: same size, other content.
+    let b = encode_wav(&sine(130.0, 22_050, 0.7, 1), 1, 44_100, 16, false);
+    assert_eq!(a.len(), b.len());
+    assert_ne!(a, b);
+    std::fs::write(&file, &a).unwrap();
     let world = load(&root).unwrap();
-    WorldRuntime::new(world.clone(), 1, installed_registry()).unwrap();
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(0)
-        .open(root.join("sounds/hum.wav"))
+    let observed = |rev| {
+        WorldRuntime::new(world.clone(), rev, installed_registry())
+            .unwrap()
+            .observation()
+            .metrics["audio"]["clips"]["files"][0]
+            .clone()
+    };
+    let first = observed(1);
+    assert_eq!(first["rate"], 22_050, "{first}");
+    let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, &b).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(modified)
         .unwrap();
-    assert!(
-        std::fs::read(root.join("sounds/hum.wav")).is_err(),
-        "locked"
-    );
-    let r = WorldRuntime::new(world, 2, installed_registry()).unwrap();
     assert_eq!(
-        r.observation().metrics["audio"]["clips"]["files"][0]["seconds"],
-        0.7
+        std::fs::metadata(&file).unwrap().modified().unwrap(),
+        modified
     );
-    drop(lock);
+    let second = observed(2);
+    assert_eq!(second["rate"], 44_100, "{second}");
+    assert_eq!(second["seconds"], 0.35, "{second}");
+    // Unchanged again: the same (cached) decode.
+    assert_eq!(observed(3)["rate"], 44_100);
 }
 
 #[test]

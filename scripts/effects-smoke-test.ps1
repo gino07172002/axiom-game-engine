@@ -106,7 +106,6 @@ try {
     $failure=Send-Effects @{op='apply';expected_rev=$applied.rev;edits=@(@{kind='set_field';target=@{kind='resource';id='render.shaders'};field='/shaders/vertex/wgsl';value=$vertexBad})}
     if($failure.ok -or $failure.diagnostics[0].code -ne 'invalid_shader' -or $failure.diagnostics[0].path -ne '/resources/render.shaders/shaders/vertex/wgsl'){throw 'Vertex-stage-only WGSL was not rejected before commit'}
     $retained=Wait-Effects {param($o)$o.rev -eq $applied.rev -and $o.activation -eq 'applied'}
-    $restored=$retained
     $delta=Send-Effects @{op='observe_delta';fields=@('/showcase','/shader','/activation','/rev');cursor=$firstDelta.cursor}
     if(-not $delta.ok){throw 'Projected effects observation failed'}
     if(-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0){throw 'Effects native helper timed out or failed'}
@@ -114,7 +113,7 @@ try {
 $final=Get-Content "$dir/live-repaired.json" -Raw -Encoding utf8|ConvertFrom-Json
 if($final.activation -ne 'applied' -or $final.showcase.active -ne 'mat/03-metalness'){throw 'Final native screenshot is not the repaired material instance'}
 if((Get-FileHash -LiteralPath $exe).Hash -ne $hash){throw 'Executable changed during effects QA'}
-$report=@{ok=$true;exe_sha256=$hash;source_commit=$inventory.commit;inventory_count=$inventory.stations.Count;captures=$captures;overview="$dir/overview.png";verified=$verified;live=@{focused=$focused;applied=$applied;preview=$previewed;delta=$delta;budget_rejection=$rejected;gpu_stage_failure=$retained;repair=$restored;gpu_inspection=$inspected};completed=$final;final_screenshot="$dir/live-repaired.png"}
+$report=@{ok=$true;exe_sha256=$hash;source_commit=$inventory.commit;inventory_count=$inventory.stations.Count;captures=$captures;overview="$dir/overview.png";verified=$verified;live=@{focused=$focused;applied=$applied;preview=$previewed;delta=$delta;budget_rejection=$rejected;pre_commit_rejection=$failure;retained_active=$retained;gpu_inspection=$inspected};completed=$final;final_screenshot="$dir/live-repaired.png"}
 $report|ConvertTo-Json -Depth 70|Set-Content "$dir/report.json" -Encoding utf8
 Copy-Item -LiteralPath "$dir/report.json" -Destination artifacts/effects-validation.json
-Write-Host "PASS 24 materials / 12 particle exhibits / native GPU captures / local edits / retries / emitter state / vertex-stage recovery. Report: $dir/report.json"
+Write-Host "PASS 24 materials / 12 particle exhibits / native GPU captures / local edits / retries / emitter state / vertex-stage rejection before commit. Report: $dir/report.json"
