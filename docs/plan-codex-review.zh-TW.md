@@ -353,6 +353,31 @@ Gate(debug,worktree `r4b`,其他 agent 同時編譯造成高負載):`cargo fmt -
 
 修正前會失敗的確認:N1 兩個測試與 F2 的預算測試在暫時拿掉檢查後實跑,都失敗(N1 在 gltf crate 內 panic)。其餘依推理:F12 的舊公式在該射線上判別式捨入為 0 並回傳 100;F3 舊程式 `prev / duration = inf` 直接 return;F8 舊程式提交後快取為空,`Arc::ptr_eq` 不成立;F14 的「接近填滿預算」案例舊程式加上提示後超過 1 KiB,selector 也不會截斷;N2 舊程式延續 3 秒;N3 舊程式回報 `idle` / 0。
 
+#### R4 第三輪(確認複審)
+
+依 `docs/reviews/codex-2026-11/R4.recheck2.md`。範圍照第三輪規則:A 節的回歸(A-F5、前輪 N1、前輪 N2、A-F12、A-F2)與 C 節 `[high]`(N1、N2)。worktree `r4c`(基於 `integ` a57a88e)。改動只在 `crates/axiom-animation/src/import/{mod,gltf}.rs`、`axiom-runtime/src/animation.rs`(熱重載一個條件)、`axiom-runtime/src/animation_parts.rs`(`ray_capsule`)與測試;`authoring.rs` 的 `check_player_clip` / validator 沒有動(與 C0 的 `strict_world_validators` 合併不衝突)。
+
+| ID | 判定 | 修改 / 理由 | 測試 |
+|---|---|---|---|
+| A-F5(回歸) | CONFIRMED | clip 索引改以**內容**為鍵:`(JSON 長度, SipHash)`,JSON 指 GLB 的 JSON chunk、`.gltf` / `.axrig` 的整個檔案(`clip_source`)。`import::load` 用已讀入的位元組算同一個鍵後寫入索引;`clip_ids` 每次讀 JSON(GLB 只讀檔頭 + JSON chunk)、算雜湊,命中才跳過解析。同長度同 mtime 但改了 clip 名的檔案會重新解析。PMX 直接回空清單、不讀檔(與原本相同)。`check_player_clip` 未改 | `import_limits::a_renamed_clip_is_listed_although_the_file_kept_its_length_and_time`(匯入 `aaaa` → 同長度、同 mtime 換成 `bbbb` → `clip_ids` 回 `bbbb`;內容不變時回同一個 `Arc`)。取代原本把沿用舊資料當成預期的 `an_import_fills_the_clip_index_the_validator_reads`。舊程式在此測試回 `aaaa`(依推理) |
+| N1 前輪(回歸) | CONFIRMED | `check_accessors` 對所有 accessor 仍做 count ≥ 1、範圍、stride、sparse 範圍檢查;256 MiB 密集大小上限移到 `expect`,只套用在 importer 會建立 reader 的 accessor(POSITION/NORMAL/TEXCOORD_0/JOINTS_0/WEIGHTS_0/indices/morph target/inverseBindMatrices/animation input/output) | `import_limits::an_unused_sparse_accessor_is_not_expanded`(未使用的 2,300 萬元素 sparse VEC3 不擋匯入);`malformed_gltf_accessors_are_errors_not_panics` 新增「被讀取的 sparse POSITION 2,300 萬元素 → exceeds 256 MiB」,原本的 count 溢位案例改為由範圍檢查回報 `range exceeds buffer view 0` |
+| N2 前輪(回歸) | CONFIRMED | 熱重載延續播放的條件改為「實際播放的 clip 不變」:作者 clip 未改,**或**新作者 clip 正是 runtime 已在播的 clip(`p.config.clip == previous.active`)。改成其他 clip 仍從頭播放 | `animation_review::authoring_the_clip_already_playing_at_runtime_keeps_its_playback`(作者 `short`、`animation.play` 播 `long` 3 秒 → 作者改成 `long`,時間不歸零);第二輪的 `an_authored_clip_switch_starts_the_new_clip_from_its_head` 仍通過 |
+| A-F12(回歸) | CONFIRMED | `ray_capsule` 全部改用 `f64`(`DVec3`)計算,輸入 / 輸出仍是 `f32`;判別式仍用最近點垂直偏移 | `animation_parts::tests::an_oblique_ray_just_inside_a_tiny_sphere_hits_it`(`(15,0,20.008333)` 沿 `(-3,0,-4)`,先以 f64 斷言垂距 < 0.005,再斷言球與膠囊都命中);第二輪的遠距未命中測試仍通過 |
+| A-F2(回歸) | CONFIRMED | `push_texture` / `texture` 共用 `decode`:只建一次 decoder(`ImageReader::into_decoder`),讀尺寸 → 預算檢查 → 照 `ImageReader::decode` 的做法以 `Limits::reserve(total_bytes)` 扣掉輸出緩衝後 `set_limits` → `DynamicImage::from_decoder`。配置上限(4096×4096、64 MiB)不變 | 無法在不加儀器的情況下觀察 decoder 建立次數;行為由既有的 `pmx_textures_share_the_decoded_texture_budget`(檔頭預算)與 workspace 內的 PNG / JPEG 匯入測試覆蓋。**未以測試證明只建一次**,依程式碼判斷 |
+| N1 [high] | CONFIRMED | `gltf 1.4.1` 的 `Glb::from_reader` 以 `header.length - 12`(u32 未檢查)配置緩衝後才讀檔。`import::gltf::open` 自己讀檔(最多 128 MiB + 1 byte),`glTF` 開頭時要求宣告長度存在且在 `12..=實際長度`,才交給 `Gltf::from_slice`(它切的是已在記憶體的資料,chunk 長度都對實際長度檢查) | `import_limits::a_glb_header_length_that_disagrees_with_the_file_is_an_error`(宣告 4、11、`0xffff_fff0`,以及只有 10 bytes 的檔頭;舊程式在宣告 < 12 時於 gltf crate 內溢位 panic) |
+| N2 [high] | CONFIRMED | 收集任何軌道前,依 accessor count 預算:每個 clip 的 values(output count 總和)與 times(input count × 軌數,weights channel 的軌數 = 該 node 的 morph target 數)各 ≤ 2,000,000(與 `Clip::compile_for` 相同;合法 clip 的 times 不會超過 values,所以不會多擋合法資產);整份資產 values + times ≤ `MAX_ANIMATION_KEYS` = 16,000,000(新上限,約 256 MiB 的 Vec4) | `import_limits::shared_animation_inputs_are_budgeted_before_they_are_expanded`(一個 100 萬 key 的 sparse input 被 3 個 channel 共用 → 收集前回 `key budget exceeded (3 values, 3000000 times`;17 個 clip 各 100 萬 key → 超過資產上限) |
+| A-F14 | BACKLOG | selector 截斷加省略號後最多 67 bytes(超過 64);只影響錯誤訊息長度 | — |
+| N3 前輪 | BACKLOG | 熱重載保留圈數時 `playhead` 與一次性姿勢取樣的時間算法可能不同;觀察值差異,非資料損壞 | — |
+| 未涵蓋:`animation.stage` 丟棄等值蒙皮快取 | BACKLOG | 效能,非行為錯誤 | — |
+| 未涵蓋:gameplay bindings 重複解析 primary clip | BACKLOG | 效能 | — |
+| 未涵蓋:F3 checkpoint → 事件送達端對端測試 | BACKLOG | 純測試缺口 | — |
+
+A-F5 的代價:索引命中時仍要讀 JSON 並算雜湊(std 的 SipHash 即使在 debug build 也是最佳化過的程式碼)。GLB 只讀 JSON chunk;大型 `.gltf`(內嵌 base64)命中時要讀整個檔案。**命中成本未量測**,不宣稱任何效能數字。
+
+Gate(debug,worktree `r4c`):`cargo fmt --all -- --check` 通過;`cargo clippy --workspace --all-targets -- -D warnings` 通過(第一次因 `CLIP_INDEX` 的 `type_complexity` 失敗,抽出 `ClipEntry` 後通過);`cargo test --workspace --no-fail-fast` 1066 passed / 0 failed / 6 ignored(77 個 test target,一次跑完,沒有需要單獨重跑的失敗);`editor-smoke-test` ok(`-Port 5121`);`editor-world-parity` identical(rev 13,`-Port 5123`);`street-editor-parity` identical(rev 16,`-Port 5125`);`m0-smoke-test` PASS(M0 + QA live bridge,`-Port 5127`)。沒有改渲染檔案,沒做截圖 A/B。
+
+修正前會失敗:都依推理,沒有逐一 revert 實跑。A-F5 舊程式以長度 + mtime 命中而回 `aaaa`;前輪 N1 舊程式對未使用的 sparse accessor 回 `exceeds 256 MiB`;前輪 N2 舊程式因作者 clip 改變而把時間歸零;A-F12 依複審報告,`f32` 投影使判別式為負(測試先以 `f64` 斷言射線確實在半徑內);N1 舊程式在宣告長度 < 12 時於 gltf crate 的 `header.length - 12` 溢位 panic(`load_err` 會把 panic 判為失敗);N2 舊程式先收集 300 萬個 time 才由 `compile_for` 回 `clip key/value budget mismatch`,訊息與斷言不同。未驗證:A-F2 只建立一個 decoder 沒有測試證明;A-F5 索引命中的實際耗時沒有量測。
+
 ### R8 編輯器
 
 範圍:`crates/axiom-runtime/src/editor/**` 與 `app.rs` 面向編輯器的部分。13 項 finding:11 項 CONFIRMED 並修改(F13 部分修正),2 項 DEFERRED(F8、F9)。另檢查 R1 延後到編輯器的兩項:6.2-F5 修了 Verify 的部分,世界輪詢的部分延後;6.2-F11 延後。`app.rs` 只改了必要的幾處:寫入失敗與 writer 停滯時呼叫 `restore_submitted`、`editor_view` 的 command 改走 `remote_command`、錄影結束改交背景工作、模型熱重載成功時通知縮圖失效,並移除不再使用的 `Action::Verify` 分支。

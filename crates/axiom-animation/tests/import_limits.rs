@@ -81,6 +81,12 @@ fn malformed_gltf_accessors_are_errors_not_panics() {
         (
             r#""bufferView":0,"componentType":5126,"count":4611686018427387904,"type":"VEC3""#,
             "",
+            "accessor 0: range exceeds buffer view 0",
+        ),
+        // A read sparse accessor that expands past 256 MiB (23,000,000 x 12 bytes).
+        (
+            r#""componentType":5126,"count":23000000,"type":"VEC3","sparse":{"count":1,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":1}}"#,
+            "",
             "accessor 0: exceeds 256 MiB",
         ),
         // Four elements in a 36-byte view.
@@ -123,33 +129,124 @@ fn malformed_gltf_accessors_are_errors_not_panics() {
 }
 
 #[test]
-fn an_import_fills_the_clip_index_the_validator_reads() {
-    // Review R4 F5 (round 2): once this process imported an asset (the runtime's build), the
-    // authoring check finds its clips without reading the file again. Proven by replacing the
-    // file with unparsable bytes of the same length and modification time.
+fn an_unused_sparse_accessor_is_not_expanded() {
+    // Review R4 N1 (round 3): the 256 MiB expansion budget applies to accessors the importer
+    // reads. A 23,000,000-element sparse VEC3 accessor nothing uses does not stop the import.
+    let dir = scratch("gltf-unused-sparse");
+    let ok = r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+        {"componentType":5126,"count":23000000,"type":"VEC3","sparse":{"count":1,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":1}}"#;
+    let asset = import::load(&triangle(&dir, ok, ""), &Default::default()).unwrap();
+    assert_eq!(asset.vertices.len(), 3);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A glTF of one triangle (`triangle`) whose node 0 has the animations `animations` (JSON
+/// array members), over extra accessors `accessors` (JSON array members, indices from 1).
+fn animated(dir: &Path, accessors: &str, animations: &str) -> PathBuf {
+    let path = triangle(
+        dir,
+        &format!(r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}},{accessors}"#),
+        "",
+    );
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        r#""nodes":"#,
+        &format!(r#""animations":[{animations}],"nodes":"#),
+    );
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// Accessor 1: one time key 0; accessor 2: one zero translation.
+const ONE_KEY: &str = r#"{"bufferView":0,"componentType":5126,"count":1,"type":"SCALAR","min":[0],"max":[0]},
+    {"bufferView":0,"componentType":5126,"count":1,"type":"VEC3""#;
+
+fn one_key_clip(name: &str) -> String {
+    format!(
+        r#"{{"name":"{name}","samplers":[{{"input":1,"output":2}}],"channels":[{{"sampler":0,"target":{{"node":0,"path":"translation"}}}}]}}"#
+    )
+}
+
+#[test]
+fn a_renamed_clip_is_listed_although_the_file_kept_its_length_and_time() {
+    // Review R4 A-F5 (round 3): the clip index is keyed by content, not by length and
+    // modification time. An import fills it; a file replaced with the same length and time
+    // whose clip was renamed lists the new name (the validator accepts it), while unchanged
+    // content is still served from the index.
     let dir = scratch("clip-index");
-    let ok = r#""bufferView":0,"componentType":5126,"count":3,"type":"VEC3""#;
-    let path = triangle(&dir, ok, "");
+    let path = animated(&dir, ONE_KEY, &one_key_clip("aaaa"));
     let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-    import::load(&path, &Default::default()).unwrap();
-    let len = std::fs::metadata(&path).unwrap().len() as usize;
-    std::fs::write(&path, vec![b'!'; len]).unwrap();
+    let asset = import::load(&path, &Default::default()).unwrap();
+    assert_eq!(asset.clips[0].id, "aaaa");
+    let first = import::clip_ids(&path).unwrap().unwrap();
+    assert_eq!(*first, ["aaaa"]);
+    // Unchanged content: the same index entry.
+    let again = import::clip_ids(&path).unwrap().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace(r#""name":"aaaa""#, r#""name":"bbbb""#);
+    std::fs::write(&path, text).unwrap();
     std::fs::File::options()
         .write(true)
         .open(&path)
         .unwrap()
         .set_modified(modified)
         .unwrap();
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_eq!(meta.modified().unwrap(), modified);
     let ids = import::clip_ids(&path).unwrap().unwrap();
-    assert!(ids.is_empty(), "{ids:?}");
-    // A real change (new modification time) is read again.
-    std::fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(modified + std::time::Duration::from_secs(5))
-        .unwrap();
-    assert!(import::clip_ids(&path).is_err());
+    assert_eq!(*ids, ["bbbb"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn shared_animation_inputs_are_budgeted_before_they_are_expanded() {
+    // Review R4 N2 (round 3): channels share accessors, so one 1,000,000-key input (a sparse
+    // accessor: a few bytes of file) read by three channels must be refused from the counts,
+    // before 3,000,000 times are collected.
+    let dir = scratch("gltf-anim-budget");
+    let big_input = r#"{"componentType":5126,"count":1000000,"type":"SCALAR","min":[0],"max":[0],"sparse":{"count":1,"indices":{"bufferView":1,"componentType":5125},"values":{"bufferView":1}}},
+        {"bufferView":0,"componentType":5126,"count":1,"type":"VEC3"},
+        {"bufferView":0,"componentType":5126,"count":1,"type":"VEC4""#;
+    let clip = r#"{"samplers":[{"input":1,"output":2},{"input":1,"output":3}],"channels":[
+        {"sampler":0,"target":{"node":0,"path":"translation"}},
+        {"sampler":0,"target":{"node":0,"path":"scale"}},
+        {"sampler":1,"target":{"node":0,"path":"rotation"}}]}"#;
+    let e = load_err(&animated(&dir, big_input, clip));
+    assert!(
+        e.contains("glTF animation 0: key budget exceeded (3 values, 3000000 times"),
+        "{e}"
+    );
+    // Within each clip but over the asset: 17 clips of one 1,000,000-key channel.
+    let clip = r#"{"samplers":[{"input":1,"output":2}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}"#;
+    let clips = vec![clip; 17].join(",");
+    let e = load_err(&animated(&dir, big_input, &clips));
+    assert!(e.contains("asset key budget of 16000000"), "{e}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_glb_header_length_that_disagrees_with_the_file_is_an_error() {
+    // Review R4 N1 (round 3): the gltf crate subtracts the 12-byte header from the declared
+    // length unchecked and allocates the result before reading. Short or overlong declared
+    // lengths are refused first.
+    let dir = scratch("glb-header");
+    let path = dir.join("bad.glb");
+    let json = br#"{"asset":{"version":"2.0"},"nodes":[{}]}  "#;
+    for declared in [4u32, 11, 0xffff_fff0] {
+        let mut b = b"glTF".to_vec();
+        b.extend(2u32.to_le_bytes());
+        b.extend(declared.to_le_bytes());
+        b.extend((json.len() as u32).to_le_bytes());
+        b.extend(b"JSON");
+        b.extend(json);
+        std::fs::write(&path, &b).unwrap();
+        let e = load_err(&path);
+        assert!(e.contains("GLB header length"), "{declared}: {e}");
+    }
+    // A header alone, shorter than its length field.
+    std::fs::write(&path, b"glTF  ").unwrap();
+    assert!(load_err(&path).contains("GLB header length (missing)"));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

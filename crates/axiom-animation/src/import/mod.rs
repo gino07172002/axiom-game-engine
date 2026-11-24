@@ -35,6 +35,11 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
         ),
     };
     let mut bytes = std::fs::read(path)?;
+    // A successful import also fills the clip index, so validating a revision that uses an
+    // asset this process already imported parses nothing. Keyed by the content clip IDs are
+    // read from, as `clip_ids` reads it.
+    let clip_key =
+        clip_source(&extension, &bytes).map(|source| (source.len(), content_hash(source)));
     bytes.extend(serde_json::to_vec(options)?);
     let mut hash = 0xcbf29ce484222325u64;
     let mut mix = |bytes: &[u8]| {
@@ -75,40 +80,59 @@ pub fn load(path: &Path, options: &ImportOptions) -> Result<Asset> {
             asset.diagnostics.join("; ")
         );
     }
-    // A successful import also fills the clip index, so validating a revision that uses an
-    // asset this process already imported (the runtime's build) parses nothing.
-    remember_clip_ids(
-        path,
-        &meta,
-        Arc::new(asset.clips.iter().map(|c| c.id.clone()).collect()),
-    );
+    if let Some((len, hash)) = clip_key {
+        remember_clip_ids(
+            path,
+            (len, hash),
+            Arc::new(asset.clips.iter().map(|c| c.id.clone()).collect()),
+        );
+    }
     Ok(asset)
 }
 use std::sync::{Arc, Mutex};
-type ClipIndexEntry = (u64, Option<std::time::SystemTime>, Arc<Vec<String>>);
-/// Clip IDs per asset path with the length and modification time they were read at.
-static CLIP_INDEX: Mutex<BTreeMap<PathBuf, ClipIndexEntry>> = Mutex::new(BTreeMap::new());
-fn remember_clip_ids(path: &Path, meta: &std::fs::Metadata, ids: Arc<Vec<String>>) {
+/// (length, hash) of the bytes clip IDs are read from: the GLB JSON chunk, else the file.
+type ClipKey = (usize, u64);
+type ClipEntry = (ClipKey, Arc<Vec<String>>);
+/// Clip IDs per asset path with the content version they were read from. A content key, not
+/// the file's length and modification time: a replaced file that kept both must not reuse the
+/// old IDs.
+static CLIP_INDEX: Mutex<BTreeMap<PathBuf, ClipEntry>> = Mutex::new(BTreeMap::new());
+fn remember_clip_ids(path: &Path, key: ClipKey, ids: Arc<Vec<String>>) {
     if let Ok(mut cache) = CLIP_INDEX.lock() {
         if cache.len() >= 64 && !cache.contains_key(path) {
             cache.clear();
         }
-        cache.insert(path.to_path_buf(), (meta.len(), meta.modified().ok(), ids));
+        cache.insert(path.to_path_buf(), (key, ids));
+    }
+}
+/// Hash of `bytes` (std's SipHash, optimized even in debug builds; stable within a process).
+fn content_hash(bytes: &[u8]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write(bytes);
+    h.finish()
+}
+/// The part of an asset file clip IDs come from: the JSON chunk of a GLB, the whole file of a
+/// `.gltf` / `.axrig`; `None` for formats without clips in the file (PMX) or a malformed GLB.
+fn clip_source<'a>(extension: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
+    match extension {
+        "gltf" | "axrig" => Some(bytes),
+        "glb" => {
+            let len = u32::from_le_bytes(bytes.get(12..16)?.try_into().ok()?) as usize;
+            (bytes.get(16..20)? == b"JSON").then_some(())?;
+            bytes.get(20..20usize.checked_add(len)?)
+        }
+        _ => None,
     }
 }
 /// The clip IDs importing `path` yields (glTF animations, `.axrig` clips; PMX has none),
 /// without importing it: only the glTF JSON / the bundle's clip IDs are parsed. Cached per
-/// process by path, length and modification time (an import of the same file fills the cache
-/// too). `Ok(None)` for an unknown extension.
+/// process by path and a hash of that JSON (an import of the same file fills the cache too),
+/// so a hit still reads the JSON (of a GLB only its JSON chunk) but does not parse it.
+/// `Ok(None)` for an unknown extension.
 pub fn clip_ids(path: &Path) -> Result<Option<Arc<Vec<String>>>> {
     let meta = std::fs::metadata(path)?;
     ensure!(meta.len() <= 134_217_728, "asset file exceeds 128 MiB");
-    let modified = meta.modified().ok();
-    if let Some((len, time, ids)) = CLIP_INDEX.lock().ok().and_then(|c| c.get(path).cloned()) {
-        if len == meta.len() && time == modified {
-            return Ok(Some(ids));
-        }
-    }
     #[derive(Deserialize)]
     struct Named {
         #[serde(default)]
@@ -142,9 +166,10 @@ pub fn clip_ids(path: &Path) -> Result<Option<Arc<Vec<String>>>> {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let ids = match extension.as_str() {
-        "pmx" => vec![],
-        "gltf" => gltf_ids(&std::fs::read(path)?)?,
+    // The JSON clip IDs are read from (the whole file except for a GLB).
+    let source = match extension.as_str() {
+        "pmx" => return Ok(Some(Arc::new(vec![]))),
+        "gltf" | "axrig" => std::fs::read(path)?,
         "glb" => {
             use std::io::Read;
             let mut file = std::fs::File::open(path)?;
@@ -159,16 +184,24 @@ pub fn clip_ids(path: &Path) -> Result<Option<Arc<Vec<String>>>> {
             let mut json = vec![];
             file.take(len).read_to_end(&mut json)?;
             ensure!(json.len() as u64 == len, "truncated GLB JSON chunk");
-            gltf_ids(&json)?
-        }
-        "axrig" => {
-            let bundle: Clips = serde_json::from_slice(&std::fs::read(path)?)?;
-            bundle.clips.into_iter().map(|c| c.id).collect()
+            json
         }
         _ => return Ok(None),
     };
+    let key = (source.len(), content_hash(&source));
+    if let Some((cached, ids)) = CLIP_INDEX.lock().ok().and_then(|c| c.get(path).cloned()) {
+        if cached == key {
+            return Ok(Some(ids));
+        }
+    }
+    let ids = if extension == "axrig" {
+        let bundle: Clips = serde_json::from_slice(&source)?;
+        bundle.clips.into_iter().map(|c| c.id).collect()
+    } else {
+        gltf_ids(&source)?
+    };
     let ids = Arc::new(ids);
-    remember_clip_ids(path, &meta, ids.clone());
+    remember_clip_ids(path, key, ids.clone());
     Ok(Some(ids))
 }
 pub fn confined(root: &Path, uri: &str) -> Result<PathBuf> {
@@ -214,16 +247,17 @@ pub fn push_texture(
     decoded: &mut usize,
     bytes: &[u8],
 ) -> Result<usize> {
-    let (width, height) = image_reader(bytes)?.into_dimensions()?;
-    let total = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-        .and_then(|n| n.checked_add(*decoded));
-    ensure!(
-        total.is_some_and(|t| t <= MAX_DECODED_TEXTURES),
-        "decoded textures exceed 256 MiB"
-    );
-    let t = texture(bytes)?;
+    let t = decode(bytes, |width, height| {
+        let total = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| n.checked_add(*decoded));
+        ensure!(
+            total.is_some_and(|t| t <= MAX_DECODED_TEXTURES),
+            "decoded textures exceed 256 MiB"
+        );
+        Ok(())
+    })?;
     // The decoder may disagree with the header; the budget holds for what was decoded.
     let total = decoded.saturating_add(t.rgba.len());
     ensure!(
@@ -234,25 +268,38 @@ pub fn push_texture(
     textures.push(t);
     Ok(textures.len() - 1)
 }
-fn image_reader(bytes: &[u8]) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>> {
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(67_108_864);
+    limits
+}
+/// Decodes `bytes` with one decoder (a JPEG decoder copies the whole input when it is
+/// created), calling `check` with the header's dimensions before any pixel is decoded.
+fn decode(bytes: &[u8], check: impl FnOnce(u32, u32) -> Result<()>) -> Result<Texture> {
+    use image::ImageDecoder;
     ensure!(
         bytes.len() <= MAX_ENCODED_TEXTURE,
         "encoded image exceeds 32 MiB"
     );
     let format = image::guess_format(bytes).unwrap_or(image::ImageFormat::Tga);
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(67_108_864);
-    reader.limits(limits);
-    Ok(reader)
-}
-pub fn texture(bytes: &[u8]) -> Result<Texture> {
-    let image = image_reader(bytes)?.decode()?.to_rgba8();
+    reader.limits(limits());
+    let mut decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    check(width, height)?;
+    // As `ImageReader::decode` does: the output buffer counts against the allocation limit.
+    let mut limits = limits();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    let image = image::DynamicImage::from_decoder(decoder)?.to_rgba8();
     Ok(Texture {
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
     })
+}
+pub fn texture(bytes: &[u8]) -> Result<Texture> {
+    decode(bytes, |_, _| Ok(()))
 }

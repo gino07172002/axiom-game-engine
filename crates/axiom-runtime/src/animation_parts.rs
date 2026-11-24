@@ -352,9 +352,13 @@ impl Parts {
 
 /// Distance along the ray (`d` normalized) to where it enters a capsule (segment `a`-`b`,
 /// radius `r`), if it hits; 0 from inside. The entry is the nearest of the side of the finite
-/// cylinder and the two end spheres (its end disks lie inside the spheres).
+/// cylinder and the two end spheres (its end disks lie inside the spheres). Computed in `f64`:
+/// in `f32` the projections of a far or oblique ray onto a millimetre part lose the digits that
+/// decide hit or miss.
 fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
-    let d = d.try_normalize()?;
+    use glam::DVec3;
+    let (o, a, b, r) = (o.as_dvec3(), a.as_dvec3(), b.as_dvec3(), f64::from(r));
+    let d = d.as_dvec3().try_normalize()?;
     let u = b - a;
     let uu = u.dot(u);
     // Inside: the origin is within r of the segment.
@@ -367,9 +371,8 @@ fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
         return Some(0.0);
     }
     // Discriminants come from the perpendicular offset at the closest approach (`r^2 - |q|^2`),
-    // not from `b^2 - (|oc|^2 - r^2)`: far from a small part the latter cancels in `f32` and
-    // reports misses as grazing hits.
-    let sphere = |c: Vec3| -> Option<f32> {
+    // not from `b^2 - (|oc|^2 - r^2)`, which cancels far from a small part.
+    let sphere = |c: DVec3| -> Option<f64> {
         let oc = o - c;
         let b = oc.dot(d);
         let h = r * r - (oc - d * b).length_squared();
@@ -400,7 +403,7 @@ fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
             }
         }
     }
-    best
+    best.map(|t| t as f32)
 }
 
 impl AnimationSystem {
@@ -602,5 +605,25 @@ mod tests {
         )
         .unwrap();
         assert!((t - (100.0 - 0.004)).abs() < 1e-3, "{t}");
+    }
+
+    #[test]
+    fn an_oblique_ray_just_inside_a_tiny_sphere_hits_it() {
+        // Review R4 A-F12 (round 3): a ray along (-3, 0, -4) from (15, 0, 20.008333) passes
+        // about 0.0049999 m from the centre of a 5 mm sphere; the `f32` projections rounded
+        // the discriminant below zero and reported a miss.
+        let o = Vec3::new(15.0, 0.0, 20.008333);
+        let d = Vec3::new(-3.0, 0.0, -4.0);
+        // The exact perpendicular distance of the (f32) ray, in f64.
+        let (od, dd) = (o.as_dvec3(), d.as_dvec3().normalize());
+        let miss = (od - dd * od.dot(dd)).length();
+        assert!(
+            miss < 0.005,
+            "the test ray must pass inside the radius: {miss}"
+        );
+        let t = ray_capsule(o, d, Vec3::ZERO, Vec3::ZERO, 0.005).expect("oblique ray hits");
+        assert!((t - 25.006).abs() < 0.01, "{t}");
+        // The same ray against a capsule whose side it crosses.
+        assert!(ray_capsule(o, d, Vec3::NEG_Y * 0.01, Vec3::Y * 0.01, 0.005).is_some());
     }
 }
