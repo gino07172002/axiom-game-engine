@@ -1482,6 +1482,29 @@ impl Editor {
         Ok(())
     }
 
+    /// Whether opening `kind:id` (`graph`, `animator` or `rules`) commits the open element /
+    /// rule draft (`graph_flush`): another graph kind, another graph or another rule. Reopening
+    /// what is open only focuses the Graphs tab (R8 F3).
+    pub(super) fn graph_open_flushes(&self, kind: &str, id: &str) -> bool {
+        let id = id.trim();
+        let doc = match kind {
+            "graph" => GraphDoc::Fsm,
+            "animator" => GraphDoc::Animator,
+            "rules" => {
+                return !id.is_empty()
+                    && self
+                        .graph_world()
+                        .resources
+                        .get("behavior.program")
+                        .and_then(|p| p["rules"].as_array())
+                        .and_then(|r| r.iter().position(|x| x["id"] == id))
+                        != self.graph.rule_index;
+            }
+            _ => return true,
+        };
+        self.graph.doc != doc || self.graph.machine.as_deref() != Some(id)
+    }
+
     /// The rule table, with rule `id` selected unless empty (`editor_view {open:"rules:ID"}`).
     pub(super) fn graph_open_rules(&mut self, id: &str) -> anyhow::Result<()> {
         if !id.is_empty() {

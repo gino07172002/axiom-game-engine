@@ -121,6 +121,15 @@ pub(crate) enum Action {
     PrepareMerge {
         proposal: i64,
     },
+    /// The stale-draft merge built against revision `rev` adds nothing: the host checks the
+    /// database is still at `rev` (`Editor::confirm_empty_merge`) before the draft is dropped
+    /// (the editor adopts other writers' revisions only on a poll).
+    EmptyMerge {
+        rev: i64,
+    },
+    /// An action an agent asked for (`editor_view {command}`) that is emitted on a later
+    /// frame (a draft merge built in the background): the host records it as the agent's.
+    ByAgent(Box<Action>),
     /// Run a scenario file headless against the current revision (background job).
     RunScenario {
         path: String,
@@ -1062,13 +1071,57 @@ impl Editor {
         };
         let later = std::mem::take(&mut self.submitted).len();
         let Submitted {
-            mut draft, base, ..
+            mut draft,
+            base,
+            edits,
         } = first;
         let id = draft.id.clone();
         if self.world.entity(&id).is_none() {
             let note =
                 format!("Your unsaved edit of {id} was dropped: the object no longer exists");
             self.append_error(note);
+            return false;
+        }
+        // Unsaved work on another target (another object or component, or a material,
+        // prefab or resource) is never replaced (R8 F1): the person keeps typing it and the
+        // returned edit stays recoverable as the edit batch it sent.
+        let elsewhere = match &self.draft {
+            Some(d) if d.dirty() && (d.id != draft.id || d.component != draft.component) => {
+                Some(if d.component.is_empty() || d.id != draft.id {
+                    d.id.clone()
+                } else {
+                    format!("{} {}", d.id, d.component)
+                })
+            }
+            _ => None,
+        }
+        .or_else(|| {
+            self.material
+                .as_ref()
+                .filter(|d| d.dirty())
+                .map(|d| format!("material {}", d.id))
+        })
+        .or_else(|| {
+            self.prefab
+                .as_ref()
+                .filter(|d| d.dirty())
+                .map(|d| format!("prefab {}", d.id))
+        })
+        .or_else(|| {
+            self.resource
+                .as_ref()
+                .filter(|d| d.dirty)
+                .map(|d| format!("resource {}", d.id))
+        });
+        if let Some(other) = elsewhere {
+            self.append_error(format!(
+                "Your edit of {id} was not saved and is not reopened over your unsaved edit of {other}{}; its edits: [{edits}]",
+                if later > 0 {
+                    format!(" ({later} later Inspector edit(s) built on it were not kept)")
+                } else {
+                    String::new()
+                }
+            ));
             return false;
         }
         if let Some(mut now) = self
@@ -2078,51 +2131,29 @@ impl Editor {
         self.set_view_flag(&ids, locked);
     }
 
-    /// What `remote_view` and `remote_open` would refuse (and an unknown `command`), without
-    /// changing anything: the host checks a whole `editor_view` request with it before any
-    /// side effect (Play). The gizmo-drag condition is left to `remote_view` (starting Play
-    /// ends a drag), and a command's state-dependent availability to running it.
+    /// What `remote_view`, `remote_open` and `remote_command` would refuse, without changing
+    /// anything: the host checks a whole `editor_view` request with it before any side effect
+    /// (Play, a dock switch, a selection). The command part is the same predicate
+    /// `remote_command` runs (`remote_command_refusal`). The gizmo-drag condition is left to
+    /// `remote_view` (starting Play ends a drag); a command's state-dependent availability is
+    /// checked here only when nothing before it changes that state (no Play switch, selection
+    /// or open), and always again when it runs.
     pub(crate) fn check_remote(
         &self,
         select: &[String],
         dock: Option<&str>,
         open: Option<&str>,
-        command: Option<&str>,
+        command: Option<(&str, Option<&str>)>,
+        play: Option<bool>,
     ) -> anyhow::Result<()> {
-        if let Some(id) = command {
-            anyhow::ensure!(
-                commands::command(id).is_some(),
-                "unknown editor command {id}; see discover editor (commands)"
-            );
+        if let Some((id, arg)) = command {
+            self.remote_command_refusal(id, arg)?;
         }
-        // The same draft rules as `remote_view` (a selection change), `remote_open` and
-        // `remote_command` (the draft-merge commands keep their own preconditions), checked
-        // here before any side effect.
-        let draft_merge = command.is_some_and(|id| {
-            matches!(
-                id,
-                "merge.open" | "merge.pick" | "merge.commit" | "merge.cancel"
-            )
-        });
-        if !select.is_empty() || open.is_some() || (command.is_some() && !draft_merge) {
+        if !select.is_empty() || open.is_some() {
             self.remote_draft_guard()?;
         }
-        let graph_open = open.is_some_and(|t| {
-            matches!(t.split_once(':'), Some(("graph" | "rules" | "animator", _)))
-        });
-        let graph_command = command.is_some_and(|id| {
-            (id.starts_with("graph.") || id.starts_with("behavior."))
-                && !matches!(id, "graph.zoom" | "graph.frame")
-        });
-        if graph_open || graph_command {
-            if let Some(draft) = self.graph_unsaved() {
-                return Err(unsaved_draft(&draft));
-            }
-        }
-        if command == Some("ui.select") {
-            if let Some(draft) = self.ui_unsaved() {
-                return Err(unsaved_draft(&draft));
-            }
+        if let Some(target) = open {
+            self.remote_open_refusal(target)?;
         }
         for id in select {
             if self.world.entity(id).is_none() {
@@ -2139,6 +2170,89 @@ impl Editor {
         if let Some(target) = open {
             let selected = select.first().map(String::as_str);
             self.check_open(target, selected.or(self.selected.as_deref()))?;
+        }
+        let unchanged =
+            select.is_empty() && open.is_none() && play.is_none_or(|play| play == self.previewing);
+        if let Some((id, _)) = command.filter(|_| unchanged) {
+            if let Some(reason) = self.command_blocked(id) {
+                anyhow::bail!("{id} is unavailable: {reason}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Why `remote_open` refuses `target` because of an unsaved Graphs draft: opening another
+    /// graph or rule commits it (R8 F3: reopening the open one does not).
+    fn remote_open_refusal(&self, target: &str) -> anyhow::Result<()> {
+        if let Some((kind @ ("graph" | "rules" | "animator"), id)) = target.split_once(':') {
+            if self.graph_open_flushes(kind, id) {
+                if let Some(draft) = self.graph_unsaved() {
+                    return Err(unsaved_draft(&draft));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The one predicate for a remote command (`editor_view {command, arg}`), run by
+    /// `check_remote` before any side effect and by `remote_command` before running it
+    /// (R8 F7): the command ID, its `arg` and the merge source decide it.
+    fn remote_command_refusal(&self, id: &str, arg: Option<&str>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            commands::command(id).is_some(),
+            "unknown editor command {id}; see discover editor (commands)"
+        );
+        let target = arg.map(str::trim).filter(|a| !a.is_empty());
+        // The stale-draft merge commands are how an agent helps with exactly such a draft
+        // (they keep their own preconditions); a proposal merge replaces the draft view.
+        let draft_merge = match id {
+            "merge.open" => target == Some("draft"),
+            "merge.pick" | "merge.commit" | "merge.cancel" => {
+                self.merge.source == Some(merge::MergeSource::Draft)
+            }
+            _ => false,
+        };
+        // Checking or cancelling a check of the open shader reads the drafts, never
+        // replaces them (R8 F5).
+        let reads_drafts = matches!(id, "shader.check" | "shader.cancel_check");
+        if !draft_merge && !reads_drafts {
+            self.remote_draft_guard()?;
+        }
+        let graph = (id.starts_with("graph.") || id.starts_with("behavior."))
+            && !matches!(id, "graph.zoom" | "graph.frame");
+        let flushes = match (id, target) {
+            ("graph.open", Some(machine)) => self.graph_open_flushes("graph", machine),
+            ("graph.open_controller", Some(c)) => self.graph_open_flushes("animator", c),
+            _ => graph,
+        };
+        let unsaved = match id {
+            _ if flushes => self.graph_unsaved(),
+            "ui.select" => self.ui_unsaved(),
+            _ => None,
+        };
+        if let Some(draft) = unsaved {
+            return Err(unsaved_draft(&draft));
+        }
+        // Arguments the command would refuse, checked without running it (R8 F6).
+        match (id, target) {
+            ("ui.select", Some(widget)) => anyhow::ensure!(
+                self.ui_document()
+                    .is_some_and(|d| d.widgets.iter().any(|w| w.id() == widget)),
+                "ui.select: no widget '{widget}' in ui.document"
+            ),
+            ("ui.locale", Some(locale)) => anyhow::ensure!(
+                self.ui_document()
+                    .is_some_and(|d| d.catalogs.contains_key(locale)),
+                "ui.locale: ui.document has no catalog '{locale}'"
+            ),
+            ("merge.open", Some(source)) if source != "draft" => anyhow::ensure!(
+                source
+                    .strip_prefix("proposal:")
+                    .map(|n| n.trim_start_matches('#'))
+                    .is_some_and(|n| n.parse::<i64>().is_ok()),
+                "merge.open takes proposal:N or draft"
+            ),
+            _ => {}
         }
         Ok(())
     }
@@ -2261,33 +2375,20 @@ impl Editor {
     /// A registered command from the bridge (`editor_view {command, arg}`): as from the menu,
     /// except that it never commits or replaces a draft the person is editing (refused with
     /// `editor_dirty`). The stale-draft merge commands are how an agent helps with exactly
-    /// such a draft, so they keep their own preconditions.
+    /// such a draft, so they keep their own preconditions. Refused by the same predicate
+    /// `check_remote` runs before any side effect.
     pub(crate) fn remote_command(
         &mut self,
         id: &str,
         arg: Option<&str>,
     ) -> anyhow::Result<Vec<Action>> {
-        let draft_merge = match id {
-            "merge.open" => arg.is_some_and(|a| a.trim() == "draft"),
-            "merge.pick" | "merge.commit" | "merge.cancel" => {
-                self.merge.source == Some(merge::MergeSource::Draft)
-            }
-            _ => false,
-        };
-        if !draft_merge {
-            self.remote_draft_guard()?;
+        self.remote_command_refusal(id, arg)?;
+        let actions = self.run_command_with(id, arg)?;
+        if id == "merge.commit" && self.merge.commit.is_some() {
+            // The merge is built in the background and written on a later frame (R8 N1).
+            self.merge.by_agent = true;
         }
-        let graph = (id.starts_with("graph.") || id.starts_with("behavior."))
-            && !matches!(id, "graph.zoom" | "graph.frame");
-        let unsaved = match id {
-            _ if graph => self.graph_unsaved(),
-            "ui.select" => self.ui_unsaved(),
-            _ => None,
-        };
-        if let Some(draft) = unsaved {
-            return Err(unsaved_draft(&draft));
-        }
-        self.run_command_with(id, arg)
+        Ok(actions)
     }
 
     /// Remote view control from the bridge (`editor_view`). Never touches drafts.
@@ -2328,15 +2429,7 @@ impl Editor {
     /// or `rules:` (Graphs tab).
     pub(crate) fn remote_open(&mut self, target: &str) -> anyhow::Result<()> {
         self.remote_draft_guard()?;
-        if matches!(
-            target.split_once(':'),
-            Some(("graph" | "rules" | "animator", _))
-        ) {
-            // Opening another graph commits the open element / rule draft.
-            if let Some(draft) = self.graph_unsaved() {
-                return Err(unsaved_draft(&draft));
-            }
-        }
+        self.remote_open_refusal(target)?;
         let (kind, id) = target.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(
                 "open expects material:ID, prefab:ID, resource:ID, component:ID, options:COMMAND, graph:MACHINE or rules:"
@@ -3113,6 +3206,11 @@ impl Editor {
 
 #[cfg(test)]
 impl Editor {
+    /// Whether the dock tab named `name` is the active tab of its leaf.
+    pub(crate) fn test_dock_shows(&self, name: &str) -> bool {
+        Dock::from_name(name).is_some_and(|tab| self.dock_shows(tab))
+    }
+
     /// What the Inspector's Apply sends for the selected object moved to `position` (the
     /// draft kept until the write commits, as in `ui.rs`).
     pub(crate) fn test_inspector_apply_position(&mut self, position: [f32; 3]) -> Action {
@@ -3133,6 +3231,22 @@ impl Editor {
             },
             select: None,
         }
+    }
+
+    /// Selects `id` and types `label` into its Inspector draft (not applied).
+    pub(crate) fn test_type_label(&mut self, id: &str, label: &str) {
+        self.select(Some(id.to_owned()));
+        let draft = self.draft.as_mut().expect("the object exists");
+        draft.label = label.to_owned();
+        draft.label_dirty = true;
+    }
+
+    /// The selected object and its draft's label.
+    pub(crate) fn test_selected_label(&self) -> (Option<String>, Option<String>) {
+        (
+            self.selected.clone(),
+            self.draft.as_ref().map(|d| d.label.clone()),
+        )
     }
 
     /// (dirty, draft revision, has a Merge… base, draft edits on that base).

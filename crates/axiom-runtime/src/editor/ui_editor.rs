@@ -384,7 +384,7 @@ impl Editor {
         self.op_write(result, None).into_iter().collect()
     }
 
-    fn ui_document(&self) -> Option<UiDocument> {
+    pub(super) fn ui_document(&self) -> Option<UiDocument> {
         self.world
             .resources
             .get(ops::UI_DOCUMENT)

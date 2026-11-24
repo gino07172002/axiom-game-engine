@@ -746,6 +746,34 @@ fn shader_check_runs_in_the_background_and_marks_the_error_line() {
         );
     }
     assert_eq!(h.editor.tuning.shader.draft, typed);
+    // R8 F5 (recheck): an agent may check the typed source, and cancel that check; both
+    // read the draft and never replace it.
+    h.editor.remote_command("shader.check", None).unwrap();
+    for _ in 0..600 {
+        if h.editor.tuning.shader.job.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.frame(vec![]);
+    }
+    let checked = h.editor.tuning.shader.checked.as_ref().expect("checked");
+    assert_eq!(checked.source, typed, "the person's draft was checked");
+    h.editor.remote_command("shader.check", None).unwrap();
+    if let Err(e) = h.editor.remote_command("shader.cancel_check", None) {
+        // Only when the check already finished.
+        assert!(
+            format!("{e:#}").contains("no shader check is running"),
+            "{e:#}"
+        );
+    }
+    for _ in 0..600 {
+        if h.editor.tuning.shader.job.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.frame(vec![]);
+    }
+    assert_eq!(h.editor.tuning.shader.draft, typed);
     // Nothing typed: the agent sets a draft, and may replace its own draft again.
     h.editor.tuning.shader.draft = h.editor.tuning.shader.base.clone();
     h.editor

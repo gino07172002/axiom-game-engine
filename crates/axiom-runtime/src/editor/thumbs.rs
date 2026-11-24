@@ -10,7 +10,7 @@ use crate::jobs::{Job, Outcome, Progress};
 use axiom_core::assets::{AssetEntry, AssetKind};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::mpsc,
     time::Duration,
@@ -226,6 +226,9 @@ pub(crate) struct Thumbnails {
     /// Frame each thumbnail cell was last drawn (one entry per asset ever shown).
     last_drawn: HashMap<ThumbKey, u64>,
     running: Option<Running>,
+    /// Keys the running job was given before `invalidate_models`: their results may show
+    /// the old file, so they are dropped and the cell asks again when drawn (R8 F12).
+    stale: HashSet<ThumbKey>,
     /// Cells drawn this frame that need a thumbnail (lazy batch), filled while drawing.
     wanted: Vec<Request>,
     frame: u64,
@@ -292,7 +295,8 @@ impl Thumbnails {
             let rest: Vec<_> = running.results.try_iter().collect();
             let stuck = (state == "timed_out" || state == "abandoned")
                 .then(|| running.keys.get(done as usize).cloned())
-                .flatten();
+                .flatten()
+                .filter(|key| !self.stale.contains(key));
             self.running = None;
             for (key, result) in rest {
                 self.accept(key, result);
@@ -311,6 +315,7 @@ impl Thumbnails {
             }
             // Items the stopped job never reached are asked for again when drawn.
             self.states.retain(|_, s| !matches!(s, State::Queued));
+            self.stale.clear();
             self.last = Some(summary);
         }
     }
@@ -318,6 +323,12 @@ impl Thumbnails {
     /// A finished worker result. Pixels are kept only for a cell drawn in the last frames
     /// (memory stays bounded by what is on screen); others wait on disk until drawn.
     fn accept(&mut self, key: ThumbKey, result: Result<Vec<u8>, String>) {
+        if self.stale.remove(&key) {
+            if let Some(State::Texture { .. }) = self.states.remove(&key) {
+                self.textures -= 1;
+            }
+            return;
+        }
         let recent = self
             .last_drawn
             .get(&key)
@@ -437,12 +448,18 @@ impl Thumbnails {
 
     /// Model files were reloaded (`asset.reload`): model and prefab thumbnails are made again
     /// when next drawn. The source hash (path, length, modified time) finds the new content;
-    /// items already handed to a running job stay with it.
+    /// items already handed to a running job stay with it, but their results (possibly made
+    /// from the old file) are dropped and asked for again (`stale`).
     pub fn invalidate_models(&mut self) {
         let mut textures = 0;
+        let stale = &mut self.stale;
         self.states.retain(|key, state| {
-            let keep = !matches!(key.kind, AssetKind::Model | AssetKind::Prefab)
-                || matches!(state, State::Queued);
+            let model = matches!(key.kind, AssetKind::Model | AssetKind::Prefab);
+            let queued = matches!(state, State::Queued);
+            if model && queued {
+                stale.insert(key.clone());
+            }
+            let keep = !model || queued;
             if !keep && matches!(state, State::Texture { .. }) {
                 textures += 1;
             }
@@ -466,6 +483,7 @@ impl Thumbnails {
             );
             running.job.detach();
             self.states.retain(|_, s| !matches!(s, State::Queued));
+            self.stale.clear();
         }
         if explicit {
             self.lazy_paused = false;
@@ -1348,5 +1366,39 @@ mod box_tests {
             let face = glam::Vec3::from_array(mesh.vertices[t[0] as usize].normal);
             assert!(n.dot(face) > 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::{State, ThumbKey, Thumbnails};
+    use axiom_core::assets::AssetKind;
+
+    /// R8 F12 (recheck): a model result handed to the running job before `asset.reload` is
+    /// dropped (the cell asks again), not backfilled with what the old file looked like.
+    #[test]
+    fn a_result_queued_before_a_model_reload_is_not_backfilled() {
+        let mut thumbs = Thumbnails::default();
+        let key = |id: &str| ThumbKey {
+            kind: AssetKind::Model,
+            id: id.into(),
+            source: 1,
+        };
+        thumbs.states.insert(key("old"), State::Queued);
+        thumbs.last_drawn.insert(key("old"), 0);
+        thumbs.invalidate_models();
+        thumbs.accept(key("old"), Ok(vec![0; 4]));
+        assert!(
+            !thumbs.states.contains_key(&key("old")),
+            "stale result kept"
+        );
+        // A key queued after the reload is accepted as usual.
+        thumbs.states.insert(key("new"), State::Queued);
+        thumbs.last_drawn.insert(key("new"), 0);
+        thumbs.accept(key("new"), Ok(vec![0; 4]));
+        assert!(matches!(
+            thumbs.states.get(&key("new")),
+            Some(State::Pixels(_))
+        ));
     }
 }

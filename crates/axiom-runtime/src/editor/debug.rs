@@ -1203,15 +1203,20 @@ impl Editor {
     }
 
     /// Shutdown and tests: waits at most `limit` for the recording being written.
-    pub(crate) fn flush_recording(&mut self, limit: std::time::Duration) {
+    pub(crate) fn flush_recording(&mut self, limit: std::time::Duration) -> bool {
         let Some(job) = &mut self.debug.saving else {
-            return;
+            return false;
         };
         let Some(outcome) = job.poll_within(limit) else {
-            return;
+            eprintln!(
+                "recording writer did not finish within {} s",
+                limit.as_secs()
+            );
+            return false;
         };
         self.debug.saving = None;
         self.recording_written(outcome);
+        true
     }
 
     fn recording_written(&mut self, outcome: crate::jobs::Outcome<anyhow::Result<Value>>) {
