@@ -119,4 +119,4 @@ Gizmo(場景工具列 Gizmos 開關):樞紐點周圍的 range 圓(黃色;停用�
 
 - 測試 `axiom_town_interactables_match_the_fsm_nearby_workaround`:同一組輸入讓主角走向露米、離開、走向琳、離開,整段路(1,920 tick)**每隔一個 tick 按一次 E**(960 次按鍵),比較新舊兩版:每個 tick 的主角 / 露米 / 琳位置相同、每一次進入對話節點的 tick 與節點相同(露米 228 次、琳 152 次,含按鍵落在範圍邊界前後的 tick)、最後變數相同。把系統 phase 改成 26(移動之後)時,這個測試會因為差一個 tick 而失敗,證明它對時機敏感。
 - **差異(刻意)**:舊版琳離開後進入 bye 狀態 170 tick(鞠躬動畫),這段時間內玩家走回 2.6 m 內也不會進入 serve,所以按 E 沒有反應;新版只看距離與遲滯,走回範圍內就能再交談。露米的 bye 只有 1 tick、接著 idle 1 tick,玩家不可能在 2 tick 內從 3.2 m 外走進 2.4 m,所以沒有差異。上面的測試路徑在琳的 bye 期間不回頭。
-- 朝向提醒:town 主角的 `action.actor.model_yaw` 是 0,動作系統的「前方」是實體的 -Z;如果要對主角使用 `view_angle`,請把 `model_yaw` 設成 π(和 `content/action` 一樣),讓實體 +Z 就是前方。town 目前沒有用 `view_angle`。
+- 朝向:town 主角的 `action.actor.model_yaw` 是 π(和 `content/action` 一樣),因為動作系統的「前方」是實體的 -Z,而 glTF 模型的臉朝 +Z;所以實體 +Z 就是模型前方,`view_angle` 可以直接用在主角上。填錯時 `observe facing` 會回報 `facing_mismatch`(見使用指南)。

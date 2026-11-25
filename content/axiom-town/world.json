@@ -27,7 +27,7 @@
       "core.transform":{"position":[0,0,9]},
       "core.health":{"value":100,"max":100},
       "animation.player":{"asset":"axiom-short","clip":"idle"},
-      "action.actor":{"faction":0,"speed":3.2,"radius":0.25,"stamina":100,"regen":40,"idle_clip":"idle","run_clip":"run","death_clip":"bow","attack":"wave","dodge":"hop","ai":false,"model_yaw":0},
+      "action.actor":{"faction":0,"speed":3.2,"radius":0.25,"stamina":100,"regen":40,"idle_clip":"idle","run_clip":"run","death_clip":"bow","attack":"wave","dodge":"hop","ai":false,"model_yaw":3.1415927},
       "ui.nameplate":{"text":"Axi  ·  you","height":1.55,"color":[1,0.85,0.4]}
     }},
     {"id":"npc/lumi","label":"Lumi","tags":["npc"],"components":{
@@ -151,7 +151,7 @@
     "animation.library": {"assets":{"axiom-short":{"path":"axiom-short.glb"},"axiom-long":{"path":"axiom-long.glb"}}},
     "audio.library": {"cues":{"chime":{"frequency":880,"duration_ms":90,"gain":0.08},"pop":{"frequency":520,"duration_ms":60,"gain":0.08}}},
     "input.bindings": {"capture_pointer": false,
-      "axes": {"move_x":{"positive":"KeyD","negative":"KeyA"},"move_z":{"positive":"KeyW","negative":"KeyS"},"orbit":{"positive":"KeyC","negative":"KeyZ"}},
+      "axes": {"move_x":{"positive":"KeyD","negative":"KeyA"},"move_z":{"positive":"KeyW","negative":"KeyS"},"orbit":{"positive":"KeyC","negative":"KeyZ"},"zoom":{"positive":"WheelDown","negative":"WheelUp"}},
       "buttons": {"attack":"KeyR","dodge":"Space","lock":"KeyL","interact":"KeyE",
         "emote_wave":"Digit1","emote_bow":"Digit2","emote_dance":"Digit3","emote_cheer":"Digit4","emote_pose":"Digit5","emote_think":"Digit6"}
     },
@@ -159,7 +159,8 @@
       "hero":"hero","camera":"camera","bounds":{"min":[-20,-20],"max":[20,20]},
       "obstacles":[],
       "input_buffer_ticks":8,"lock_range":4,"camera_distance":6.5,"camera_height":2.6,"camera_yaw":0,
-      "enemy_notice_range":1,"hit_sound":"pop","hud":false
+      "enemy_notice_range":1,"hit_sound":"pop","hud":false,
+      "first_person":{"eye_height":1.15}
     },
     "action.abilities": {"abilities":{
       "wave":{"kind":"attack","clip":"wave","duration":190,"cost":0,"cooldown":10,

@@ -121,6 +121,17 @@
 
 town 的相機由 `action.simulate` 擁有:`action.session.camera` 是必填欄位,action 控制器每步寫相機 transform,而且它的 yaw(Z / C 的 `orbit` 軸與滑鼠拖曳)同時決定玩家的移動方向(以相機為基準的 WASD)。要換成 `camera.follow` 得改 action 控制器的契約(從相機讀 yaw、session 不再必填相機、重播與 timeline 測試跟著改),超出這個項目的範圍;而且 town 是開放廣場,沒有會擋住相機的室內空間,換了也看不到差別。因此 town 不變;在 action 的相機上加 `camera.follow` 是明確的 `camera_conflict`(有測試)。
 
+### action 相機的縮放與第一人稱(axiom-town)
+
+action 控制器的相機也能用滑鼠滾輪縮放,不必換成 `camera.follow`:
+
+- `input.bindings` 加一個選用的 `zoom` 軸,例如 `"zoom":{"positive":"WheelDown","negative":"WheelUp"}`(滾輪往前 = 拉近)。宿主把每格滾輪當成一個固定步的 `WheelUp` / `WheelDown` 偽按鍵,所以每格只算一次。
+- 每格把目標距離乘或除以 0.8,相機每個固定步追上剩下距離的 8%(約 10/s),所以移動是平滑的;最遠就是編寫的 `camera_distance`。拉近時相機沿原本的方向靠近,注視點從 1.0 m 漸漸移到眼睛高度。
+- `action.session.first_person = {eye_height, eye_forward?}`(公尺;`eye_forward` 預設 0.25):目標距離低於 1.6 m 時直接變成 0,畫面在 1.6 → 0.5 m 之間以 smoothstep 從第三人稱混到第一人稱。第一人稱的眼睛在英雄腳下往上 `eye_height`、沿相機 yaw 往前 `eye_forward`(在臉的前面,所以不會從頭裡往外看),水平看出去。相機離眼睛很近時不畫英雄自己的 mesh(和它的影子),頭上的名牌在相機後方,也不會出現。第一人稱時 WASD 一樣以相機方向為準。再往外滾一格回到 1.6 m 的第三人稱。
+- 沒有 `first_person` 的世界,縮放停在 1.6 m。沒綁 `zoom` 的世界行為不變;沒用到縮放的世界,`observe` 與錄影的 `state_hash` 也不變。用到時 `observe action.camera` 回報 `distance`、`target_distance`、`first_person`(0..1)與 `hero_hidden`。
+- 腳本與 AI 代理用 `command {kind:"call", capability:"action", action:"zoom", args:{distance}}` 設定同一個目標距離(0 = 第一人稱),相機一樣平滑過去。
+- 第一人稱沒有上下看(pitch);滑鼠只在捕捉指標時轉 yaw,和第三人稱相同。
+
 ## 限制
 
 - 只擋靜態幾何;移動中的物件(門、車)不擋相機。不做遮擋物淡出。

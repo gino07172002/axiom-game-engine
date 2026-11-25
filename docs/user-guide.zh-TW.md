@@ -209,6 +209,8 @@ Entity 可沒有空間或生命組件。原生組件包含 Transform、Health、
 
 Observe 分開回報 `rev`（已啟用）、`requested_rev` 與 `activation`。FPS HUD 也使用同一個啟用版本。authoring commit 不代表 runtime 已啟用；`activation_failed` 帶有診斷。
 
+**角色朝向(`observe facing`)**：只要世界有帶動畫的角色(`animation.player`)，observe 就回報 `facing.characters.ID = {front:[x,z], speed, dot}`：模型前方(實體 +Z 經世界旋轉，與 glTF、`fsm`、`nav.agent`、`path.follow` 相同的慣例)、水平速度(m/s)，以及兩者夾角的 cos(速度低於 0.5 m/s 時為 null)。角色以這個速度持續「往背後移動」(dot < -0.7，約 135° 以上)超過 0.5 秒時，`facing.mismatches` 會鎖存一筆 `facing_mismatch` 警告(實體、起始 tick、最差 dot、說明)，通常代表 `action.actor.model_yaw` 填錯，或資產的前方軸與慣例相反。橫移(90°)與短暫擊退不會觸發。這一節完全由 transform 推得，不進 `state_hash`。scenario 可以斷言 `{"kind":"equals","pointer":"/facing/mismatches","value":[]}`；`crates/axiom-runtime/tests/facing_invariant.rs` 對每個內容包都做這項檢查。
+
 原生 Transform 在定義不變時保留執行位置；自訂欄位在 schema／定義不變時保留值，entity references 依穩定邏輯 ID 重新連結。FPS 模組依邏輯 ID 保留傷害、裝填、角色與擊殺狀態；變更地形或出生點會安全重置角色位置。世界 undo 恢復定義，重新開始會重建遊玩狀態。
 
 Adapter 僅綁定 loopback TCP，JSONL 協定不依賴 MCP 或特定 LLM。預設連接埠 4242，`play --port 0` 可停用；多個遊戲使用不同 `--db` 與 `--port`。Stdio 批次使用 `axiom serve`，每行一個 request／response。每行最多讀入 1 MiB(協定上限);超長的行在讀取時就丟棄並回一筆錯誤,之後的行照常處理。CLI 的檔案輸入(`rpc`/`apply`/`preview`/`select`/`dispatch FILE` 1 MiB、`acl FILE` 64 KiB、`scenario`/benchmark suite 1 MiB、`import` 64 MiB)也是有界讀取,超過上限時在配置整份檔案前就回錯。

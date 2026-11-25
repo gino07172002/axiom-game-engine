@@ -22,6 +22,11 @@ use std::{
 pub struct ActionSystem {
     pub sim: Simulation,
     yaw: f32,
+    /// Camera distance now and where the `zoom` axis is taking it (meters; 0 = first person).
+    zoom: f32,
+    zoom_target: f32,
+    /// The camera is inside or next to the hero's head: its mesh is not drawn.
+    hide_hero: bool,
     held: BTreeSet<String>,
     clips: BTreeMap<String, String>,
     definitions: Value,
@@ -118,6 +123,9 @@ impl ActionSystem {
     ) -> Self {
         Self {
             yaw: sim.session.camera_yaw,
+            zoom: sim.session.camera_distance,
+            zoom_target: sim.session.camera_distance,
+            hide_hero: false,
             sim,
             held: BTreeSet::new(),
             clips: BTreeMap::new(),
@@ -216,21 +224,54 @@ impl ActionSystem {
         }
         self.camera(state);
     }
-    fn camera(&self, state: &mut RuntimeState) {
-        let hero = &self.sim.actors[self.sim.hero];
-        let target = Vec3::new(hero.position.x, 1.0, hero.position.y);
-        let offset = Vec3::new(
-            self.yaw.sin() * self.sim.session.camera_distance,
-            self.sim.session.camera_height,
-            self.yaw.cos() * self.sim.session.camera_distance,
-        );
-        let eye = target + offset;
-        let rotation =
-            Quat::from_mat4(&Mat4::look_at_rh(eye, target, Vec3::Y).inverse()).normalize();
+    fn camera(&mut self, state: &mut RuntimeState) {
+        let hero = self.sim.actors[self.sim.hero].position;
+        let view = camera_view(&self.sim.session, hero, self.yaw, self.zoom);
+        self.hide_hero = view.hide_hero;
         let slot = state.compiled.indices[&self.sim.session.camera];
         let transform = state.transforms[slot].as_mut().unwrap();
-        transform.position = eye.to_array();
-        transform.rotation = rotation.to_array();
+        transform.position = view.eye.to_array();
+        transform.rotation = view.rotation.to_array();
+    }
+    /// Sets the target distance like the wheel does: past the closest third-person distance
+    /// it is first person (0) when the session has one, else the closest third-person view.
+    fn set_zoom(&mut self, distance: f32) {
+        let session = &self.sim.session;
+        self.zoom_target = if distance < FIRST_PERSON_FROM {
+            if session.first_person.is_some() {
+                0.0
+            } else {
+                FIRST_PERSON_FROM
+            }
+        } else {
+            distance.min(session.camera_distance)
+        };
+    }
+    /// One `zoom` axis step: a wheel notch scales the target distance; zooming in past the
+    /// closest third-person distance snaps to first person (when the session has one), and
+    /// the camera eases toward the target every fixed step.
+    fn zoom(&mut self, axis: f32) {
+        let session = &self.sim.session;
+        let full = session.camera_distance;
+        if axis < 0.0 {
+            self.zoom_target *= ZOOM_NOTCH;
+            if self.zoom_target < FIRST_PERSON_FROM {
+                self.zoom_target = if session.first_person.is_some() {
+                    0.0
+                } else {
+                    FIRST_PERSON_FROM
+                };
+            }
+        } else if axis > 0.0 {
+            self.zoom_target = (self.zoom_target / ZOOM_NOTCH).max(FIRST_PERSON_FROM);
+        }
+        self.zoom_target = self.zoom_target.min(full);
+        let gap = self.zoom_target - self.zoom;
+        self.zoom = if gap.abs() < 1e-3 {
+            self.zoom_target
+        } else {
+            self.zoom + gap * ZOOM_EASE
+        };
     }
     fn input(&mut self, input: &ActionMap) {
         let pressed = ["attack", "dodge", "lock"]
@@ -258,6 +299,80 @@ impl ActionSystem {
         (right * input.axis("move_x") + forward * input.axis("move_z")).clamp_length_max(1.0)
     }
 }
+/// Each wheel notch toward the scene multiplies the camera distance by this.
+const ZOOM_NOTCH: f32 = 0.8;
+/// The closest third-person distance (meters); zooming in past it goes first person.
+const FIRST_PERSON_FROM: f32 = 1.6;
+/// At this distance and closer the view is fully first person.
+const FIRST_PERSON_AT: f32 = 0.5;
+/// Fraction of the remaining distance the camera covers per fixed step (about 10/s).
+const ZOOM_EASE: f32 = 0.08;
+/// The hero is not drawn while the camera is this close to its eye point (meters).
+const HIDE_WITHIN: f32 = 0.6;
+
+/// The follow camera at `zoom` meters: the authored third-person view at
+/// `camera_distance`, moving in along the same direction toward the hero's eyes, and blended
+/// into a first-person view looking along `yaw` below `FIRST_PERSON_FROM`.
+pub(crate) struct CameraView {
+    pub eye: Vec3,
+    pub rotation: Quat,
+    /// 0 = third person, 1 = first person.
+    pub first_person: f32,
+    pub hide_hero: bool,
+}
+pub(crate) fn camera_view(session: &Session, hero: Vec2, yaw: f32, zoom: f32) -> CameraView {
+    let full = session.camera_distance;
+    let look = |eye: Vec3, target: Vec3| {
+        Quat::from_mat4(&Mat4::look_at_rh(eye, target, Vec3::Y).inverse()).normalize()
+    };
+    let eye_point = session
+        .first_person
+        .as_ref()
+        .map(|f| Vec3::new(hero.x, f.eye_height, hero.y));
+    let weight = match &session.first_person {
+        Some(_) => {
+            let t = ((FIRST_PERSON_FROM - zoom) / (FIRST_PERSON_FROM - FIRST_PERSON_AT))
+                .clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        }
+        None => 0.0,
+    };
+    // Third person (never evaluated fully in first person, where the offset vanishes).
+    let third = (weight < 1.0).then(|| {
+        let s = (zoom / full).clamp(0.0, 1.0);
+        let height = session.first_person.as_ref().map_or(1.0, |f| f.eye_height);
+        let target = Vec3::new(hero.x, 1.0 + (height - 1.0) * (1.0 - s), hero.y);
+        let offset = Vec3::new(yaw.sin() * full, session.camera_height, yaw.cos() * full) * s;
+        let eye = target + offset;
+        (eye, look(eye, target))
+    });
+    let first = session
+        .first_person
+        .as_ref()
+        .filter(|_| weight > 0.0)
+        .map(|f| {
+            let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+            let eye = Vec3::new(hero.x, f.eye_height, hero.y) + forward * f.eye_forward;
+            (eye, look(eye, eye + forward))
+        });
+    let (eye, rotation) = match (third, first) {
+        (Some((te, tr)), Some((fe, fr))) => (te.lerp(fe, weight), tr.slerp(fr, weight)),
+        (Some(t), None) => t,
+        (None, Some(f)) => f,
+        (None, None) => unreachable!("weight is in 0..=1"),
+    };
+    let hide_hero = eye_point.is_some_and(|p| {
+        let f = session.first_person.as_ref().map_or(0.0, |f| f.eye_forward);
+        weight > 0.0 && eye.distance(p) < HIDE_WITHIN.max(f + 0.1)
+    });
+    CameraView {
+        eye,
+        rotation,
+        first_person: weight,
+        hide_hero,
+    }
+}
+
 fn definitions(state: &RuntimeState) -> Value {
     json!({"world":state.compiled.source.id,"session":state.compiled.source.resources[SESSION],
         "abilities":state.compiled.source.resources[ABILITIES],
@@ -276,6 +391,7 @@ impl RuntimeSystem for ActionSystem {
         self.sim.combat = state.combat.as_ref().map(|c| c.scene.clone());
         self.yaw =
             (self.yaw + input.axis("orbit") * FIXED_DT * 1.5).rem_euclid(std::f32::consts::TAU);
+        self.zoom(input.axis("zoom"));
         self.input(input);
         self.sim.step(self.direction(input));
         if state.combat.is_some() {
@@ -309,10 +425,20 @@ impl RuntimeSystem for ActionSystem {
         state: &mut RuntimeState,
         capability: &str,
         action: &str,
-        _args: &Value,
+        args: &Value,
     ) -> Option<Result<Value>> {
         if capability != "action" {
             return None;
+        }
+        if action == "zoom" {
+            // The same target the wheel sets; the camera eases there over the next steps.
+            return Some((|| {
+                let distance = args["distance"]
+                    .as_f64()
+                    .context("expected {distance: meters}")? as f32;
+                self.set_zoom(distance);
+                Ok(json!({"status":"zooming","target_distance":self.zoom_target}))
+            })());
         }
         self.sim.combat = state.combat.as_ref().map(|c| c.scene.clone());
         Some((|| {
@@ -345,6 +471,8 @@ impl RuntimeSystem for ActionSystem {
             self.held = old.held.clone();
             self.clips = old.clips.clone();
             self.yaw = old.yaw;
+            self.zoom = old.zoom;
+            self.zoom_target = old.zoom_target;
             next.animation_cues
                 .pending
                 .retain(|p| !self.clips.contains_key(&p.entity));
@@ -365,7 +493,27 @@ impl RuntimeSystem for ActionSystem {
         Ok(())
     }
     fn metrics(&self) -> BTreeMap<String, Value> {
-        BTreeMap::from([("action".into(), self.sim.observation())])
+        let mut observation = self.sim.observation();
+        // Only for worlds that use the zoom: others keep their observation (and the
+        // recordings' state_hash) unchanged.
+        let full = self.sim.session.camera_distance;
+        if self.sim.session.first_person.is_none() && self.zoom == full && self.zoom_target == full
+        {
+            return BTreeMap::from([("action".into(), observation)]);
+        }
+        let view = camera_view(
+            &self.sim.session,
+            self.sim.actors[self.sim.hero].position,
+            self.yaw,
+            self.zoom,
+        );
+        observation["camera"] = json!({
+            "distance": self.zoom,
+            "target_distance": self.zoom_target,
+            "first_person": view.first_person,
+            "hero_hidden": self.hide_hero,
+        });
+        BTreeMap::from([("action".into(), observation)])
     }
     fn validate(&self, state: &RuntimeState) -> Result<()> {
         ensure!(
@@ -379,6 +527,14 @@ impl RuntimeSystem for ActionSystem {
         state.validate()
     }
     fn extract(&self, _state: &RuntimeState, frame: &mut RenderFrame) {
+        // First person: the hero's own mesh (and its shadow) would fill the view from inside.
+        // `animation.evaluate` extracts before this system.
+        if self.hide_hero {
+            let hero = &self.sim.actors[self.sim.hero].id;
+            for mesh in frame.meshes.iter_mut().filter(|m| &m.id == hero) {
+                mesh.hidden = [u64::MAX; 4];
+            }
+        }
         for (i, actor) in self.sim.actors.iter().enumerate() {
             if actor.health <= 0.0 {
                 continue;

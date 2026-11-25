@@ -17,6 +17,7 @@ pub mod checkpoint;
 pub mod combat;
 mod editor;
 pub mod events;
+pub mod facing;
 pub mod fps;
 pub mod fsm;
 pub mod gamepad;

@@ -709,6 +709,8 @@ pub struct WorldRuntime {
     /// Opt-in wall time of each system's `step` (ms, summed since the last `take_system_profile`;
     /// same order as `system_ids`). `None` = not measured (no `Instant` reads per step).
     system_profile: Option<Vec<f64>>,
+    /// Model front versus motion of every animated character (`observe facing`).
+    pub(crate) facing: crate::facing::Monitor,
 }
 impl WorldRuntime {
     /// Run `runtime.bindings` calls for gameplay events that fired since the last scan.
@@ -1273,6 +1275,7 @@ impl WorldRuntime {
                 )
                 .any(|op| matches!(op, axiom_core::gameplay::Op::Call(_)))
         });
+        let facing = crate::facing::Monitor::new(&state);
         let build_timings = BuildTimings {
             compile_ms,
             shader_library_ms,
@@ -1313,6 +1316,7 @@ impl WorldRuntime {
             binding_calls: 0,
             has_calls,
             system_profile: None,
+            facing,
         })
     }
     /// Prepare a complete replacement and migrate state before changing the active runtime.
@@ -1532,6 +1536,8 @@ impl WorldRuntime {
                 contexts.transfer(previous);
             }
         }
+        // The carried-over transforms are the new monitor's starting point.
+        next.facing = crate::facing::Monitor::new(&next.state);
         Ok(())
     }
     pub fn step(&mut self, input: &ActionMap) {
@@ -1607,6 +1613,7 @@ impl WorldRuntime {
         }
         self.dispatch_bindings();
         self.dispatch_calls();
+        self.facing.step(&self.state);
     }
     /// Whether a system acts on screen pointer events (see `RuntimeSystem::uses_screen_pointer`).
     pub fn uses_screen_pointer(&self) -> bool {
@@ -1889,6 +1896,9 @@ impl WorldRuntime {
         }
         if let Some(g) = &self.state.gameplay {
             metrics.insert("gameplay".into(), g.observation());
+        }
+        if !self.facing.is_empty() {
+            metrics.insert("facing".into(), self.facing.observation());
         }
         if !self.event_bindings.events.is_empty() {
             metrics.insert(

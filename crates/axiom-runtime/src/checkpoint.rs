@@ -167,6 +167,8 @@ impl WorldRuntime {
         next.state.next_generation = self.state.next_generation;
         next.state.sync_scenes();
         next.load_system_states(&c.systems)?;
+        // A diagnostic, not saved: a new window starting at the restored transforms.
+        next.facing = crate::facing::Monitor::new(&next.state);
         next.restored();
         next.assert_valid()?;
         *self = next;

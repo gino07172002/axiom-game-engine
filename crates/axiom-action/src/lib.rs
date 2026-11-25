@@ -220,9 +220,28 @@ pub struct Session {
     /// exploration content turns it off and relies on its own `ui.document`.
     #[serde(default = "combat_hud")]
     pub hud: bool,
+    /// Zooming in with the optional `zoom` axis (mouse wheel) past the closest third-person
+    /// distance ends in this first-person view. Without it, zoom stops at the closest
+    /// third-person distance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person: Option<FirstPerson>,
 }
 fn combat_hud() -> bool {
     true
+}
+/// The hero's eye point for the first-person end of the zoom range.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstPerson {
+    /// Eye height above the hero's feet (meters).
+    pub eye_height: f32,
+    /// How far the eye sits in front of the hero's vertical axis, toward the view (meters):
+    /// past the face, so the camera never looks out from inside the head.
+    #[serde(default = "eye_forward")]
+    pub eye_forward: f32,
+}
+fn eye_forward() -> f32 {
+    0.25
 }
 impl Session {
     pub fn validate(&self) -> Result<()> {
@@ -263,6 +282,15 @@ impl Session {
                 && (1.0..=50.0).contains(&self.enemy_notice_range),
             "camera or target range out of bounds"
         );
+        if let Some(f) = &self.first_person {
+            ensure!(
+                f.eye_height.is_finite()
+                    && f.eye_forward.is_finite()
+                    && (0.2..=3.0).contains(&f.eye_height)
+                    && (0.0..=1.0).contains(&f.eye_forward),
+                "first_person: eye_height must be 0.2..3 m and eye_forward 0..1 m"
+            );
+        }
         Ok(())
     }
 }
@@ -410,7 +438,7 @@ pub fn register(r: &mut Registry) {
     r.movers
         .insert("action.actor".into(), "action.simulate".into());
     r.resource(ABILITIES,"action",json!({"abilities":"stable ID -> {kind:attack|dodge,clip,duration,cost,cooldown,active?,invulnerable?,chain?,chain_window?,dodge_window?,damage,range,arc_degrees,travel_speed,events:[{tick,sound}]}","windows":"half-open [start,end), fixed 120 Hz ticks","duration":"1..2400","cost":"0..1000","range":"0..6"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
-    r.resource(SESSION,"action",json!({"hero":"entity ID","camera":"entity ID","bounds":"{min:[x,z],max:[x,z]}","obstacles":"bounded planar rectangles","input_buffer_ticks":"0..60","lock_range":"meters","camera_distance":"meters","camera_height":"meters","camera_yaw":"radians","enemy_notice_range":"meters","hit_sound":"audio cue ID"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
+    r.resource(SESSION,"action",json!({"hero":"entity ID","camera":"entity ID","bounds":"{min:[x,z],max:[x,z]}","obstacles":"bounded planar rectangles","input_buffer_ticks":"0..60","lock_range":"meters","camera_distance":"meters","camera_height":"meters","camera_yaw":"radians","enemy_notice_range":"meters","hit_sound":"audio cue ID","hud?":"bool, default true","first_person?":"{eye_height: meters 0.2..3, eye_forward?: meters 0..1 (default 0.25)}: the optional zoom axis (input.bindings, e.g. WheelUp/WheelDown) ends in a first-person view; without it zoom stops at the closest third-person distance"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
     r.systems.insert(
         "action.simulate".into(),
         SystemDescriptor {
@@ -441,15 +469,30 @@ pub fn register(r: &mut Registry) {
             Ok(())
         });
     }
+    r.action(
+        "action.zoom",
+        "action",
+        json!({"distance":"meters from the hero, 0..camera_distance; 0 = first person when action.session.first_person is set (else the closest third-person distance, 1.6)"}),
+        |v| {
+            let d = v
+                .as_object()
+                .filter(|o| o.len() == 1)
+                .and_then(|o| o.get("distance"))
+                .and_then(Value::as_f64)
+                .ok_or_else(|| anyhow::anyhow!("expected {{distance: meters}}"))?;
+            ensure!(d.is_finite() && (0.0..=50.0).contains(&d), "distance must be 0..50 m");
+            Ok(())
+        },
+    );
     r.world_validators.push(validate_world);
     r.topics.insert("action".into(),json!({
-        "resources":[SESSION,ABILITIES],"actions":["attack","dodge","lock"],
-        "inputs":{"axes":["move_x","move_z","orbit"],"buttons":["attack","dodge","lock"]},
+        "resources":[SESSION,ABILITIES],"actions":["attack","dodge","lock","zoom"],
+        "inputs":{"axes":["move_x","move_z","orbit","zoom? (wheel: WheelUp / WheelDown)"],"buttons":["attack","dodge","lock"]},
         "inspect":{"op":"select","query":{"from":"resources","ids":[ABILITIES],"fields":["/abilities/slash2"]}},
         "timing":"120 Hz, windows [start,end), input buffer uses simulation ticks",
         "hit_policy":"one attempt per target per activation, invulnerability consumes the attempt, no damage through planar obstacles",
         "reload":"ability/session/actor changes restart the action simulation; unrelated edits preserve it",
-        "observe":["/action/hero","/action/stats","/action/trace","/audio"],
+        "observe":["/action/hero","/action/stats","/action/trace","/action/camera (when zoom is used)","/facing","/audio"],
         "checkpoint":"action private state is explicitly unsupported"
     }));
 }
