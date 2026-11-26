@@ -128,6 +128,12 @@ EDIT (any number, atomic):
   ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none
                                   reference screen: panels are laid out in W x H pixels and the panel layer
                                   scales to the window (N% lengths are of W / H); live: observe ui.layout
+  ui template ID {params:[NAME..], widgets:[WIDGET..], panel?:{PANEL}, classes?:{W:CLASS}} (JSON) | ui template ID none
+                                  reusable widgets; strings may use {NAME} and {i} (instance index)
+  ui use ID TEMPLATE [into=PANEL] [count=VARIABLE] [[{NAME:value},..]] (JSON) | ui use ID none
+                                  one instance per parameter object, expanded at compile time after the
+                                  authored widgets (<= 64 widgets in all); into = panel receiving them;
+                                  count = number variable, instance i shown while it is > i
   ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none
                                   content font (.ttf/.otf <= 24 MiB, package-relative; at most 4); used by
                                   text / button classes (font=ID); CJK falls back to the system UI font
@@ -790,6 +796,10 @@ enum UiStatement {
     Frame(String, Option<crate::ui_theme::UiFrame>),
     PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
     Panel(String, Option<crate::ui_theme::UiPanel>),
+    /// `ui template ID {JSON}` / `ui template ID none`.
+    Template(String, Option<Box<crate::ui_template::UiTemplate>>),
+    /// `ui use ID TEMPLATE [into=] [count=] [INSTANCES]` / `ui use ID none`.
+    Use(String, Option<crate::ui_template::UiUse>),
     /// `ui font ID PATH license=SPDX` / `ui font ID none`.
     Font(String, Option<crate::ui_theme::UiFont>),
     /// `ui screen W H [scale=]` / `ui screen none`.
@@ -950,6 +960,44 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             let class = (tokens[3] != "none").then(|| tokens[3].clone());
             UiStatement::Class(tokens[2].clone(), class)
         }
+        "template" => {
+            let usage = "use: ui template ID {\"params\":[..],\"widgets\":[..],\"panel\"?:{..},\"classes\"?:{..}} | ui template ID none";
+            match tokens.len() {
+                4 if tokens[3] == "none" => UiStatement::Template(tokens[2].clone(), None),
+                4 => UiStatement::Template(
+                    tokens[2].clone(),
+                    Some(Box::new(
+                        serde_json::from_value(json_value(&tokens[3])?)
+                            .with_context(|| usage.to_owned())?,
+                    )),
+                ),
+                _ => bail!("{usage}"),
+            }
+        }
+        "use" => {
+            let usage = "use: ui use ID TEMPLATE [into=PANEL] [count=VARIABLE] [[{\"PARAM\":\"value\"},..]] | ui use ID none";
+            match tokens.len() {
+                4 if tokens[3] == "none" => UiStatement::Use(tokens[2].clone(), None),
+                n if n >= 4 => {
+                    let (lists, options): (Vec<String>, Vec<String>) = tokens[4..]
+                        .iter()
+                        .cloned()
+                        .partition(|t| t.starts_with('['));
+                    ensure!(lists.len() <= 1, "{usage}");
+                    let instances = lists.first().map(|t| json_value(t)).transpose()?;
+                    UiStatement::Use(
+                        tokens[2].clone(),
+                        Some(crate::ui_template::use_from(
+                            &tokens[2],
+                            &tokens[3],
+                            &key_values(&options)?,
+                            instances,
+                        )?),
+                    )
+                }
+                _ => bail!("{usage}"),
+            }
+        }
         "font" => {
             let usage = "use: ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none";
             match tokens.len() {
@@ -1051,7 +1099,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             }
             other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
         },
-        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, font, textclass, buttonclass, class)"),
+        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, font, template, use, textclass, buttonclass, class)"),
     })
 }
 
@@ -1065,6 +1113,10 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
         UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
         UiStatement::Screen(reference, scale) => crate::ops::set_ui_screen(w, *reference, *scale),
         UiStatement::Font(id, font) => crate::ops::set_ui_font(w, id, font.clone()),
+        UiStatement::Template(id, template) => {
+            crate::ops::set_ui_template(w, id, template.as_deref().cloned())
+        }
+        UiStatement::Use(id, entry) => crate::ops::set_ui_use(w, id, entry.clone()),
         UiStatement::TextClass(class, text) => {
             crate::ops::set_ui_text_class(w, class, text.clone())
         }

@@ -300,11 +300,19 @@
           "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}},
         "reference":[1280,720]
       },
-      "classes":{"speaker":"speaker","line":"dialog_line","emote_wave":"emote","emote_bow":"emote","emote_dance":"emote","emote_cheer":"emote","emote_pose":"emote","emote_think":"emote"},
+      "classes":{"speaker":"speaker","line":"dialog_line"},
+      "templates":{
+        "emote_button":{"params":["name"],
+          "widgets":[{"kind":"button","id":"emote_{name}","text":"e_{name}","command":{"kind":"emit","event":"emote_{name}"}}],
+          "classes":{"emote_{name}":"emote"}}
+      },
+      "uses":[
+        {"id":"emote_buttons","template":"emote_button","into":"emotes",
+          "instances":[{"name":"wave"},{"name":"bow"},{"name":"dance"},{"name":"cheer"},{"name":"pose"},{"name":"think"}]}
+      ],
       "panels":[
         {"id":"dialog","anchor":"bottom","offset":[0,-14],"width":900,"style":"dialog","children":["speaker","line","choices"]},
-        {"id":"emotes","anchor":"right","offset":[-12,-60],"style":"hud","layout":"grid","columns":3,"gap":8,
-          "children":["emote_wave","emote_bow","emote_dance","emote_cheer","emote_pose","emote_think"]}
+        {"id":"emotes","anchor":"right","offset":[-12,-60],"style":"hud","layout":"grid","columns":3,"gap":8,"children":[]}
       ],
       "regions":{
         "title":"top_left","quest":"top_left","prompt":"top","coins_label":"top_left","coins":"top_left","affection":"top_left"
@@ -352,13 +360,7 @@
         {"kind":"progress","id":"affection","variable":"affection","max":100},
         {"kind":"text","id":"speaker","binding":{"kind":"speaker"}},
         {"kind":"text","id":"line","binding":{"kind":"line"}},
-        {"kind":"choices","id":"choices"},
-        {"kind":"button","id":"emote_wave","text":"e_wave","command":{"kind":"emit","event":"emote_wave"}},
-        {"kind":"button","id":"emote_bow","text":"e_bow","command":{"kind":"emit","event":"emote_bow"}},
-        {"kind":"button","id":"emote_dance","text":"e_dance","command":{"kind":"emit","event":"emote_dance"}},
-        {"kind":"button","id":"emote_cheer","text":"e_cheer","command":{"kind":"emit","event":"emote_cheer"}},
-        {"kind":"button","id":"emote_pose","text":"e_pose","command":{"kind":"emit","event":"emote_pose"}},
-        {"kind":"button","id":"emote_think","text":"e_think","command":{"kind":"emit","event":"emote_think"}}
+        {"kind":"choices","id":"choices"}
       ]
     }
   }

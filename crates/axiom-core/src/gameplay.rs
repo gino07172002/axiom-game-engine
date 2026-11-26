@@ -306,6 +306,12 @@ pub struct UiDocument {
     /// Widget ID -> theme text or button class (plan M2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub classes: BTreeMap<String, String>,
+    /// Reusable widget groups (plan M5), expanded by `ui_template::expand` when compiled.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub templates: BTreeMap<String, crate::ui_template::UiTemplate>,
+    /// Template instances, expanded in order after the authored widgets and panels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<crate::ui_template::UiUse>,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1175,10 +1181,15 @@ impl CompiledGameplay {
                 Ok((action.clone(), e))
             })
             .collect::<Result<_>>()?;
+        // Templates are expanded here: everything below sees ordinary widgets and panels.
         let ui: Option<UiDocument> = w
             .resources
             .get("ui.document")
-            .map(|v| serde_json::from_value(v.clone()))
+            .map(|v| {
+                serde_json::from_value::<UiDocument>(v.clone())
+                    .map_err(anyhow::Error::from)
+                    .and_then(|d| crate::ui_template::expand(&d))
+            })
             .transpose()?;
         let mut widgets = vec![];
         let mut effects = vec![];
@@ -1735,6 +1746,7 @@ pub fn authored_calls(w: &World) -> Result<Vec<AuthoredCall>> {
     let mut out = vec![];
     if let Some(value) = w.resources.get("ui.document") {
         let doc: UiDocument = serde_json::from_value(value.clone())?;
+        let doc = crate::ui_template::expand(&doc)?;
         for widget in &doc.widgets {
             let path = format!(
                 "{}/command",
@@ -1833,7 +1845,7 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects","theme?":"{frames: ID -> {image: images ID, slice: [l,t,r,b] px, center?: stretch|tile|hidden}, panel: CLASS -> {fill?: [r,g,b,a], corner? 0..64, padding? 0..128, frame? ID}, fonts: ID -> {path: .ttf|.otf, license: OFL-1.1|Apache-2.0|MIT|CC0-1.0} (<= 4), text: CLASS -> {size? 8..96, font? ID, color?, shadow?}, button: CLASS -> {size?, font? ID, padding? 0..64, normal|hover|pressed|disabled: {frame?, fill?, text?} (unset = normal)}, reference?: [w,h] px, scale?: fit_height|fit_width|fit|none} (ACL ui frame / panelstyle / textclass / buttonclass / screen)","classes?":"widget ID -> text class (text widgets) or button class (buttons); not together with styles (ACL ui class)","panels?":"[{id, anchor: REGION, offset?: [x,y] px, width?/height?: 16..4096 px | \"N%\", layout?: column|row|grid|stack, columns? 1..16 (grid), gap? 0..128, z? -100..100, style? CLASS, children: [widget or panel IDs]}] (ACL ui panel); a widget sits in one panel or one region; child panels nest <= 4 deep; root panels are anchored over the view in reference pixels (theme.reference), scaled to the window; live layout: observe ui_layout"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects","theme?":"{frames: ID -> {image: images ID, slice: [l,t,r,b] px, center?: stretch|tile|hidden}, panel: CLASS -> {fill?: [r,g,b,a], corner? 0..64, padding? 0..128, frame? ID}, fonts: ID -> {path: .ttf|.otf, license: OFL-1.1|Apache-2.0|MIT|CC0-1.0} (<= 4), text: CLASS -> {size? 8..96, font? ID, color?, shadow?}, button: CLASS -> {size?, font? ID, padding? 0..64, normal|hover|pressed|disabled: {frame?, fill?, text?} (unset = normal)}, reference?: [w,h] px, scale?: fit_height|fit_width|fit|none} (ACL ui frame / panelstyle / textclass / buttonclass / screen)","classes?":"widget ID -> text class (text widgets) or button class (buttons); not together with styles (ACL ui class)","templates?":"ID -> {params?: [NAME], widgets: [widget with {NAME} / {i} in strings], panel?: panel without children, classes?: {widget ID: class}} (ACL ui template; <= 16, <= 16 widgets each)","uses?":"[{id, template, instances: [{NAME: value}] 1..32, into?: panel ID, count?: number variable (instance i shown while > i)}] expanded at compile time after the authored widgets (ACL ui use); <= 64 widgets after expansion","panels?":"[{id, anchor: REGION, offset?: [x,y] px, width?/height?: 16..4096 px | \"N%\", layout?: column|row|grid|stack, columns? 1..16 (grid), gap? 0..128, z? -100..100, style? CLASS, children: [widget or panel IDs]}] (ACL ui panel); a widget sits in one panel or one region; child panels nest <= 4 deep; root panels are anchored over the view in reference pixels (theme.reference), scaled to the window; live layout: observe ui_layout"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {

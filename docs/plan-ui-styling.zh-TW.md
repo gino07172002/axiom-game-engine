@@ -464,3 +464,33 @@ theme: {
   - 中途一次 `inspector_on_a_4096_object_world_stays_within_budget`(時間預算 96 ms)在 GPU 截圖同時跑的時候失敗;單獨的完整重跑通過,這個測試和 M4 的改動無關。
 - **截圖 A/B**(M3 exe 對 M4 exe):9 個內容沒變的包逐位元相同,第一個包重跑一次確認穩定。
 - **打包**:`axiom package --pack content/axiom-town` 的輸出包含 `content/ui/axiom-pixel.ttf`,SHA-256 和原檔相同,打包的重新載入檢查通過;沒有實際啟動打包出來的遊戲。
+
+### 補記 2026-11-26:M5 和 ADR-5 的差異(原計畫 → 現在 → 原因)
+
+1. **模板的內容**
+   - 原計畫:`templates: {ID: {params, panel}}`,使用端 `{use, params, id_prefix}`。
+   - 現在:模板是 `{params, widgets, panel?, classes?}`,元件 ID 由模板自己用參數組出來(例如 `emote_{name}`),不自動加前綴;使用端是文件層級的 `uses` 清單,一個 use 有多個實例。
+   - 原因:面板只裝元件 ID,模板一定要能產生元件;ID 由模板決定,town 的表情按鈕改成模板後 ID 完全不變(按鍵、targets、測試都不用改)。
+2. **repeat**
+   - 原計畫:`repeat: {count: VARIABLE|N, max ≤ 32}`。
+   - 現在:`instances` 清單(每個實例自己的參數)加上選用的 `count` 變數。
+   - 原因:表情按鈕每個都不同(文字、事件),只有數量的 repeat 做不出來;`count` 仍可做「依變數顯示幾個」。
+3. **展開預算**:原計畫寫展開後 ≤ 256 個元件,但文件本來的元件上限是 64(執行期預算),展開後仍套用 64。
+4. **示範**:原計畫要「對話框模板用在 Lumi 和 Rin 兩處」,但 town 的對話框是同一個面板跟著劇情切換,沒有兩個對話框。現在:town 用 use 產生表情按鈕;「同一個模板用兩次」由 parity 測試(`card` 模板用在 lumi、rin 兩張卡)和 core 測試涵蓋。
+5. **編輯器**:實例在 UI Editor 畫布上會畫出來,但不能點選、拖動;要改就改模板或 use。
+
+### M5 完成(分支 `ui-v2`)
+
+- **格式**:`templates.ID = {params, widgets, panel?, classes?}`、`uses = [{id, template, instances, into?, count?}]`;`ui_template::expand` 在 `compile`(以及 ops 的驗證、命令抽取)時展開,實例接在原本的元件和面板後面,之後的綁定、效果、類別、面板、`ui_layout` 都看到一般元件。
+- **預算**:模板 ≤ 16、每個模板 ≤ 16 個元件、參數 ≤ 8、use ≤ 32、每個 use 1–32 個實例;展開後元件 ≤ 64(展開前先算總數,不會先建出一大堆再拒絕)。
+- **ops / ACL / 編輯器**:`set_ui_template`、`set_ui_use`;ACL `ui template ID {JSON}|none`、`ui use ID TEMPLATE [into=] [count=] [[{..}]]|none`;編輯器命令 `ui.template`、`ui.use`;parity 測試多兩步(`card` 模板用在 lumi、rin),parity 表加一列。
+- **內容**:Axiom Town 的 6 個表情按鈕改成模板 `emote_button` + 一個 use(6 個實例放進 `emotes`),元件 ID、按鍵和事件都不變。
+- **實作中發現並修正**:
+  - UI Editor 畫布把編譯後的元件索引拿去查原始文件的元件,實例的索引會超出範圍。現在只有原始元件能點選、拖動(實例照常畫出)。
+  - 編輯器測試的 town 夾具改用展開後的文件(`authored`),新增一個用原始文件的測試確認實例畫得出來但不能點選。
+- **測試**:core 新增 1 個(展開順序、類別、面板、count 條件、可以編譯、10 種有路徑的拒絕、預算、全部移除後逐位元回到原樣);`ui_panels.rs` 新增 1 個(25 個實例、`count=coins`,coins = 20 時剛好畫 20 個);`ui_editor_tests` 新增 1 個。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1142 passed / 1 failed / 7 ignored,失敗的是 `inspector_on_a_4096_object_world_stays_within_budget`。
+  - 這個測試在完整平行執行、背景 CPU 約 45% 時會超過 96 ms(這次一個 528 ms 的尖峰);單獨跑 4 次都通過(約 20–24 ms)。
+  - 為了確認不是 M4 / M5 讓它變慢,在 M3 的 commit 上單獨跑 3 次:idle 21.8–23.7 ms、filtered 18.9–21.1 ms;M5 上單獨跑:idle 21.5–22.5 ms、filtered 19.9–24.3 ms,沒有差別。判斷是測試在負載下不穩,不是回歸;沒有改這個測試。
+- **smoke**:editor smoke 通過、world 和 street parity 結果一致;M0 第一次在 `two-cameras` 的截圖那一步失敗(沒有留下錯誤訊息),同一條命令手動重跑成功,整支 M0 重跑 PASS。沒有找到原因,記錄在這裡。
+- **未驗證**:沒有 GPU 截圖(表情按鈕的畫面和 M4 相同,`ui_layout` 由 headless 測試涵蓋);沒有截圖 A/B(引擎的繪製程式這次沒改,只動了編譯和編輯器)。

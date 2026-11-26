@@ -40,6 +40,7 @@ pub mod tags;
 pub mod trigger;
 pub mod tween;
 pub mod typed_schema;
+pub mod ui_template;
 pub mod ui_theme;
 pub use ir::*;
 pub use light::*;

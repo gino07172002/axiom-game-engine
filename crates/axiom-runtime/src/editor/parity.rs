@@ -1764,12 +1764,14 @@ fn inspector_arrays_reset_paste_and_play_on_match_acl() {
 fn ui_editor_edits_match_acl() {
     use axiom_core::gameplay::{Region, RuntimeCommand, TextStyle, UiEffect, UiEffectKind};
     let town = || {
-        axiom_core::ContentPackage::load(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
-            &crate::installed_registry().authoring,
+        authored(
+            axiom_core::ContentPackage::load(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
+                &crate::installed_registry().authoring,
+            )
+            .unwrap()
+            .world,
         )
-        .unwrap()
-        .world
     };
     assert_parity(
         town(),
@@ -2000,7 +2002,21 @@ fn graph_edits_made_in_one_frame_build_on_each_other() {
 }
 
 fn town() -> World {
-    serde_json::from_str(include_str!("../../../../content/axiom-town/world.json")).unwrap()
+    authored(
+        serde_json::from_str(include_str!("../../../../content/axiom-town/world.json")).unwrap(),
+    )
+}
+
+/// Axiom Town as its UI compiles: the template uses (plan M5, the emote buttons) expanded into
+/// authored widgets, so these tests can edit those buttons as ordinary widgets.
+fn authored(mut world: World) -> World {
+    let doc: axiom_core::gameplay::UiDocument =
+        serde_json::from_value(world.resources["ui.document"].clone()).unwrap();
+    let doc = axiom_core::ui_template::expand(&doc).unwrap();
+    world
+        .resources
+        .insert("ui.document".into(), serde_json::to_value(doc).unwrap());
+    world
 }
 
 #[test]
@@ -3415,6 +3431,17 @@ fn ui_theme_and_panel_commands_match_acl() {
             "title_gold size=22 font=serif color=E9C478 shadow=000000AA",
             "ui textclass title_gold size=22 font=serif color=E9C478 shadow=000000AA",
         ),
+        // Plan M5: a template with a panel, used twice into the tracker panel.
+        (
+            "ui.template",
+            r#"card {"params":["k"],"widgets":[{"kind":"text","id":"card_{k}","binding":{"kind":"key","id":"{k}"}}],"panel":{"id":"card_{k}_box","anchor":"top"}}"#,
+            r#"ui template card {"params":["k"],"widgets":[{"kind":"text","id":"card_{k}","binding":{"kind":"key","id":"{k}"}}],"panel":{"id":"card_{k}_box","anchor":"top"}}"#,
+        ),
+        (
+            "ui.use",
+            r#"cards card into=tracker [{"k":"lumi"},{"k":"rin"}]"#,
+            r#"ui use cards card into=tracker [{"k":"lumi"},{"k":"rin"}]"#,
+        ),
         // Plan M3: the reference screen, and a grid panel holding the tracker panel.
         ("ui.screen", "1920 1080 scale=fit", "ui screen 1920 1080 scale=fit"),
         (
@@ -3453,6 +3480,11 @@ fn ui_theme_and_panel_commands_match_acl() {
     assert_eq!(hud["layout"], "grid");
     assert_eq!(hud["children"], serde_json::json!(["tracker"]));
     assert_eq!(theme["fonts"]["serif"]["license"], "OFL-1.1");
+    assert_eq!(at.resources["ui.document"]["uses"][0]["into"], "tracker");
+    assert_eq!(
+        at.resources["ui.document"]["uses"][0]["instances"][1]["k"],
+        "rin"
+    );
     assert_eq!(theme["text"]["title_gold"]["font"], "serif");
     // Repeating a step that changes nothing writes nothing (no empty batch for the store to
     // refuse) and is not an error.

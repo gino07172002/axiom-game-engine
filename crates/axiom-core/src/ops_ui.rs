@@ -595,6 +595,8 @@ fn theme_entry(mut raw: Value, map: &str, id: &str, value: Option<Value>) -> Vec
 fn checked(raw: &Value) -> Result<()> {
     let doc: UiDocument = serde_json::from_value(raw.clone())
         .map_err(|e| invalid(DOC_PATH, format!("ui.document does not parse: {e}")))?;
+    // Templates first (plan M5): panels and classes may name widgets only instances create.
+    let doc = crate::ui_template::expand(&doc)?;
     let names: std::collections::BTreeSet<&str> = doc.widgets.iter().map(|w| w.id()).collect();
     crate::ui_theme::validate(&doc, &names)
 }
@@ -708,6 +710,57 @@ pub fn set_ui_font(
 ) -> Result<Vec<Edit>> {
     let (raw, _) = document(world)?;
     checked_edits(theme_entry(raw, "fonts", id, font.map(|f| json!(f))))
+}
+
+/// UI Editor ▸ template / ACL `ui template ID {JSON} | ui template ID none` (plan M5).
+/// Removing a template a use still names is refused.
+pub fn set_ui_template(
+    world: &World,
+    id: &str,
+    template: Option<crate::ui_template::UiTemplate>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(map_entry(raw, "templates", id, template.map(|t| json!(t))))
+}
+
+/// UI Editor ▸ use / ACL `ui use ID TEMPLATE [into=] [count=] [INSTANCES] | ui use ID none`
+/// (plan M5). Replaces the use with that ID in place (expansion order) or appends one.
+pub fn set_ui_use(
+    world: &World,
+    id: &str,
+    entry: Option<crate::ui_template::UiUse>,
+) -> Result<Vec<Edit>> {
+    let (mut raw, doc) = document(world)?;
+    let at = doc.uses.iter().position(|u| u.id == id);
+    if at.is_none() && entry.is_none() {
+        return Err(Diagnostic::error(
+            "not_found",
+            format!("{DOC_PATH}/uses"),
+            format!("no use '{id}'"),
+        ));
+    }
+    if at.map(|i| &doc.uses[i]) == entry.as_ref() {
+        return Ok(vec![]);
+    }
+    let object = raw
+        .as_object_mut()
+        .expect("ui.document parsed as an object");
+    let list = object.entry("uses").or_insert_with(|| json!([]));
+    let list = list
+        .as_array_mut()
+        .ok_or_else(|| invalid(format!("{DOC_PATH}/uses"), "uses must be an array"))?;
+    match (at, entry) {
+        (Some(i), Some(u)) => list[i] = json!(u),
+        (None, Some(u)) => list.push(json!(u)),
+        (Some(i), None) => {
+            list.remove(i);
+        }
+        (None, None) => unreachable!("refused above"),
+    }
+    if list.is_empty() {
+        object.remove("uses");
+    }
+    checked_edits(put(raw))
 }
 
 /// UI Editor ▸ text class / ACL `ui textclass CLASS [size=] [color=] [shadow=] | none` (plan M2).

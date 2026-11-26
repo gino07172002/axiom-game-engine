@@ -574,3 +574,44 @@ fn a_font_file_that_is_not_a_font_fails_activation_with_its_id() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_counted_template_use_shows_one_instance_per_unit_of_its_variable() {
+    // Plan M5: 25 instances with count=coins; coins starts at 20, so 20 are drawn.
+    let mut world = town();
+    let doc = world.resources.get_mut("ui.document").unwrap();
+    doc["templates"]["pip"] = serde_json::json!({
+        "widgets": [{"kind": "text", "id": "pip_{i}", "binding": {"kind": "key", "id": "e_wave"}}]
+    });
+    doc["panels"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": "pips", "anchor": "top_left", "offset": [0, 200], "layout": "grid", "columns": 5,
+            "children": []
+        }));
+    doc["uses"].as_array_mut().unwrap().push(serde_json::json!({
+        "id": "pip_row", "template": "pip", "into": "pips", "count": "coins",
+        "instances": vec![serde_json::json!({}); 25]
+    }));
+    let mut r = WorldRuntime::new(world, 1, installed_registry()).unwrap();
+    r.step(&ActionMap::default());
+    assert_eq!(
+        r.observation().metrics["gameplay"]["variables"]["coins"],
+        20
+    );
+    let ctx = egui::Context::default();
+    let mut ui = UiState::default();
+    frames_at(&r, &ctx, &mut ui, [1280.0, 720.0], 4, vec![]);
+    let layout = r.ui_layout_observation(&ui).expect("ui_layout");
+    let pips: Vec<&str> = layout["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["panel"] == "pips")
+        .map(|w| w["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(pips.len(), 20, "{pips:?}");
+    assert_eq!(pips.first(), Some(&"pip_0"));
+    assert_eq!(pips.last(), Some(&"pip_19"));
+}

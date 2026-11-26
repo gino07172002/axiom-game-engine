@@ -7,12 +7,29 @@ use axiom_core::{Edit, Request, Store, World};
 use egui::{epaint::Shape, vec2, Event, Modifiers, PointerButton, Pos2, Rect};
 
 fn town() -> World {
+    authored(raw_town())
+}
+
+/// The town package as shipped (templates not expanded).
+fn raw_town() -> World {
     axiom_core::ContentPackage::load(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
         &crate::installed_registry().authoring,
     )
     .unwrap()
     .world
+}
+
+/// Axiom Town as its UI compiles: the template uses (plan M5, the emote buttons) expanded into
+/// authored widgets, so these tests can edit those buttons as ordinary widgets.
+fn authored(mut world: World) -> World {
+    let doc: axiom_core::gameplay::UiDocument =
+        serde_json::from_value(world.resources["ui.document"].clone()).unwrap();
+    let doc = axiom_core::ui_template::expand(&doc).unwrap();
+    world
+        .resources
+        .insert("ui.document".into(), serde_json::to_value(doc).unwrap());
+    world
 }
 
 fn acl(world: &World, script: &str) -> World {
@@ -541,4 +558,23 @@ fn canvas_panels_scale_with_the_reference_screen() {
         small[0] > 0.5 && line_small[1] > 0.6,
         "{small:?} {line_small:?}"
     );
+}
+
+/// Plan M5: template instances (the shipped town's emote buttons) draw on the canvas by the
+/// game's code but are edited through their template / use, so they cannot be picked or
+/// dragged; authored widgets still can.
+#[test]
+fn template_instances_draw_but_are_not_selectable_on_the_canvas() {
+    let mut h = Harness::new(raw_town());
+    h.frame(vec![]);
+    assert!(
+        h.shows("揮手"),
+        "the emote buttons are drawn: {:?}",
+        h.shown
+    );
+    assert!(
+        !h.editor.rects.contains_key("ui_canvas:emote_wave"),
+        "an instance is not a canvas target"
+    );
+    assert!(h.editor.rects.contains_key("ui_canvas:affection"));
 }

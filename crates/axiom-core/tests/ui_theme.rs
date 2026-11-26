@@ -394,3 +394,107 @@ fn content_fonts_need_an_open_licence_and_known_ids() {
     acl(&mut s, "ui font pixel none").unwrap();
     assert_eq!(doc(&s), raw);
 }
+
+/// Plan M5: templates expand at compile time into ordinary widgets and panels.
+#[test]
+fn templates_expand_into_widgets_panels_and_classes() {
+    use axiom_core::gameplay::UiDocument;
+    let mut s = store();
+    let raw = doc(&s);
+    acl(&mut s, "ui textclass big size=30").unwrap();
+    acl(&mut s, "ui panel shelf top layout=row").unwrap();
+    acl(
+        &mut s,
+        r#"ui template card {"params":["k"],"widgets":[{"kind":"text","id":"card_{k}","binding":{"kind":"key","id":"{k}"}},{"kind":"text","id":"card_{k}_n","binding":{"kind":"variable","id":"coins"}}],"panel":{"id":"card_{k}_box","anchor":"top","layout":"row"},"classes":{"card_{k}":"big"}}"#,
+    )
+    .unwrap();
+    acl(
+        &mut s,
+        r#"ui use cards card into=shelf count=coins [{"k":"title"},{"k":"buy"}]"#,
+    )
+    .unwrap();
+    let typed: UiDocument = serde_json::from_value(doc(&s)).unwrap();
+    let out = axiom_core::ui_template::expand(&typed).unwrap();
+    assert!(out.templates.is_empty() && out.uses.is_empty());
+    let ids: Vec<&str> = out.widgets.iter().map(|w| w.id()).collect();
+    assert_eq!(
+        ids,
+        [
+            "title",
+            "quest",
+            "coins",
+            "buy",
+            "card_title",
+            "card_title_n",
+            "card_buy",
+            "card_buy_n"
+        ],
+        "instances after the authored widgets, in order"
+    );
+    let shelf = out.panels.iter().find(|p| p.id == "shelf").unwrap();
+    assert_eq!(shelf.children, ["card_title_box", "card_buy_box"]);
+    let card = out.panels.iter().find(|p| p.id == "card_buy_box").unwrap();
+    assert_eq!(card.children, ["card_buy", "card_buy_n"]);
+    assert_eq!(out.classes["card_title"], "big");
+    // count=coins: instance 1 is shown while coins > 1 (coins >= 2).
+    let when = serde_json::to_value(&out.widgets[6]).unwrap()["when"].clone();
+    assert_eq!(
+        when,
+        json!({"kind":"ge","left":{"kind":"variable","id":"coins"},"right":{"kind":"literal","value":2}})
+    );
+    // The whole world still compiles (keys exist, widgets are unique, budgets hold).
+    let world = s.current().unwrap().1;
+    axiom_core::gameplay::CompiledGameplay::compile(&world).unwrap();
+
+    let start = rev(&s);
+    for (script, path) in [
+        (r#"ui use u2 nope [{"k":"title"}]"#, "/uses/1/template"),
+        (r#"ui use u2 card [{}]"#, "/uses/1/instances/0"),
+        (
+            r#"ui use u2 card [{"k":"title","x":"y"}]"#,
+            "/uses/1/instances/0",
+        ),
+        (r#"ui use u2 card [{"k":"a!b"}]"#, "/uses/1/instances/0/k"),
+        (
+            r#"ui use u2 card into=ghost [{"k":"quest"}]"#,
+            "/uses/1/into",
+        ),
+        (r#"ui use cards2 card [{"k":"title"}]"#, "/panels/3/id"),
+        ("ui template card none", "/uses/0/template"),
+        (
+            r#"ui template t2 {"widgets":[{"kind":"text","id":"x","binding":{"kind":"key","id":"title"}}],"panel":{"id":"p","anchor":"top","children":["x"]}}"#,
+            "/templates/t2/panel/children",
+        ),
+        (
+            r#"ui template t2 {"params":["i"],"widgets":[{"kind":"text","id":"x{i}","binding":{"kind":"key","id":"title"}}]}"#,
+            "/templates/t2/params",
+        ),
+        (r#"ui template t2 {"widgets":[]}"#, "/templates/t2/widgets"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    // 64 widgets after expansion at most: 4 authored + 4 now + 2 x 30 more is too many.
+    let many: Vec<_> = (0..30).map(|n| json!({"k": format!("k{n}")})).collect();
+    let e = acl(
+        &mut s,
+        &format!("ui use u3 card into=shelf {}", json!(many)),
+    )
+    .expect_err("over the widget budget");
+    assert!(e.to_string().contains("after expansion"), "{e}");
+    assert_eq!(rev(&s), start);
+    for script in [
+        "ui use cards none",
+        "ui template card none",
+        "ui panel shelf none",
+        "ui textclass big none",
+    ] {
+        acl(&mut s, script).unwrap();
+    }
+    assert_eq!(doc(&s), raw);
+}

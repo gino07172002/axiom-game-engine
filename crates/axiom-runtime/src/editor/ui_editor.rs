@@ -338,6 +338,8 @@ impl Editor {
             "ui.panel" => format!("panel {arg}"),
             "ui.screen" => format!("screen {arg}"),
             "ui.font" => format!("font {arg}"),
+            "ui.template" => format!("template {arg}"),
+            "ui.use" => format!("use {arg}"),
             "ui.text_class" => format!("textclass {arg}"),
             "ui.button_class" => format!("buttonclass {arg}"),
             "ui.class" => format!("class {arg}"),
@@ -803,7 +805,7 @@ impl Editor {
         }
         // The HUD itself, by the game's code.
         st.canvas.playing = true;
-        let rects = crate::bound_ui::draw_canvas(
+        let mut rects = crate::bound_ui::draw_canvas(
             ui.ctx(),
             canvas,
             size,
@@ -813,6 +815,16 @@ impl Editor {
             fx.as_ref().map(|f| f as &dyn EffectVisuals),
             view.intersect(ui.clip_rect()),
         );
+        // Template instances (plan M5) are compiled after the authored widgets: they draw, but
+        // are edited through their template / use, so only authored widgets are selectable.
+        rects.retain(|(index, _)| {
+            doc.widgets.get(*index).is_some_and(|w| {
+                g.compiled
+                    .widgets
+                    .get(*index)
+                    .is_some_and(|b| axiom_core::gameplay::bound_widget_id(b) == w.id())
+            })
+        });
         if plates > 0.0 {
             // The game draws these over the 3D view at each entity; here they are listed in a
             // row under the canvas view, painted by the same function.

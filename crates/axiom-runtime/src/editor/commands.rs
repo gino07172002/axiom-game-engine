@@ -534,6 +534,18 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ID ANCHOR [at=X,Y] [width=|N%] [height=] [layout=] [columns=] [gap=] [z=] [style=] [widgets=A,B] | ID none",
     ),
     a(
+        "ui.template",
+        "UI: Template (JSON)…",
+        "World",
+        "ID {\"params\":[..],\"widgets\":[..],\"panel\"?:{..}} | ID none",
+    ),
+    a(
+        "ui.use",
+        "UI: Use Template…",
+        "World",
+        "ID TEMPLATE [into=PANEL] [count=VAR] [[{..},..]] | ID none",
+    ),
+    a(
         "ui.font",
         "UI: Content Font…",
         "World",
@@ -772,6 +784,8 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.panel",
     "ui.screen",
     "ui.font",
+    "ui.template",
+    "ui.use",
     "ui.text_class",
     "ui.button_class",
     "ui.class",
@@ -1340,7 +1354,8 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
-            | "ui.screen" | "ui.font" | "ui.text_class" | "ui.button_class" | "ui.class"
+            | "ui.screen" | "ui.font" | "ui.template" | "ui.use" | "ui.text_class"
+            | "ui.button_class" | "ui.class"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")

@@ -75,6 +75,8 @@ ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui pan
 ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N] [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none
 ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none   # 參考畫面:面板層整體縮放
 ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none   # 內容包字型
+ui template ID {JSON} | ui template ID none                       # 模板:元件(+ 面板、類別)
+ui use ID TEMPLATE [into=PANEL] [count=VAR] [[{..},..]] | ui use ID none   # 每個參數物件一個實例
 ui textclass CLASS [size=N] [font=ID] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
 ui buttonclass CLASS [size=N] [font=ID] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | ui buttonclass CLASS none
 ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → button class
@@ -113,6 +115,21 @@ ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → b
 - `theme.frames.ID = {image, slice:[l,t,r,b]}`:四個角保持原像素大小,四邊和中央拉伸。面板比兩個角加起來還小時,角會等比縮小。
 - 示範:Axiom Town 的對話框是 `dialog` 面板(底部置中、寬 900,使用 `ui/dialog-frame.png`)。這張圖由 `cargo run -p axiom-runtime --example build_ui_frames` 產生,是原創、不含第三方素材的圖,而且每次產生的結果都相同。
 - 回歸檢查:`scripts/ui-screenshot-ab.ps1 -Old OLD.exe` 對每個有 `ui.document` 的內容包做新舊截圖逐位元比較。
+
+**模板與重複(plan M5)**
+
+- `templates.ID = {params, widgets, panel?, classes?}`:
+  - `widgets` 是一般的元件 JSON,字串裡可以寫 `{參數名}` 和 `{i}`(實例的序號,從 0 開始);
+  - `panel`(選用)是裝這些元件的面板(不要寫 `children`,會自動填入元件);
+  - `classes` 是元件 ID → 類別,也可以用參數。
+- `uses = [{id, template, instances, into?, count?}]`:
+  - `instances` 每個參數物件產生一個實例(1–32 個);參數值只能用英數字和 `_ - . /`,最長 64 字;
+  - `into`:把實例放進哪個面板(模板有面板時放面板,沒有時直接放元件);沒寫時,每個實例的面板都是根面板;
+  - `count`:數字變數;第 i 個實例在變數 > i 時才顯示(例如「顯示幾顆星」)。
+- 展開發生在編譯時:實例接在原本的元件和面板後面,綁定、效果、類別、面板、`ui_layout` 看到的都是一般元件。展開後的元件總數仍然 ≤ 64。
+- 錯誤會指到欄位:未知模板、少參數、多參數、參數值不合法、`into` 的面板不存在、模板面板寫了 `children`、參數取名 `i`、超過元件預算、刪除還在使用的模板。
+- 編輯器:UI Editor 畫布照常畫出實例,但實例不能點選或拖動(要改模板或 use)。
+- 示範:Axiom Town 的 6 個表情按鈕由模板 `emote_button`(參數 `name`)加一個 use(6 個實例,放進 `emotes` 面板)產生,元件 ID 仍是 `emote_wave` 等。
 
 **內容包字型(plan M4)**
 
