@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-26 — Claude (Opus 5.5) — UI styling program (plan `docs/plan-ui-styling.zh-TW.md`): M1a–M3 on branch `ui-v2`
+
+**Done:** `ui.document` v2 in `axiom-core/src/ui_theme.rs` + `bound_ui.rs`. M1a/M1b nine-slice framed panels (pushed 746e699, 61cbc09), M2 text/button classes with hover/pressed/disabled looks and frame centre modes (pushed 6efcc5a), M3 panel sizes (px / %), row/grid/stack layouts, nesting ≤ 4, z, `theme.reference` + `scale` (whole panel layer scaled; hit tests follow), live `observe` `ui_layout` with `ui_overlap` / `ui_offscreen` (f1a864c, local only so far). Every edit has ops + ACL (`ui frame|panelstyle|panel|screen|textclass|buttonclass|class`) + editor command + parity test. Original frame PNGs from `examples/build_ui_frames.rs`.
+
+**Verification (M3, debug):** fmt + clippy clean; `cargo test --workspace` 1137 / 0 / 7; editor smoke, world + street parity identical, M0 PASS; `scripts/ui-screenshot-ab.ps1` M2 vs M3: 9 unchanged packs byte-identical; GPU captures at 1920×1080 and 1600×900 inspected (`ui_layout`: 2 panels, 9 widgets, 0 diagnostics); `examples/ui_layout_bench` 30 extra panels: 1.28 ms debug / 1.15 ms release per HUD frame (CPU).
+
+**Not verified / open:** next milestones M4 fonts, M5 templates, M6 screens/modal/focus, M7 editor free canvas, M8 town + docs. No GPU capture with the dialog open (headless test covers it).
+
+**Gotchas:** observe metrics are flattened: the field is `observation.ui_layout`. `ui_layout` reports window pixels (egui points × pixels_per_point). Reference pixels are window-relative while legacy regions follow DPI, so pick a reference close to the window's point size (town: 1280×720). egui clamps areas into the window, so `ui_offscreen` only fires for panels larger than the window. Anchored areas use the previous frame's size: let grids settle two frames before measuring. `AXIOM_WINDOW_SIZE` below the 960×600 logical minimum is ignored on scaled displays. Document budget: 64 widgets. Write apply/ACL JSON with node, not PowerShell 5.1 (UTF-8). Publish engine work only from an origin-based branch.
+
 ## 2026-11-25 — Claude (Opus 5.5) — integrator: Codex review program (R1–R10, gpt-6.2-sol high) on branch `integ`
 
 **Done:** every engine area reviewed by Codex for general code, AI usability, human handoff and AI–human collaboration (reports in `docs/reviews/codex-2026-11/`). Fixes merged on `integ` (worktree `.claude/worktrees/r1`): round 1 R1–R10, round 2 (rechecks) R1b/R2b/R4b, round 3 (user rule: only our regressions + high) C0 strict-on-write validators, R2c, R4c, R8c, r3x (R3/R5/R6/R7), R9c; final round after the confirmation rechecks: c0f, r9f. Plan + per-item tables: `docs/plan-codex-review.zh-TW.md`. Everything not fixed: `docs/reviews/codex-2026-11/backlog.md`.
