@@ -333,6 +333,9 @@ impl Editor {
             "ui.effect_add" => format!("effect add {arg}"),
             "ui.effect_set" => format!("effect set {arg}"),
             "ui.effect_remove" => format!("effect remove {arg}"),
+            "ui.frame" => format!("frame {arg}"),
+            "ui.panel_style" => format!("panelstyle {arg}"),
+            "ui.panel" => format!("panel {arg}"),
             "ui.select" => {
                 let known = self
                     .ui_document()

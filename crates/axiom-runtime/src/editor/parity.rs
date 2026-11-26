@@ -3368,3 +3368,51 @@ fn stylized_mesh_components_match_acl() {
         .unwrap_err();
     assert!(format!("{error:#}").contains("bands"), "{error:#}");
 }
+
+/// ui.document v2 (plan M1a): theme frames, panel styles and panels. The editor commands
+/// compile through the ACL `ui frame|panelstyle|panel` verbs to the same ops.
+#[test]
+fn ui_theme_and_panel_commands_match_acl() {
+    let mut start = town();
+    let doc = start.resources.get_mut("ui.document").unwrap();
+    doc["images"] = serde_json::json!({"parchment":"ui/parchment.png"});
+    doc["regions"].as_object_mut().unwrap().remove("quest");
+    let steps = [
+        (
+            "ui.frame",
+            "scroll parchment 24 24 24 24",
+            "ui frame scroll parchment 24 24 24 24",
+        ),
+        (
+            "ui.panel_style",
+            "quest_box fill=10141Ccc corner=6 padding=18 frame=scroll",
+            "ui panelstyle quest_box fill=10141Ccc corner=6 padding=18 frame=scroll",
+        ),
+        (
+            "ui.panel",
+            "tracker top_left at=12,64 width=320 style=quest_box widgets=quest",
+            "ui panel tracker top_left at=12,64 width=320 style=quest_box widgets=quest",
+        ),
+    ];
+    // One step at a time: each starts from the world the earlier ACL lines produced.
+    let mut at = start.clone();
+    for (command, arg, script) in steps {
+        assert_parity(
+            at.clone(),
+            |e| vec![e.run_command_with(command, Some(arg)).unwrap()],
+            script,
+        );
+        at = headless(&at, script);
+    }
+    assert_eq!(
+        at.resources["ui.document"]["panels"][0]["children"],
+        serde_json::json!(["quest"])
+    );
+    // A refused edit writes nothing and reports the field.
+    let mut e = Editor::new(start, 1, None);
+    e.set_component_hints(&crate::installed_registry().authoring);
+    assert!(e
+        .run_command_with("ui.frame", Some("bad missing 1 1 1 1"))
+        .is_err());
+    assert!(e.problem_codes().contains(&"invalid_value".to_owned()));
+}

@@ -272,4 +272,25 @@ theme: {
 
 ## 執行紀錄
 
-(尚未開工)
+### 補記 2026-11-26:M1 拆成 M1a / M1b(原計畫 → 現在 → 原因)
+
+- 原計畫:M1 一次打通格式、渲染、ACL、編輯器和 town 內容。
+- 現在:
+  - M1a 只做格式、驗證、ops、ACL、編輯器命令、parity;
+  - M1b 做 `bound_ui` 渲染、town 內容、GPU 驗收和截圖 A/B。
+- 原因:開工時 Paladin session 仍有未提交的改動(`bound_ui.rs` +260、`gameplay.rs` +109),這就是 pre-mortem 第 1 項。M1a 不碰 `bound_ui.rs`,新型別放在新模組 `axiom-core/src/ui_theme.rs`,`gameplay.rs` 只加兩個欄位和一個驗證呼叫,讓之後的合併衝突最小。
+
+### M1a 完成(分支 `ui-v2`,基底 `7451a04`)
+
+- **格式**:`ui.document.theme`({frames, panel})和 `ui.document.panels`,兩者都是選用欄位、空的時候不序列化。
+- **驗證**:`ui_theme::validate`,在 `compile` 和 ops 都會執行。錯誤路徑會指到欄位,例如 `/resources/ui.document/theme/panel/box/frame`。
+  - 擋下的情況:圖片不在 `images` 裡、邊距超過 1024 px、圓角或內距超出範圍、樣式引用不存在的邊框、刪除仍被使用的邊框、面板引用未知元件、同一元件同時在面板和 region、同一元件在兩個面板、未知的面板樣式、寬度超出範圍、id 重複。
+  - 預算:邊框、面板樣式、面板各 32 個,每個面板最多 64 個元件。
+- **ops**:`set_ui_frame`、`set_ui_panel_style`、`set_ui_panel`(修改時保留面板在清單中的位置,也就是 z 順序;內容沒變時不產生編輯)。
+- **ACL**:`ui frame|panelstyle|panel`;語法表已更新。
+- **編輯器**:`ui.frame`、`ui.panel_style`、`ui.panel` 命令都經過同一個 ACL parser;Play 期間和檢查器有草稿時都會擋下;parity 表加了一列。
+- **測試**:
+  - `axiom-core/tests/ui_theme.rs` 3 個:建立流程、11 種拒絕(檢查路徑,且不寫入)、加上再全部移除後文件逐位元回到原樣;
+  - `editor::parity::ui_theme_and_panel_commands_match_acl`:逐步比對編輯器命令和 ACL 的結果。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 1120 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+- **尚未做(M1b)**:畫面上還看不到面板和邊框,放進面板的元件照舊畫在原本的位置(discover 的說明有寫)。截圖 A/B 腳本、town 內容、原創邊框生成器也都留到 M1b。

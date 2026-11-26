@@ -515,6 +515,24 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ID key=value ..",
     ),
     a("ui.effect_remove", "UI: Remove Effect…", "World", "ID"),
+    a(
+        "ui.frame",
+        "UI: Theme Frame (nine-slice)…",
+        "World",
+        "ID IMAGE LEFT TOP RIGHT BOTTOM | ID none",
+    ),
+    a(
+        "ui.panel_style",
+        "UI: Panel Style…",
+        "World",
+        "CLASS [fill=] [corner=] [padding=] [frame=] | CLASS none",
+    ),
+    a(
+        "ui.panel",
+        "UI: Panel…",
+        "World",
+        "ID ANCHOR [at=X,Y] [width=] [style=] [widgets=A,B] | ID none",
+    ),
     c("help.shortcuts", "Keyboard Shortcuts…", "Help", "F1"),
     c(
         "help.copy_discovery",
@@ -724,6 +742,9 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.effect_add",
     "ui.effect_set",
     "ui.effect_remove",
+    "ui.frame",
+    "ui.panel_style",
+    "ui.panel",
     "graph.add_state",
     "graph.set_initial",
     "graph.delete",
@@ -1288,7 +1309,7 @@ impl Editor {
                 Some("select a widget in the UI Editor")
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
-            | "ui.effect_set" | "ui.effect_remove"
+            | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")

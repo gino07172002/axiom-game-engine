@@ -1,0 +1,157 @@
+//! ui.document v2, plan M1a: theme frames, panel styles and anchored panels through the
+//! ACL `ui frame|panelstyle|panel` verbs (the editor commands compile to the same verbs).
+use axiom_core::gameplay::UiDocument;
+use axiom_core::{error_response, Registry, Request, Store, World};
+use serde_json::{json, Value};
+
+fn hud() -> World {
+    let mut w = World::empty("hud");
+    for c in ["behavior", "ui"] {
+        w.capabilities.insert(c.into(), 1);
+    }
+    w.systems = vec!["behavior.execute".into()];
+    w.resources.insert(
+        "behavior.program".into(),
+        json!({"variables":{"coins":3,"quest":"q_none"},"events":{"buy":{}}}),
+    );
+    w.resources.insert(
+        "ui.document".into(),
+        json!({"locale":"en",
+            "catalogs":{"en":{"title":"Title","q_none":"Quest: none","buy":"Buy"}},
+            "images":{"parchment":"ui/parchment.png","brass":"ui/brass.png"},
+            "regions":{"title":"top_left"},
+            "widgets":[
+                {"kind":"text","id":"title","binding":{"kind":"key","id":"title"}},
+                {"kind":"text","id":"quest","binding":{"kind":"localized_variable","id":"quest"}},
+                {"kind":"text","id":"coins","binding":{"kind":"variable","id":"coins"}},
+                {"kind":"button","id":"buy","text":"buy","command":{"kind":"emit","event":"buy"}}]}),
+    );
+    w
+}
+fn store() -> Store {
+    Store::memory_with(Registry::core(), hud()).unwrap()
+}
+fn acl(store: &mut Store, text: &str) -> Result<i64, Value> {
+    store
+        .execute(Request::Acl {
+            text: text.into(),
+            preview: false,
+            expected_rev: None,
+            propose: false,
+        })
+        .map(|v| v["rev"].as_i64().unwrap_or(-1))
+        .map_err(|e| error_response(&e))
+}
+fn doc(store: &Store) -> Value {
+    store.current().unwrap().1.resources["ui.document"].clone()
+}
+fn rev(store: &Store) -> i64 {
+    store.current().unwrap().0
+}
+
+#[test]
+fn acl_builds_a_framed_panel_from_a_theme() {
+    let mut s = store();
+    acl(&mut s, "ui frame scroll parchment 24 24 24 24").unwrap();
+    acl(
+        &mut s,
+        "ui panelstyle quest_box fill=10141Ccc corner=6 padding=18 frame=scroll",
+    )
+    .unwrap();
+    acl(
+        &mut s,
+        "ui panel tracker top_left at=12,64 width=320 style=quest_box widgets=quest,coins",
+    )
+    .unwrap();
+    let d = doc(&s);
+    assert_eq!(
+        d["theme"]["frames"]["scroll"],
+        json!({"image":"parchment","slice":[24,24,24,24]})
+    );
+    assert_eq!(
+        d["theme"]["panel"]["quest_box"],
+        json!({"fill":[16,20,28,204],"corner":6.0,"padding":18.0,"frame":"scroll"})
+    );
+    assert_eq!(
+        d["panels"],
+        json!([{"id":"tracker","anchor":"top_left","offset":[12.0,64.0],"width":320.0,
+            "style":"quest_box","children":["quest","coins"]}])
+    );
+    // The typed document reads back and the world compiles with it.
+    let typed: UiDocument = serde_json::from_value(d).unwrap();
+    assert_eq!(typed.panels[0].children, ["quest", "coins"]);
+    // Editing a panel keeps its position in the list (z order); the same edit is a no-op.
+    acl(&mut s, "ui panel extra bottom widgets=buy").unwrap();
+    acl(
+        &mut s,
+        "ui panel tracker top_left at=12,80 width=320 style=quest_box widgets=quest,coins",
+    )
+    .unwrap();
+    assert_eq!(doc(&s)["panels"][0]["id"], "tracker");
+    assert_eq!(doc(&s)["panels"][0]["offset"], json!([12.0, 80.0]));
+    let before = rev(&s);
+    acl(&mut s, "ui frame scroll parchment 24 24 24 24").unwrap();
+    assert_eq!(rev(&s), before, "an unchanged frame commits nothing");
+}
+
+#[test]
+fn invalid_themes_and_panels_are_refused_with_the_field_path() {
+    let mut s = store();
+    acl(&mut s, "ui frame scroll parchment 24 24 24 24").unwrap();
+    acl(&mut s, "ui panelstyle box frame=scroll").unwrap();
+    acl(&mut s, "ui panel tracker top_left widgets=quest").unwrap();
+    let start = rev(&s);
+    for (script, path) in [
+        ("ui frame f2 missing 8 8 8 8", "/theme/frames/f2/image"),
+        ("ui frame f2 parchment 8 8 8 4000", "/theme/frames/f2/slice"),
+        ("ui panelstyle b2 frame=nope", "/theme/panel/b2/frame"),
+        ("ui panelstyle b2 corner=900", "/theme/panel/b2/corner"),
+        ("ui frame scroll none", "/theme/panel/box/frame"),
+        ("ui panel p2 top widgets=ghost", "/panels/1/children/0"),
+        ("ui panel p2 top widgets=title", "/panels/1/children/0"),
+        ("ui panel p2 top widgets=quest", "/panels/1/children/0"),
+        ("ui panel p2 top style=nope", "/panels/1/style"),
+        ("ui panel p2 top width=2", "/panels/1/width"),
+        ("ui panel nope none", "/panels"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    for (script, needle) in [
+        ("ui panelstyle b3 fill=zz", "RRGGBB"),
+        ("ui panelstyle b3 shine=1", "unknown panel style option"),
+        ("ui panel p3 sideways", "region"),
+        ("ui panel p3 top at=1", "X,Y"),
+        ("ui frame f3 parchment 1 2 3", "use: ui frame"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        assert!(e.to_string().contains(needle), "{script}: {e}");
+    }
+    assert_eq!(rev(&s), start);
+}
+
+#[test]
+fn documents_without_a_theme_keep_their_exact_form() {
+    // No theme / panels: the typed document serializes neither key.
+    let raw = hud().resources["ui.document"].clone();
+    let typed: UiDocument = serde_json::from_value(raw.clone()).unwrap();
+    let back = serde_json::to_value(&typed).unwrap();
+    assert!(
+        back.get("theme").is_none() && back.get("panels").is_none(),
+        "{back}"
+    );
+    // Adding and then removing everything returns the authored JSON byte for byte.
+    let mut s = store();
+    acl(&mut s, "ui frame scroll parchment 24 24 24 24").unwrap();
+    acl(&mut s, "ui panelstyle box frame=scroll").unwrap();
+    acl(&mut s, "ui panel tracker top_left style=box widgets=quest").unwrap();
+    acl(&mut s, "ui panel tracker none").unwrap();
+    acl(&mut s, "ui panelstyle box none").unwrap();
+    acl(&mut s, "ui frame scroll none").unwrap();
+    assert_eq!(doc(&s), raw);
+}

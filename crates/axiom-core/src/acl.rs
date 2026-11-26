@@ -117,6 +117,12 @@ EDIT (any number, atomic):
         [ease=E] [direction=left|right|up|down] [amount=X] [from=X]   KIND: fade_in|fade_out|slide_in|
         slide_out|scale_in|scale_out|pulse|shake|number_roll (+ system ui.effects when missing)
   ui effect set ID [kind=..] [widget=..] [same options; OPTION=default clears] | ui effect remove ID
+  ui frame ID IMAGE LEFT TOP RIGHT BOTTOM | ui frame ID none
+                                  theme nine-slice frame: an ui.document image + slice margins in pixels
+  ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
+  ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
+                                  anchored panel (ANCHOR = a REGION name) holding widgets top to bottom;
+                                  a widget sits in one panel or one region (drawing: plan M1b)
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
   input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
                                   KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft
@@ -769,6 +775,9 @@ enum UiStatement {
     EffectAdd(Box<crate::gameplay::UiEffect>),
     EffectSet(String, Vec<(String, String)>),
     EffectRemove(String),
+    Frame(String, Option<crate::ui_theme::UiFrame>),
+    PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
+    Panel(String, Option<crate::ui_theme::UiPanel>),
 }
 
 fn key_values(tokens: &[String]) -> Result<Vec<(String, String)>> {
@@ -792,7 +801,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
     let arg = |n: usize| {
         tokens
             .get(n)
-            .with_context(|| "ui needs more arguments (see grammar: ui place|style|button|effect)")
+            .with_context(|| "ui needs more arguments (see grammar: ui place|style|button|effect|slider|frame|panelstyle|panel)")
     };
     Ok(match arg(1)?.as_str() {
         "place" => {
@@ -839,6 +848,63 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                 _ => bail!("{usage}"),
             };
             UiStatement::Button(widget, command)
+        }
+        "frame" => {
+            let usage = "use: ui frame ID IMAGE LEFT TOP RIGHT BOTTOM | ui frame ID none";
+            match tokens.len() {
+                4 if tokens[3] == "none" => UiStatement::Frame(tokens[2].clone(), None),
+                8 => {
+                    let px = |t: &str| -> Result<u16> {
+                        t.parse()
+                            .with_context(|| format!("'{t}' is not a pixel count ({usage})"))
+                    };
+                    UiStatement::Frame(
+                        tokens[2].clone(),
+                        Some(crate::ui_theme::UiFrame {
+                            image: tokens[3].clone(),
+                            slice: [
+                                px(&tokens[4])?,
+                                px(&tokens[5])?,
+                                px(&tokens[6])?,
+                                px(&tokens[7])?,
+                            ],
+                        }),
+                    )
+                }
+                _ => anyhow::bail!("{usage}"),
+            }
+        }
+        "panelstyle" => {
+            let usage = "use: ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none";
+            ensure!(tokens.len() >= 3, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::PanelStyle(tokens[2].clone(), None)
+            } else {
+                UiStatement::PanelStyle(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::panel_style_from(&key_values(
+                        &tokens[3..],
+                    )?)?),
+                )
+            }
+        }
+        "panel" => {
+            let usage = "use: ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none";
+            ensure!(tokens.len() >= 4, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::Panel(tokens[2].clone(), None)
+            } else {
+                let anchor = crate::ops::parse_region(&tokens[3])?
+                    .with_context(|| format!("a panel needs an anchor ({usage})"))?;
+                UiStatement::Panel(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::panel_from(
+                        &tokens[2],
+                        anchor,
+                        &key_values(&tokens[4..])?,
+                    )?),
+                )
+            }
         }
         "slider" => {
             let usage = "use: ui slider add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME] [when=JSON]";
@@ -895,6 +961,11 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
 fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
     match stmt {
         UiStatement::Place(widget, region) => crate::ops::set_ui_region(w, widget, *region),
+        UiStatement::Frame(id, frame) => crate::ops::set_ui_frame(w, id, frame.clone()),
+        UiStatement::PanelStyle(class, style) => {
+            crate::ops::set_ui_panel_style(w, class, style.clone())
+        }
+        UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
         UiStatement::Style(widget, style) => crate::ops::set_ui_style(w, widget, *style),
         UiStatement::Button(widget, command) => {
             crate::ops::set_ui_button_command(w, widget, command)

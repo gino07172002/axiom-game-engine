@@ -297,6 +297,12 @@ pub struct UiDocument {
     /// number roll), run on the fixed step by the `ui.effects` system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<UiEffect>,
+    /// Nine-slice frames and panel styles (`ui_theme`, plan M1). None = built-in look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<crate::ui_theme::UiTheme>,
+    /// Anchored panels holding widgets (`ui_theme::UiPanel`, plan M1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<crate::ui_theme::UiPanel>,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1396,6 +1402,10 @@ impl CompiledGameplay {
                     "ui.document style refers to unknown widget {id}"
                 );
             }
+            {
+                let names: BTreeSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+                crate::ui_theme::validate(u, &names)?;
+            }
             for path in u.images.values() {
                 ensure!(
                     path.len() <= 1024
@@ -1820,7 +1830,7 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects","theme?":"{frames: ID -> {image: images ID, slice: [l,t,r,b] px}, panel: CLASS -> {fill?: [r,g,b,a], corner? 0..64, padding? 0..128, frame? ID}} (ACL ui frame / ui panelstyle)","panels?":"[{id, anchor: REGION, offset?: [x,y] px, width? 16..4096, style? CLASS, children: [widget IDs]}] (ACL ui panel); a widget sits in one panel or one region; drawing is plan M1b"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {

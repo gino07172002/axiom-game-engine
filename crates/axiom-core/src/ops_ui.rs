@@ -539,3 +539,130 @@ pub fn apply_effect_options(effect: &mut UiEffect, options: &[(String, String)])
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------
+// ui.document v2, plan M1: theme frames, panel styles and anchored panels. Each op checks
+// the edited document with the same validation `compile` runs, so a refusal names the
+// exact field (`/resources/ui.document/theme/...`).
+// ---------------------------------------------------------------------------------------
+
+/// Sets or removes `theme.<map>.<id>`, dropping empty maps (and an empty theme).
+fn theme_entry(mut raw: Value, map: &str, id: &str, value: Option<Value>) -> Vec<Edit> {
+    let before = raw
+        .get("theme")
+        .and_then(|t| t.get(map))
+        .and_then(|m| m.get(id))
+        .cloned();
+    if before == value {
+        return vec![];
+    }
+    let object = raw
+        .as_object_mut()
+        .expect("ui.document parsed as an object");
+    match value {
+        Some(v) => {
+            let theme = object.entry("theme").or_insert_with(|| json!({}));
+            if let Some(t) = theme.as_object_mut() {
+                let m = t.entry(map).or_insert_with(|| json!({}));
+                if let Some(m) = m.as_object_mut() {
+                    m.insert(id.to_owned(), v);
+                }
+            }
+        }
+        None => {
+            if let Some(t) = object.get_mut("theme").and_then(Value::as_object_mut) {
+                let empty = t
+                    .get_mut(map)
+                    .and_then(Value::as_object_mut)
+                    .map(|m| {
+                        m.remove(id);
+                        m.is_empty()
+                    })
+                    .unwrap_or(false);
+                if empty {
+                    t.remove(map);
+                }
+                if t.is_empty() {
+                    object.remove("theme");
+                }
+            }
+        }
+    }
+    put(raw)
+}
+
+/// The edited document must still pass the theme / panel checks.
+fn checked(raw: &Value) -> Result<()> {
+    let doc: UiDocument = serde_json::from_value(raw.clone())
+        .map_err(|e| invalid(DOC_PATH, format!("ui.document does not parse: {e}")))?;
+    let names: std::collections::BTreeSet<&str> = doc.widgets.iter().map(|w| w.id()).collect();
+    crate::ui_theme::validate(&doc, &names)
+}
+
+fn checked_edits(edits: Vec<Edit>) -> Result<Vec<Edit>> {
+    if let Some(Edit::Core(CoreEdit::SetResource { value, .. })) = edits.first() {
+        checked(value)?;
+    }
+    Ok(edits)
+}
+
+/// UI Editor ▸ theme frame / ACL `ui frame ID IMAGE L T R B | ui frame ID none`.
+/// Removing a frame a panel style still uses is refused.
+pub fn set_ui_frame(
+    world: &World,
+    id: &str,
+    frame: Option<crate::ui_theme::UiFrame>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(raw, "frames", id, frame.map(|f| json!(f))))
+}
+
+/// UI Editor ▸ panel style / ACL `ui panelstyle CLASS [fill=] [corner=] [padding=] [frame=] | none`.
+pub fn set_ui_panel_style(
+    world: &World,
+    class: &str,
+    style: Option<crate::ui_theme::PanelStyle>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(raw, "panel", class, style.map(|s| json!(s))))
+}
+
+/// UI Editor ▸ panel / ACL `ui panel ID ANCHOR [at=X,Y] [width=] [style=] [widgets=A,B] | none`.
+/// Replaces the panel with that ID in place (keeping its z order) or appends a new one.
+pub fn set_ui_panel(
+    world: &World,
+    id: &str,
+    panel: Option<crate::ui_theme::UiPanel>,
+) -> Result<Vec<Edit>> {
+    let (mut raw, doc) = document(world)?;
+    let at = doc.panels.iter().position(|p| p.id == id);
+    if at.is_none() && panel.is_none() {
+        return Err(Diagnostic::error(
+            "not_found",
+            format!("{DOC_PATH}/panels"),
+            format!("no panel '{id}'"),
+        ));
+    }
+    if at.map(|i| &doc.panels[i]) == panel.as_ref() {
+        return Ok(vec![]);
+    }
+    let object = raw
+        .as_object_mut()
+        .expect("ui.document parsed as an object");
+    let panels = object.entry("panels").or_insert_with(|| json!([]));
+    let list = panels
+        .as_array_mut()
+        .ok_or_else(|| invalid(format!("{DOC_PATH}/panels"), "panels must be an array"))?;
+    match (at, panel) {
+        (Some(i), Some(p)) => list[i] = json!(p),
+        (None, Some(p)) => list.push(json!(p)),
+        (Some(i), None) => {
+            list.remove(i);
+        }
+        (None, None) => unreachable!("refused above"),
+    }
+    if list.is_empty() {
+        object.remove("panels");
+    }
+    checked_edits(put(raw))
+}
