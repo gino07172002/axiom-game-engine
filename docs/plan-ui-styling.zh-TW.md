@@ -526,3 +526,26 @@ theme: {
 - **GPU**(實際看過,1920×1080,新資料庫):用 bridge 送 `open pause` 後 tick 停在 310、`ui_layout` 有 `pause_menu`、0 個診斷;截圖中選單置中、「繼續遊戲」有焦點外觀、表情按鈕是停用的樣子;同一點地面的顏色開著 (145,143,139)、關掉後 (193,191,185),背景確實變暗約 25%;關掉後 tick 繼續。
 - **未驗證**:真實鍵盤的 Esc 和實體手把沒有實測(GPU 檢查用 bridge 指令開關頁面;方向鍵和 Enter 由 headless 測試涵蓋,app 的 Esc / 手把路徑只讀過程式碼)。
 - **smoke**:editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+
+### 補記 2026-11-27:M7 和計畫的差異(原計畫 → 現在 → 原因)
+
+1. **主題編輯器**
+   - 原計畫:完整的主題編輯器。
+   - 現在:只做選取面板的樣式 padding / corner(− / +)和邊框的九宮格邊距;顏色、文字類別、按鈕類別仍然用 ACL 或命令面板(`ui.panel_style`、`ui.text_class`、`ui.button_class`)。
+   - 原因:demo 第 7 步要的是拖動、縮放面板和邊框;每一種表單都要配 parity 測試,先做 demo 需要的部分,其餘列為之後的工作。
+2. **縮放把手**:只有寬度(邊緣把手);高度沿用內容或用 ACL `height=`。
+3. **對齊格線**:固定 8 個參考像素,沒有開關。
+
+### M7 完成(分支 `ui-v2`)
+
+- **畫布拖動**:`bound_ui::draw_canvas` 也回報面板的螢幕矩形;UI Editor 按住根面板(或面板裡的元件)拖動 = 改 `offset`,拖選取面板的邊緣把手 = 改 `width`(左錨在右邊、右錨在左邊、置中在右邊且兩側一起長);對齊 8 參考像素,拖曳中畫虛線和數值,放開時一筆 `ops::set_ui_panel`(和 ACL `ui panel` 同一個 op),拖曳中不寫入。原本的元件拖到九宮格不受影響(放在 region 裡的元件照舊)。
+- **面板區**:元件面板上方固定顯示選取的面板:位置、樣式 padding / corner 的 − / +(一按一筆 `ui panelstyle`)、邊框圖的九宮格邊距(四條導線,讀原始指標,放開時一筆 `ui frame`)。
+- **實作中發現並修正**:
+  - UI Editor 的預覽從來沒有載入圖片(M1b 起畫布上就沒有九宮格邊框和圖片元件)。現在沿用執行中遊戲已解碼的圖片(Arc,只在集合改變時更新;只用同一個檔案的圖片),編輯器不讀檔、不解碼。
+  - 導線一開始用 egui 的拖曳感應,在可捲動的元件面板裡收不到拖曳;改成和畫布一樣讀原始指標,只接受面板可見範圍內的按下。
+  - 每次修訂之後元件面板的捲動位置會跳開(按鈕和導線跑到可見範圍外,測試的點擊落空);面板區改成固定在捲動區上方。捲動跳動本身的原因沒有查到。
+- **測試**:`ui_editor_tests` 新增 2 個:拖動對話框 (+40, −40) → `at=40,-56`、拖把手 +30 → `width=960`,每一步等於 ACL、拖曳中不寫入;點選面板不寫入、九宮格左線 32 → 40 等於 `ui frame dialog dialog 40 32 32 32`、padding + 等於 `ui panelstyle dialog padding=28 frame=dialog`。
+- **GPU 截圖檢查後再修的兩處**(\`axiom view --dock ui_editor --capture\`,1920×1080,實際看過):
+  - 畫布上的內容字型:預覽同樣沿用執行中遊戲已讀取的字型(同一個檔案);\`ensure_fonts\` 改成在 context 目前的字型上加入內容字型,不再換成遊戲的基底字型,所以不會蓋掉編輯器自己的字型。截圖中畫布的台詞和表情按鈕是點陣字,編輯器介面字型不變。
+  - 元件清單把放在面板裡的元件標成「(bottom panel)」,改成「panel dialog」這類面板名稱。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1150 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS(smoke 在字型修正之前跑;之後只改了編輯器預覽與 `ensure_fonts`,完整測試重跑通過)。

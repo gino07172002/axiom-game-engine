@@ -44,6 +44,26 @@ pub(super) fn component_value(world: &World, entity: &Entity, component: &str) -
 impl Editor {
     pub fn draw(&mut self, ctx: &egui::Context, runtime: &WorldRuntime) -> Vec<Action> {
         let mut actions = Vec::new();
+        // The UI Editor preview reuses the runtime's decoded UI images (Arc clones, refreshed
+        // only when its set changes): the editor never decodes on the main thread (plan M7).
+        if let Some(g) = &runtime.state.gameplay {
+            let same = g.images.len() == self.ui_editor.images.len()
+                && g.images
+                    .iter()
+                    .zip(&self.ui_editor.images)
+                    .all(|((a, x), (b, y))| a == b && x.key == y.key);
+            if !same {
+                self.ui_editor.images = g.images.clone();
+            }
+            if g.fonts.len() != self.ui_editor.fonts.len()
+                || g.fonts
+                    .iter()
+                    .zip(&self.ui_editor.fonts)
+                    .any(|((a, x), (b, y))| a != b || x.family != y.family)
+            {
+                self.ui_editor.fonts = g.fonts.clone();
+            }
+        }
         self.poll_look();
         let text_focused = ctx
             .memory(|memory| memory.focused())

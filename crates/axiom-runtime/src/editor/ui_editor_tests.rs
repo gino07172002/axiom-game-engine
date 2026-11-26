@@ -578,3 +578,101 @@ fn template_instances_draw_but_are_not_selectable_on_the_canvas() {
     );
     assert!(h.editor.rects.contains_key("ui_canvas:affection"));
 }
+
+/// Plan M7 (demo step 7): drag the dialog panel and resize it from its edge handle on the
+/// canvas; each release writes one revision equal to the ACL `ui panel` line, positions snap
+/// to 8 reference pixels, and nothing is written while the pointer is held.
+#[test]
+fn dragging_and_resizing_a_panel_on_the_canvas_matches_acl() {
+    let start = town();
+    let mut h = Harness::new(start.clone());
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let view = h.rect("ui_editor:view");
+    let fit = view.width() / 1280.0; // the town reference is 1280x720 = the default canvas
+    let drag = |h: &mut Harness, from: Pos2, by: egui::Vec2| -> Vec<Action> {
+        assert!(h
+            .frame(vec![Event::PointerMoved(from), press(from, true)])
+            .is_empty());
+        for step in 1..=8 {
+            let p = from + by * (step as f32 / 8.0);
+            assert!(
+                h.frame(vec![Event::PointerMoved(p)]).is_empty(),
+                "no write while held"
+            );
+        }
+        h.frame(vec![press(from + by, false)])
+    };
+    // Move: (+40, -40) document pixels from the dialog's centre; at=0,-14 -> 40,-54 -> snapped.
+    let dialog = h.rect("ui_panel:dialog");
+    let moved = drag(&mut h, dialog.center(), vec2(40.0, -40.0) * fit);
+    h.commit(moved);
+    assert_eq!(h.editor.ui_editor.selected_panel.as_deref(), Some("dialog"));
+    let step1 = acl(
+        &start,
+        "ui panel dialog bottom at=40,-56 width=900 style=dialog widgets=speaker,line,choices",
+    );
+    assert_eq!(h.world(), step1);
+    // Resize from the right handle (+30 px): a centred panel grows on both sides, 900 -> 960.
+    h.frame(vec![]);
+    let handle = h.rect("ui_panel_handle:dialog");
+    let resized = drag(&mut h, handle.center(), vec2(30.0, 0.0) * fit);
+    h.commit(resized);
+    assert_eq!(
+        h.world(),
+        acl(
+            &step1,
+            "ui panel dialog bottom at=40,-56 width=960 style=dialog widgets=speaker,line,choices",
+        )
+    );
+}
+
+/// Plan M7: the selected panel's style (padding / corner steps) and its frame's nine-slice
+/// margins (guides dragged on the frame image) edit through the same ops as ACL, one
+/// revision per click / release.
+#[test]
+fn panel_style_steps_and_nine_slice_guides_match_acl() {
+    let start = town();
+    let mut h = Harness::new(start.clone());
+    h.frame(vec![]);
+    h.frame(vec![]);
+    // A click (no movement) selects the panel and writes nothing.
+    let at = h.rect("ui_panel:dialog").center();
+    assert!(h
+        .frame(vec![Event::PointerMoved(at), press(at, true)])
+        .is_empty());
+    assert!(h.frame(vec![press(at, false)]).is_empty());
+    h.frame(vec![]);
+    assert_eq!(h.editor.ui_editor.selected_panel.as_deref(), Some("dialog"));
+    // Left guide 32 -> 40 source pixels (the guides are only grabbed where the panel shows
+    // them: a press outside the visible part of the scrolling panel is ignored).
+    h.frame(vec![]);
+    let zoom = h.rect("ui_slice:box").width() / 96.0;
+    let from = h.rect("ui_slice:left").center();
+    let to = from + vec2(8.0 * zoom, 0.0);
+    assert!(h
+        .frame(vec![Event::PointerMoved(from), press(from, true)])
+        .is_empty());
+    for step in 1..=6 {
+        let p = from + (to - from) * (step as f32 / 6.0);
+        assert!(
+            h.frame(vec![Event::PointerMoved(p)]).is_empty(),
+            "no write while held"
+        );
+    }
+    assert!(
+        h.shows("slice 40 32 32 32"),
+        "the guide follows the pointer"
+    );
+    let released = h.frame(vec![press(to, false)]);
+    h.commit(released);
+    let step1 = acl(&start, "ui frame dialog dialog 40 32 32 32");
+    assert_eq!(h.world(), step1);
+    // Padding + (26 -> 28).
+    let padded = h.click("ui_style:padding:+");
+    h.commit(padded);
+    assert_eq!(
+        h.world(),
+        acl(&step1, "ui panelstyle dialog padding=28 frame=dialog")
+    );
+}

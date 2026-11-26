@@ -80,8 +80,55 @@ pub(crate) struct UiEditorState {
     /// Widget draft: (widget ID, its value when the form loaded, the edited value).
     widget_draft: Option<(String, Value, Value)>,
     canvas: crate::ui::UiState,
+    /// Selected root panel (plan M7), and a panel move / resize in progress.
+    pub selected_panel: Option<String>,
+    panel_drag: Option<PanelDrag>,
+    /// The runtime's decoded UI images, shared with the preview (`Editor::draw`).
+    pub(super) images: BTreeMap<String, std::sync::Arc<crate::bound_ui::PreparedImage>>,
+    /// The runtime's checked content fonts, shared with the preview the same way.
+    pub(super) fonts: BTreeMap<String, std::sync::Arc<crate::bound_ui::PreparedFont>>,
+    /// Nine-slice margins being dragged in the frame editor: (frame ID, edge 0..4, margins).
+    slice_drag: Option<(String, usize, [u16; 4])>,
     /// Times the preview was rebuilt (tests: not per frame).
     pub builds: usize,
+}
+
+/// A panel being moved (no `resize`) or resized from its edge handle on the canvas: written
+/// once, on release, as one `ui panel` revision (plan M7).
+#[derive(Clone, Copy)]
+struct PanelDrag {
+    /// Index in `ui.document.panels` (authored root panels only).
+    index: usize,
+    /// Width change per pointer x unit: 1 (right handle), -1 (left), 2 (centred panel).
+    resize: Option<f32>,
+    origin: Pos2,
+    now: Pos2,
+    /// The panel's width on screen when the drag started (auto-width panels).
+    width: f32,
+}
+
+/// Panel placement snaps to this many reference pixels.
+pub(crate) const SNAP: f32 = 8.0;
+fn snap(v: f32) -> f32 {
+    (v / SNAP).round() * SNAP
+}
+
+/// The edge handle that resizes a panel anchored at `anchor`: the edge away from the anchor
+/// (the right edge of centred panels), and how much the width changes per x unit.
+fn resize_handle(r: Rect, anchor: axiom_core::gameplay::Region) -> (Rect, f32) {
+    use axiom_core::gameplay::Region as R;
+    let (x, k) = match anchor {
+        R::TopLeft | R::Left | R::BottomLeft => (r.right(), 1.0),
+        R::TopRight | R::Right | R::BottomRight => (r.left(), -1.0),
+        _ => (r.right(), 2.0),
+    };
+    (
+        Rect::from_center_size(
+            Pos2::new(x, r.center().y),
+            Vec2::new(10.0, (r.height() * 0.5).clamp(16.0, 60.0)),
+        ),
+        k,
+    )
 }
 
 struct Preview {
@@ -553,6 +600,26 @@ impl Editor {
                 return;
             }
         };
+        // Content fonts the document names that the runtime has read (same path).
+        for (id, font) in doc.theme.iter().flat_map(|t| &t.fonts) {
+            if let Some(f) = st.fonts.get(id).filter(|f| f.path == font.path) {
+                if g.fonts.get(id).is_none_or(|have| have.family != f.family) {
+                    g.fonts.insert(id.clone(), f.clone());
+                }
+            }
+        }
+        // Images the document names that the runtime has decoded (same path => same image).
+        for (id, path) in &doc.images {
+            if let Some(image) = st
+                .images
+                .get(id)
+                .filter(|p| p.key.starts_with(path.as_str()))
+            {
+                if g.images.get(id).is_none_or(|have| have.key != image.key) {
+                    g.images.insert(id.clone(), image.clone());
+                }
+            }
+        }
         if st
             .selected
             .as_ref()
@@ -867,6 +934,188 @@ impl Editor {
                 i.pointer.interact_pos(),
             )
         });
+        // Panels (plan M7): authored root panels on the canvas. A press on one (or on a widget
+        // inside it) moves it, a press on the selected panel's edge handle resizes it; both
+        // snap to SNAP reference pixels and write one revision on release.
+        let compiled_doc = g.compiled.ui.as_ref();
+        let ui_scale = compiled_doc
+            .and_then(|d| d.theme.as_ref())
+            .map_or(1.0, |t| t.scale_factor([size.x, size.y]));
+        let per_ref = canvas.width() / size.x * ui_scale;
+        let panel_rects: Vec<(usize, Rect)> = st
+            .canvas
+            .layout
+            .panels
+            .iter()
+            .copied()
+            .filter(|(i, _)| {
+                doc.panels.get(*i).is_some_and(|p| {
+                    compiled_doc.is_some_and(|c| c.panels.get(*i).is_some_and(|q| q.id == p.id))
+                        && !doc.panels.iter().any(|o| o.children.contains(&p.id))
+                })
+            })
+            .collect();
+        for (i, r) in &panel_rects {
+            self.rects
+                .insert(format!("ui_panel:{}", doc.panels[*i].id), *r);
+            if st.selected_panel.as_deref() == Some(doc.panels[*i].id.as_str()) {
+                let (h, _) = resize_handle(*r, doc.panels[*i].anchor);
+                self.rects
+                    .insert(format!("ui_panel_handle:{}", doc.panels[*i].id), h);
+            }
+        }
+        let panel_at = |p: Pos2| {
+            panel_rects
+                .iter()
+                .rev()
+                .find(|(_, r)| r.contains(p))
+                .copied()
+        };
+        let mut panel_press = None;
+        if pressed && !st.panning {
+            if let Some(p) = pos.filter(|p| canvas.contains(*p) && on_view(*p)) {
+                let selected = panel_rects.iter().find(|(i, _)| {
+                    st.selected_panel.as_deref() == Some(doc.panels[*i].id.as_str())
+                });
+                let handle = selected.and_then(|&(i, r)| {
+                    let (h, k) = resize_handle(r, doc.panels[i].anchor);
+                    h.expand(3.0).contains(p).then_some((i, r, Some(k)))
+                });
+                let widget_in_panel = rects
+                    .iter()
+                    .rev()
+                    .find(|(_, r)| r.contains(p))
+                    .filter(|(w, _)| {
+                        doc.panels
+                            .iter()
+                            .any(|q| q.children.iter().any(|c| c == doc.widgets[*w].id()))
+                    })
+                    .map(|(w, _)| *w);
+                let grabbed = handle.or_else(|| {
+                    let on_widget = rects.iter().any(|(_, r)| r.contains(p));
+                    (widget_in_panel.is_some() || !on_widget)
+                        .then(|| panel_at(p).map(|(i, r)| (i, r, None)))
+                        .flatten()
+                });
+                if let Some((i, r, resize)) = grabbed {
+                    panel_press = Some(PanelDrag {
+                        index: i,
+                        resize,
+                        origin: p,
+                        now: p,
+                        width: r.width(),
+                    });
+                    st.selected_panel = Some(doc.panels[i].id.clone());
+                    if let Some(w) = widget_in_panel {
+                        let id = doc.widgets[w].id().to_owned();
+                        if st.selected.as_deref() != Some(&id) {
+                            self.ui_flush(st, doc, actions);
+                            st.effect = None;
+                        }
+                        st.selected = Some(id);
+                    }
+                }
+            }
+        }
+        if let Some(d) = panel_press {
+            st.panel_drag = Some(d);
+        }
+        if let (Some(d), Some(p), true) = (&mut st.panel_drag, pos, down) {
+            d.now = p;
+        }
+        // The panel as it would be written now (snapped), while one is held.
+        let edited = st.panel_drag.and_then(|d| {
+            let before = doc.panels.get(d.index)?;
+            let delta = (d.now - d.origin) / per_ref;
+            let mut after = before.clone();
+            match d.resize {
+                None => {
+                    after.offset = [
+                        snap(before.offset[0] + delta.x),
+                        snap(before.offset[1] + delta.y),
+                    ];
+                }
+                Some(k) => {
+                    let width = before
+                        .width
+                        .map_or(d.width / per_ref, |l| l.resolve(size.x / ui_scale));
+                    after.width = Some(axiom_core::ui_theme::Length::Px(
+                        snap(width + k * delta.x).clamp(16.0, 4096.0),
+                    ));
+                }
+            }
+            Some((d, after))
+        });
+        if let Some((d, after)) = &edited {
+            if let Some((_, r)) = panel_rects.iter().find(|(i, _)| *i == d.index) {
+                let before = &doc.panels[d.index];
+                let moved = Vec2::new(
+                    after.offset[0] - before.offset[0],
+                    after.offset[1] - before.offset[1],
+                ) * per_ref;
+                let grow = match (after.width, before.width) {
+                    (Some(a), b) => {
+                        a.resolve(1.0) * per_ref
+                            - b.map_or(r.width(), |b| b.resolve(size.x / ui_scale) * per_ref)
+                    }
+                    _ => 0.0,
+                };
+                let ghost = match d.resize {
+                    Some(k) if k < 0.0 => Rect::from_min_max(r.min - Vec2::new(grow, 0.0), r.max),
+                    Some(k) if k > 1.5 => r.expand2(Vec2::new(grow / 2.0, 0.0)),
+                    Some(_) => Rect::from_min_max(r.min, r.max + Vec2::new(grow, 0.0)),
+                    None => r.translate(moved),
+                };
+                overlay.rect_stroke(
+                    ghost,
+                    4.0,
+                    Stroke::new(2.0_f32, ACCENT),
+                    egui::StrokeKind::Outside,
+                );
+                caption_at(
+                    &overlay,
+                    ghost.left_top() + Vec2::new(0.0, -18.0),
+                    &match d.resize {
+                        None => format!(
+                            "{} at={:.0},{:.0}",
+                            after.id, after.offset[0], after.offset[1]
+                        ),
+                        Some(_) => format!(
+                            "{} width={:.0}",
+                            after.id,
+                            after.width.map_or(0.0, |w| w.resolve(1.0))
+                        ),
+                    },
+                );
+                ui.ctx().request_repaint();
+            }
+        }
+        if released || !down {
+            if let Some((d, after)) = edited.filter(|_| released) {
+                if after != doc.panels[d.index] && (d.now - d.origin).length() > 3.0 {
+                    let id = after.id.clone();
+                    actions.extend(
+                        self.op_write(ops::set_ui_panel(&self.world, &id, Some(after)), None),
+                    );
+                }
+            }
+            st.panel_drag = None;
+        }
+        // Outline and handle of the selected panel.
+        if let Some((i, r)) = panel_rects
+            .iter()
+            .find(|(i, _)| st.selected_panel.as_deref() == Some(doc.panels[*i].id.as_str()))
+        {
+            overlay.rect_stroke(
+                r.expand(3.0),
+                4.0,
+                Stroke::new(1.0_f32, ACCENT),
+                egui::StrokeKind::Outside,
+            );
+            let (h, _) = resize_handle(*r, doc.panels[*i].anchor);
+            overlay.rect_filled(h, 3.0, ACCENT);
+        }
+        let panel_held = st.panel_drag.is_some() || panel_press.is_some();
         let hit = |p: Pos2| {
             rects
                 .iter()
@@ -876,7 +1125,7 @@ impl Editor {
         };
         // Only presses that land on the visible canvas (not on a menu or popup above it).
         let on_canvas = |p: Pos2| canvas.contains(p) && on_view(p);
-        if pressed && !st.panning {
+        if pressed && !st.panning && !panel_held {
             st.press = pos
                 .filter(|p| on_canvas(*p))
                 .and_then(|p| hit(p).map(|id| (id, p)));
@@ -960,8 +1209,13 @@ impl Editor {
         if let Some((id, to)) = place {
             actions.extend(self.ui_place(&id, Some(to)));
         }
-        // Element panel.
+        // Element panel. The selected panel's section (plan M7) is pinned above the scrolling
+        // widget section, so its guides and steps stay where they were after each revision.
         let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(panel));
+        if st.selected_panel.is_some() {
+            self.ui_panel_section(&mut panel_ui, st, doc, g, actions);
+            panel_ui.separator();
+        }
         egui::ScrollArea::vertical()
             .id_salt("ui_editor_panel")
             .auto_shrink([false, false])
@@ -969,6 +1223,231 @@ impl Editor {
                 self.ui_element_panel(ui, st, doc, g, actions);
             });
         ui.advance_cursor_after_rect(area);
+    }
+
+    /// The selected panel (plan M7): where it is, its style's padding and corner (one
+    /// revision per click), and the nine-slice margins of the style's frame, dragged on the
+    /// frame image (one revision per release). All through the same ops as ACL.
+    fn ui_panel_section(
+        &mut self,
+        ui: &mut Ui,
+        st: &mut UiEditorState,
+        doc: &UiDocument,
+        g: &Gameplay,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(panel) = st
+            .selected_panel
+            .as_ref()
+            .and_then(|id| doc.panels.iter().find(|p| &p.id == id))
+            .cloned()
+        else {
+            st.selected_panel = None;
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("Panel {}", panel.id))
+                    .strong()
+                    .color(ACCENT),
+            );
+            caption(
+                ui,
+                format!(
+                    "{} at={:.0},{:.0}{}",
+                    ops::region_name(panel.anchor),
+                    panel.offset[0],
+                    panel.offset[1],
+                    panel.width.map_or(String::new(), |w| format!(
+                        " width={}",
+                        serde_json::json!(w)
+                    ))
+                ),
+            );
+            if ui.small_button("Deselect").clicked() {
+                st.selected_panel = None;
+            }
+        });
+        caption(
+            ui,
+            format!("Drag on the canvas to move, the edge handle to resize ({SNAP:.0} px snap)."),
+        );
+        let theme = doc.theme.as_ref();
+        let Some((class, style)) = panel.style.as_ref().and_then(|c| {
+            theme
+                .and_then(|t| t.panel.get(c))
+                .map(|s| (c.clone(), s.clone()))
+        }) else {
+            caption(
+                ui,
+                "No panel style (ACL ui panelstyle, then ui panel .. style=CLASS).",
+            );
+            return;
+        };
+        ui.label(RichText::new(format!("Style {class}")).strong());
+        let mut changed = None;
+        for (field, value, step, max) in [
+            ("padding", style.padding.unwrap_or(10.0), 2.0, 128.0),
+            ("corner", style.corner.unwrap_or(0.0), 1.0, 64.0),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(format!("{field} {value:.0}"));
+                for (sign, label) in [(-1.0, "-"), (1.0, "+")] {
+                    let r = ui.small_button(label);
+                    self.rects
+                        .insert(format!("ui_style:{field}:{label}"), r.rect);
+                    if r.clicked() {
+                        let v = (value + sign * step).clamp(0.0, max);
+                        let mut s = style.clone();
+                        match field {
+                            "padding" => s.padding = Some(v),
+                            _ => s.corner = Some(v),
+                        }
+                        changed = Some(s);
+                    }
+                }
+            });
+        }
+        if let Some(s) = changed {
+            actions
+                .extend(self.op_write(ops::set_ui_panel_style(&self.world, &class, Some(s)), None));
+        }
+        // Nine-slice margins of the style's frame, dragged on the frame image.
+        let Some((fid, frame)) = style.frame.as_ref().and_then(|f| {
+            theme
+                .and_then(|t| t.frames.get(f))
+                .map(|fr| (f.clone(), fr.clone()))
+        }) else {
+            return;
+        };
+        let Some(image) = g.images.get(&frame.image) else {
+            caption(
+                ui,
+                format!("Frame {fid}: image {} is not loaded", frame.image),
+            );
+            return;
+        };
+        ui.label(
+            RichText::new(format!(
+                "Frame {fid} (drag the guides: left, top, right, bottom)"
+            ))
+            .strong(),
+        );
+        let texture = st
+            .canvas
+            .textures
+            .entry(image.key.clone())
+            .or_insert_with(|| {
+                ui.ctx().load_texture(
+                    &image.key,
+                    image.image.clone(),
+                    egui::TextureOptions::NEAREST,
+                )
+            })
+            .id();
+        let [w, h] = image.image.size.map(|v| v.max(1) as f32);
+        let zoom = (200.0 / w).min(200.0 / h).max(0.25);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h) * zoom, egui::Sense::hover());
+        self.rects.insert("ui_slice:box".into(), rect);
+        let painter = ui.painter_at(rect.expand(4.0));
+        painter.image(
+            texture,
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        let held = st.slice_drag.as_ref().filter(|(f, ..)| f == &fid);
+        let mut slice = held.map_or(frame.slice, |(_, _, s)| *s);
+        // Guide k: 0 left, 1 top, 2 right, 3 bottom (pixels from that edge of the image).
+        let guide = |k: usize, s: [u16; 4]| -> Rect {
+            let v = s[k] as f32 * zoom;
+            match k {
+                0 => Rect::from_x_y_ranges(
+                    rect.left() + v - 3.0..=rect.left() + v + 3.0,
+                    rect.y_range(),
+                ),
+                1 => Rect::from_x_y_ranges(
+                    rect.x_range(),
+                    rect.top() + v - 3.0..=rect.top() + v + 3.0,
+                ),
+                2 => Rect::from_x_y_ranges(
+                    rect.right() - v - 3.0..=rect.right() - v + 3.0,
+                    rect.y_range(),
+                ),
+                _ => Rect::from_x_y_ranges(
+                    rect.x_range(),
+                    rect.bottom() - v - 3.0..=rect.bottom() - v + 3.0,
+                ),
+            }
+        };
+        // Raw pointer (like the canvas): a press on a guide grabs it, the held pointer moves
+        // it, the release writes one revision. Widgets in the scrolling panel never see it.
+        let (pressed, released, down, pos) = ui.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.pointer.primary_down(),
+                i.pointer.interact_pos(),
+            )
+        });
+        let visible = ui.clip_rect();
+        if pressed {
+            if let Some(p) = pos.filter(|p| visible.contains(*p)) {
+                if let Some(k) = (0..4).find(|&k| guide(k, slice).expand(2.0).contains(p)) {
+                    st.slice_drag = Some((fid.clone(), k, slice));
+                }
+            }
+        }
+        let mut release = None;
+        if let (Some((f, k, s)), Some(p)) = (st.slice_drag.as_mut(), pos) {
+            if *f == fid && (down || released) {
+                let pixels = match *k {
+                    0 => (p.x - rect.left()) / zoom,
+                    1 => (p.y - rect.top()) / zoom,
+                    2 => (rect.right() - p.x) / zoom,
+                    _ => (rect.bottom() - p.y) / zoom,
+                };
+                let limit = if *k % 2 == 0 { w } else { h };
+                s[*k] = pixels.round().clamp(0.0, limit) as u16;
+                slice = *s;
+                if released {
+                    release = Some(slice);
+                }
+            }
+        }
+        if !down && !released {
+            st.slice_drag = None;
+        }
+        for (k, name) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
+            self.rects
+                .insert(format!("ui_slice:{name}"), guide(k, slice));
+            let line = guide(k, slice).center();
+            let stroke = Stroke::new(1.5_f32, ACCENT);
+            if k % 2 == 0 {
+                painter.vline(line.x, rect.y_range(), stroke);
+            } else {
+                painter.hline(rect.x_range(), line.y, stroke);
+            }
+        }
+        caption(
+            ui,
+            format!(
+                "slice {} {} {} {} px",
+                slice[0], slice[1], slice[2], slice[3]
+            ),
+        );
+        if let Some(s) = release {
+            st.slice_drag = None;
+            if s != frame.slice {
+                let edited = axiom_core::ui_theme::UiFrame {
+                    slice: s,
+                    ..frame.clone()
+                };
+                actions.extend(
+                    self.op_write(ops::set_ui_frame(&self.world, &fid, Some(edited)), None),
+                );
+            }
+        }
     }
 
     fn ui_element_panel(
@@ -989,10 +1468,14 @@ impl Editor {
             ui.add_space(6.0);
             ui.label(RichText::new("Widgets").strong());
             for w in &doc.widgets {
-                let place = doc
-                    .regions
-                    .get(w.id())
-                    .map_or("(bottom panel)".to_owned(), |r| ops::region_name(*r));
+                let place = match doc.regions.get(w.id()) {
+                    Some(r) => ops::region_name(*r),
+                    None => doc
+                        .panels
+                        .iter()
+                        .find(|p| p.children.iter().any(|c| c == w.id()))
+                        .map_or("(bottom panel)".to_owned(), |p| format!("panel {}", p.id)),
+                };
                 let r = ui.selectable_label(false, format!("{}  {}  {place}", w.id(), kind_of(w)));
                 self.rects.insert(format!("ui_widget:{}", w.id()), r.rect);
                 if r.clicked() {

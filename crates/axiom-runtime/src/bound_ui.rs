@@ -10,6 +10,8 @@ use egui::{Color32, RichText, Vec2};
 /// A content font (plan M4): bytes read and parsed off the main thread, and the egui family
 /// it is installed under (`ui:ID:FINGERPRINT`, so a changed file installs as a new family).
 pub struct PreparedFont {
+    /// The file it was read from (the editor preview reuses it for the same path).
+    pub path: String,
     pub bytes: std::sync::Arc<Vec<u8>>,
     pub family: egui::FontFamily,
 }
@@ -62,6 +64,7 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
         g.fonts.insert(
             id.clone(),
             std::sync::Arc::new(PreparedFont {
+                path: font.path.clone(),
                 bytes: std::sync::Arc::new(raw),
                 family: egui::FontFamily::Name(format!("ui:{id}:{fingerprint:x}").into()),
             }),
@@ -95,7 +98,8 @@ fn ensure_fonts(ctx: &egui::Context, g: &Gameplay) -> bool {
     if asked.is_some_and(|at| pass < at + 2) {
         return false;
     }
-    let mut defs = crate::ui::base_fonts().cloned().unwrap_or_default();
+    // On top of the context's current fonts (the game's base fonts, or the editor's own).
+    let mut defs = ctx.fonts(|f| f.lock().fonts.definitions().clone());
     let fallback = defs
         .families
         .get(&egui::FontFamily::Proportional)
@@ -435,6 +439,7 @@ pub fn draw_canvas(
     let mut rects = vec![];
     state.targets.clear();
     state.fonts_ready = ensure_fonts(ctx, g);
+    state.layout.clear(screen, 1.0);
     let mut surface = Surface {
         area: Some(screen),
         top,
@@ -509,6 +514,10 @@ pub fn draw_canvas(
         ctx.set_transform_layer(egui::LayerId::new(egui::Order::Middle, id), transform);
     }
     for (_, r) in &mut rects {
+        *r = transform.mul_rect(*r);
+    }
+    // Panel rects in screen space too (the editor drags and resizes panels).
+    for (_, r) in &mut state.layout.panels {
         *r = transform.mul_rect(*r);
     }
     rects
@@ -1274,12 +1283,13 @@ fn draw_panels(
             ctx.move_to_top(panel_layer(s.salt, &doc.panels[i].id));
         }
     }
+    // Panel rects: the game's `ui_layout`, and the editor canvas's drag targets (plan M7).
+    state
+        .layout
+        .panels
+        .extend(panels.iter().map(|&(i, r)| (i, ui_t.mul_rect(r))));
     if s.area.is_none() {
         state.layout.scale = scale;
-        state
-            .layout
-            .panels
-            .extend(panels.iter().map(|&(i, r)| (i, ui_t.mul_rect(r))));
         state
             .layout
             .widgets
