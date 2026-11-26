@@ -530,35 +530,46 @@ fn draw_widgets(
                     }
                     _ => g.bound_text(binding),
                 };
-                let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
-                let (size, color, strong) = text_look(style.copied(), binding);
-                if flow {
-                    let width = ui
-                        .painter()
-                        .layout_no_wrap(
-                            text.clone(),
-                            egui::FontId::proportional(size),
-                            ui.visuals().text_color(),
-                        )
-                        .size()
-                        .x;
-                    if width > ui.available_size_before_wrap().x {
+                if let Some(class) = text_class(g, id) {
+                    drawn = Some(
+                        ui.push_id(id, |ui| {
+                            with_effects(ui, visual, |ui| {
+                                themed_text(ui, text, class);
+                            })
+                        })
+                        .inner,
+                    );
+                } else {
+                    let style = g.compiled.ui.as_ref().and_then(|d| d.styles.get(id));
+                    let (size, color, strong) = text_look(style.copied(), binding);
+                    if flow {
+                        let width = ui
+                            .painter()
+                            .layout_no_wrap(
+                                text.clone(),
+                                egui::FontId::proportional(size),
+                                ui.visuals().text_color(),
+                            )
+                            .size()
+                            .x;
+                        if width > ui.available_size_before_wrap().x {
+                            ui.end_row();
+                        }
+                    }
+                    if matches!(style, Some(TextStyle::Banner)) && flow {
                         ui.end_row();
                     }
-                }
-                if matches!(style, Some(TextStyle::Banner)) && flow {
-                    ui.end_row();
-                }
-                drawn = Some(
-                    ui.push_id(id, |ui| {
-                        with_effects(ui, visual, |ui| {
-                            ui.add(egui::Label::new(styled(text, size, color, strong)).wrap());
+                    drawn = Some(
+                        ui.push_id(id, |ui| {
+                            with_effects(ui, visual, |ui| {
+                                ui.add(egui::Label::new(styled(text, size, color, strong)).wrap());
+                            })
                         })
-                    })
-                    .inner,
-                );
-                if matches!(style, Some(TextStyle::Value)) && flow {
-                    ui.add_space(10.0);
+                        .inner,
+                    );
+                    if matches!(style, Some(TextStyle::Value)) && flow {
+                        ui.add_space(10.0);
+                    }
                 }
             }
             BoundWidget::Button(id, text, command, when) if visual.forced || g.test(when) => {
@@ -578,11 +589,16 @@ fn draw_widgets(
                 drawn = Some(
                     ui.push_id(id, |ui| {
                         with_effects(ui, visual, |ui| {
-                            let response = ui.add_enabled(
-                                state.playing && !state.console,
-                                egui::Button::new(text)
-                                    .min_size(Vec2::new(if flow { 0.0 } else { 220.0 }, 32.0)),
-                            );
+                            let enabled = state.playing && !state.console;
+                            let min = Vec2::new(if flow { 0.0 } else { 220.0 }, 32.0);
+                            let response = match button_class(g, id) {
+                                Some(class) => {
+                                    themed_button(ui, g, state, text, class, enabled, min)
+                                }
+                                None => {
+                                    ui.add_enabled(enabled, egui::Button::new(text).min_size(min))
+                                }
+                            };
                             // Kept on screen only by an exit effect: shown, not usable.
                             if g.test(when) {
                                 state.targets.insert(format!("button/{id}"), response.rect);
@@ -816,7 +832,9 @@ pub(crate) fn nine_slice(
     tex: egui::TextureId,
     size: [usize; 2],
     slice: [u16; 4],
+    center: axiom_core::ui_theme::FrameCenter,
 ) -> egui::epaint::Mesh {
+    use axiom_core::ui_theme::FrameCenter;
     let [w, h] = [size[0].max(1) as f32, size[1].max(1) as f32];
     let [l, t, r, b] = slice.map(f32::from);
     // Margins on screen: the source pixels, shrunk if the rect cannot fit both sides.
@@ -837,21 +855,52 @@ pub(crate) fn nine_slice(
     let us = [0.0, (l / w).min(1.0), (1.0 - r / w).max(0.0), 1.0];
     let vs = [0.0, (t / h).min(1.0), (1.0 - b / h).max(0.0), 1.0];
     let mut mesh = egui::epaint::Mesh::with_texture(tex);
+    let uv = |i: usize, j: usize| {
+        egui::Rect::from_min_max(egui::pos2(us[i], vs[j]), egui::pos2(us[i + 1], vs[j + 1]))
+    };
     for j in 0..3 {
         for i in 0..3 {
             let quad = egui::Rect::from_min_max(
                 egui::pos2(xs[i], ys[j]),
                 egui::pos2(xs[i + 1], ys[j + 1]),
             );
-            if quad.width() > 0.0 && quad.height() > 0.0 {
-                mesh.add_rect_with_uv(
-                    quad,
-                    egui::Rect::from_min_max(
-                        egui::pos2(us[i], vs[j]),
-                        egui::pos2(us[i + 1], vs[j + 1]),
-                    ),
-                    Color32::WHITE,
-                );
+            if quad.width() <= 0.0 || quad.height() <= 0.0 {
+                continue;
+            }
+            if (i, j) != (1, 1) {
+                mesh.add_rect_with_uv(quad, uv(i, j), Color32::WHITE);
+                continue;
+            }
+            // The centre: stretched, left empty, or tiled at its source size.
+            let tile = egui::vec2(w - l - r, h - t - b);
+            let count =
+                (quad.width() / tile.x.max(1.0)).ceil() * (quad.height() / tile.y.max(1.0)).ceil();
+            match center {
+                FrameCenter::Hidden => {}
+                FrameCenter::Tile if tile.x >= 1.0 && tile.y >= 1.0 && count <= 1024.0 => {
+                    let mut y = quad.top();
+                    while y < quad.bottom() {
+                        let th = tile.y.min(quad.bottom() - y);
+                        let mut x = quad.left();
+                        while x < quad.right() {
+                            let tw = tile.x.min(quad.right() - x);
+                            let cell = uv(1, 1);
+                            let part = egui::Rect::from_min_size(
+                                cell.min,
+                                egui::vec2(cell.width() * tw / tile.x, cell.height() * th / tile.y),
+                            );
+                            mesh.add_rect_with_uv(
+                                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(tw, th)),
+                                part,
+                                Color32::WHITE,
+                            );
+                            x += tw;
+                        }
+                        y += th;
+                    }
+                }
+                // Stretch, or a tile too small / too many to draw (budget: 1024 tiles).
+                _ => mesh.add_rect_with_uv(quad, uv(1, 1), Color32::WHITE),
             }
         }
     }
@@ -952,7 +1001,9 @@ fn draw_panels(
                 ));
             }
             if let (Some(f), Some((tex, size))) = (frame, texture) {
-                background.push(egui::Shape::mesh(nine_slice(rect, tex, size, f.slice)));
+                background.push(egui::Shape::mesh(nine_slice(
+                    rect, tex, size, f.slice, f.center,
+                )));
             }
             ui.painter().set(slot, egui::Shape::Vec(background));
         });
@@ -976,7 +1027,13 @@ mod panel_tests {
     #[test]
     fn nine_slice_keeps_corner_pixels_and_maps_the_slice_uvs() {
         let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(600.0, 200.0));
-        let m = nine_slice(rect, egui::TextureId::Managed(7), [96, 96], [32, 24, 16, 8]);
+        let m = nine_slice(
+            rect,
+            egui::TextureId::Managed(7),
+            [96, 96],
+            [32, 24, 16, 8],
+            Default::default(),
+        );
         assert_eq!(m.vertices.len(), 36);
         let (xs, us) = bounds(&m);
         assert_eq!(
@@ -996,10 +1053,213 @@ mod panel_tests {
             egui::TextureId::Managed(1),
             [96, 96],
             [32, 32, 32, 32],
+            Default::default(),
         );
         let (xs, _) = bounds(&m);
         // 64 px of corners in 32 px: halved, and the empty middle column is skipped.
         assert_eq!(xs, [0.0, 16.0, 32.0]);
         assert!(m.vertices.iter().all(|v| v.pos.x >= 0.0 && v.pos.x <= 32.0));
     }
+}
+
+#[cfg(test)]
+mod frame_center_tests {
+    use super::*;
+    use axiom_core::ui_theme::FrameCenter;
+
+    #[test]
+    fn a_hidden_centre_draws_only_the_border() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 200.0));
+        let m = nine_slice(
+            rect,
+            egui::TextureId::Managed(1),
+            [96, 96],
+            [32; 4],
+            FrameCenter::Hidden,
+        );
+        assert_eq!(m.vertices.len(), 8 * 4, "8 border quads");
+        let inside = egui::Rect::from_min_max(egui::pos2(33.0, 33.0), egui::pos2(267.0, 167.0));
+        assert!(m.vertices.iter().all(|v| !inside.contains(v.pos)));
+    }
+
+    #[test]
+    fn a_tiled_centre_repeats_the_source_centre_with_partial_edge_tiles() {
+        // Centre 236 x 136 px, source centre 32 x 32 px: 8 x 5 tiles (last ones partial).
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 200.0));
+        let m = nine_slice(
+            rect,
+            egui::TextureId::Managed(1),
+            [96, 96],
+            [32; 4],
+            FrameCenter::Tile,
+        );
+        assert_eq!(m.vertices.len(), (8 + 8 * 5) * 4);
+        // The last column maps only 12 of the 32 source pixels (only a tile can).
+        let uv_w: Vec<f32> = m
+            .vertices
+            .chunks(4)
+            .map(|q| {
+                q.iter().map(|v| v.uv.x).fold(f32::MIN, f32::max)
+                    - q.iter().map(|v| v.uv.x).fold(f32::MAX, f32::min)
+            })
+            .collect();
+        assert!(uv_w
+            .iter()
+            .any(|w| (w - (236.0 - 7.0 * 32.0) / 96.0).abs() < 1e-5));
+    }
+
+    #[test]
+    fn a_tiled_centre_over_budget_falls_back_to_one_stretched_quad() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(4000.0, 4000.0));
+        let m = nine_slice(
+            rect,
+            egui::TextureId::Managed(1),
+            [66, 66],
+            [32; 4],
+            FrameCenter::Tile,
+        );
+        assert_eq!(
+            m.vertices.len(),
+            9 * 4,
+            "2 px tiles would be 3.9M quads: stretched instead"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Theme classes (plan M2): text classes and button classes with per-state looks.
+// ---------------------------------------------------------------------------------------
+
+fn rgba(c: [u8; 4]) -> Color32 {
+    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+}
+
+/// A theme frame and its texture (the same cache as image widgets and panels).
+fn frame_texture<'a>(
+    ctx: &egui::Context,
+    g: &'a Gameplay,
+    state: &mut UiState,
+    id: &str,
+) -> Option<(
+    &'a axiom_core::ui_theme::UiFrame,
+    egui::TextureId,
+    [usize; 2],
+)> {
+    let frame = g.compiled.ui.as_ref()?.theme.as_ref()?.frames.get(id)?;
+    let p = g.images.get(&frame.image)?;
+    let texture = state
+        .textures
+        .entry(p.key.clone())
+        .or_insert_with(|| ctx.load_texture(&p.key, p.image.clone(), egui::TextureOptions::LINEAR));
+    Some((frame, texture.id(), p.image.size))
+}
+
+fn text_class<'a>(g: &'a Gameplay, id: &str) -> Option<&'a axiom_core::ui_theme::TextClass> {
+    let doc = g.compiled.ui.as_ref()?;
+    doc.theme.as_ref()?.text.get(doc.classes.get(id)?)
+}
+
+fn button_class<'a>(g: &'a Gameplay, id: &str) -> Option<&'a axiom_core::ui_theme::ButtonClass> {
+    let doc = g.compiled.ui.as_ref()?;
+    doc.theme.as_ref()?.button.get(doc.classes.get(id)?)
+}
+
+/// A text widget in a theme text class: its size and colour, wrapped to the width, with the
+/// optional drop shadow painted 2 px down-right underneath.
+fn themed_text(
+    ui: &mut egui::Ui,
+    text: String,
+    class: &axiom_core::ui_theme::TextClass,
+) -> egui::Response {
+    let size = class.size.unwrap_or(15.0);
+    let color = class
+        .color
+        .map(rgba)
+        .unwrap_or_else(|| ui.visuals().text_color());
+    let galley = ui.painter().layout(
+        text,
+        egui::FontId::proportional(size),
+        Color32::PLACEHOLDER,
+        ui.available_width(),
+    );
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        if let Some(shadow) = class.shadow {
+            ui.painter()
+                .galley(rect.min + Vec2::splat(2.0), galley.clone(), rgba(shadow));
+        }
+        ui.painter().galley(rect.min, galley, color);
+    }
+    response
+}
+
+/// Which look a themed button shows now.
+pub(crate) fn button_state(enabled: bool, response: &egui::Response) -> &'static str {
+    if !enabled {
+        "disabled"
+    } else if response.is_pointer_button_down_on() {
+        "pressed"
+    } else if response.hovered() {
+        "hover"
+    } else {
+        "normal"
+    }
+}
+
+/// A button in a theme button class: the state's fill and nine-slice frame behind a centred
+/// label; unset state fields fall back to `normal`. Clicks behave like the plain button.
+fn themed_button(
+    ui: &mut egui::Ui,
+    g: &Gameplay,
+    state: &mut UiState,
+    text: String,
+    class: &axiom_core::ui_theme::ButtonClass,
+    enabled: bool,
+    min: Vec2,
+) -> egui::Response {
+    let padding = class.padding.unwrap_or(10.0);
+    let galley = ui.painter().layout_no_wrap(
+        text,
+        egui::FontId::proportional(class.size.unwrap_or(15.0)),
+        Color32::PLACEHOLDER,
+    );
+    let desired = (galley.size() + Vec2::splat(2.0 * padding)).max(min);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
+    if ui.is_rect_visible(rect) {
+        let name = button_state(enabled, &response);
+        let look = class
+            .state(name)
+            .map_or_else(|| class.normal.clone(), |l| l.over(&class.normal));
+        if let Some(fill) = look.fill {
+            ui.painter().rect_filled(rect, 4.0, rgba(fill));
+        }
+        if let Some((frame, tex, size)) = look
+            .frame
+            .as_deref()
+            .and_then(|f| frame_texture(ui.ctx(), g, state, f))
+        {
+            ui.painter().add(egui::Shape::mesh(nine_slice(
+                rect,
+                tex,
+                size,
+                frame.slice,
+                frame.center,
+            )));
+        }
+        let color = look.text.map(rgba).unwrap_or_else(|| {
+            if enabled {
+                ui.visuals().text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            }
+        });
+        let pos = rect.center() - galley.size() / 2.0;
+        ui.painter().galley(pos, galley, color);
+    }
+    response
 }

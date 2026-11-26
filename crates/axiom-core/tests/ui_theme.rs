@@ -155,3 +155,88 @@ fn documents_without_a_theme_keep_their_exact_form() {
     acl(&mut s, "ui frame scroll none").unwrap();
     assert_eq!(doc(&s), raw);
 }
+
+#[test]
+fn text_and_button_classes_assign_to_widgets_and_reject_mismatches() {
+    let mut s = store();
+    acl(&mut s, "ui frame plate brass 12 12 12 12 center=tile").unwrap();
+    acl(&mut s, "ui frame edge brass 12 12 12 12 center=hidden").unwrap();
+    acl(
+        &mut s,
+        "ui textclass gold size=20 color=E9C478 shadow=000000AA",
+    )
+    .unwrap();
+    acl(&mut s, "ui buttonclass chip size=15 padding=8 normal.frame=plate normal.text=F3E6C8 hover.frame=edge pressed.fill=200000FF disabled.text=8A8A8A").unwrap();
+    acl(&mut s, "ui class title gold").unwrap();
+    acl(&mut s, "ui class buy chip").unwrap();
+    let d = doc(&s);
+    assert_eq!(d["theme"]["frames"]["plate"]["center"], "tile");
+    assert_eq!(d["theme"]["frames"]["edge"]["center"], "hidden");
+    assert_eq!(
+        d["theme"]["text"]["gold"],
+        json!({"size":20.0,"color":[233,196,120,255],"shadow":[0,0,0,170]})
+    );
+    assert_eq!(
+        d["theme"]["button"]["chip"],
+        json!({"size":15.0,"padding":8.0,
+            "normal":{"frame":"plate","text":[243,230,200,255]},
+            "hover":{"frame":"edge"},
+            "pressed":{"fill":[32,0,0,255]},
+            "disabled":{"text":[138,138,138,255]}})
+    );
+    assert_eq!(d["classes"], json!({"title":"gold","buy":"chip"}));
+    let start = rev(&s);
+    for (script, path) in [
+        ("ui class quest chip", "/classes/quest"), // a text widget needs a text class
+        ("ui class buy gold", "/classes/buy"),     // a button needs a button class
+        ("ui class quest nope", "/classes/quest"),
+        ("ui textclass big size=400", "/theme/text/big/size"),
+        (
+            "ui buttonclass b2 hover.frame=nope",
+            "/theme/button/b2/hover/frame",
+        ),
+        ("ui buttonclass b2 padding=99", "/theme/button/b2/padding"),
+        ("ui frame plate none", "/theme/button/chip/normal/frame"),
+        ("ui textclass gold none", "/classes/title"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    for (script, needle) in [
+        ("ui buttonclass b3 glow.frame=plate", "unknown button state"),
+        (
+            "ui buttonclass b3 normal.shine=1",
+            "unknown button look field",
+        ),
+        ("ui buttonclass b3 shine=1", "unknown button class option"),
+        ("ui textclass t3 weight=bold", "unknown text class option"),
+        (
+            "ui frame f9 brass 1 1 1 1 center=spiral",
+            "stretch, tile or hidden",
+        ),
+        ("ui frame f9 brass 1 1 1 1 middle=tile", "unknown option"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        assert!(e.to_string().contains(needle), "{script}: {e}");
+    }
+    // A widget with a legacy text style cannot also take a class.
+    let mut w = hud();
+    w.resources.get_mut("ui.document").unwrap()["styles"] = json!({"quest":"value"});
+    let mut s2 = Store::memory_with(Registry::core(), w).unwrap();
+    acl(&mut s2, "ui textclass gold size=20").unwrap();
+    let e = acl(&mut s2, "ui class quest gold").expect_err("style and class");
+    assert!(e.to_string().contains("styles or classes"), "{e}");
+    // Removing every class assignment and class returns the document to its exact form.
+    acl(&mut s, "ui class title none").unwrap();
+    acl(&mut s, "ui class buy none").unwrap();
+    acl(&mut s, "ui buttonclass chip none").unwrap();
+    acl(&mut s, "ui textclass gold none").unwrap();
+    acl(&mut s, "ui frame plate none").unwrap();
+    acl(&mut s, "ui frame edge none").unwrap();
+    assert_eq!(doc(&s), hud().resources["ui.document"]);
+}

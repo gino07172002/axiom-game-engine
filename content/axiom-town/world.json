@@ -287,11 +287,17 @@
     },
     "ui.document": {
       "locale":"zh-TW",
-      "images":{"dialog":"ui/dialog-frame.png"},
+      "images":{"dialog":"ui/dialog-frame.png","btn_normal":"ui/button-normal.png","btn_hover":"ui/button-hover.png","btn_pressed":"ui/button-pressed.png"},
       "theme":{
-        "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]}},
-        "panel":{"dialog":{"padding":26,"frame":"dialog"}}
+        "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]},
+          "btn_normal":{"image":"btn_normal","slice":[14,14,14,14]},"btn_hover":{"image":"btn_hover","slice":[14,14,14,14]},"btn_pressed":{"image":"btn_pressed","slice":[14,14,14,14]}},
+        "panel":{"dialog":{"padding":26,"frame":"dialog"}},
+        "text":{"speaker":{"size":20,"color":[233,196,120,255],"shadow":[0,0,0,170]}},
+        "button":{"emote":{"size":15,"padding":9,
+          "normal":{"frame":"btn_normal","text":[243,230,200,255]},"hover":{"frame":"btn_hover","text":[255,244,214,255]},
+          "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}}
       },
+      "classes":{"speaker":"speaker","emote_wave":"emote","emote_bow":"emote","emote_dance":"emote","emote_cheer":"emote","emote_pose":"emote","emote_think":"emote"},
       "panels":[
         {"id":"dialog","anchor":"bottom","offset":[0,-14],"width":900,"style":"dialog","children":["speaker","line","choices"]}
       ],

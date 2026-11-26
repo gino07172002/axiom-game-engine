@@ -73,7 +73,28 @@ ui effect remove ID                   # ui.effects 系統保留
 ui frame ID IMAGE L T R B | ui frame ID none        # 主題九宮格邊框:images 裡的圖 + 四邊切割像素
 ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
 ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
+ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
+ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | ui buttonclass CLASS none
+ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → button class
 ```
+
+**類別(plan M2)**
+
+- `theme.text.CLASS = {size, color, shadow}`:文字大小(8–96 px)、顏色,以及往右下偏 2 px 的陰影色。
+- `theme.button.CLASS = {size, padding, normal, hover, pressed, disabled}`:
+  - 每個狀態可以各自設定 `{frame, fill, text}`,分別是九宮格框圖、底色、字色;
+  - 狀態沒設定的欄位沿用 `normal` 的值;
+  - 遊戲沒在跑或主控台開著時,按鈕是停用狀態;
+  - 按鈕點擊後的行為和沒套類別的按鈕完全相同。
+- `classes.WIDGET = CLASS`:讓元件套用類別。
+  - 文字元件只能用 text class,按鈕只能用 button class;
+  - 已經用 `styles` 的元件不能同時用 class,兩者只能擇一;
+  - 沒有套用類別的元件,畫法完全不變。
+- `theme.frames.ID.center`:框圖中央的畫法,有三種:
+  - `stretch`(預設):拉伸;
+  - `tile`:依原圖中央的像素尺寸平鋪,最多 1024 片,超過時改用拉伸;
+  - `hidden`:不畫中央,只畫邊框。
+- 示範:Axiom Town 的 6 個表情按鈕使用 `emote` 類別,一般、滑過、按下各有一張原創框圖(`ui/button-*.png`,由 `build_ui_frames` 產生);講者名字使用 `speaker` 類別,金色並帶陰影。
 
 **面板與邊框(`ui.document` v2,見 `docs/plan-ui-styling.zh-TW.md`)**
 

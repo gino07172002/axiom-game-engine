@@ -318,3 +318,47 @@ theme: {
   - adv、animation、animator-lab、character-lab、duet-lab、rts-bench、rts、street、style-lab 共 9 個包**逐位元相同**;
   - axiom-town 預期會變:截圖已看過,對話框在金框內,右上角控制項還在。
 - **未驗證**:沒有在 GPU 上截對話框開啟中的畫面,這部分由 headless 測試涵蓋;出生點的截圖已顯示框內的「廣場」說明。沒有做 release 量測,也沒有效能宣稱。
+
+### 補記 2026-11-26:M2 和 ADR-4 的差異(原計畫 → 現在 → 原因)
+
+1. **類別放在哪裡**
+   - 原計畫:每個元件加一個 `class` 欄位。
+   - 現在:改用 `ui.document.classes` 對照表(元件 ID → 類別),和 `regions`、`styles` 同一種形式。
+   - 原因:`Widget` enum 的六種元件和所有比對它們的程式碼都不用改;序列化方式一致;編輯器和 ACL 可以沿用 `map_entry`。
+2. **舊的 `TextStyle`**
+   - 原計畫:對應成內建預設主題裡的 6 個 class。
+   - 現在:舊的 `styles` 維持原本的程式路徑;同一個元件不能同時有 style 和 class,兩者只能擇一。
+   - 原因:不碰舊路徑,舊內容的截圖才能保證逐位元相同,A/B 已驗證。改成內建 class 留到需要時再做。
+3. **文字描邊**:這次只做陰影。描邊在 egui 上要畫 8 次 galley,先列為 backlog。
+
+### M2 完成(分支 `ui-v2`)
+
+- **格式**:
+  - `theme.text`:size、color、shadow;
+  - `theme.button`:size、padding,以及 normal / hover / pressed / disabled 四種狀態,各自可設 frame / fill / text,沒設的欄位沿用 normal;
+  - `theme.frames.*.center`:stretch / tile / hidden;
+  - `classes`:元件 → 類別。
+- **驗證**:
+  - 文字元件只能用 text class,按鈕只能用 button class,其他元件不能用類別;
+  - 同一個元件不能同時有 style 和 class;
+  - 範圍:字級 8–96、padding 0–64、文字和按鈕類別各 ≤ 32 個;
+  - 刪掉仍被使用的邊框或類別會被擋下,錯誤指出完整路徑。
+- **ops / ACL / 編輯器**:
+  - ops:`set_ui_text_class`、`set_ui_button_class`、`set_ui_class`;
+  - ACL:`ui textclass|buttonclass|class`,`ui frame … center=`;
+  - 編輯器命令:`ui.text_class`、`ui.button_class`、`ui.class`(同樣在 Play 中、檢查器有草稿時擋下);
+  - parity 測試延伸三個步驟,parity 表加一列。
+- **渲染**:
+  - `themed_text`:陰影先畫,本體疊在上面;
+  - `themed_button`:依狀態(停用 > 按下 > 滑過 > 一般)畫底色、九宮格和置中的文字;點擊和 target 登記和原本的按鈕相同;
+  - `nine_slice` 支援 center 模式:tile 最多 1024 片,超過改用 stretch;
+  - 沒有類別的元件走原本的程式。
+- **原創素材**:`build_ui_frames` 新增 `button-normal/hover/pressed.png`(48×48,切割 14)。dialog 框圖的 hash 不變;連跑兩次結果相同。
+- **內容**:town 的 6 個表情按鈕使用 `emote` 類別;`speaker` 使用金色加陰影的 `speaker` 類別。
+- **測試**:
+  - core `ui_theme.rs` 新增 1 個(建立流程、8 種有路徑的拒絕、6 種解析錯誤、style 和 class 互斥、全部移除後逐位元回到原樣);
+  - `frame_center_tests` 3 個(hidden、tile 的片數和部分片的 UV、超過預算改用 stretch);
+  - `ui_panels.rs` 新增 3 個(滑過和按下會換成不同的框圖貼圖、停用字色、講者陰影位在右下 2 px)。
+  - 注意:測試時遊戲沒在跑,egui 會把停用的 UI 整體乘上透明度,所以顏色以「每個通道 ≈ 設定值 × alpha」比對。
+- **截圖 A/B**(M1b exe 對 M2 exe):9 個內容沒變的 UI 內容包逐位元相同。town 的內容使用了新欄位,舊 exe 讀不了,所以這次不做 A/B;GPU 截圖已經看過:表情按鈕是酒紅底金邊,講者名字是金字加陰影。
+- **未驗證**:沒有在 GPU 上截滑過和按下狀態(由 headless 測試涵蓋);沒有 release 量測,也沒有效能宣稱。

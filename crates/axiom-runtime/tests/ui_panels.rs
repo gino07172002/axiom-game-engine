@@ -77,6 +77,8 @@ fn the_town_dialog_draws_in_a_framed_bottom_panel() {
         .iter()
         .filter(|m| m.vertices.len() == 36 && m.texture_id != egui::TextureId::default())
         .map(|m| Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>()))
+        // The emote buttons draw their own (small) frames since M2; the panel is the wide one.
+        .filter(|r| r.width() > 400.0)
         .collect();
     assert_eq!(frames.len(), 1, "one framed panel: {frames:?}");
     let frame = frames[0];
@@ -144,4 +146,131 @@ fn session_controls_stay_on_screen_when_every_widget_is_in_a_region_or_panel() {
             "{label} missing from {texts:?}"
         );
     }
+}
+
+/// Draws the town HUD `frames` times with the given pointer input and returns the shapes.
+fn frame_with(
+    r: &WorldRuntime,
+    ctx: &egui::Context,
+    ui: &mut UiState,
+    events: Vec<egui::Event>,
+) -> Vec<egui::epaint::ClippedShape> {
+    let raw = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0))),
+        events,
+        ..Default::default()
+    };
+    ctx.run(raw, |ctx| {
+        let _ = r.draw_ui(ctx, ui);
+    })
+    .shapes
+}
+
+/// Whether a (premultiplied) drawn colour is `rgb` at some opacity: a disabled UI is drawn
+/// faded, so each channel is the authored value times the alpha (within rounding).
+fn is_rgb(c: egui::Color32, rgb: [u8; 3]) -> bool {
+    let a = c.a() as f32 / 255.0;
+    c.a() > 0
+        && [c.r(), c.g(), c.b()]
+            .iter()
+            .zip(rgb)
+            .all(|(&got, want)| (got as f32 - want as f32 * a).abs() <= 2.0)
+}
+
+/// Texture of the 36-vertex nine-slice drawn inside `area`.
+fn frame_texture_in(shapes: &[egui::epaint::ClippedShape], area: Rect) -> Option<egui::TextureId> {
+    let mut found = vec![];
+    meshes(shapes, &mut found);
+    found
+        .iter()
+        .filter(|m| m.vertices.len() == 36)
+        .find(|m| m.vertices.iter().all(|v| area.expand(1.0).contains(v.pos)))
+        .map(|m| m.texture_id)
+}
+
+#[test]
+fn emote_buttons_switch_frames_for_hover_and_press() {
+    let r = WorldRuntime::new(town(), 1, installed_registry()).unwrap();
+    let ctx = egui::Context::default();
+    let mut ui = UiState {
+        playing: true,
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        frame_with(&r, &ctx, &mut ui, vec![]);
+    }
+    let button = ui.targets["button/emote_wave"];
+    let normal =
+        frame_texture_in(&frame_with(&r, &ctx, &mut ui, vec![]), button).expect("normal frame");
+    let at = button.center();
+    let hover = frame_texture_in(
+        &frame_with(&r, &ctx, &mut ui, vec![egui::Event::PointerMoved(at)]),
+        button,
+    )
+    .expect("hover frame");
+    let press = egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    };
+    frame_with(&r, &ctx, &mut ui, vec![press]);
+    let pressed =
+        frame_texture_in(&frame_with(&r, &ctx, &mut ui, vec![]), button).expect("pressed frame");
+    assert_ne!(normal, hover, "hover shows its own frame");
+    assert_ne!(hover, pressed, "pressed shows its own frame");
+    assert_ne!(normal, pressed);
+}
+
+#[test]
+fn a_stopped_game_shows_buttons_in_the_disabled_text_colour() {
+    let r = WorldRuntime::new(town(), 1, installed_registry()).unwrap();
+    let ctx = egui::Context::default();
+    let mut ui = UiState::default(); // not playing: buttons cannot be used
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = frame_with(&r, &ctx, &mut ui, vec![]);
+    }
+    let colours: Vec<egui::Color32> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Text(t) if t.galley.text().contains("揮手") => Some(t.fallback_color),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        colours.iter().any(|c| is_rgb(*c, [150, 140, 130])),
+        "{colours:?}"
+    );
+}
+
+#[test]
+fn the_speaker_name_uses_its_text_class_with_a_shadow() {
+    let r = talking();
+    let ctx = egui::Context::default();
+    let mut ui = UiState::default();
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = frame_with(&r, &ctx, &mut ui, vec![]);
+    }
+    let speaker = r.observation().metrics["gameplay"]["bindings"]["speaker"]
+        .as_str()
+        .map(str::to_owned);
+    let texts: Vec<(Pos2, egui::Color32, String)> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Text(t) => Some((t.pos, t.fallback_color, t.galley.text().to_owned())),
+            _ => None,
+        })
+        .collect();
+    let main = texts
+        .iter()
+        .find(|(_, c, _)| is_rgb(*c, [233, 196, 120]))
+        .unwrap_or_else(|| panic!("no gold speaker text (speaker {speaker:?}): {texts:?}"));
+    assert!(
+        texts.iter().any(|(p, c, t)| is_rgb(*c, [0, 0, 0])
+            && *t == main.2
+            && *p == main.0 + Vec2::splat(2.0)),
+        "shadow 2 px down-right of {main:?}"
+    );
 }

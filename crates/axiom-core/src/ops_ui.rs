@@ -666,3 +666,31 @@ pub fn set_ui_panel(
     }
     checked_edits(put(raw))
 }
+
+/// UI Editor ▸ text class / ACL `ui textclass CLASS [size=] [color=] [shadow=] | none` (plan M2).
+pub fn set_ui_text_class(
+    world: &World,
+    class: &str,
+    text: Option<crate::ui_theme::TextClass>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(raw, "text", class, text.map(|t| json!(t))))
+}
+
+/// UI Editor ▸ button class / ACL `ui buttonclass CLASS [size=] [padding=] [STATE.frame|fill|text=] | none`.
+pub fn set_ui_button_class(
+    world: &World,
+    class: &str,
+    button: Option<crate::ui_theme::ButtonClass>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(raw, "button", class, button.map(|b| json!(b))))
+}
+
+/// UI Editor ▸ widget class / ACL `ui class WIDGET CLASS|none`: a theme text class for text
+/// widgets, a button class for buttons.
+pub fn set_ui_class(world: &World, widget: &str, class: Option<&str>) -> Result<Vec<Edit>> {
+    let (raw, doc) = document(world)?;
+    find_widget(&doc, widget)?;
+    checked_edits(map_entry(raw, "classes", widget, class.map(|c| json!(c))))
+}

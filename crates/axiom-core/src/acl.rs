@@ -117,12 +117,16 @@ EDIT (any number, atomic):
         [ease=E] [direction=left|right|up|down] [amount=X] [from=X]   KIND: fade_in|fade_out|slide_in|
         slide_out|scale_in|scale_out|pulse|shake|number_roll (+ system ui.effects when missing)
   ui effect set ID [kind=..] [widget=..] [same options; OPTION=default clears] | ui effect remove ID
-  ui frame ID IMAGE LEFT TOP RIGHT BOTTOM | ui frame ID none
+  ui frame ID IMAGE LEFT TOP RIGHT BOTTOM [center=stretch|tile|hidden] | ui frame ID none
                                   theme nine-slice frame: an ui.document image + slice margins in pixels
   ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
   ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
                                   anchored panel (ANCHOR = a REGION name) holding widgets top to bottom;
                                   a widget sits in one panel or one region; drawn with the style fill + frame
+  ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
+  ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | none
+                                  STATE: normal|hover|pressed|disabled (unset fields use normal)
+  ui class WIDGET CLASS|none      text widget -> text class, button -> button class (not with ui style)
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
   input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
                                   KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft
@@ -778,6 +782,9 @@ enum UiStatement {
     Frame(String, Option<crate::ui_theme::UiFrame>),
     PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
     Panel(String, Option<crate::ui_theme::UiPanel>),
+    TextClass(String, Option<crate::ui_theme::TextClass>),
+    ButtonClass(String, Option<crate::ui_theme::ButtonClass>),
+    Class(String, Option<String>),
 }
 
 fn key_values(tokens: &[String]) -> Result<Vec<(String, String)>> {
@@ -801,7 +808,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
     let arg = |n: usize| {
         tokens
             .get(n)
-            .with_context(|| "ui needs more arguments (see grammar: ui place|style|button|effect|slider|frame|panelstyle|panel)")
+            .with_context(|| "ui needs more arguments (see grammar: ui place|style|button|effect|slider|frame|panelstyle|panel|textclass|buttonclass|class)")
     };
     Ok(match arg(1)?.as_str() {
         "place" => {
@@ -850,8 +857,17 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             UiStatement::Button(widget, command)
         }
         "frame" => {
-            let usage = "use: ui frame ID IMAGE LEFT TOP RIGHT BOTTOM | ui frame ID none";
-            match tokens.len() {
+            let usage = "use: ui frame ID IMAGE LEFT TOP RIGHT BOTTOM [center=stretch|tile|hidden] | ui frame ID none";
+            let center = match tokens.get(8) {
+                Some(t) => {
+                    let v = t
+                        .strip_prefix("center=")
+                        .with_context(|| format!("unknown option '{t}' ({usage})"))?;
+                    crate::ui_theme::parse_center(v)?
+                }
+                None => Default::default(),
+            };
+            match tokens.len().min(8) {
                 4 if tokens[3] == "none" => UiStatement::Frame(tokens[2].clone(), None),
                 8 => {
                     let px = |t: &str| -> Result<u16> {
@@ -868,6 +884,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                                 px(&tokens[6])?,
                                 px(&tokens[7])?,
                             ],
+                            center,
                         }),
                     )
                 }
@@ -887,6 +904,39 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                     )?)?),
                 )
             }
+        }
+        "textclass" => {
+            let usage = "use: ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none";
+            ensure!(tokens.len() >= 3, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::TextClass(tokens[2].clone(), None)
+            } else {
+                UiStatement::TextClass(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::text_class_from(&key_values(
+                        &tokens[3..],
+                    )?)?),
+                )
+            }
+        }
+        "buttonclass" => {
+            let usage = "use: ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=RRGGBB[AA]] [STATE.text=RRGGBB[AA]] | ui buttonclass CLASS none (STATE: normal|hover|pressed|disabled)";
+            ensure!(tokens.len() >= 3, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::ButtonClass(tokens[2].clone(), None)
+            } else {
+                UiStatement::ButtonClass(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::button_class_from(&key_values(
+                        &tokens[3..],
+                    )?)?),
+                )
+            }
+        }
+        "class" => {
+            ensure!(tokens.len() == 4, "use: ui class WIDGET CLASS|none");
+            let class = (tokens[3] != "none").then(|| tokens[3].clone());
+            UiStatement::Class(tokens[2].clone(), class)
         }
         "panel" => {
             let usage = "use: ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none";
@@ -966,6 +1016,13 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
             crate::ops::set_ui_panel_style(w, class, style.clone())
         }
         UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
+        UiStatement::TextClass(class, text) => {
+            crate::ops::set_ui_text_class(w, class, text.clone())
+        }
+        UiStatement::ButtonClass(class, button) => {
+            crate::ops::set_ui_button_class(w, class, button.clone())
+        }
+        UiStatement::Class(widget, class) => crate::ops::set_ui_class(w, widget, class.as_deref()),
         UiStatement::Style(widget, style) => crate::ops::set_ui_style(w, widget, *style),
         UiStatement::Button(widget, command) => {
             crate::ops::set_ui_button_command(w, widget, command)

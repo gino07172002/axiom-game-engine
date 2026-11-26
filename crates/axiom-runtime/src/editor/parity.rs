@@ -3393,6 +3393,17 @@ fn ui_theme_and_panel_commands_match_acl() {
             "tracker top_left at=12,64 width=320 style=quest_box widgets=quest",
             "ui panel tracker top_left at=12,64 width=320 style=quest_box widgets=quest",
         ),
+        (
+            "ui.text_class",
+            "title_gold size=22 color=E9C478 shadow=000000AA",
+            "ui textclass title_gold size=22 color=E9C478 shadow=000000AA",
+        ),
+        (
+            "ui.button_class",
+            "chip size=14 padding=6 normal.frame=scroll hover.fill=202020FF",
+            "ui buttonclass chip size=14 padding=6 normal.frame=scroll hover.fill=202020FF",
+        ),
+        ("ui.class", "title title_gold", "ui class title title_gold"),
     ];
     // One step at a time: each starts from the world the earlier ACL lines produced.
     let mut at = start.clone();

@@ -533,6 +533,19 @@ pub(crate) const COMMANDS: &[Command] = &[
         "World",
         "ID ANCHOR [at=X,Y] [width=] [style=] [widgets=A,B] | ID none",
     ),
+    a(
+        "ui.text_class",
+        "UI: Text Class…",
+        "World",
+        "CLASS [size=] [color=] [shadow=] | CLASS none",
+    ),
+    a(
+        "ui.button_class",
+        "UI: Button Class (states)…",
+        "World",
+        "CLASS [size=] [padding=] [STATE.frame|fill|text=] | CLASS none",
+    ),
+    a("ui.class", "UI: Widget Class…", "World", "WIDGET CLASS|none"),
     c("help.shortcuts", "Keyboard Shortcuts…", "Help", "F1"),
     c(
         "help.copy_discovery",
@@ -745,6 +758,9 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.frame",
     "ui.panel_style",
     "ui.panel",
+    "ui.text_class",
+    "ui.button_class",
+    "ui.class",
     "graph.add_state",
     "graph.set_initial",
     "graph.delete",
@@ -1310,6 +1326,7 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
+            | "ui.text_class" | "ui.button_class" | "ui.class"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")
