@@ -134,6 +134,8 @@ struct App {
     audio: crate::audio::Output,
     /// XInput controllers; polled only by the native host (`run`), so tests stay deterministic.
     gamepads: crate::gamepad::Gamepads,
+    /// Gamepad menu buttons held last frame (D-pad up/down/left/right, A, B, Start; plan M6).
+    pad_menu: [bool; 7],
     /// File ▸ Exit requested from the editor.
     quit: bool,
     /// Main-thread phases of the last revision reload; reported as `metrics.reload`.
@@ -861,6 +863,7 @@ impl App {
             closing: false,
             audio: crate::audio::Output::new(),
             gamepads: crate::gamepad::Gamepads::new(false),
+            pad_menu: [false; 7],
             game_ctx: None,
             game_input: false,
             game_pointer: false,
@@ -1804,6 +1807,79 @@ impl App {
     /// Records a runtime command that ran during a recorded Play. A batch that failed after
     /// applying a prefix changed state the recording cannot reproduce (only successful
     /// commands are written), so the recording becomes inexact (no `state_hash` assertion).
+    /// Esc / gamepad Start (plan M6): opens or closes the document's escape page. False when
+    /// the document has none (Esc then pauses the host as before).
+    fn toggle_escape_page(&mut self) -> bool {
+        let Some((page, open)) = self.runtime.escape_page() else {
+            return false;
+        };
+        let command = if open {
+            axiom_core::gameplay::RuntimeCommand::Close { page: Some(page) }
+        } else {
+            axiom_core::gameplay::RuntimeCommand::Open { page }
+        };
+        let result = self.runtime.command(&command);
+        self.record_command(&command, &result);
+        if let Err(e) = result {
+            self.ui.output.push(format!("ERROR {e:#}"));
+        }
+        true
+    }
+
+    /// Gamepad menu buttons (plan M6), on the press edge: Start toggles the escape page, B
+    /// closes the top open page, and the D-pad / A become arrow keys / Enter for the UI (a
+    /// modal page takes them for focus; otherwise egui ignores them).
+    fn pad_menu_input(&mut self, raw: &mut egui::RawInput) {
+        if !self.gamepads.enabled() {
+            return;
+        }
+        const NAMES: [&str; 7] = [
+            "PadDpadUp",
+            "PadDpadDown",
+            "PadDpadLeft",
+            "PadDpadRight",
+            "PadA",
+            "PadB",
+            "PadStart",
+        ];
+        let levels = self.gamepads.poll().levels(0.5);
+        let mut pressed = [false; 7];
+        for (k, name) in NAMES.iter().enumerate() {
+            let down = axiom_core::PAD_INPUTS
+                .iter()
+                .position(|n| n == name)
+                .is_some_and(|i| levels[i] > 0.5);
+            pressed[k] = down && !self.pad_menu[k];
+            self.pad_menu[k] = down;
+        }
+        let keys = [
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+            egui::Key::ArrowLeft,
+            egui::Key::ArrowRight,
+            egui::Key::Enter,
+        ];
+        for (k, key) in keys.into_iter().enumerate() {
+            if pressed[k] {
+                raw.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
+        if pressed[5] && self.runtime.top_page().is_some() {
+            let command = axiom_core::gameplay::RuntimeCommand::Close { page: None };
+            let result = self.runtime.command(&command);
+            self.record_command(&command, &result);
+        }
+        if pressed[6] {
+            self.toggle_escape_page();
+        }
+    }
+
     fn record_command(
         &mut self,
         command: &axiom_core::gameplay::RuntimeCommand,
@@ -3124,6 +3200,7 @@ impl App {
         phases.mark("simulate");
         let window = self.window.as_ref().unwrap().clone();
         let mut raw = self.egui_state.as_mut().unwrap().take_egui_input(&window);
+        self.pad_menu_input(&mut raw);
         let ctx = self.ctx.clone();
         let chrome = self.chrome();
         let in_tab = self.play_in_tab();
@@ -3729,7 +3806,8 @@ impl ApplicationHandler for App {
                         if key == KeyCode::Escape {
                             if self.ui.console {
                                 self.ui.console = false;
-                            } else {
+                            } else if !self.toggle_escape_page() {
+                                // No escape page in the document: Esc pauses the host.
                                 self.ui.playing = !self.ui.playing;
                             }
                             self.capture();

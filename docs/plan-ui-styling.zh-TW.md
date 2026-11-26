@@ -494,3 +494,35 @@ theme: {
   - 為了確認不是 M4 / M5 讓它變慢,在 M3 的 commit 上單獨跑 3 次:idle 21.8–23.7 ms、filtered 18.9–21.1 ms;M5 上單獨跑:idle 21.5–22.5 ms、filtered 19.9–24.3 ms,沒有差別。判斷是測試在負載下不穩,不是回歸;沒有改這個測試。
 - **smoke**:editor smoke 通過、world 和 street parity 結果一致;M0 第一次在 `two-cameras` 的截圖那一步失敗(沒有留下錯誤訊息),同一條命令手動重跑成功,整支 M0 重跑 PASS。沒有找到原因,記錄在這裡。
 - **未驗證**:沒有 GPU 截圖(表情按鈕的畫面和 M4 相同,`ui_layout` 由 headless 測試涵蓋);沒有截圖 A/B(引擎的繪製程式這次沒改,只動了編譯和編輯器)。
+
+### 補記 2026-11-26:M6 和 ADR-6 的差異(原計畫 → 現在 → 原因)
+
+1. **名稱**
+   - 原計畫:`screens`,命令 `ui.open SCREEN` / `ui.close`。
+   - 現在:`pages`,命令 `{kind: open, page}` / `{kind: close, page?}`,ACL `ui page`。
+   - 原因:`ui screen` 在 M3 已經是參考畫面的動詞;同一個字表示兩件事會讓 AI 和人都搞混。
+2. **頁面的內容**:頁面列出根面板 ID(`panels`),不自己帶面板;面板照樣用 `ui panel` 編輯,頁面只決定「什麼時候顯示」。
+3. **Esc**:`escape` 頁面取代原本 Esc 的「暫停整個主機」;文件沒有 escape 頁面時行為不變。
+4. **暫停的位置**:放在 `WorldRuntime::step`(不是 app),scenario 和 loopback 也會暫停,結果一致。
+5. **焦點**:只在模態頁面打開時接管方向鍵;沒有模態頁面時方向鍵照常給遊戲。非 pause 的模態頁面開著時,方向鍵同時也會送進遊戲的輸入(遊戲輸入不經過 egui)— 記錄為已知限制。
+6. **規則動作**:沒有加「規則打開頁面」的 GameAction;目前由按鈕、Esc / Start、scenario 和 loopback 指令開關。
+
+### M6 完成(分支 `ui-v2`)
+
+- **格式**:`pages.ID = {panels, modal(預設開), pause, escape}`;頁面列出根面板,沒有放進頁面的面板就是 HUD。驗證:面板存在、是根面板、只在一個頁面、最多一個 escape 頁面、最多 8 個頁面。
+- **指令**:型別化的遊戲指令 `{kind: open, page}`、`{kind: close, page?}`(UI、scenario、loopback 共用,也能放進 batch);按鈕 `ui button W open PAGE|close [PAGE]`;`discover` 的指令清單也列出來了。
+- **狀態與存檔**:開著的頁面(由下到上)是 gameplay 進度,存在 checkpoint;讀檔時頁面不存在會明確失敗;內容熱重載後還存在的頁面保持開著;`observe` 的 `gameplay.pages`(只有文件有頁面時才出現)。
+- **暫停**:`WorldRuntime::step` 在 pause 頁面開著時不推進固定步長,UI、scenario、loopback 一致;指令照常套用。
+- **繪製**:關著的頁面不畫;最上面的模態頁面畫在 Foreground,下面一層全螢幕半透明黑底(擋點擊);HUD 按鈕停用,頁面上的按鈕可用。
+- **焦點**:模態頁面打開時方向鍵 / Tab 移動、Enter / Space 按下(egui 的按鍵被這裡用掉);被選中的按鈕用 hover 外觀,沒套類別的按鈕畫金框;手把十字鍵 / A 轉成同樣的按鍵,B 關最上面的頁面,Start 和 Esc 一樣開關 escape 頁面;文件沒有 escape 頁面時 Esc 照舊暫停整個主機。
+- **ops / ACL / 編輯器**:`set_ui_page`;ACL `ui page`;編輯器命令 `ui.page`;UI Editor 按鈕的 Command 下拉列出每個頁面的 open / close;parity 測試多兩步,parity 表加一列。
+- **內容**:Axiom Town 的 `pause` 頁面(pause + escape):置中的對話框邊框面板,「暫停」標題 + 繼續遊戲 / 英文 English / 中文 三個按鈕(按鈕類別 emote、點陣字)。
+- **實作中發現並修正**:
+  - UI Editor 的按鈕指令下拉原本只認舊的指令種類(編譯錯誤擋下),加了 open / close。
+  - `discover` 的指令 schema 沒有新指令(protocol 合約測試擋下),補上。
+  - 兩個語系的按鈕文字一樣時,編輯器的在地化表會把英文算成「缺字」(和預設語系相同),改成各語系不同的寫法。
+- **測試**:core 新增 1 個(頁面格式、5 種有路徑的拒絕、開關指令、可以編譯、全部移除後逐位元回到原樣);新檔 `tests/ui_pages.rs` 4 個(暫停時 tick 不動、關掉後繼續;模態擋住 HUD 按鈕、方向鍵 + Enter 換焦點和觸發、Up 繞回;checkpoint 保留開著的頁面、頁面不存在的存檔被拒;背景變暗的全螢幕方塊有畫)。checkpoint 測試用 ADV(town 沒有開 save 能力)。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1148 passed / 0 failed / 7 ignored(前一次完整執行有一次 `a_full_capture_queue_refuses_editor_view_before_its_edit` database is locked,單獨重跑通過,和 M3 時同一個現象)。
+- **GPU**(實際看過,1920×1080,新資料庫):用 bridge 送 `open pause` 後 tick 停在 310、`ui_layout` 有 `pause_menu`、0 個診斷;截圖中選單置中、「繼續遊戲」有焦點外觀、表情按鈕是停用的樣子;同一點地面的顏色開著 (145,143,139)、關掉後 (193,191,185),背景確實變暗約 25%;關掉後 tick 繼續。
+- **未驗證**:真實鍵盤的 Esc 和實體手把沒有實測(GPU 檢查用 bridge 指令開關頁面;方向鍵和 Enter 由 headless 測試涵蓋,app 的 Esc / 手把路徑只讀過程式碼)。
+- **smoke**:editor smoke 通過、world 和 street parity 結果一致、M0 PASS。

@@ -25,6 +25,36 @@ pub const MAX_GRID_COLUMNS: u8 = 16;
 pub const MAX_FONTS: usize = 4;
 /// Byte budget of one font file.
 pub const FONT_BYTES: u64 = 25_165_824;
+/// Pages per document (plan M6) and open pages at once.
+pub const MAX_PAGES: usize = 8;
+
+/// A page (plan M6): root panels shown only while the page is open. Pages open and close
+/// with the typed gameplay commands `open` / `close`; the open stack is gameplay state
+/// (saved in checkpoints). A modal page dims the HUD under it, makes its buttons unusable
+/// and takes keyboard / gamepad focus; a pause page also stops the fixed-step simulation;
+/// the escape page is what Esc (gamepad Start) opens and closes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UiPage {
+    /// Root panel IDs, drawn in this order (z still orders them).
+    pub panels: Vec<String>,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub modal: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pause: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub escape: bool,
+}
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Licences a content font may declare (SPDX IDs): open licences that allow redistribution.
 pub const FONT_LICENSES: [&str; 4] = ["OFL-1.1", "Apache-2.0", "MIT", "CC0-1.0"];
 
@@ -680,6 +710,45 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
             }
         }
     }
+    // Pages (plan M6): root panels, each in at most one page; at most one escape page.
+    if doc.pages.len() > MAX_PAGES {
+        return Err(invalid(
+            format!("{DOC}/pages"),
+            format!("at most {MAX_PAGES} pages"),
+        ));
+    }
+    let mut paged = BTreeSet::new();
+    for (id, page) in &doc.pages {
+        let path = format!("{DOC}/pages/{id}");
+        valid_id(id).map_err(|e| invalid(path.clone(), e.to_string()))?;
+        if page.panels.is_empty() || page.panels.len() > MAX_PANELS {
+            return Err(invalid(
+                format!("{path}/panels"),
+                format!("a page shows 1..={MAX_PANELS} panels"),
+            ));
+        }
+        for (j, panel) in page.panels.iter().enumerate() {
+            let at = format!("{path}/panels/{j}");
+            if doc.panels.iter().all(|p| &p.id != panel) {
+                return Err(invalid(at, format!("unknown panel '{panel}'")));
+            }
+            if placed.contains(panel.as_str()) {
+                return Err(invalid(
+                    at,
+                    format!("panel '{panel}' is inside another panel; pages show root panels"),
+                ));
+            }
+            if !paged.insert(panel.as_str()) {
+                return Err(invalid(at, format!("panel '{panel}' is in two pages")));
+            }
+        }
+    }
+    if doc.pages.values().filter(|p| p.escape).count() > 1 {
+        return Err(invalid(
+            format!("{DOC}/pages"),
+            "at most one page has escape=on".into(),
+        ));
+    }
     // Nesting: every panel is reached from a root (no cycles), at most MAX_PANEL_DEPTH deep.
     let depths = panel_depths(&doc.panels);
     for (i, p) in doc.panels.iter().enumerate() {
@@ -906,6 +975,40 @@ pub fn button_class_from(options: &[(String, String)]) -> Result<ButtonClass> {
         }
     }
     Ok(b)
+}
+
+/// `ui page ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off]` options.
+pub fn page_from(options: &[(String, String)]) -> Result<UiPage> {
+    let mut page = UiPage {
+        panels: vec![],
+        modal: true,
+        pause: false,
+        escape: false,
+    };
+    let flag = |k: &str, v: &str| -> Result<bool> {
+        match v {
+            "on" | "true" => Ok(true),
+            "off" | "false" => Ok(false),
+            _ => anyhow::bail!("{k}='{v}' must be on or off"),
+        }
+    };
+    for (k, v) in options {
+        match k.as_str() {
+            "panels" => {
+                page.panels = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            }
+            "modal" => page.modal = flag(k, v)?,
+            "pause" => page.pause = flag(k, v)?,
+            "escape" => page.escape = flag(k, v)?,
+            _ => anyhow::bail!("unknown page option '{k}' (panels, modal, pause, escape)"),
+        }
+    }
+    Ok(page)
 }
 
 /// `ui screen W H scale=fit_height|fit_width|fit|none`: the panels' scale mode.

@@ -712,6 +712,17 @@ pub fn set_ui_font(
     checked_edits(theme_entry(raw, "fonts", id, font.map(|f| json!(f))))
 }
 
+/// UI Editor ▸ page / ACL `ui page ID panels=A,B [modal=] [pause=] [escape=] | ui page ID none`
+/// (plan M6). Removing a page a button still opens is refused by the command check.
+pub fn set_ui_page(
+    world: &World,
+    id: &str,
+    page: Option<crate::ui_theme::UiPage>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(map_entry(raw, "pages", id, page.map(|p| json!(p))))
+}
+
 /// UI Editor ▸ template / ACL `ui template ID {JSON} | ui template ID none` (plan M5).
 /// Removing a template a use still names is refused.
 pub fn set_ui_template(

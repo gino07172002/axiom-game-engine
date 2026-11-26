@@ -90,7 +90,7 @@ pub fn gameplay_schema() -> Value {
         &["start", "nodes"],
     );
     // A batch holds the plain commands only (no nested batch or slide), as the runtime checks.
-    let plain = json!({"oneOf":[tagged("choose",json!({"node":{"type":"string"},"choice":{"type":"string"}}),&["node","choice"]),tagged("emit",json!({"event":{"type":"string"},"fields":{"type":"object","additionalProperties":{"type":["boolean","integer","number","string"]}}}),&["event"]),tagged("locale",json!({"locale":{"type":"string"}}),&["locale"]),tagged("call",json!({"capability":{"type":"string"},"action":{"type":"string"},"args":{"type":"object"}}),&["capability","action","args"])]});
+    let plain = json!({"oneOf":[tagged("choose",json!({"node":{"type":"string"},"choice":{"type":"string"}}),&["node","choice"]),tagged("emit",json!({"event":{"type":"string"},"fields":{"type":"object","additionalProperties":{"type":["boolean","integer","number","string"]}}}),&["event"]),tagged("locale",json!({"locale":{"type":"string"}}),&["locale"]),tagged("call",json!({"capability":{"type":"string"},"action":{"type":"string"},"args":{"type":"object"}}),&["capability","action","args"]),tagged("open",json!({"page":{"type":"string","description":"ui.document page (plan M6), opened on top"}}),&["page"]),tagged("close",json!({"page":{"type":"string","description":"open page to close; omit for the top one"}}),&[])]});
     let mut command = plain.clone();
     let commands = command["oneOf"].as_array_mut().unwrap();
     commands.push(tagged("batch",json!({"commands":{"type":"array","minItems":1,"maxItems":crate::gameplay::MAX_BATCH,"items":{"$ref":"#/$defs/batch_command"},"description":"run in order in one tick, all validated first; no nested batch or slide"}}),&["commands"]));

@@ -1544,6 +1544,12 @@ impl WorldRuntime {
         if self.state.events.fault.is_some() {
             return;
         }
+        // An open pause page (plan M6) stops the fixed step: UI, scenarios and loopback alike.
+        // Gameplay commands still apply (they do not run through the step), so the page's
+        // own buttons can close it.
+        if self.ui_paused() {
+            return;
+        }
         self.state.tick += 1;
         if let Some(combat) = &mut self.state.combat {
             combat.scene.bodies.clear();
@@ -1745,6 +1751,34 @@ impl WorldRuntime {
                 .map_or(self.bindings.capture_pointer, |c| c.capture())
             && self.systems.iter().all(|(_, s)| s.pointer_allowed())
     }
+    /// Whether an open `ui.document` page pauses the simulation (plan M6).
+    pub fn ui_paused(&self) -> bool {
+        self.state.gameplay.as_ref().is_some_and(|g| g.paused())
+    }
+
+    /// The top open `ui.document` page (plan M6).
+    pub fn top_page(&self) -> Option<&str> {
+        self.state
+            .gameplay
+            .as_ref()?
+            .pages
+            .last()
+            .map(String::as_str)
+    }
+
+    /// The page Esc (gamepad Start) opens and closes, and whether it is open now (plan M6).
+    pub fn escape_page(&self) -> Option<(String, bool)> {
+        let g = self.state.gameplay.as_ref()?;
+        let (id, _) = g
+            .compiled
+            .ui
+            .as_ref()?
+            .pages
+            .iter()
+            .find(|(_, p)| p.escape)?;
+        Some((id.clone(), g.pages.contains(id)))
+    }
+
     /// `ui_layout` of the HUD last drawn with `ui` (plan M3); none without a
     /// `ui.document` or before a frame placed any region or panel.
     pub fn ui_layout_observation(&self, ui: &UiState) -> Option<serde_json::Value> {

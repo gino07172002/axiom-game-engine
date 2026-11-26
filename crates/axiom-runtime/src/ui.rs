@@ -23,6 +23,17 @@ pub struct UiState {
     pub fps: f32,
     pub gpu: String,
     pub port: u16,
+    /// A modal page is open (plan M6): HUD buttons outside it cannot be used.
+    pub blocked: bool,
+    /// Drawing the top modal page's panels now (its buttons stay usable and focusable).
+    pub in_modal: bool,
+    /// Keyboard / gamepad focus: index of the focused button among the compiled widgets.
+    pub focus: Option<usize>,
+    /// Focus moves this frame (+1 next, -1 previous) and whether the focused button fires.
+    pub nav: i32,
+    pub activate: bool,
+    /// Buttons of the top modal page drawn this frame, in layout order (reused buffer).
+    pub focusables: Vec<usize>,
     /// The document's content fonts are installed in the context drawing this pass (plan M4).
     pub fonts_ready: bool,
     /// Game HUD layout of the last frame (plan M3, `observe` `ui_layout`).

@@ -338,6 +338,7 @@ impl Editor {
             "ui.panel" => format!("panel {arg}"),
             "ui.screen" => format!("screen {arg}"),
             "ui.font" => format!("font {arg}"),
+            "ui.page" => format!("page {arg}"),
             "ui.template" => format!("template {arg}"),
             "ui.use" => format!("use {arg}"),
             "ui.text_class" => format!("textclass {arg}"),
@@ -1090,15 +1091,27 @@ impl Editor {
             RuntimeCommand::Call { .. } => "call",
             RuntimeCommand::Batch { .. } => "batch",
             RuntimeCommand::Slide { .. } => "slide",
+            RuntimeCommand::Open { .. } => "open",
+            RuntimeCommand::Close { .. } => "close",
         };
         let mut picked: Option<RuntimeCommand> = None;
         ui.horizontal_wrapped(|ui| {
             ui.label("Command");
             caption(ui, kind);
             match command {
-                RuntimeCommand::Emit { event, .. } | RuntimeCommand::Locale { locale: event } => {
+                RuntimeCommand::Emit { .. }
+                | RuntimeCommand::Locale { .. }
+                | RuntimeCommand::Open { .. }
+                | RuntimeCommand::Close { .. } => {
+                    let event: &str = match command {
+                        RuntimeCommand::Emit { event, .. } => event,
+                        RuntimeCommand::Locale { locale } => locale,
+                        RuntimeCommand::Open { page } => page,
+                        RuntimeCommand::Close { page } => page.as_deref().unwrap_or("top page"),
+                        _ => "",
+                    };
                     let r = egui::ComboBox::from_id_salt("ui_editor_command")
-                        .selected_text(event.as_str())
+                        .selected_text(event)
                         .show_ui(ui, |ui| {
                             // Field-less events (a button sends no payload) and the locales.
                             for (e, schema) in &g.compiled.program.events {
@@ -1125,6 +1138,27 @@ impl Editor {
                                     .insert(format!("ui_command:locale {l}"), item.rect);
                                 if item.clicked() {
                                     picked = Some(RuntimeCommand::Locale { locale: l.clone() });
+                                }
+                            }
+                            // Pages (plan M6): open or close each one.
+                            for p in doc.pages.keys() {
+                                for (label, choice) in [
+                                    (
+                                        format!("open {p}"),
+                                        RuntimeCommand::Open { page: p.clone() },
+                                    ),
+                                    (
+                                        format!("close {p}"),
+                                        RuntimeCommand::Close {
+                                            page: Some(p.clone()),
+                                        },
+                                    ),
+                                ] {
+                                    let item = ui.selectable_label(command == &choice, &label);
+                                    self.rects.insert(format!("ui_command:{label}"), item.rect);
+                                    if item.clicked() {
+                                        picked = Some(choice);
+                                    }
                                 }
                             }
                         });

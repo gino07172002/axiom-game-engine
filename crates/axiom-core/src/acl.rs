@@ -109,7 +109,7 @@ EDIT (any number, atomic):
  ui.document (UI Editor tab):
   ui place WIDGET REGION|none     top_left|top|top_right|left|center|right|bottom_left|bottom|bottom_right
   ui style WIDGET STYLE|none      title|heading|banner|value|label|muted (text and progress widgets)
-  ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}]
+  ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}] | open PAGE | close [PAGE]
         | batch [COMMANDS]        1..16 commands run in order in one tick, all validated first
   ui slider add ID TEXT_KEY MIN MAX [variable=V] [step=S] [value=X] [call=CAP.ACTION] [args={..}] [arg=NAME]
         [when={COND}]             slider widget: sets number variable V and / or sends the call with args[NAME]=value
@@ -128,6 +128,11 @@ EDIT (any number, atomic):
   ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none
                                   reference screen: panels are laid out in W x H pixels and the panel layer
                                   scales to the window (N% lengths are of W / H); live: observe ui.layout
+  ui page ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off] | ui page ID none
+                                  root panels shown only while the page is open (buttons: ui button W open PAGE
+                                  | close [PAGE]; commands {kind:open,page} / {kind:close,page?}); modal (default on)
+                                  dims the HUD and takes arrow-key / Enter / gamepad focus; pause stops the fixed
+                                  step; escape = Esc / pad Start toggles it; the open stack is saved in checkpoints
   ui template ID {params:[NAME..], widgets:[WIDGET..], panel?:{PANEL}, classes?:{W:CLASS}} (JSON) | ui template ID none
                                   reusable widgets; strings may use {NAME} and {i} (instance index)
   ui use ID TEMPLATE [into=PANEL] [count=VARIABLE] [[{NAME:value},..]] (JSON) | ui use ID none
@@ -796,6 +801,8 @@ enum UiStatement {
     Frame(String, Option<crate::ui_theme::UiFrame>),
     PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
     Panel(String, Option<crate::ui_theme::UiPanel>),
+    /// `ui page ID panels=A,B [modal=] [pause=] [escape=]` / `ui page ID none`.
+    Page(String, Option<crate::ui_theme::UiPage>),
     /// `ui template ID {JSON}` / `ui template ID none`.
     Template(String, Option<Box<crate::ui_template::UiTemplate>>),
     /// `ui use ID TEMPLATE [into=] [count=] [INSTANCES]` / `ui use ID none`.
@@ -842,7 +849,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             UiStatement::Style(arg(2)?.clone(), crate::ops::parse_style(arg(3)?)?)
         }
         "button" => {
-            let usage = "use: ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}] | batch [COMMANDS JSON]";
+            let usage = "use: ui button WIDGET emit EVENT [{FIELDS}] | locale L | choose NODE CHOICE | call CAP ACTION [{ARGS}] | batch [COMMANDS JSON] | open PAGE | close [PAGE]";
             let widget = arg(2)?.clone();
             let n = tokens.len();
             let command = match (tokens.get(3).map(String::as_str), n) {
@@ -856,6 +863,12 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                 },
                 (Some("locale"), 5) => RuntimeCommand::Locale {
                     locale: tokens[4].clone(),
+                },
+                (Some("open"), 5) => RuntimeCommand::Open {
+                    page: tokens[4].clone(),
+                },
+                (Some("close"), 4 | 5) => RuntimeCommand::Close {
+                    page: tokens.get(4).cloned(),
                 },
                 (Some("choose"), 6) => RuntimeCommand::Choose {
                     node: tokens[4].clone(),
@@ -959,6 +972,18 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             ensure!(tokens.len() == 4, "use: ui class WIDGET CLASS|none");
             let class = (tokens[3] != "none").then(|| tokens[3].clone());
             UiStatement::Class(tokens[2].clone(), class)
+        }
+        "page" => {
+            let usage = "use: ui page ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off] | ui page ID none";
+            ensure!(tokens.len() >= 4, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::Page(tokens[2].clone(), None)
+            } else {
+                UiStatement::Page(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::page_from(&key_values(&tokens[3..])?)?),
+                )
+            }
         }
         "template" => {
             let usage = "use: ui template ID {\"params\":[..],\"widgets\":[..],\"panel\"?:{..},\"classes\"?:{..}} | ui template ID none";
@@ -1099,7 +1124,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             }
             other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
         },
-        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, font, template, use, textclass, buttonclass, class)"),
+        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, font, template, use, page, textclass, buttonclass, class)"),
     })
 }
 
@@ -1117,6 +1142,7 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
             crate::ops::set_ui_template(w, id, template.as_deref().cloned())
         }
         UiStatement::Use(id, entry) => crate::ops::set_ui_use(w, id, entry.clone()),
+        UiStatement::Page(id, page) => crate::ops::set_ui_page(w, id, page.clone()),
         UiStatement::TextClass(class, text) => {
             crate::ops::set_ui_text_class(w, class, text.clone())
         }

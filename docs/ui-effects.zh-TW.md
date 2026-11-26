@@ -66,7 +66,7 @@
 ```
 ui place WIDGET REGION|none           # 九宮格區域;none = 底部文件面板
 ui style WIDGET STYLE|none            # title|heading|banner|value|label|muted(text、progress)
-ui button WIDGET emit EVENT [{..}] | locale L | choose NODE CHOICE | call CAP ACTION [{..}]
+ui button WIDGET emit EVENT [{..}] | locale L | choose NODE CHOICE | call CAP ACTION [{..}] | open PAGE | close [PAGE]
 ui effect add ID WIDGET KIND [on=..] [event=..] [when={..}] [ticks=N] [ease=..] [direction=..] [amount=X] [from=X]
 ui effect set ID [kind=..] [widget=..] [同上;OPTION=default 清回預設]
 ui effect remove ID                   # ui.effects 系統保留
@@ -75,6 +75,7 @@ ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui pan
 ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N] [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none
 ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none   # 參考畫面:面板層整體縮放
 ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none   # 內容包字型
+ui page ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off] | ui page ID none   # 頁面(選單、彈窗)
 ui template ID {JSON} | ui template ID none                       # 模板:元件(+ 面板、類別)
 ui use ID TEMPLATE [into=PANEL] [count=VAR] [[{..},..]] | ui use ID none   # 每個參數物件一個實例
 ui textclass CLASS [size=N] [font=ID] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
@@ -115,6 +116,18 @@ ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → b
 - `theme.frames.ID = {image, slice:[l,t,r,b]}`:四個角保持原像素大小,四邊和中央拉伸。面板比兩個角加起來還小時,角會等比縮小。
 - 示範:Axiom Town 的對話框是 `dialog` 面板(底部置中、寬 900,使用 `ui/dialog-frame.png`)。這張圖由 `cargo run -p axiom-runtime --example build_ui_frames` 產生,是原創、不含第三方素材的圖,而且每次產生的結果都相同。
 - 回歸檢查:`scripts/ui-screenshot-ab.ps1 -Old OLD.exe` 對每個有 `ui.document` 的內容包做新舊截圖逐位元比較。
+
+**頁面、模態與焦點(plan M6)**
+
+- `pages.ID = {panels, modal?, pause?, escape?}`:頁面打開時才畫出 `panels` 裡的根面板(沒有放進任何頁面的面板就是一直顯示的 HUD)。
+  - `modal`(預設開):底下的 HUD 變暗、按鈕不能用,頁面拿走鍵盤 / 手把焦點;
+  - `pause`:頁面開著時固定步長的模擬停止(UI、scenario、loopback 都一樣);指令照樣能用,所以頁面上的按鈕可以關掉它;
+  - `escape`:Esc(手把 Start)開關這個頁面;最多一個。文件沒有 escape 頁面時,Esc 照舊暫停整個遊戲。
+- 開關頁面是型別化的遊戲指令:`{"kind":"open","page":ID}`、`{"kind":"close","page"?:ID}`(沒有 page = 關最上面的);按鈕用 `ui button W open PAGE` / `ui button W close [PAGE]`。
+- 焦點:最上面的模態頁面打開時,方向鍵 / Tab 在它的按鈕間移動(到底會繞回),Enter / Space 按下;手把十字鍵、A 一樣,B 關掉最上面的頁面。被選中的按鈕用 hover 的外觀(沒套類別的按鈕畫金色框)。
+- 存檔:開著的頁面存在 checkpoint 的 gameplay 進度裡;讀檔時頁面不存在會明確失敗,不會默默丟掉。
+- 觀察:`observe` 的 `gameplay.pages` 是開著的頁面(由下到上)。
+- 示範:Axiom Town 按 Esc 打開置中的「暫停」選單(對話框邊框、點陣字):繼續遊戲 / English / 中文;遊戲在選單開著時暫停。
 
 **模板與重複(plan M5)**
 

@@ -498,3 +498,58 @@ fn templates_expand_into_widgets_panels_and_classes() {
     }
     assert_eq!(doc(&s), raw);
 }
+
+/// Plan M6: pages of root panels, opened and closed by typed commands.
+#[test]
+fn pages_show_root_panels_and_buttons_open_and_close_them() {
+    let mut s = store();
+    let raw = doc(&s);
+    acl(&mut s, "ui panel menu center widgets=buy").unwrap();
+    acl(&mut s, "ui panel inner top widgets=coins").unwrap();
+    acl(&mut s, "ui panel outer top widgets=inner").unwrap();
+    acl(&mut s, "ui page shop panels=menu pause=on escape=on").unwrap();
+    assert_eq!(
+        doc(&s)["pages"],
+        json!({"shop": {"panels": ["menu"], "pause": true, "escape": true}}),
+        "modal is the default and not written"
+    );
+    acl(&mut s, "ui button buy close shop").unwrap();
+    assert_eq!(
+        doc(&s)["widgets"][3]["command"],
+        json!({"kind": "close", "page": "shop"})
+    );
+    acl(&mut s, "ui button buy close").unwrap();
+    assert_eq!(doc(&s)["widgets"][3]["command"], json!({"kind": "close"}));
+    acl(&mut s, "ui button buy open shop").unwrap();
+    let start = rev(&s);
+    for (script, path) in [
+        ("ui page p2 panels=ghost", "/pages/p2/panels/0"),
+        ("ui page p2 panels=inner", "/pages/p2/panels/0"),
+        ("ui page p2 panels=menu", "/pages/shop/panels/0"),
+        ("ui page p2 panels=outer escape=on", "/pages"),
+        ("ui page p2 modal=off", "/pages/p2/panels"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    let e = acl(&mut s, "ui page p2 panels=outer pause=maybe").expect_err("flag");
+    assert!(e.to_string().contains("on or off"), "{e}");
+    // The command names a page the document has (checked when the world compiles).
+    let world = s.current().unwrap().1;
+    axiom_core::gameplay::CompiledGameplay::compile(&world).unwrap();
+    for script in [
+        r#"set widgets[id=buy] /command {"kind":"emit","event":"buy"}"#,
+        "ui page shop none",
+        "ui panel outer none",
+        "ui panel inner none",
+        "ui panel menu none",
+    ] {
+        acl(&mut s, script).unwrap();
+    }
+    assert_eq!(doc(&s), raw);
+}

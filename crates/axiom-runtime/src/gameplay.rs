@@ -27,6 +27,9 @@ pub struct Progress {
     /// Committed values of sliders without a variable (absent when none moved: older saves load).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sliders: BTreeMap<String, f64>,
+    /// Open `ui.document` pages, bottom to top (plan M6; absent when none: older saves load).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<String>,
 }
 /// Outcome of the capability calls `call` actions queued (observe `calls`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -91,6 +94,8 @@ pub struct Gameplay {
     /// Committed values of sliders without a variable, set by successful `slide` commands
     /// (GUI and CLI alike) and observed under `bindings`.
     pub slider_values: BTreeMap<String, f64>,
+    /// Open `ui.document` pages, bottom to top (`open` / `close` commands, plan M6).
+    pub pages: Vec<String>,
 }
 struct Budget(usize);
 impl Budget {
@@ -122,6 +127,7 @@ impl Gameplay {
             calls: vec![],
             call_stats: CallStats::default(),
             slider_values: BTreeMap::new(),
+            pages: vec![],
             animation: compiled
                 .animation_reads
                 .iter()
@@ -411,8 +417,43 @@ impl Gameplay {
                 );
                 next.locale = Some(locale.clone());
             }
+            RuntimeCommand::Open { page } => {
+                ensure!(
+                    next.compiled
+                        .ui
+                        .as_ref()
+                        .is_some_and(|u| u.pages.contains_key(page)),
+                    "unknown page {page}"
+                );
+                // Opening an open page brings it to the top.
+                next.pages.retain(|p| p != page);
+                next.pages.push(page.clone());
+                next.record(tick, "open", page);
+            }
+            RuntimeCommand::Close { page } => {
+                let closed = match page {
+                    Some(page) => {
+                        let at = next
+                            .pages
+                            .iter()
+                            .position(|p| p == page)
+                            .with_context(|| format!("page {page} is not open"))?;
+                        next.pages.remove(at)
+                    }
+                    None => next.pages.pop().context("no page is open")?,
+                };
+                next.record(tick, "close", &closed);
+            }
         }
         Ok(())
+    }
+    /// Whether an open page stops the fixed-step simulation (`pause`, plan M6).
+    pub fn paused(&self) -> bool {
+        self.compiled.ui.as_ref().is_some_and(|u| {
+            self.pages
+                .iter()
+                .any(|p| u.pages.get(p).is_some_and(|page| page.pause))
+        })
     }
     /// One fixed step; returns whether it switched scene flags (the caller syncs visibility).
     pub fn step(&mut self, input: &crate::ActionMap, tick: u64) -> bool {
@@ -508,6 +549,7 @@ impl Gameplay {
             held_inputs: self.held.clone(),
             calls: self.call_stats.clone(),
             sliders: self.slider_values.clone(),
+            pages: self.pages.clone(),
         }
     }
     pub fn restore(&mut self, p: &Progress, tick: u64) -> Result<()> {
@@ -614,6 +656,20 @@ impl Gameplay {
             "invalid saved inputs"
         );
         next.held = p.held_inputs.clone();
+        // Open pages (plan M6): every one must still exist, each once.
+        ensure!(
+            p.pages.len() <= axiom_core::ui_theme::MAX_PAGES
+                && p.pages.iter().enumerate().all(|(i, id)| {
+                    !p.pages[..i].contains(id)
+                        && self
+                            .compiled
+                            .ui
+                            .as_ref()
+                            .is_some_and(|u| u.pages.contains_key(id))
+                }),
+            "save page missing"
+        );
+        next.pages = p.pages.clone();
         next.slider_values.clear();
         for (id, value) in &p.sliders {
             let s = self
@@ -659,6 +715,18 @@ impl Gameplay {
                 }
             }
         }
+        // Open pages that still exist stay open across a content reload.
+        self.pages = old
+            .pages
+            .iter()
+            .filter(|p| {
+                self.compiled
+                    .ui
+                    .as_ref()
+                    .is_some_and(|u| u.pages.contains_key(*p))
+            })
+            .cloned()
+            .collect();
         for (id, value) in &old.slider_values {
             if let Ok(s) = self.slider(id) {
                 if s.variable.is_none() {
@@ -753,6 +821,15 @@ impl Gameplay {
             })
             .collect::<BTreeMap<_, _>>();
         let mut out = json!({"bindings":bindings,"variables":self.progress().variables,"node":self.node.map(|n|&self.compiled.nodes[n].id),"ending":self.ending,"choices":self.choices().iter().map(|c|json!({"id":c.id,"text":self.text(&c.text)})).collect::<Vec<_>>(),"active_scenes":self.progress().active_scenes,"pending_events":self.pending.len(),"locale":self.locale,"trace":self.trace,"error":self.fault});
+        // Open pages (plan M6), only for documents that have pages.
+        if self
+            .compiled
+            .ui
+            .as_ref()
+            .is_some_and(|u| !u.pages.is_empty())
+        {
+            out["pages"] = json!(self.pages);
+        }
         // Only when used, so other worlds keep their observation (and state_hash).
         if !self.animation.is_empty() {
             out["animation_reads"] = self

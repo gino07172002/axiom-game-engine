@@ -214,6 +214,33 @@ pub fn draw(
     let mut actions = vec![];
     state.targets.clear();
     state.fonts_ready = ensure_fonts(ctx, g);
+    // Pages (plan M6): a modal page takes the arrow keys, Tab and Enter / Space for focus.
+    state.blocked = top_modal(doc, g).is_some();
+    state.nav = 0;
+    state.activate = false;
+    state.focusables.clear();
+    if state.blocked {
+        ctx.input_mut(|i| {
+            use egui::{Key, Modifiers};
+            for key in [Key::ArrowDown, Key::ArrowRight, Key::Tab] {
+                while i.consume_key(Modifiers::NONE, key) {
+                    state.nav += 1;
+                }
+            }
+            for key in [Key::ArrowUp, Key::ArrowLeft] {
+                while i.consume_key(Modifiers::NONE, key) {
+                    state.nav -= 1;
+                }
+            }
+            for key in [Key::Enter, Key::Space] {
+                if i.consume_key(Modifiers::NONE, key) {
+                    state.activate = true;
+                }
+            }
+        });
+    } else {
+        state.focus = None;
+    }
     // Only the currently prepared assets remain cached after a content switch/reload.
     state
         .textures
@@ -234,6 +261,18 @@ pub fn draw(
         .clear(ctx.screen_rect(), ctx.pixels_per_point());
     draw_regions(ctx, g, state, &mut actions, &mut surface);
     draw_panels(ctx, g, state, &mut actions, &mut surface);
+    if state.blocked {
+        // Focus: keep it on a drawn button of the top modal page, then apply this frame's moves.
+        let n = state.focusables.len() as i32;
+        state.focus = match state
+            .focus
+            .and_then(|f| state.focusables.iter().position(|&i| i == f))
+        {
+            _ if n == 0 => None,
+            None => Some(state.focusables[0]),
+            Some(at) => Some(state.focusables[(at as i32 + state.nav).rem_euclid(n) as usize]),
+        };
+    }
     let placed = |w: &BoundWidget| region_of(w).is_some() || in_panel(doc, w);
     let unplaced = g.compiled.widgets.iter().any(|w| !placed(w));
     if (!doc.regions.is_empty() || !doc.panels.is_empty()) && !unplaced {
@@ -683,20 +722,39 @@ fn draw_widgets(
                 drawn = Some(
                     ui.push_id(id, |ui| {
                         with_effects(ui, visual, |ui| {
-                            let enabled = state.playing && !state.console;
+                            // Under an open modal page only that page's buttons can be used.
+                            let enabled = state.playing
+                                && !state.console
+                                && (!state.blocked || state.in_modal);
+                            let focused = state.in_modal && state.focus == Some(index);
                             let min = Vec2::new(if compact { 0.0 } else { 220.0 }, 32.0);
                             let response = match button_class(g, id) {
                                 Some(class) => {
-                                    themed_button(ui, g, state, text, class, enabled, min)
+                                    themed_button(ui, g, state, text, class, enabled, min, focused)
                                 }
                                 None => {
-                                    ui.add_enabled(enabled, egui::Button::new(text).min_size(min))
+                                    let r = ui.add_enabled(
+                                        enabled,
+                                        egui::Button::new(text).min_size(min),
+                                    );
+                                    if focused {
+                                        ui.painter().rect_stroke(
+                                            r.rect.expand(2.0),
+                                            4.0,
+                                            egui::Stroke::new(2.0_f32, FOCUS),
+                                            egui::StrokeKind::Outside,
+                                        );
+                                    }
+                                    r
                                 }
                             };
                             // Kept on screen only by an exit effect: shown, not usable.
                             if g.test(when) {
                                 state.target(format!("button/{id}"), response.rect);
-                                if response.clicked() {
+                                if state.in_modal && enabled {
+                                    state.focusables.push(index);
+                                }
+                                if response.clicked() || (focused && enabled && state.activate) {
                                     actions.push(Action::Gameplay(command.clone()));
                                 }
                             }
@@ -1079,6 +1137,27 @@ fn panel_visible(pc: &PanelCtx, i: usize, depth: usize) -> bool {
             })
 }
 
+/// The page (plan M6) that shows root panel `id`, if any.
+fn page_of<'a>(doc: &'a axiom_core::gameplay::UiDocument, id: &str) -> Option<&'a str> {
+    doc.pages
+        .iter()
+        .find(|(_, p)| p.panels.iter().any(|q| q == id))
+        .map(|(k, _)| k.as_str())
+}
+
+/// The top open modal page, if any.
+fn top_modal<'a>(doc: &'a axiom_core::gameplay::UiDocument, g: &Gameplay) -> Option<&'a str> {
+    g.pages.iter().rev().find_map(|open| {
+        doc.pages
+            .get_key_value(open)
+            .filter(|(_, p)| p.modal)
+            .map(|(k, _)| k.as_str())
+    })
+}
+
+/// Focus ring of plain (unthemed) buttons.
+const FOCUS: Color32 = Color32::from_rgb(255, 214, 102);
+
 fn panel_layer(salt: &'static str, id: &str) -> egui::LayerId {
     egui::LayerId::new(egui::Order::Middle, egui::Id::new((salt, "panel", id)))
 }
@@ -1121,8 +1200,26 @@ fn draw_panels(
     widgets.clear();
     let mut panels = std::mem::take(&mut state.layout_panels);
     panels.clear();
+    // Pages (plan M6): panels of closed pages are not drawn; the top modal page draws above
+    // a backdrop that dims the HUD and takes its clicks.
+    let modal = top_modal(doc, g);
+    if let (Some(_), None) = (modal, s.area) {
+        egui::Area::new(egui::Id::new("ui_page_backdrop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+            });
+    }
     for &i in &order {
         let panel = &doc.panels[i];
+        let page = page_of(doc, &panel.id);
+        if page.is_some_and(|p| !g.pages.iter().any(|open| open == p)) {
+            continue;
+        }
+        let on_top = page.is_some() && page == modal;
         if !panel_visible(&pc, i, 1) {
             continue;
         }
@@ -1134,8 +1231,17 @@ fn draw_panels(
         ) {
             offset[1] += s.top / scale;
         }
-        let layer = panel_layer(s.salt, &panel.id);
-        let mut area = egui::Area::new(layer.id).anchor(align, offset);
+        let layer = egui::LayerId::new(
+            if on_top && s.area.is_none() {
+                egui::Order::Foreground
+            } else {
+                egui::Order::Middle
+            },
+            panel_layer(s.salt, &panel.id).id,
+        );
+        let mut area = egui::Area::new(layer.id)
+            .order(layer.order)
+            .anchor(align, offset);
         if s.area.is_some() {
             area = area.constrain_to(virt).interactable(false);
         } else if scaled {
@@ -1144,6 +1250,7 @@ fn draw_panels(
         let clip = s.clip.map(|c| ui_t.inverse().mul_rect(c));
         let canvas = s.area.is_some();
         state.target_transform = layer_t;
+        state.in_modal = on_top;
         area.show(ctx, |ui| {
             if let Some(clip) = clip {
                 ui.set_clip_rect(ui.clip_rect().intersect(clip));
@@ -1154,8 +1261,13 @@ fn draw_panels(
             panel_body(ui, &pc, state, actions, &mut widgets, &mut panels, i, 1);
         });
         state.target_transform = TSTransform::IDENTITY;
+        state.in_modal = false;
         // Identity removes the layer transform (an unscaled game HUD stays untransformed).
         ctx.set_transform_layer(layer, layer_t);
+        if on_top {
+            // Above the backdrop (clicking it would otherwise raise it over the page).
+            ctx.move_to_top(layer);
+        }
     }
     if doc.panels.iter().any(|p| p.z.is_some()) {
         for &i in &order {
@@ -1634,6 +1746,7 @@ pub(crate) fn button_state(enabled: bool, response: &egui::Response) -> &'static
 
 /// A button in a theme button class: the state's fill and nine-slice frame behind a centred
 /// label; unset state fields fall back to `normal`. Clicks behave like the plain button.
+#[allow(clippy::too_many_arguments)]
 fn themed_button(
     ui: &mut egui::Ui,
     g: &Gameplay,
@@ -1642,6 +1755,7 @@ fn themed_button(
     class: &axiom_core::ui_theme::ButtonClass,
     enabled: bool,
     min: Vec2,
+    focused: bool,
 ) -> egui::Response {
     let padding = class.padding.unwrap_or(10.0);
     let galley = ui.painter().layout_no_wrap(
@@ -1660,7 +1774,11 @@ fn themed_button(
     };
     let (rect, response) = ui.allocate_exact_size(desired, sense);
     if ui.is_rect_visible(rect) {
-        let name = button_state(enabled, &response);
+        let mut name = button_state(enabled, &response);
+        // Keyboard / gamepad focus looks like hover (plan M6).
+        if focused && name == "normal" {
+            name = "hover";
+        }
         let look = class
             .state(name)
             .map_or_else(|| class.normal.clone(), |l| l.over(&class.normal));

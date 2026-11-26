@@ -534,6 +534,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ID ANCHOR [at=X,Y] [width=|N%] [height=] [layout=] [columns=] [gap=] [z=] [style=] [widgets=A,B] | ID none",
     ),
     a(
+        "ui.page",
+        "UI: Page (menu / modal)…",
+        "World",
+        "ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off] | ID none",
+    ),
+    a(
         "ui.template",
         "UI: Template (JSON)…",
         "World",
@@ -784,6 +790,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.panel",
     "ui.screen",
     "ui.font",
+    "ui.page",
     "ui.template",
     "ui.use",
     "ui.text_class",
@@ -1354,7 +1361,7 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
-            | "ui.screen" | "ui.font" | "ui.template" | "ui.use" | "ui.text_class"
+            | "ui.screen" | "ui.font" | "ui.page" | "ui.template" | "ui.use" | "ui.text_class"
             | "ui.button_class" | "ui.class"
                 if busy =>
             {

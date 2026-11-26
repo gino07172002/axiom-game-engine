@@ -3449,6 +3449,13 @@ fn ui_theme_and_panel_commands_match_acl() {
             "hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",
             "ui panel hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",
         ),
+        // Plan M6: the hud panel becomes a page; a button opens it.
+        (
+            "ui.page",
+            "stats panels=hud modal=off",
+            "ui page stats panels=hud modal=off",
+        ),
+        ("ui.button", "emote_wave open stats", "ui button emote_wave open stats"),
     ];
     // One step at a time: each starts from the world the earlier ACL lines produced.
     let mut at = start.clone();
@@ -3479,6 +3486,10 @@ fn ui_theme_and_panel_commands_match_acl() {
     assert_eq!(hud["width"], "40%");
     assert_eq!(hud["layout"], "grid");
     assert_eq!(hud["children"], serde_json::json!(["tracker"]));
+    assert_eq!(
+        at.resources["ui.document"]["pages"]["stats"],
+        serde_json::json!({"panels": ["hud"], "modal": false})
+    );
     assert_eq!(theme["fonts"]["serif"]["license"], "OFL-1.1");
     assert_eq!(at.resources["ui.document"]["uses"][0]["into"], "tracker");
     assert_eq!(
