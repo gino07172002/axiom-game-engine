@@ -122,7 +122,7 @@ EDIT (any number, atomic):
   ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
   ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
                                   anchored panel (ANCHOR = a REGION name) holding widgets top to bottom;
-                                  a widget sits in one panel or one region (drawing: plan M1b)
+                                  a widget sits in one panel or one region; drawn with the style fill + frame
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
   input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
                                   KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft

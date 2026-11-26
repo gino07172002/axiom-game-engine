@@ -70,7 +70,26 @@ ui button WIDGET emit EVENT [{..}] | locale L | choose NODE CHOICE | call CAP AC
 ui effect add ID WIDGET KIND [on=..] [event=..] [when={..}] [ticks=N] [ease=..] [direction=..] [amount=X] [from=X]
 ui effect set ID [kind=..] [widget=..] [同上;OPTION=default 清回預設]
 ui effect remove ID                   # ui.effects 系統保留
+ui frame ID IMAGE L T R B | ui frame ID none        # 主題九宮格邊框:images 裡的圖 + 四邊切割像素
+ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
+ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
 ```
+
+**面板與邊框(`ui.document` v2,見 `docs/plan-ui-styling.zh-TW.md`)**
+
+- `panels`:每個面板是一個錨定在九宮格方位(ANCHOR = REGION 名稱)加偏移 `at`(px,+x 往右、+y 往下)的直欄,元件依 `widgets` 的順序由上而下排列。
+- 面板依清單順序疊放:後面的面板畫在上層。
+- 面板可以指定 `width`;沒指定時寬度跟著內容,上限是該錨點原本的寬度。
+- 同一個元件只能放在一個面板或一個 region 裡,不能兩處都放。
+- 所有元件都放進 region 或面板時,不再畫底部的文件面板;語系、存檔、讀檔控制項會移到右上角。
+- `theme.panel.CLASS`:面板外觀。
+  - `fill`:RGBA 底色。
+  - `corner`:圓角。
+  - `padding`:內距,預設 10。
+  - `frame`:引用 `theme.frames` 裡的一個九宮格邊框,畫在元件後面。
+- `theme.frames.ID = {image, slice:[l,t,r,b]}`:四個角保持原像素大小,四邊和中央拉伸。面板比兩個角加起來還小時,角會等比縮小。
+- 示範:Axiom Town 的對話框是 `dialog` 面板(底部置中、寬 900,使用 `ui/dialog-frame.png`)。這張圖由 `cargo run -p axiom-runtime --example build_ui_frames` 產生,是原創、不含第三方素材的圖,而且每次產生的結果都相同。
+- 回歸檢查:`scripts/ui-screenshot-ab.ps1 -Old OLD.exe` 對每個有 `ui.document` 的內容包做新舊截圖逐位元比較。
 
 每個動詞都是 `axiom_core::ops` 的純函式(`set_ui_region`、`set_ui_style`、`set_ui_button_command`、`add_ui_effect`、`set_ui_effect`、`edit_ui_effect`、`remove_ui_effect`、`set_ui_widget_fields`),編輯器呼叫同一組函式。`discover ui_effects` 列出種類、觸發、預設與預算。
 

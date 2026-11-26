@@ -294,3 +294,27 @@ theme: {
   - `editor::parity::ui_theme_and_panel_commands_match_acl`:逐步比對編輯器命令和 ACL 的結果。
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 1120 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
 - **尚未做(M1b)**:畫面上還看不到面板和邊框,放進面板的元件照舊畫在原本的位置(discover 的說明有寫)。截圖 A/B 腳本、town 內容、原創邊框生成器也都留到 M1b。
+
+### M1b 完成(分支 `ui-v2`)
+
+- **渲染(`bound_ui.rs`)**:新增 `draw_panels`。
+  - 每個面板是一個 egui `Area`:錨點沿用 region 的 `Align2`,偏移使用 `offset`;錨在上方的面板會再往下讓開頂端的 chrome。
+  - 背景:先預留一個繪製位置,內容畫完後依實際矩形填入「`fill` 圓角矩形 + 九宮格 mesh」,所以背景會在元件下方(Spike S1 的作法)。
+  - 子元件依 `children` 的順序畫出。
+  - 遊戲畫面和編輯器畫布(`draw_canvas`,面板圖層套用畫布縮放)走同一條路徑。
+  - 放在面板裡的元件不會掉到底部文件面板。
+- **九宮格**:`nine_slice(rect, tex, size, slice)`。四個角保持原像素大小;矩形比兩個角加起來還小時,角等比縮小;寬或高為零的格子略過。貼圖和圖片元件共用 `state.textures` 快取。
+- **回歸(實作中發現並修正)**:元件全部放進面板或 region 後,底部面板不再出現,原本只看 region 的判斷讓語系、存檔、讀檔控制項消失。現在判斷「已放好位置」時也算入面板。
+  - 回歸測試 `ui_panels::session_controls_stay_on_screen_when_every_widget_is_in_a_region_or_panel`。
+  - 把修正還原後測試會失敗,恢復修正後通過。
+- **原創素材**:`crates/axiom-runtime/examples/build_ui_frames.rs` 產生 `content/axiom-town/ui/dialog-frame.png`(96×96,切割 32)。連跑兩次 SHA-256 相同。
+- **內容**:Axiom Town 的 `speaker`、`line`、`choices` 從 bottom region 移到 `dialog` 面板(底部置中、`offset [0,-14]`、寬 900、`padding 26`、`frame dialog`)。
+- **測試**:
+  - `bound_ui::panel_tests` 2 個:邊角像素與 UV、小矩形的邊角縮小。
+  - `tests/ui_panels.rs` 2 個:
+    - 走到 Lumi 按 E 之後,只畫出一個九宮格,寬 900、置中、離底 14 px,所有選項按鈕都在框內;
+    - session 控制項仍在畫面上。
+- **截圖 A/B**(`scripts/ui-screenshot-ab.ps1`;新 exe 對 M1a exe,debug,1805×950,120 幀,每次用新的資料庫,第一個包重跑兩次確認截圖本身穩定):
+  - adv、animation、animator-lab、character-lab、duet-lab、rts-bench、rts、street、style-lab 共 9 個包**逐位元相同**;
+  - axiom-town 預期會變:截圖已看過,對話框在金框內,右上角控制項還在。
+- **未驗證**:沒有在 GPU 上截對話框開啟中的畫面,這部分由 headless 測試涵蓋;出生點的截圖已顯示框內的「廣場」說明。沒有做 release 量測,也沒有效能宣稱。

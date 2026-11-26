@@ -2,8 +2,9 @@
 //! frames and panel styles, and anchored panels that hold widgets. All fields are optional
 //! and skipped when empty, so documents without them serialize exactly as before.
 //!
-//! Rendering of panels and frames is milestone M1b (`bound_ui`); until then a widget placed
-//! in a panel draws where it did before (its region or the bottom document panel).
+//! `bound_ui` draws each panel as an anchored column (z order = list order) with its style
+//! fill and nine-slice frame behind the widgets; panel widgets never fall back to the bottom
+//! document panel.
 use crate::gameplay::{Region, UiDocument};
 use crate::{valid_id, Diagnostic};
 use anyhow::Result;

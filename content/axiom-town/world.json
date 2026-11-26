@@ -287,9 +287,16 @@
     },
     "ui.document": {
       "locale":"zh-TW",
+      "images":{"dialog":"ui/dialog-frame.png"},
+      "theme":{
+        "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]}},
+        "panel":{"dialog":{"padding":26,"frame":"dialog"}}
+      },
+      "panels":[
+        {"id":"dialog","anchor":"bottom","offset":[0,-14],"width":900,"style":"dialog","children":["speaker","line","choices"]}
+      ],
       "regions":{
         "title":"top_left","quest":"top_left","prompt":"top","coins_label":"top_left","coins":"top_left","affection":"top_left",
-        "speaker":"bottom","line":"bottom","choices":"bottom",
         "emote_wave":"right","emote_bow":"right","emote_dance":"right","emote_cheer":"right","emote_pose":"right","emote_think":"right"
       },
       "catalogs":{

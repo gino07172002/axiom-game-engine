@@ -140,8 +140,10 @@ pub fn draw(
         clip: None,
     };
     draw_regions(ctx, g, state, &mut actions, &mut surface);
-    let unplaced = g.compiled.widgets.iter().any(|w| region_of(w).is_none());
-    if !doc.regions.is_empty() && !unplaced {
+    draw_panels(ctx, g, state, &mut actions, &mut surface);
+    let placed = |w: &BoundWidget| region_of(w).is_some() || in_panel(doc, w);
+    let unplaced = g.compiled.widgets.iter().any(|w| !placed(w));
+    if (!doc.regions.is_empty() || !doc.panels.is_empty()) && !unplaced {
         if let Some(error) = &g.fault {
             egui::Area::new(egui::Id::new("bound_fault"))
                 .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
@@ -160,7 +162,7 @@ pub fn draw(
                 if doc.session_controls {
                     session_controls(ui, doc, g, state, &mut actions);
                 }
-                let filter = |w: &BoundWidget| region_of(w).is_none();
+                let filter = |w: &BoundWidget| !placed(w);
                 if doc.flow {
                     ui.horizontal_wrapped(|ui| {
                         draw_widgets(ui, g, state, &mut actions, &filter, true, fx, None)
@@ -198,10 +200,15 @@ fn draw_regions(
             region_of(w) == Some(region)
                 && (widget_visible(g, w) || fx.is_some_and(|f| f.visual(i).forced))
         });
+        // Session controls move to the top-right region when no bottom document panel is
+        // drawn: every widget is placed in a region or a panel.
         let controls = region == Region::TopRight
             && doc.session_controls
-            && !doc.regions.is_empty()
-            && g.compiled.widgets.iter().all(|w| region_of(w).is_some());
+            && (!doc.regions.is_empty() || !doc.panels.is_empty())
+            && g.compiled
+                .widgets
+                .iter()
+                .all(|w| region_of(w).is_some() || in_panel(doc, w));
         if !visible && !controls {
             continue;
         }
@@ -301,6 +308,16 @@ pub fn draw_canvas(
         clip: Some(layout_clip),
     };
     draw_regions(ctx, g, state, &mut actions, &mut surface);
+    draw_panels(ctx, g, state, &mut actions, &mut surface);
+    for panel in &doc.panels {
+        ctx.set_transform_layer(
+            egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new(("ui_canvas_region", "panel", panel.id.as_str())),
+            ),
+            transform,
+        );
+    }
     for region in REGIONS {
         ctx.set_transform_layer(
             egui::LayerId::new(
@@ -312,7 +329,10 @@ pub fn draw_canvas(
     }
     // Unplaced widgets: the game draws them in a bottom panel across the window.
     let region_of = |w: &BoundWidget| doc.regions.get(widget_id(w)).copied();
-    if doc.regions.is_empty() || g.compiled.widgets.iter().any(|w| region_of(w).is_none()) {
+    let placed = |w: &BoundWidget| region_of(w).is_some() || in_panel(doc, w);
+    if (doc.regions.is_empty() && doc.panels.is_empty())
+        || g.compiled.widgets.iter().any(|w| !placed(w))
+    {
         let id = egui::Id::new("ui_canvas_document");
         egui::Area::new(id)
             .constrain_to(screen)
@@ -329,7 +349,7 @@ pub fn draw_canvas(
                         if doc.session_controls {
                             session_controls(ui, doc, g, state, &mut actions);
                         }
-                        let filter = |w: &BoundWidget| region_of(w).is_none();
+                        let filter = |w: &BoundWidget| !placed(w);
                         if doc.flow {
                             ui.horizontal_wrapped(|ui| {
                                 draw_widgets(
@@ -772,5 +792,214 @@ fn choice_buttons(
                 choice: choice.id.clone(),
             }));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// ui.document v2 panels (plan M1b): anchored panels with a panel style (fill, corner,
+// padding) and an optional nine-slice frame image drawn behind their widgets.
+// ---------------------------------------------------------------------------------------
+
+/// Whether a widget sits in one of the document's panels.
+fn in_panel(doc: &axiom_core::gameplay::UiDocument, w: &BoundWidget) -> bool {
+    let id = widget_id(w);
+    doc.panels
+        .iter()
+        .any(|p| p.children.iter().any(|c| c == id))
+}
+
+/// Nine quads of `size`-pixel texture `tex` over `rect`: corners keep their pixel size
+/// (shrunk proportionally when the rect is smaller than two corners), edges and centre
+/// stretch.
+pub(crate) fn nine_slice(
+    rect: egui::Rect,
+    tex: egui::TextureId,
+    size: [usize; 2],
+    slice: [u16; 4],
+) -> egui::epaint::Mesh {
+    let [w, h] = [size[0].max(1) as f32, size[1].max(1) as f32];
+    let [l, t, r, b] = slice.map(f32::from);
+    // Margins on screen: the source pixels, shrunk if the rect cannot fit both sides.
+    let fx = (rect.width() / (l + r).max(1.0)).min(1.0);
+    let fy = (rect.height() / (t + b).max(1.0)).min(1.0);
+    let xs = [
+        rect.left(),
+        rect.left() + l * fx,
+        rect.right() - r * fx,
+        rect.right(),
+    ];
+    let ys = [
+        rect.top(),
+        rect.top() + t * fy,
+        rect.bottom() - b * fy,
+        rect.bottom(),
+    ];
+    let us = [0.0, (l / w).min(1.0), (1.0 - r / w).max(0.0), 1.0];
+    let vs = [0.0, (t / h).min(1.0), (1.0 - b / h).max(0.0), 1.0];
+    let mut mesh = egui::epaint::Mesh::with_texture(tex);
+    for j in 0..3 {
+        for i in 0..3 {
+            let quad = egui::Rect::from_min_max(
+                egui::pos2(xs[i], ys[j]),
+                egui::pos2(xs[i + 1], ys[j + 1]),
+            );
+            if quad.width() > 0.0 && quad.height() > 0.0 {
+                mesh.add_rect_with_uv(
+                    quad,
+                    egui::Rect::from_min_max(
+                        egui::pos2(us[i], vs[j]),
+                        egui::pos2(us[i + 1], vs[j + 1]),
+                    ),
+                    Color32::WHITE,
+                );
+            }
+        }
+    }
+    mesh
+}
+
+fn draw_panels(
+    ctx: &egui::Context,
+    g: &Gameplay,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+    s: &mut Surface,
+) {
+    let Some(doc) = &g.compiled.ui else {
+        return;
+    };
+    let fx = s.fx;
+    let theme = doc.theme.as_ref();
+    for panel in &doc.panels {
+        let children: Vec<usize> = panel
+            .children
+            .iter()
+            .filter_map(|c| g.compiled.widgets.iter().position(|w| widget_id(w) == c))
+            .collect();
+        let visible = children.iter().any(|&i| {
+            widget_visible(g, &g.compiled.widgets[i]) || fx.is_some_and(|f| f.visual(i).forced)
+        });
+        if !visible {
+            continue;
+        }
+        let style = panel
+            .style
+            .as_ref()
+            .and_then(|c| theme.and_then(|t| t.panel.get(c)));
+        let frame = style
+            .and_then(|s| s.frame.as_ref())
+            .and_then(|f| theme.and_then(|t| t.frames.get(f)));
+        // The frame's texture (the same cache the image widget uses).
+        let texture = frame.and_then(|f| g.images.get(&f.image)).map(|p| {
+            let t = state.textures.entry(p.key.clone()).or_insert_with(|| {
+                ctx.load_texture(&p.key, p.image.clone(), egui::TextureOptions::LINEAR)
+            });
+            (t.id(), p.image.size)
+        });
+        let (align, _, default_width, _) = anchor(panel.anchor);
+        let mut offset = panel.offset;
+        if matches!(
+            panel.anchor,
+            Region::TopLeft | Region::Top | Region::TopRight
+        ) {
+            offset[1] += s.top;
+        }
+        let mut area = egui::Area::new(egui::Id::new((s.salt, "panel", panel.id.as_str())))
+            .anchor(align, offset);
+        if let Some(rect) = s.area {
+            area = area.constrain_to(rect).interactable(false);
+        }
+        let rects = &mut s.rects;
+        let canvas = s.area.is_some();
+        let clip = s.clip;
+        area.show(ctx, |ui| {
+            if let Some(clip) = clip {
+                ui.set_clip_rect(ui.clip_rect().intersect(clip));
+            }
+            if canvas {
+                ui.style_mut().interaction.selectable_labels = false;
+            }
+            // Background first (under the widgets), filled in once the panel's size is known.
+            let slot = ui.painter().add(egui::Shape::Noop);
+            let padding = style.and_then(|s| s.padding).unwrap_or(10.0);
+            let inner = egui::Frame::new().inner_margin(padding).show(ui, |ui| {
+                match panel.width {
+                    Some(w) => ui.set_width(w - 2.0 * padding),
+                    None => ui.set_max_width(default_width),
+                }
+                for &i in &children {
+                    let only = |w: &BoundWidget| widget_id(w) == widget_id(&g.compiled.widgets[i]);
+                    draw_widgets(
+                        ui,
+                        g,
+                        state,
+                        actions,
+                        &only,
+                        false,
+                        fx,
+                        rects.as_deref_mut(),
+                    );
+                }
+            });
+            let rect = inner.response.rect;
+            let mut background = vec![];
+            if let Some([r, gr, b, a]) = style.and_then(|s| s.fill) {
+                let corner = style.and_then(|s| s.corner).unwrap_or(0.0);
+                background.push(egui::Shape::rect_filled(
+                    rect,
+                    corner,
+                    Color32::from_rgba_unmultiplied(r, gr, b, a),
+                ));
+            }
+            if let (Some(f), Some((tex, size))) = (frame, texture) {
+                background.push(egui::Shape::mesh(nine_slice(rect, tex, size, f.slice)));
+            }
+            ui.painter().set(slot, egui::Shape::Vec(background));
+        });
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    fn bounds(m: &egui::epaint::Mesh) -> (Vec<f32>, Vec<f32>) {
+        let mut xs: Vec<f32> = m.vertices.iter().map(|v| v.pos.x).collect();
+        let mut us: Vec<f32> = m.vertices.iter().map(|v| v.uv.x).collect();
+        xs.sort_by(f32::total_cmp);
+        xs.dedup();
+        us.sort_by(f32::total_cmp);
+        us.dedup();
+        (xs, us)
+    }
+
+    #[test]
+    fn nine_slice_keeps_corner_pixels_and_maps_the_slice_uvs() {
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(600.0, 200.0));
+        let m = nine_slice(rect, egui::TextureId::Managed(7), [96, 96], [32, 24, 16, 8]);
+        assert_eq!(m.vertices.len(), 36);
+        let (xs, us) = bounds(&m);
+        assert_eq!(
+            xs,
+            [100.0, 132.0, 684.0, 700.0],
+            "corners keep their pixel width"
+        );
+        assert_eq!(us, [0.0, 32.0 / 96.0, 1.0 - 16.0 / 96.0, 1.0]);
+        assert_eq!(m.texture_id, egui::TextureId::Managed(7));
+    }
+
+    #[test]
+    fn nine_slice_shrinks_corners_in_a_rect_smaller_than_both() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(32.0, 200.0));
+        let m = nine_slice(
+            rect,
+            egui::TextureId::Managed(1),
+            [96, 96],
+            [32, 32, 32, 32],
+        );
+        let (xs, _) = bounds(&m);
+        // 64 px of corners in 32 px: halved, and the empty middle column is skipped.
+        assert_eq!(xs, [0.0, 16.0, 32.0]);
+        assert!(m.vertices.iter().all(|v| v.pos.x >= 0.0 && v.pos.x <= 32.0));
     }
 }

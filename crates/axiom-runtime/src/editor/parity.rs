@@ -3375,7 +3375,7 @@ fn stylized_mesh_components_match_acl() {
 fn ui_theme_and_panel_commands_match_acl() {
     let mut start = town();
     let doc = start.resources.get_mut("ui.document").unwrap();
-    doc["images"] = serde_json::json!({"parchment":"ui/parchment.png"});
+    doc["images"]["parchment"] = serde_json::json!("ui/parchment.png");
     doc["regions"].as_object_mut().unwrap().remove("quest");
     let steps = [
         (
@@ -3404,10 +3404,13 @@ fn ui_theme_and_panel_commands_match_acl() {
         );
         at = headless(&at, script);
     }
-    assert_eq!(
-        at.resources["ui.document"]["panels"][0]["children"],
-        serde_json::json!(["quest"])
-    );
+    let tracker = at.resources["ui.document"]["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "tracker")
+        .expect("the tracker panel");
+    assert_eq!(tracker["children"], serde_json::json!(["quest"]));
     // A refused edit writes nothing and reports the field.
     let mut e = Editor::new(start, 1, None);
     e.set_component_hints(&crate::installed_registry().authoring);
