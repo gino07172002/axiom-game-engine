@@ -240,3 +240,99 @@ fn text_and_button_classes_assign_to_widgets_and_reject_mismatches() {
     acl(&mut s, "ui frame edge none").unwrap();
     assert_eq!(doc(&s), hud().resources["ui.document"]);
 }
+
+/// Plan M3: panel sizes in px or %, layouts, nesting, z and the reference screen.
+#[test]
+fn panel_layouts_nest_and_the_reference_screen_round_trips() {
+    let mut s = store();
+    let raw = doc(&s);
+    acl(&mut s, "ui screen 1920 1080 scale=fit").unwrap();
+    acl(&mut s, "ui panel coins_box top widgets=coins").unwrap();
+    acl(
+        &mut s,
+        "ui panel shop top_right width=40% height=300 layout=grid columns=3 gap=6 z=2 widgets=quest,coins_box,buy",
+    )
+    .unwrap();
+    let d = doc(&s);
+    assert_eq!(
+        d["theme"],
+        json!({"reference": [1920.0, 1080.0], "scale": "fit"})
+    );
+    let shop = &d["panels"][1];
+    assert_eq!(
+        shop,
+        &json!({"id": "shop", "anchor": "top_right", "width": "40%", "height": 300.0,
+            "layout": "grid", "columns": 3, "gap": 6.0, "z": 2,
+            "children": ["quest", "coins_box", "buy"]})
+    );
+    let typed: UiDocument = serde_json::from_value(d.clone()).unwrap();
+    assert_eq!(
+        typed.panels[1].width,
+        Some(axiom_core::ui_theme::Length::Percent(40.0))
+    );
+    assert_eq!(
+        axiom_core::ui_theme::panel_depths(&typed.panels),
+        vec![2, 1],
+        "coins_box sits inside shop"
+    );
+    let theme = typed.theme.as_ref().unwrap();
+    assert!((theme.scale_factor([1280.0, 720.0]) - 720.0 / 1080.0).abs() < 1e-6);
+    assert!(
+        (theme.scale_factor([2560.0, 1080.0]) - 1.0).abs() < 1e-6,
+        "fit: the smaller ratio"
+    );
+
+    let start = rev(&s);
+    for (script, path) in [
+        ("ui panel p9 top width=0%", "/panels/2/width"),
+        ("ui panel p9 top height=5000", "/panels/2/height"),
+        ("ui panel p9 top layout=row columns=2", "/panels/2/columns"),
+        (
+            "ui panel p9 top layout=grid columns=40",
+            "/panels/2/columns",
+        ),
+        ("ui panel p9 top gap=500", "/panels/2/gap"),
+        ("ui panel p9 top z=999", "/panels/2/z"),
+        ("ui panel buy top", "/panels/2/id"),
+        ("ui panel p9 top widgets=p9", "/panels/2/children/0"),
+        ("ui panel p9 top widgets=coins_box", "/panels/2/children/0"),
+        // shop <- coins_box <- shop: a cycle.
+        ("ui panel coins_box top widgets=coins,shop", "/panels/0"),
+        ("ui screen 100 100", "/theme/reference"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    for (script, needle) in [
+        ("ui panel p9 top width=wide", "percentage"),
+        (
+            "ui panel p9 top layout=spiral",
+            "column, row, grid or stack",
+        ),
+        ("ui screen 1920 1080 scale=zoom", "fit_height"),
+        ("ui screen 1920", "use: ui screen"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        assert!(e.to_string().contains(needle), "{script}: {e}");
+    }
+    // Five deep is refused (four is the limit).
+    acl(&mut s, "ui panel shop none").unwrap();
+    acl(&mut s, "ui panel coins_box none").unwrap();
+    acl(&mut s, "ui panel d4 top widgets=coins").unwrap();
+    acl(&mut s, "ui panel d3 top widgets=d4").unwrap();
+    acl(&mut s, "ui panel d2 top widgets=d3").unwrap();
+    acl(&mut s, "ui panel d1 top widgets=d2").unwrap();
+    let e = acl(&mut s, "ui panel d0 top widgets=d1").expect_err("depth 5");
+    assert!(e.to_string().contains("nested 5 deep"), "{e}");
+    // Removing everything restores the authored document byte for byte.
+    for id in ["d1", "d2", "d3", "d4"] {
+        acl(&mut s, &format!("ui panel {id} none")).unwrap();
+    }
+    acl(&mut s, "ui screen none").unwrap();
+    assert_eq!(doc(&s), raw);
+}

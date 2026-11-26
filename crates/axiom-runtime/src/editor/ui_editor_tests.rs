@@ -501,3 +501,44 @@ fn a_revision_from_elsewhere_keeps_an_unrelated_ui_editor_draft() {
         h.editor.status
     );
 }
+
+/// Plan M3: the canvas draws panels with the document's reference scale, so a panel widget
+/// sits at the same fraction of the canvas at 1280x720 and 1920x1080 (16:9 both), and the
+/// canvas rects it reports are where it is drawn.
+#[test]
+fn canvas_panels_scale_with_the_reference_screen() {
+    let mut h = Harness::new(town());
+    // A grid settles its column widths over a frame and an anchored area is placed from its
+    // previous size: let both settle before measuring.
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let fraction = |h: &Harness, key: &str| {
+        let canvas = h.rect("ui_editor:canvas");
+        let r = h.rect(key);
+        [
+            (r.min.x - canvas.min.x) / canvas.width(),
+            (r.min.y - canvas.min.y) / canvas.height(),
+            r.width() / canvas.width(),
+            r.height() / canvas.height(),
+        ]
+    };
+    let small = fraction(&h, "ui_canvas:emote_wave");
+    let line_small = fraction(&h, "ui_canvas:line");
+    h.editor
+        .run_command_with("ui.resolution", Some("1920x1080"))
+        .unwrap();
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let large = fraction(&h, "ui_canvas:emote_wave");
+    let line_large = fraction(&h, "ui_canvas:line");
+    for (a, b) in [(small, large), (line_small, line_large)] {
+        for k in 0..4 {
+            assert!((a[k] - b[k]).abs() < 0.002, "{a:?} vs {b:?}");
+        }
+    }
+    // The emote grid is on the right half, the dialog line in the lower part.
+    assert!(
+        small[0] > 0.5 && line_small[1] > 0.6,
+        "{small:?} {line_small:?}"
+    );
+}

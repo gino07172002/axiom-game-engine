@@ -18,6 +18,9 @@ pub const MAX_PANEL_CHILDREN: usize = 64;
 /// Largest slice margin, in source-image pixels.
 pub const MAX_SLICE: u16 = 1024;
 pub const MAX_CLASSES: usize = 32;
+/// Deepest panel nesting (a root panel is depth 1).
+pub const MAX_PANEL_DEPTH: usize = 4;
+pub const MAX_GRID_COLUMNS: u8 = 16;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +37,122 @@ pub struct UiTheme {
     /// Button class -> look of the buttons that use it, per state (plan M2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub button: BTreeMap<String, ButtonClass>,
+    /// Reference screen [width, height] the panels are authored for (plan M3); none = panels
+    /// are laid out in screen pixels, unscaled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<[f32; 2]>,
+    /// How the reference screen maps to the window (default fit_height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<UiScale>,
+}
+
+/// Panel scaling against `theme.reference`: the whole panel layer is scaled by one factor.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiScale {
+    /// window height / reference height
+    #[default]
+    FitHeight,
+    /// window width / reference width
+    FitWidth,
+    /// the smaller of the two (the whole reference screen stays visible)
+    Fit,
+    /// 1: reference pixels are screen pixels
+    None,
+}
+impl UiScale {
+    /// The scale factor for a window of `screen` size.
+    pub fn factor(self, reference: [f32; 2], screen: [f32; 2]) -> f32 {
+        let [rw, rh] = [reference[0].max(1.0), reference[1].max(1.0)];
+        let f = match self {
+            UiScale::FitHeight => screen[1] / rh,
+            UiScale::FitWidth => screen[0] / rw,
+            UiScale::Fit => (screen[0] / rw).min(screen[1] / rh),
+            UiScale::None => 1.0,
+        };
+        if f.is_finite() {
+            f.clamp(0.1, 8.0)
+        } else {
+            1.0
+        }
+    }
+}
+impl UiTheme {
+    /// The panel scale factor for a window of `screen` size (1 without a reference).
+    pub fn scale_factor(&self, screen: [f32; 2]) -> f32 {
+        match self.reference {
+            Some(r) => self.scale.unwrap_or_default().factor(r, screen),
+            None => 1.0,
+        }
+    }
+}
+
+/// A panel length: reference pixels (`900`) or a percentage of the reference screen
+/// (`"50%"`; of the window when the theme has no reference).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    Px(f32),
+    Percent(f32),
+}
+impl Length {
+    /// Pixels against a screen dimension of `of` reference pixels.
+    pub fn resolve(self, of: f32) -> f32 {
+        match self {
+            Length::Px(v) => v,
+            Length::Percent(p) => of * p / 100.0,
+        }
+    }
+    /// `900` or `50%` (ACL and editor text).
+    pub fn parse(text: &str) -> Result<Length> {
+        let bad = || anyhow::anyhow!("'{text}' must be pixels (900) or a percentage (50%)");
+        match text.strip_suffix('%') {
+            Some(p) => Ok(Length::Percent(p.trim().parse().map_err(|_| bad())?)),
+            None => Ok(Length::Px(text.trim().parse().map_err(|_| bad())?)),
+        }
+    }
+}
+impl Serialize for Length {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Length::Px(v) => s.serialize_f32(*v),
+            Length::Percent(p) => s.serialize_str(&format!("{p}%")),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for Length {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(f32),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Number(v) => Ok(Length::Px(v)),
+            Raw::Text(t) if t.ends_with('%') => Length::parse(&t).map_err(serde::de::Error::custom),
+            Raw::Text(t) => Err(serde::de::Error::custom(format!(
+                "length '{t}' must be a number of pixels or a percentage like \"50%\""
+            ))),
+        }
+    }
+}
+
+/// How a panel arranges its children.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelLayout {
+    /// top to bottom
+    #[default]
+    Column,
+    /// left to right
+    Row,
+    /// `columns` per row, left to right then down
+    Grid,
+    /// all children at the same origin, later ones on top
+    Stack,
+}
+fn is_column(l: &PanelLayout) -> bool {
+    *l == PanelLayout::Column
 }
 impl UiTheme {
     pub fn is_empty(&self) -> bool {
@@ -41,6 +160,8 @@ impl UiTheme {
             && self.panel.is_empty()
             && self.text.is_empty()
             && self.button.is_empty()
+            && self.reference.is_none()
+            && self.scale.is_none()
     }
 }
 
@@ -167,7 +288,9 @@ pub struct PanelStyle {
     pub frame: Option<String>,
 }
 
-/// An anchored panel: widgets stacked in a column, placed at `anchor` + `offset`.
+/// An anchored panel holding widgets and child panels, placed at `anchor` + `offset`. A
+/// panel named as another panel's child is drawn inside it (its anchor, offset and z are
+/// then unused).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UiPanel {
@@ -176,15 +299,46 @@ pub struct UiPanel {
     /// Offset from the anchor in reference pixels (+x right, +y down).
     #[serde(default, skip_serializing_if = "is_origin")]
     pub offset: [f32; 2],
-    /// Fixed width in reference pixels; none = fit the content.
+    /// Fixed width (reference pixels or a % of the reference width); none = fit the content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub width: Option<f32>,
+    pub width: Option<Length>,
+    /// Fixed height (pixels or %); none = fit the content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<Length>,
+    #[serde(default, skip_serializing_if = "is_column")]
+    pub layout: PanelLayout,
+    /// Cells per row of a grid layout (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<u8>,
+    /// Space between children, pixels 0..=128 (default: the UI's item spacing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap: Option<f32>,
+    /// Drawing order of root panels: higher on top; ties keep list order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<i16>,
     /// Theme panel style class; none = no fill and no frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
-    /// Widget IDs, top to bottom.
+    /// Widget and panel IDs, in layout order.
     #[serde(default)]
     pub children: Vec<String>,
+}
+impl UiPanel {
+    pub fn new(id: &str, anchor: Region) -> UiPanel {
+        UiPanel {
+            id: id.to_owned(),
+            anchor,
+            offset: [0.0, 0.0],
+            width: None,
+            height: None,
+            layout: PanelLayout::Column,
+            columns: None,
+            gap: None,
+            z: None,
+            style: None,
+            children: vec![],
+        }
+    }
 }
 fn is_origin(o: &[f32; 2]) -> bool {
     *o == [0.0, 0.0]
@@ -251,6 +405,23 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
                     ));
                 }
             }
+        }
+        if let Some([w, h]) = theme.reference {
+            if !(w.is_finite()
+                && h.is_finite()
+                && (320.0..=7680.0).contains(&w)
+                && (240.0..=4320.0).contains(&h))
+            {
+                return Err(invalid(
+                    format!("{DOC}/theme/reference"),
+                    "reference is [width 320..=7680, height 240..=4320] px".into(),
+                ));
+            }
+        } else if theme.scale.is_some() {
+            return Err(invalid(
+                format!("{DOC}/theme/scale"),
+                "scale needs a theme.reference screen size".into(),
+            ));
         }
         if theme.text.len() > MAX_CLASSES || theme.button.len() > MAX_CLASSES {
             return Err(invalid(
@@ -351,13 +522,52 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
                 "offset is finite, |x|,|y| <= 8192 px".into(),
             ));
         }
-        if let Some(w) = p.width {
-            if !(w.is_finite() && (16.0..=4096.0).contains(&w)) {
+        for (name, length) in [("width", p.width), ("height", p.height)] {
+            let ok = match length {
+                None => true,
+                Some(Length::Px(v)) => v.is_finite() && (16.0..=4096.0).contains(&v),
+                Some(Length::Percent(v)) => v.is_finite() && (1.0..=100.0).contains(&v),
+            };
+            if !ok {
                 return Err(invalid(
-                    format!("{path}/width"),
-                    "width is 16..=4096 px".into(),
+                    format!("{path}/{name}"),
+                    format!("{name} is 16..=4096 px or 1..=100%"),
                 ));
             }
+        }
+        match (p.layout, p.columns) {
+            (PanelLayout::Grid, Some(c)) if !(1..=MAX_GRID_COLUMNS).contains(&c) => {
+                return Err(invalid(
+                    format!("{path}/columns"),
+                    format!("columns is 1..={MAX_GRID_COLUMNS}"),
+                ))
+            }
+            (PanelLayout::Grid, _) | (_, None) => {}
+            (_, Some(_)) => {
+                return Err(invalid(
+                    format!("{path}/columns"),
+                    "columns applies to layout grid".into(),
+                ))
+            }
+        }
+        if let Some(gap) = p.gap {
+            if !(gap.is_finite() && (0.0..=128.0).contains(&gap)) {
+                return Err(invalid(format!("{path}/gap"), "gap is 0..=128 px".into()));
+            }
+        }
+        if let Some(z) = p.z {
+            if !(-100..=100).contains(&z) {
+                return Err(invalid(format!("{path}/z"), "z is -100..=100".into()));
+            }
+        }
+        if widgets.contains(p.id.as_str()) {
+            return Err(invalid(
+                format!("{path}/id"),
+                format!(
+                    "panel id '{}' is also a widget id; panel children name either",
+                    p.id
+                ),
+            ));
         }
         if let Some(style) = &p.style {
             if !doc
@@ -379,6 +589,15 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
         }
         for (j, child) in p.children.iter().enumerate() {
             let at = format!("{path}/children/{j}");
+            if doc.panels.iter().any(|q| &q.id == child) {
+                if child == &p.id {
+                    return Err(invalid(at, format!("panel '{child}' cannot hold itself")));
+                }
+                if !placed.insert(child.as_str()) {
+                    return Err(invalid(at, format!("panel '{child}' is in two panels")));
+                }
+                continue;
+            }
             if !widgets.contains(child.as_str()) {
                 return Err(invalid(at, format!("unknown widget '{child}'")));
             }
@@ -393,7 +612,58 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
             }
         }
     }
+    // Nesting: every panel is reached from a root (no cycles), at most MAX_PANEL_DEPTH deep.
+    let depths = panel_depths(&doc.panels);
+    for (i, p) in doc.panels.iter().enumerate() {
+        match depths[i] {
+            0 => {
+                return Err(invalid(
+                    format!("{DOC}/panels/{i}"),
+                    format!("panel '{}' is inside a cycle of child panels", p.id),
+                ))
+            }
+            d if d > MAX_PANEL_DEPTH => {
+                return Err(invalid(
+                    format!("{DOC}/panels/{i}"),
+                    format!(
+                        "panel '{}' is nested {d} deep (at most {MAX_PANEL_DEPTH})",
+                        p.id
+                    ),
+                ))
+            }
+            _ => {}
+        }
+    }
     Ok(())
+}
+
+/// Depth of each panel (1 = root: no panel names it as a child; 0 = not reachable from a
+/// root, i.e. inside a cycle).
+pub fn panel_depths(panels: &[UiPanel]) -> Vec<usize> {
+    let index = |id: &str| panels.iter().position(|p| p.id == id);
+    let mut parent = vec![None; panels.len()];
+    for (i, p) in panels.iter().enumerate() {
+        for c in &p.children {
+            if let Some(j) = index(c) {
+                if j != i && parent[j].is_none() {
+                    parent[j] = Some(i);
+                }
+            }
+        }
+    }
+    (0..panels.len())
+        .map(|mut i| {
+            let mut depth = 1;
+            while let Some(up) = parent[i] {
+                depth += 1;
+                i = up;
+                if depth > panels.len() {
+                    return 0;
+                }
+            }
+            depth
+        })
+        .collect()
 }
 
 /// `RRGGBB` or `RRGGBBAA` (optional leading `#`).
@@ -439,13 +709,10 @@ pub fn panel_style_from(options: &[(String, String)]) -> Result<PanelStyle> {
 
 /// `ui panel ID ANCHOR at=X,Y width=W style=CLASS widgets=A,B` options.
 pub fn panel_from(id: &str, anchor: Region, options: &[(String, String)]) -> Result<UiPanel> {
-    let mut p = UiPanel {
-        id: id.to_owned(),
-        anchor,
-        offset: [0.0, 0.0],
-        width: None,
-        style: None,
-        children: vec![],
+    let mut p = UiPanel::new(id, anchor);
+    let number = |k: &str, v: &str| -> Result<f32> {
+        v.parse()
+            .map_err(|_| anyhow::anyhow!("{k}='{v}' is not a number"))
     };
     for (k, v) in options {
         match k.as_str() {
@@ -458,10 +725,24 @@ pub fn panel_from(id: &str, anchor: Region, options: &[(String, String)]) -> Res
                 anyhow::ensure!(parts.len() == 2, "at='{v}' must be X,Y");
                 p.offset = [parts[0], parts[1]];
             }
-            "width" => {
-                p.width = Some(
+            "width" => p.width = Some(Length::parse(v)?),
+            "height" => p.height = Some(Length::parse(v)?),
+            "layout" => {
+                p.layout = serde_json::from_value(serde_json::json!(v)).map_err(|_| {
+                    anyhow::anyhow!("layout '{v}' must be column, row, grid or stack")
+                })?
+            }
+            "columns" => {
+                p.columns = Some(
                     v.parse()
-                        .map_err(|_| anyhow::anyhow!("width='{v}' is not a number"))?,
+                        .map_err(|_| anyhow::anyhow!("columns='{v}' is not a count"))?,
+                )
+            }
+            "gap" => p.gap = Some(number(k, v)?),
+            "z" => {
+                p.z = Some(
+                    v.parse()
+                        .map_err(|_| anyhow::anyhow!("z='{v}' is not a whole number"))?,
                 )
             }
             "style" => p.style = Some(v.clone()),
@@ -473,7 +754,9 @@ pub fn panel_from(id: &str, anchor: Region, options: &[(String, String)]) -> Res
                     .map(str::to_owned)
                     .collect()
             }
-            _ => anyhow::bail!("unknown panel option '{k}' (at, width, style, widgets)"),
+            _ => anyhow::bail!(
+                "unknown panel option '{k}' (at, width, height, layout, columns, gap, z, style, widgets)"
+            ),
         }
     }
     Ok(p)
@@ -533,6 +816,12 @@ pub fn button_class_from(options: &[(String, String)]) -> Result<ButtonClass> {
         }
     }
     Ok(b)
+}
+
+/// `ui screen W H scale=fit_height|fit_width|fit|none`: the panels' scale mode.
+pub fn parse_scale(text: &str) -> Result<UiScale> {
+    serde_json::from_value(serde_json::json!(text))
+        .map_err(|_| anyhow::anyhow!("scale '{text}' must be fit_height, fit_width, fit or none"))
 }
 
 /// `center=stretch|tile|hidden` of `ui frame`.

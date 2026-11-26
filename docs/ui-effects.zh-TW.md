@@ -72,7 +72,8 @@ ui effect set ID [kind=..] [widget=..] [同上;OPTION=default 清回預設]
 ui effect remove ID                   # ui.effects 系統保留
 ui frame ID IMAGE L T R B | ui frame ID none        # 主題九宮格邊框:images 裡的圖 + 四邊切割像素
 ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
-ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
+ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N] [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none
+ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none   # 參考畫面:面板層整體縮放
 ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
 ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | ui buttonclass CLASS none
 ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → button class
@@ -111,6 +112,28 @@ ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → b
 - `theme.frames.ID = {image, slice:[l,t,r,b]}`:四個角保持原像素大小,四邊和中央拉伸。面板比兩個角加起來還小時,角會等比縮小。
 - 示範:Axiom Town 的對話框是 `dialog` 面板(底部置中、寬 900,使用 `ui/dialog-frame.png`)。這張圖由 `cargo run -p axiom-runtime --example build_ui_frames` 產生,是原創、不含第三方素材的圖,而且每次產生的結果都相同。
 - 回歸檢查:`scripts/ui-screenshot-ab.ps1 -Old OLD.exe` 對每個有 `ui.document` 的內容包做新舊截圖逐位元比較。
+
+**自由版面與縮放(plan M3)**
+
+- **大小**:`width`、`height` 可以是像素(`900`)或參考畫面的百分比(`"40%"`);沒設高度時跟著內容。
+- **排列** `layout`:
+  - `column`(預設):由上而下;
+  - `row`:由左而右;
+  - `grid`:每列 `columns` 格(預設 2),由左而右再往下;
+  - `stack`:所有子項疊在同一個原點,後面的在上層。
+- `gap`:子項間距(0–128 px)。
+- **巢狀**:`widgets` 也可以寫另一個面板的 ID,那個面板就畫在這個面板裡面,忽略自己的錨點、偏移和 z。最多 4 層,不能形成循環;面板 ID 不能和元件 ID 相同。
+- `z`:根面板的上下順序(-100–100),大的在上;沒設時依清單順序。
+- **參考畫面** `theme.reference = [w, h]`、`theme.scale`:
+  - 面板在 w×h 的參考座標裡排版,整個面板層再縮放到視窗;
+  - `fit_height`(預設)依高度、`fit_width` 依寬度、`fit` 取兩者較小者、`none` 不縮放;
+  - 只有面板會縮放,舊的九宮格 `regions` 維持螢幕像素。
+- **觀察**:透過 `--connect` 觀察執行中的遊戲時,`observe` 的 `ui_layout` 列出每個 region、面板、面板內元件的螢幕矩形 `[x, y, w, h]`,以及診斷:
+  - `ui_overlap`:兩個元件重疊,或兩個根面板 / region 重疊(同一個 stack 面板裡的元件不算);
+  - `ui_offscreen`:超出視窗。
+  - 只有文件有面板時才會出現。headless 的 `observe` 不排版,所以沒有這一項。
+- 示範:Axiom Town 的參考畫面是 1280×720;6 個表情按鈕在右側的 `emotes` 面板(3 欄的 grid,往上偏 60,讓開和 Lumi 對話時變高的對話框)。
+- 單位:參考座標以「整個視窗」為準,和螢幕的 DPI 縮放無關;`ui_layout` 回報的是視窗像素(egui point × DPI 縮放)。舊的 regions 仍跟著 DPI 縮放,所以參考畫面最好選接近「視窗 point 大小」的尺寸(例如 150% 縮放的 1920×1080 視窗是 1280×720 point),面板和 regions 的字級才會一致。
 
 每個動詞都是 `axiom_core::ops` 的純函式(`set_ui_region`、`set_ui_style`、`set_ui_button_command`、`add_ui_effect`、`set_ui_effect`、`edit_ui_effect`、`remove_ui_effect`、`set_ui_widget_fields`),編輯器呼叫同一組函式。`discover ui_effects` 列出種類、觸發、預設與預算。
 

@@ -86,6 +86,8 @@ struct Surface<'a> {
     rects: Option<&'a mut Vec<(usize, egui::Rect)>>,
     /// Layout-space clip of the editor canvas (its visible part when zoomed in).
     clip: Option<egui::Rect>,
+    /// Editor canvas: layout space -> screen (the panel layers combine it with their scale).
+    transform: Option<egui::emath::TSTransform>,
 }
 
 pub fn draw(
@@ -138,7 +140,11 @@ pub fn draw(
         fx,
         rects: None,
         clip: None,
+        transform: None,
     };
+    state
+        .layout
+        .clear(ctx.screen_rect(), ctx.pixels_per_point());
     draw_regions(ctx, g, state, &mut actions, &mut surface);
     draw_panels(ctx, g, state, &mut actions, &mut surface);
     let placed = |w: &BoundWidget| region_of(w).is_some() || in_panel(doc, w);
@@ -165,10 +171,10 @@ pub fn draw(
                 let filter = |w: &BoundWidget| !placed(w);
                 if doc.flow {
                     ui.horizontal_wrapped(|ui| {
-                        draw_widgets(ui, g, state, &mut actions, &filter, true, fx, None)
+                        draw_widgets(ui, g, state, &mut actions, &filter, Flow::Wrap, fx, None)
                     });
                 } else {
-                    draw_widgets(ui, g, state, &mut actions, &filter, false, fx, None);
+                    draw_widgets(ui, g, state, &mut actions, &filter, Flow::Column, fx, None);
                 }
                 if let Some(error) = &g.fault {
                     ui.colored_label(Color32::LIGHT_RED, error.to_string());
@@ -223,7 +229,7 @@ fn draw_regions(
         let rects = &mut s.rects;
         let canvas = s.area.is_some();
         let clip = s.clip;
-        area.show(ctx, |ui| {
+        let shown = area.show(ctx, |ui| {
             if let Some(clip) = clip {
                 ui.set_clip_rect(ui.clip_rect().intersect(clip));
             }
@@ -249,7 +255,7 @@ fn draw_regions(
                                 state,
                                 actions,
                                 &filter,
-                                true,
+                                Flow::Wrap,
                                 fx,
                                 rects.as_deref_mut(),
                             )
@@ -261,13 +267,16 @@ fn draw_regions(
                             state,
                             actions,
                             &filter,
-                            false,
+                            Flow::Column,
                             fx,
                             rects.as_deref_mut(),
                         );
                     }
                 });
         });
+        if !canvas {
+            state.layout.regions.push((region, shown.response.rect));
+        }
     }
 }
 
@@ -306,18 +315,11 @@ pub fn draw_canvas(
         fx,
         rects: Some(&mut rects),
         clip: Some(layout_clip),
+        transform: Some(transform),
     };
     draw_regions(ctx, g, state, &mut actions, &mut surface);
+    // Panel layers get the canvas transform times the document's reference scale.
     draw_panels(ctx, g, state, &mut actions, &mut surface);
-    for panel in &doc.panels {
-        ctx.set_transform_layer(
-            egui::LayerId::new(
-                egui::Order::Middle,
-                egui::Id::new(("ui_canvas_region", "panel", panel.id.as_str())),
-            ),
-            transform,
-        );
-    }
     for region in REGIONS {
         ctx.set_transform_layer(
             egui::LayerId::new(
@@ -358,7 +360,7 @@ pub fn draw_canvas(
                                     state,
                                     &mut actions,
                                     &filter,
-                                    true,
+                                    Flow::Wrap,
                                     fx,
                                     Some(&mut rects),
                                 )
@@ -370,7 +372,7 @@ pub fn draw_canvas(
                                 state,
                                 &mut actions,
                                 &filter,
-                                false,
+                                Flow::Column,
                                 fx,
                                 Some(&mut rects),
                             );
@@ -512,10 +514,13 @@ fn draw_widgets(
     state: &mut UiState,
     actions: &mut Vec<Action>,
     filter: &dyn Fn(&BoundWidget) -> bool,
-    flow: bool,
+    mode: Flow,
     fx: Option<&dyn EffectVisuals>,
     mut rects: Option<&mut Vec<(usize, egui::Rect)>>,
 ) {
+    let flow = mode == Flow::Wrap;
+    // Natural-size buttons (no 220 px column minimum) in wrapping rows and panel cells.
+    let compact = mode != Flow::Column;
     for (index, widget) in g.compiled.widgets.iter().enumerate() {
         if !filter(widget) {
             continue;
@@ -590,7 +595,7 @@ fn draw_widgets(
                     ui.push_id(id, |ui| {
                         with_effects(ui, visual, |ui| {
                             let enabled = state.playing && !state.console;
-                            let min = Vec2::new(if flow { 0.0 } else { 220.0 }, 32.0);
+                            let min = Vec2::new(if compact { 0.0 } else { 220.0 }, 32.0);
                             let response = match button_class(g, id) {
                                 Some(class) => {
                                     themed_button(ui, g, state, text, class, enabled, min)
@@ -601,7 +606,7 @@ fn draw_widgets(
                             };
                             // Kept on screen only by an exit effect: shown, not usable.
                             if g.test(when) {
-                                state.targets.insert(format!("button/{id}"), response.rect);
+                                state.target(format!("button/{id}"), response.rect);
                                 if response.clicked() {
                                     actions.push(Action::Gameplay(command.clone()));
                                 }
@@ -641,7 +646,9 @@ fn draw_widgets(
                 }
                 drawn = Some(
                     ui.push_id(id, |ui| {
-                        with_effects(ui, visual, |ui| choice_buttons(ui, g, state, actions, flow))
+                        with_effects(ui, visual, |ui| {
+                            choice_buttons(ui, g, state, actions, compact)
+                        })
                     })
                     .inner,
                 );
@@ -736,9 +743,7 @@ fn slider(
         if !g.test(&s.when) {
             return;
         }
-        state
-            .targets
-            .insert(format!("slider/{}", s.id), response.rect);
+        state.target(format!("slider/{}", s.id), response.rect);
         let release = response.drag_stopped();
         if response.dragged() && !release {
             state.slider_drafts.insert(s.id.clone(), value);
@@ -799,9 +804,7 @@ fn choice_buttons(
                 38.0,
             )),
         );
-        state
-            .targets
-            .insert(format!("choice/{}", choice.id), response.rect);
+        state.target(format!("choice/{}", choice.id), response.rect);
         if response.clicked() {
             actions.push(Action::Gameplay(RuntimeCommand::Choose {
                 node: g.compiled.nodes[g.node.unwrap()].id.clone(),
@@ -907,6 +910,90 @@ pub(crate) fn nine_slice(
     mesh
 }
 
+/// How `draw_widgets` lays widgets out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    /// One per line; buttons at least 220 px wide (regions, panel columns, the document).
+    Column,
+    /// Left to right, wrapping (flow regions and flow documents).
+    Wrap,
+    /// One cell per widget at its natural size (panel rows and grids).
+    Cells,
+}
+
+/// Screen rectangles of the game HUD drawn last frame (plan M3), reported by `observe` as
+/// `ui_layout`. Buffers are reused frame to frame.
+#[derive(Default)]
+pub struct UiLayout {
+    /// The window the HUD was drawn in (egui points); none before the first frame.
+    pub screen: Option<egui::Rect>,
+    /// Window pixels per egui point (display scaling); `observe` reports window pixels.
+    pub pixels_per_point: f32,
+    /// Panel layer scale (`theme.reference`), 1 without a reference.
+    pub scale: f32,
+    pub regions: Vec<(Region, egui::Rect)>,
+    /// (index in `ui.document.panels`, rect), drawn panels only.
+    pub panels: Vec<(usize, egui::Rect)>,
+    /// (index in the compiled widgets, rect), widgets drawn inside panels.
+    pub widgets: Vec<(usize, egui::Rect)>,
+}
+impl UiLayout {
+    fn clear(&mut self, screen: egui::Rect, pixels_per_point: f32) {
+        self.screen = Some(screen);
+        self.pixels_per_point = pixels_per_point;
+        self.scale = 1.0;
+        self.regions.clear();
+        self.panels.clear();
+        self.widgets.clear();
+    }
+}
+
+/// What the panel drawing helpers share.
+struct PanelCtx<'a> {
+    g: &'a Gameplay,
+    doc: &'a axiom_core::gameplay::UiDocument,
+    fx: Option<&'a dyn EffectVisuals>,
+    /// The layout space: the reference screen (or the window) in panel-layer coordinates.
+    virt: egui::Rect,
+}
+
+fn panel_index(doc: &axiom_core::gameplay::UiDocument, id: &str) -> Option<usize> {
+    doc.panels.iter().position(|p| p.id == id)
+}
+
+/// A root panel is not any panel's child.
+fn is_root(doc: &axiom_core::gameplay::UiDocument, i: usize) -> bool {
+    let id = &doc.panels[i].id;
+    !doc.panels
+        .iter()
+        .any(|p| p.children.iter().any(|c| c == id))
+}
+
+/// Whether any widget in the panel (or its child panels) would draw.
+fn panel_visible(pc: &PanelCtx, i: usize, depth: usize) -> bool {
+    depth <= axiom_core::ui_theme::MAX_PANEL_DEPTH
+        && pc.doc.panels[i]
+            .children
+            .iter()
+            .any(|c| match panel_index(pc.doc, c) {
+                Some(j) => j != i && panel_visible(pc, j, depth + 1),
+                None => {
+                    pc.g.compiled
+                        .widgets
+                        .iter()
+                        .enumerate()
+                        .find(|(_, w)| widget_id(w) == c)
+                        .is_some_and(|(k, w)| {
+                            widget_visible(pc.g, w) || pc.fx.is_some_and(|f| f.visual(k).forced)
+                        })
+                }
+            })
+}
+
+fn panel_layer(salt: &'static str, id: &str) -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Middle, egui::Id::new((salt, "panel", id)))
+}
+
 fn draw_panels(
     ctx: &egui::Context,
     g: &Gameplay,
@@ -914,53 +1001,60 @@ fn draw_panels(
     actions: &mut Vec<Action>,
     s: &mut Surface,
 ) {
+    use egui::emath::TSTransform;
     let Some(doc) = &g.compiled.ui else {
         return;
     };
-    let fx = s.fx;
+    if doc.panels.is_empty() {
+        return;
+    }
     let theme = doc.theme.as_ref();
-    for panel in &doc.panels {
-        let children: Vec<usize> = panel
-            .children
-            .iter()
-            .filter_map(|c| g.compiled.widgets.iter().position(|w| widget_id(w) == c))
-            .collect();
-        let visible = children.iter().any(|&i| {
-            widget_visible(g, &g.compiled.widgets[i]) || fx.is_some_and(|f| f.visual(i).forced)
-        });
-        if !visible {
+    let screen = s.area.unwrap_or_else(|| ctx.screen_rect());
+    let scaled = theme.is_some_and(|t| t.reference.is_some());
+    let scale = theme.map_or(1.0, |t| t.scale_factor([screen.width(), screen.height()]));
+    // Panels lay out in `virt` (the reference screen at the window's origin); one transform
+    // scales the whole panel layer onto the window (plan Spike S2).
+    let virt = egui::Rect::from_min_size(screen.min, screen.size() / scale);
+    let ui_t = TSTransform::new(screen.min.to_vec2() * (1.0 - scale), scale);
+    let layer_t = s.transform.map_or(ui_t, |canvas| canvas * ui_t);
+    let pc = PanelCtx {
+        g,
+        doc,
+        fx: s.fx,
+        virt,
+    };
+    // Root panels by z (stable: ties keep list order). Buffers are reused every frame.
+    let mut order = std::mem::take(&mut state.panel_order);
+    order.clear();
+    order.extend((0..doc.panels.len()).filter(|&i| is_root(doc, i)));
+    order.sort_by_key(|&i| doc.panels[i].z.unwrap_or(0));
+    let mut widgets = std::mem::take(&mut state.layout_widgets);
+    widgets.clear();
+    let mut panels = std::mem::take(&mut state.layout_panels);
+    panels.clear();
+    for &i in &order {
+        let panel = &doc.panels[i];
+        if !panel_visible(&pc, i, 1) {
             continue;
         }
-        let style = panel
-            .style
-            .as_ref()
-            .and_then(|c| theme.and_then(|t| t.panel.get(c)));
-        let frame = style
-            .and_then(|s| s.frame.as_ref())
-            .and_then(|f| theme.and_then(|t| t.frames.get(f)));
-        // The frame's texture (the same cache the image widget uses).
-        let texture = frame.and_then(|f| g.images.get(&f.image)).map(|p| {
-            let t = state.textures.entry(p.key.clone()).or_insert_with(|| {
-                ctx.load_texture(&p.key, p.image.clone(), egui::TextureOptions::LINEAR)
-            });
-            (t.id(), p.image.size)
-        });
-        let (align, _, default_width, _) = anchor(panel.anchor);
+        let (align, _, _, _) = anchor(panel.anchor);
         let mut offset = panel.offset;
         if matches!(
             panel.anchor,
             Region::TopLeft | Region::Top | Region::TopRight
         ) {
-            offset[1] += s.top;
+            offset[1] += s.top / scale;
         }
-        let mut area = egui::Area::new(egui::Id::new((s.salt, "panel", panel.id.as_str())))
-            .anchor(align, offset);
-        if let Some(rect) = s.area {
-            area = area.constrain_to(rect).interactable(false);
+        let layer = panel_layer(s.salt, &panel.id);
+        let mut area = egui::Area::new(layer.id).anchor(align, offset);
+        if s.area.is_some() {
+            area = area.constrain_to(virt).interactable(false);
+        } else if scaled {
+            area = area.constrain_to(virt);
         }
-        let rects = &mut s.rects;
+        let clip = s.clip.map(|c| ui_t.inverse().mul_rect(c));
         let canvas = s.area.is_some();
-        let clip = s.clip;
+        state.target_transform = layer_t;
         area.show(ctx, |ui| {
             if let Some(clip) = clip {
                 ui.set_clip_rect(ui.clip_rect().intersect(clip));
@@ -968,46 +1062,288 @@ fn draw_panels(
             if canvas {
                 ui.style_mut().interaction.selectable_labels = false;
             }
-            // Background first (under the widgets), filled in once the panel's size is known.
-            let slot = ui.painter().add(egui::Shape::Noop);
-            let padding = style.and_then(|s| s.padding).unwrap_or(10.0);
-            let inner = egui::Frame::new().inner_margin(padding).show(ui, |ui| {
-                match panel.width {
-                    Some(w) => ui.set_width(w - 2.0 * padding),
-                    None => ui.set_max_width(default_width),
-                }
-                for &i in &children {
-                    let only = |w: &BoundWidget| widget_id(w) == widget_id(&g.compiled.widgets[i]);
-                    draw_widgets(
-                        ui,
-                        g,
-                        state,
-                        actions,
-                        &only,
-                        false,
-                        fx,
-                        rects.as_deref_mut(),
-                    );
-                }
-            });
-            let rect = inner.response.rect;
-            let mut background = vec![];
-            if let Some([r, gr, b, a]) = style.and_then(|s| s.fill) {
-                let corner = style.and_then(|s| s.corner).unwrap_or(0.0);
-                background.push(egui::Shape::rect_filled(
-                    rect,
-                    corner,
-                    Color32::from_rgba_unmultiplied(r, gr, b, a),
-                ));
-            }
-            if let (Some(f), Some((tex, size))) = (frame, texture) {
-                background.push(egui::Shape::mesh(nine_slice(
-                    rect, tex, size, f.slice, f.center,
-                )));
-            }
-            ui.painter().set(slot, egui::Shape::Vec(background));
+            panel_body(ui, &pc, state, actions, &mut widgets, &mut panels, i, 1);
         });
+        state.target_transform = TSTransform::IDENTITY;
+        // Identity removes the layer transform (an unscaled game HUD stays untransformed).
+        ctx.set_transform_layer(layer, layer_t);
     }
+    if doc.panels.iter().any(|p| p.z.is_some()) {
+        for &i in &order {
+            ctx.move_to_top(panel_layer(s.salt, &doc.panels[i].id));
+        }
+    }
+    if s.area.is_none() {
+        state.layout.scale = scale;
+        state
+            .layout
+            .panels
+            .extend(panels.iter().map(|&(i, r)| (i, ui_t.mul_rect(r))));
+        state
+            .layout
+            .widgets
+            .extend(widgets.iter().map(|&(i, r)| (i, ui_t.mul_rect(r))));
+    }
+    if let Some(rects) = s.rects.as_deref_mut() {
+        rects.extend(widgets.iter().map(|&(i, r)| (i, ui_t.mul_rect(r))));
+    }
+    state.panel_order = order;
+    state.layout_widgets = widgets;
+    state.layout_panels = panels;
+}
+
+/// One panel: background slot, children in the panel's layout, then the style fill and
+/// nine-slice frame filled in behind them at the size the content took.
+#[allow(clippy::too_many_arguments)]
+fn panel_body(
+    ui: &mut egui::Ui,
+    pc: &PanelCtx,
+    state: &mut UiState,
+    actions: &mut Vec<Action>,
+    widgets: &mut Vec<(usize, egui::Rect)>,
+    panels: &mut Vec<(usize, egui::Rect)>,
+    i: usize,
+    depth: usize,
+) {
+    use axiom_core::ui_theme::PanelLayout;
+    let panel = &pc.doc.panels[i];
+    let theme = pc.doc.theme.as_ref();
+    let style = panel
+        .style
+        .as_ref()
+        .and_then(|c| theme.and_then(|t| t.panel.get(c)));
+    let frame = style
+        .and_then(|s| s.frame.as_ref())
+        .and_then(|f| theme.and_then(|t| t.frames.get(f)));
+    // The frame's texture (the same cache the image widget uses).
+    let texture = frame.and_then(|f| pc.g.images.get(&f.image)).map(|p| {
+        let t = state.textures.entry(p.key.clone()).or_insert_with(|| {
+            ui.ctx()
+                .load_texture(&p.key, p.image.clone(), egui::TextureOptions::LINEAR)
+        });
+        (t.id(), p.image.size)
+    });
+    let (_, _, default_width, _) = anchor(panel.anchor);
+    // Background first (under the widgets), filled in once the panel's size is known.
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let padding = style.and_then(|s| s.padding).unwrap_or(10.0);
+    let inner = egui::Frame::new().inner_margin(padding).show(ui, |ui| {
+        match panel.width.map(|l| l.resolve(pc.virt.width())) {
+            Some(w) => ui.set_width((w - 2.0 * padding).max(0.0)),
+            None => ui.set_max_width(default_width),
+        }
+        if let Some(h) = panel.height.map(|l| l.resolve(pc.virt.height())) {
+            let h = (h - 2.0 * padding).max(0.0);
+            ui.set_min_height(h);
+            ui.set_max_height(h);
+        }
+        if let Some(gap) = panel.gap {
+            ui.spacing_mut().item_spacing = Vec2::splat(gap);
+        }
+        let mut child = |ui: &mut egui::Ui, c: &str, mode: Flow| {
+            if let Some(j) = panel_index(pc.doc, c) {
+                if j != i && panel_visible(pc, j, depth + 1) {
+                    ui.push_id(c, |ui| {
+                        panel_body(ui, pc, state, actions, widgets, panels, j, depth + 1)
+                    });
+                }
+                return;
+            }
+            let only = |w: &BoundWidget| widget_id(w) == c;
+            draw_widgets(
+                ui,
+                pc.g,
+                state,
+                actions,
+                &only,
+                mode,
+                pc.fx,
+                Some(&mut *widgets),
+            );
+        };
+        match panel.layout {
+            PanelLayout::Column => {
+                for c in &panel.children {
+                    child(ui, c, Flow::Column);
+                }
+            }
+            PanelLayout::Row => {
+                ui.horizontal(|ui| {
+                    for c in &panel.children {
+                        child(ui, c, Flow::Cells);
+                    }
+                });
+            }
+            PanelLayout::Grid => {
+                let columns = usize::from(panel.columns.unwrap_or(2).max(1));
+                let spacing = ui.spacing().item_spacing;
+                egui::Grid::new(("panel_grid", panel.id.as_str()))
+                    .spacing(spacing)
+                    .show(ui, |ui| {
+                        for (k, c) in panel.children.iter().enumerate() {
+                            child(ui, c, Flow::Cells);
+                            if (k + 1) % columns == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            }
+            PanelLayout::Stack => {
+                let area = egui::Rect::from_min_size(ui.cursor().min, ui.available_size());
+                for c in &panel.children {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                        child(ui, c, Flow::Column)
+                    });
+                }
+            }
+        }
+    });
+    let rect = inner.response.rect;
+    panels.push((i, rect));
+    let mut background = vec![];
+    if let Some([r, gr, b, a]) = style.and_then(|s| s.fill) {
+        let corner = style.and_then(|s| s.corner).unwrap_or(0.0);
+        background.push(egui::Shape::rect_filled(
+            rect,
+            corner,
+            Color32::from_rgba_unmultiplied(r, gr, b, a),
+        ));
+    }
+    if let (Some(f), Some((tex, size))) = (frame, texture) {
+        background.push(egui::Shape::mesh(nine_slice(
+            rect, tex, size, f.slice, f.center,
+        )));
+    }
+    ui.painter().set(slot, egui::Shape::Vec(background));
+}
+
+/// `observe` `ui_layout` (plan M3): every drawn region, panel and panel widget as a
+/// rect [x, y, w, h] in window pixels (egui points times the display scaling), with `ui_overlap` / `ui_offscreen` diagnostics (at most 32).
+/// Widgets that share a stack panel may overlap by design and are not reported.
+pub fn layout_observation(g: &Gameplay, l: &UiLayout) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let doc = g.compiled.ui.as_ref()?;
+    let screen = l.screen?;
+    if l.panels.is_empty() && l.regions.is_empty() {
+        return None;
+    }
+    let ppp = if l.pixels_per_point > 0.0 {
+        l.pixels_per_point
+    } else {
+        1.0
+    };
+    let round = |v: f32| (v * ppp * 10.0).round() / 10.0;
+    let rect = |r: egui::Rect| {
+        [
+            round(r.min.x),
+            round(r.min.y),
+            round(r.width()),
+            round(r.height()),
+        ]
+    };
+    let parent = |id: &str| {
+        doc.panels
+            .iter()
+            .find(|p| p.children.iter().any(|c| c == id))
+    };
+    let region_name = |r: Region| {
+        serde_json::to_value(r)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    };
+    let mut named: Vec<(String, egui::Rect)> = vec![];
+    let mut diagnostics = vec![];
+    let regions: Vec<_> = l
+        .regions
+        .iter()
+        .map(|&(r, at)| {
+            named.push((format!("region:{}", region_name(r)), at));
+            json!({"region": region_name(r), "rect": rect(at)})
+        })
+        .collect();
+    let panels: Vec<_> = l
+        .panels
+        .iter()
+        .map(|&(i, at)| {
+            let id = &doc.panels[i].id;
+            named.push((format!("panel:{id}"), at));
+            match parent(id) {
+                Some(p) => json!({"id": id, "parent": p.id, "rect": rect(at)}),
+                None => json!({"id": id, "rect": rect(at)}),
+            }
+        })
+        .collect();
+    let widget_names: Vec<&str> = l
+        .widgets
+        .iter()
+        .map(|&(i, _)| widget_id(&g.compiled.widgets[i]))
+        .collect();
+    let widgets: Vec<_> = l
+        .widgets
+        .iter()
+        .zip(&widget_names)
+        .map(|(&(_, at), id)| {
+            named.push((format!("widget:{id}"), at));
+            json!({"id": id, "panel": parent(id).map(|p| p.id.as_str()), "rect": rect(at)})
+        })
+        .collect();
+    let mut push = |d: serde_json::Value| {
+        if diagnostics.len() < 32 {
+            diagnostics.push(d);
+        }
+    };
+    for (name, at) in &named {
+        if !screen.expand(0.5).contains_rect(*at) {
+            push(json!({"code": "ui_offscreen", "id": name, "rect": rect(*at)}));
+        }
+    }
+    let overlap = |a: egui::Rect, b: egui::Rect| {
+        let i = a.intersect(b);
+        i.is_positive() && i.area() > 1.0
+    };
+    // Widgets against widgets (not two children of one stack panel).
+    for (a, (&(_, ra), ida)) in l.widgets.iter().zip(&widget_names).enumerate() {
+        for (&(_, rb), idb) in l.widgets.iter().zip(&widget_names).skip(a + 1) {
+            let stacked = parent(ida).is_some_and(|p| {
+                p.layout == axiom_core::ui_theme::PanelLayout::Stack
+                    && p.children.iter().any(|c| c == idb)
+            });
+            if !stacked && overlap(ra, rb) {
+                push(
+                    json!({"code": "ui_overlap", "ids": [format!("widget:{ida}"), format!("widget:{idb}")]}),
+                );
+            }
+        }
+    }
+    // Root panels and regions against each other.
+    let roots: Vec<(String, egui::Rect)> = l
+        .regions
+        .iter()
+        .map(|&(r, at)| (format!("region:{}", region_name(r)), at))
+        .chain(
+            l.panels
+                .iter()
+                .filter(|&&(i, _)| is_root(doc, i))
+                .map(|&(i, at)| (format!("panel:{}", doc.panels[i].id), at)),
+        )
+        .collect();
+    for (a, (na, ra)) in roots.iter().enumerate() {
+        for (nb, rb) in roots.iter().skip(a + 1) {
+            if overlap(*ra, *rb) {
+                push(json!({"code": "ui_overlap", "ids": [na, nb]}));
+            }
+        }
+    }
+    Some(json!({
+        "screen": [round(screen.width()), round(screen.height())],
+        // Window pixels per reference pixel.
+        "scale": (l.scale * ppp * 1000.0).round() / 1000.0,
+        "regions": regions,
+        "panels": panels,
+        "widgets": widgets,
+        "diagnostics": diagnostics,
+    }))
 }
 
 #[cfg(test)]

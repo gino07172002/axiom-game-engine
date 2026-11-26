@@ -120,9 +120,14 @@ EDIT (any number, atomic):
   ui frame ID IMAGE LEFT TOP RIGHT BOTTOM [center=stretch|tile|hidden] | ui frame ID none
                                   theme nine-slice frame: an ui.document image + slice margins in pixels
   ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
-  ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none
-                                  anchored panel (ANCHOR = a REGION name) holding widgets top to bottom;
-                                  a widget sits in one panel or one region; drawn with the style fill + frame
+  ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N]
+        [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none
+                                  anchored panel (ANCHOR = a REGION name) holding widgets and child panels
+                                  (nested <= 4 deep; a child panel ignores its anchor); a widget sits in one
+                                  panel or one region; drawn with the style fill + frame; z orders root panels
+  ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none
+                                  reference screen: panels are laid out in W x H pixels and the panel layer
+                                  scales to the window (N% lengths are of W / H); live: observe ui.layout
   ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
   ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | none
                                   STATE: normal|hover|pressed|disabled (unset fields use normal)
@@ -782,6 +787,8 @@ enum UiStatement {
     Frame(String, Option<crate::ui_theme::UiFrame>),
     PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
     Panel(String, Option<crate::ui_theme::UiPanel>),
+    /// `ui screen W H [scale=]` / `ui screen none`.
+    Screen(Option<[f32; 2]>, Option<crate::ui_theme::UiScale>),
     TextClass(String, Option<crate::ui_theme::TextClass>),
     ButtonClass(String, Option<crate::ui_theme::ButtonClass>),
     Class(String, Option<String>),
@@ -938,8 +945,29 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             let class = (tokens[3] != "none").then(|| tokens[3].clone());
             UiStatement::Class(tokens[2].clone(), class)
         }
+        "screen" => {
+            let usage = "use: ui screen WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | ui screen none";
+            match tokens.len() {
+                3 if tokens[2] == "none" => UiStatement::Screen(None, None),
+                4 | 5 => {
+                    let px = |t: &str| -> Result<f32> {
+                        t.parse()
+                            .with_context(|| format!("'{t}' is not a pixel size ({usage})"))
+                    };
+                    let scale = match tokens.get(4) {
+                        Some(t) => Some(crate::ui_theme::parse_scale(
+                            t.strip_prefix("scale=")
+                                .with_context(|| format!("unknown option '{t}' ({usage})"))?,
+                        )?),
+                        None => None,
+                    };
+                    UiStatement::Screen(Some([px(&tokens[2])?, px(&tokens[3])?]), scale)
+                }
+                _ => bail!("{usage}"),
+            }
+        }
         "panel" => {
-            let usage = "use: ui panel ID ANCHOR [at=X,Y] [width=W] [style=CLASS] [widgets=A,B] | ui panel ID none";
+            let usage = "use: ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N] [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none";
             ensure!(tokens.len() >= 4, "{usage}");
             if tokens.len() == 4 && tokens[3] == "none" {
                 UiStatement::Panel(tokens[2].clone(), None)
@@ -1004,7 +1032,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             }
             other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
         },
-        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect)"),
+        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, textclass, buttonclass, class)"),
     })
 }
 
@@ -1016,6 +1044,7 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
             crate::ops::set_ui_panel_style(w, class, style.clone())
         }
         UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
+        UiStatement::Screen(reference, scale) => crate::ops::set_ui_screen(w, *reference, *scale),
         UiStatement::TextClass(class, text) => {
             crate::ops::set_ui_text_class(w, class, text.clone())
         }

@@ -362,3 +362,65 @@ theme: {
   - 注意:測試時遊戲沒在跑,egui 會把停用的 UI 整體乘上透明度,所以顏色以「每個通道 ≈ 設定值 × alpha」比對。
 - **截圖 A/B**(M1b exe 對 M2 exe):9 個內容沒變的 UI 內容包逐位元相同。town 的內容使用了新欄位,舊 exe 讀不了,所以這次不做 A/B;GPU 截圖已經看過:表情按鈕是酒紅底金邊,講者名字是金字加陰影。
 - **未驗證**:沒有在 GPU 上截滑過和按下狀態(由 headless 測試涵蓋);沒有 release 量測,也沒有效能宣稱。
+
+### 補記 2026-11-26:M3 和 ADR-3 的差異(原計畫 → 現在 → 原因)
+
+1. **內距**
+   - 原計畫:面板有自己的 `padding: [l, t, r, b]`。
+   - 現在:內距仍由面板樣式(`theme.panel.*.padding`)決定,面板本身不加欄位。
+   - 原因:M1 已經把內距放在樣式裡;同一件事有兩個來源會讓 ACL、編輯器和驗證都多一層優先順序。真的需要四邊不同時再加。
+2. **百分比**
+   - 依 pre-mortem 第 4 項:`"N%"` 只相對參考畫面(沒有 reference 時相對視窗),不相對父面板。
+3. **巢狀的寫法**
+   - 原計畫:`children: [PanelChild]`(元件或子面板的物件)。
+   - 現在:`children` 仍是 ID 字串清單,ID 是另一個面板時就是子面板。面板 ID 不能和元件 ID 重複。
+   - 原因:不改既有欄位的形狀,舊文件和 M1、M2 的 ACL 都不用動;子面板忽略自己的錨點、偏移和 z。
+4. **縮放範圍**
+   - 只縮放面板層;舊的九宮格 `regions` 維持螢幕像素、不縮放,舊內容的截圖才能逐位元相同。
+5. **`when`(條件顯示)**:ADR-3 列了面板的 `when`,M3 沒做。面板沒有可見的子元件時本來就不畫,目前的內容不需要;留到 M6(畫面與模態)一起考慮。
+6. **`observe ui.layout` 的位置**:放在 `ui_layout`,只有透過 `--connect` 觀察執行中的遊戲才有(版面是 egui 在視窗裡排出來的);headless 的 `observe` 沒有這一項,測試則用 `WorldRuntime::ui_layout_observation`。
+7. **town 的參考畫面是 1280×720,不是 1920×1080**
+   - 原計畫:`theme.reference` 預設 1920×1080。
+   - 現在:格式不設預設值(沒有 reference 就不縮放);Axiom Town 用 1280×720。
+   - 原因:實測(150% DPI 的螢幕,1920×1080 視窗)用 1920×1080 時,一個參考像素等於一個視窗像素,但舊 regions 和頂端列跟著 DPI 放大 1.5 倍,對話框和表情按鈕反而比 M2 小,字級和旁邊的 HUD 不一致。1280×720 剛好等於這個視窗的 point 大小,面板和 regions 一致,不同視窗大小下比例仍固定。
+   - 同時發現:`ui_layout` 一開始回報的是 egui point,改成視窗像素(乘上 pixels_per_point),`scale` 是「每個參考像素對應幾個視窗像素」。
+
+### M3 完成(分支 `ui-v2`)
+
+- **格式**:
+  - 面板:`width`、`height`(px 或 `"N%"`)、`layout`(column / row / grid / stack)、`columns`(grid,1–16)、`gap`(0–128)、`z`(-100–100);`children` 可以寫面板 ID 來巢狀(最多 4 層)。
+  - 主題:`reference: [w, h]`、`scale`(fit_height 預設 / fit_width / fit / none)。
+  - 全部是選用欄位、預設值不序列化,舊文件不變。
+- **驗證**:長度範圍、`columns` 只能配 grid、gap / z 範圍、面板 ID 和元件 ID 不能重複、面板不能裝自己、不能在兩個面板裡、循環、超過 4 層、沒有 reference 卻設 scale、reference 範圍;錯誤都指到欄位路徑。
+- **ops / ACL / 編輯器**:`set_ui_screen`;ACL `ui screen W H [scale=] | none`、`ui panel` 的新選項;編輯器命令 `ui.screen`;parity 測試多兩步(reference 和巢狀 grid 面板),parity 表加一列。
+- **渲染**:
+  - 根面板依 z 排序;子面板畫在父面板裡;row、grid、stack 用 egui 的 horizontal、Grid、同原點的 scope 排。
+  - 有 reference 時,面板在參考座標排版,整個面板層用一個 transform 縮放(Spike S2);點擊命中由 egui 依 transform 換算,`targets` 也換成螢幕座標。
+  - 沒有 reference 時不設 transform(identity 會移除),和 M2 完全相同。
+  - 每幀用的排序和矩形緩衝放在 `UiState` 重複使用。
+- **`observe` 的 `ui_layout`**:每個 region、面板、面板內元件的視窗像素矩形,加上 `ui_overlap`、`ui_offscreen` 診斷(最多 32 筆)。只有透過 `--connect` 觀察執行中的遊戲、而且文件有面板時才有。
+- **內容**:Axiom Town 的參考畫面 1280×720;6 個表情按鈕移到 `emotes` 面板(右側、3 欄 grid、gap 8、`hud` 樣式),從 regions 移除。
+- **測試**:
+  - core `ui_theme.rs` 新增 1 個(格式來回、深度、11 種有路徑的拒絕、4 種解析錯誤、5 層被擋、全部移除後逐位元回到原樣);
+  - `ui_panels.rs` 新增 4 個:720p 和 1080p 下對話框占視窗的比例相同;表情按鈕是 2 列 3 欄、`ui_layout` 沒有診斷;故意放錯的面板會報出重疊和超出畫面;1280×720 縮放後滑過和點擊仍然有效。
+  - 既有的 M1b、M2 測試改用參考座標換算後的數值(寬 900 → 1080 視窗下 1350;陰影 2 → 3 px)。
+- **實作中發現並修正**:
+  1. `ui_layout` 原本回報 egui point;150% DPI 的螢幕上 1920×1080 視窗回報成 1280×720。改成乘上 `pixels_per_point` 的視窗像素。
+  2. town 原本用 1920×1080 當參考畫面,實際截圖裡對話框和表情按鈕比 M2 小、和旁邊的 HUD 字級不一致,改成 1280×720(見補記第 7 點)。
+  3. `ui_layout` 的重疊診斷抓到真的問題:和 Lumi 對話時對話框變高,右上角伸到表情格底下(headless 測試 `emotes_sit_in_a_three_column_grid…` 失敗)。表情格往上移 60 參考像素後沒有診斷。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 1137 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+  - 中途有一次 `app::tests::a_full_capture_queue_refuses_editor_view_before_its_edit` 報 database is locked(兩個 cargo test 同時跑);單獨重跑和最後的完整重跑都通過,和 M3 改動無關,沒有改它。
+- **截圖 A/B**(M2 exe 對 M3 exe,debug,每次用新的資料庫):9 個內容沒變的包逐位元相同;第一個包重跑一次確認截圖穩定。town 使用新欄位,舊 exe 讀不了,不做 A/B。
+- **GPU 截圖**(實際看過):1920×1080 和 1600×900 兩種視窗,`ui_layout` 都是 2 個面板、9 個元件、0 個診斷;對話框寬 1350 / 1125(都是視窗寬的 70.3%)、置中、離底 21 / 17.5 px(14 參考像素 × 縮放)。
+- **量測**(`examples/ui_layout_bench.rs`,1280×720 視窗,egui pass + tessellate 的 CPU 時間,300 幀):
+
+  | 設定 | 面板 | debug 平均 / p95 | release 平均 / p95 |
+  |---|---|---|---|
+  | town 原樣 | 2 | 0.34 / 0.42 ms | 0.31 / 0.45 ms |
+  | town + 30 個有九宮格框的 grid 面板 | 32 | 1.28 / 1.75 ms | 1.15 / 1.71 ms |
+
+  - debug 和 release 接近,因為這個 workspace 的 dev profile 把相依套件(含 egui)編成 `opt-level = 2`。
+  - 文件元件上限 64 個,所以這 30 個面板每個只放 1 個文字元件。
+  - 這是 CPU 時間,沒有量 GPU。
+- **編輯器畫布**:`ui_editor_tests::canvas_panels_scale_with_the_reference_screen`:畫布在 1280×720 和 1920×1080 下,面板元件占畫布的比例相同(第一次寫測試時忘了等 grid 欄寬穩定,量到前一幀的位置;多畫兩幀後通過)。
+- **未驗證**:沒有在 GPU 上截對話中(對話框變高)的畫面,這部分由 headless 測試涵蓋;編輯器畫布沒有截圖檢查。

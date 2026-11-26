@@ -531,7 +531,13 @@ pub(crate) const COMMANDS: &[Command] = &[
         "ui.panel",
         "UI: Panel…",
         "World",
-        "ID ANCHOR [at=X,Y] [width=] [style=] [widgets=A,B] | ID none",
+        "ID ANCHOR [at=X,Y] [width=|N%] [height=] [layout=] [columns=] [gap=] [z=] [style=] [widgets=A,B] | ID none",
+    ),
+    a(
+        "ui.screen",
+        "UI: Reference Screen (scaling)…",
+        "World",
+        "WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | none",
     ),
     a(
         "ui.text_class",
@@ -758,6 +764,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.frame",
     "ui.panel_style",
     "ui.panel",
+    "ui.screen",
     "ui.text_class",
     "ui.button_class",
     "ui.class",
@@ -1326,7 +1333,7 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
-            | "ui.text_class" | "ui.button_class" | "ui.class"
+            | "ui.screen" | "ui.text_class" | "ui.button_class" | "ui.class"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")

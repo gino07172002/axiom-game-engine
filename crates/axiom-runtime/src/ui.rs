@@ -23,6 +23,21 @@ pub struct UiState {
     pub fps: f32,
     pub gpu: String,
     pub port: u16,
+    /// Game HUD layout of the last frame (plan M3, `observe` `ui_layout`).
+    pub layout: crate::bound_ui::UiLayout,
+    /// Panel layer transform applied to the `targets` drawn inside it (layout -> screen).
+    pub target_transform: egui::emath::TSTransform,
+    /// Reused per-frame buffers of the panel pass (internal; public so `UiState { .., ..Default::default() }` works outside the crate).
+    pub panel_order: Vec<usize>,
+    pub layout_widgets: Vec<(usize, egui::Rect)>,
+    pub layout_panels: Vec<(usize, egui::Rect)>,
+}
+impl UiState {
+    /// Records a widget target in screen space.
+    pub fn target(&mut self, key: String, rect: egui::Rect) {
+        self.targets
+            .insert(key, self.target_transform.mul_rect(rect));
+    }
 }
 pub enum Action {
     Gameplay(axiom_core::gameplay::RuntimeCommand),

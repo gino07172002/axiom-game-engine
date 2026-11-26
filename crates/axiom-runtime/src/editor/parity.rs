@@ -3404,6 +3404,13 @@ fn ui_theme_and_panel_commands_match_acl() {
             "ui buttonclass chip size=14 padding=6 normal.frame=scroll hover.fill=202020FF",
         ),
         ("ui.class", "title title_gold", "ui class title title_gold"),
+        // Plan M3: the reference screen, and a grid panel holding the tracker panel.
+        ("ui.screen", "1920 1080 scale=fit", "ui screen 1920 1080 scale=fit"),
+        (
+            "ui.panel",
+            "hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",
+            "ui panel hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",
+        ),
     ];
     // One step at a time: each starts from the world the earlier ACL lines produced.
     let mut at = start.clone();
@@ -3422,6 +3429,18 @@ fn ui_theme_and_panel_commands_match_acl() {
         .find(|p| p["id"] == "tracker")
         .expect("the tracker panel");
     assert_eq!(tracker["children"], serde_json::json!(["quest"]));
+    let theme = &at.resources["ui.document"]["theme"];
+    assert_eq!(theme["reference"], serde_json::json!([1920.0, 1080.0]));
+    assert_eq!(theme["scale"], "fit");
+    let hud = at.resources["ui.document"]["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "hud")
+        .expect("the hud panel");
+    assert_eq!(hud["width"], "40%");
+    assert_eq!(hud["layout"], "grid");
+    assert_eq!(hud["children"], serde_json::json!(["tracker"]));
     // A refused edit writes nothing and reports the field.
     let mut e = Editor::new(start, 1, None);
     e.set_component_hints(&crate::installed_registry().authoring);

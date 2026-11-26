@@ -82,17 +82,18 @@ fn the_town_dialog_draws_in_a_framed_bottom_panel() {
         .collect();
     assert_eq!(frames.len(), 1, "one framed panel: {frames:?}");
     let frame = frames[0];
+    // Authored in the 1280x720 reference (plan M3): 1080 / 720 = 1.5x in this window.
     assert!(
-        (frame.width() - 900.0).abs() < 1.0,
-        "authored width 900: {frame:?}"
+        (frame.width() - 900.0 * 1.5).abs() < 1.0,
+        "authored width 900 x 1.5: {frame:?}"
     );
     assert!(
         (frame.center().x - 960.0).abs() < 1.0,
         "centred at the bottom: {frame:?}"
     );
     assert!(
-        (1080.0 - frame.bottom() - 14.0).abs() < 1.0,
-        "14 px above the bottom: {frame:?}"
+        (1080.0 - frame.bottom() - 14.0 * 1.5).abs() < 1.0,
+        "14 reference px above the bottom: {frame:?}"
     );
     // The choice buttons are inside the frame (they are the panel's last child).
     let choices: Vec<&Rect> = ui
@@ -270,7 +271,242 @@ fn the_speaker_name_uses_its_text_class_with_a_shadow() {
     assert!(
         texts.iter().any(|(p, c, t)| is_rgb(*c, [0, 0, 0])
             && *t == main.2
-            && *p == main.0 + Vec2::splat(2.0)),
-        "shadow 2 px down-right of {main:?}"
+            // 2 reference px, drawn in the panel layer scaled 1080 / 720 = 1.5x.
+            && (*p - (main.0 + Vec2::splat(3.0))).length() < 0.01),
+        "shadow 2 x 1.5 px down-right of {main:?}"
+    );
+}
+
+/// Draws the HUD `n` times in a `w` x `h` window and returns the last frame's shapes.
+fn frames_at(
+    r: &WorldRuntime,
+    ctx: &egui::Context,
+    ui: &mut UiState,
+    [w, h]: [f32; 2],
+    n: usize,
+    events: Vec<egui::Event>,
+) -> Vec<egui::epaint::ClippedShape> {
+    let mut shapes = vec![];
+    for k in 0..n {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h))),
+            events: if k + 1 == n { events.clone() } else { vec![] },
+            ..Default::default()
+        };
+        shapes = ctx
+            .run(raw, |ctx| {
+                let _ = r.draw_ui(ctx, ui);
+            })
+            .shapes;
+    }
+    shapes
+}
+
+fn dialog_frame(shapes: &[egui::epaint::ClippedShape]) -> Rect {
+    let mut found = vec![];
+    meshes(shapes, &mut found);
+    let frames: Vec<Rect> = found
+        .iter()
+        .filter(|m| m.vertices.len() == 36 && m.texture_id != egui::TextureId::default())
+        .map(|m| Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>()))
+        .filter(|r| r.width() > 200.0)
+        .collect();
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    frames[0]
+}
+
+#[test]
+fn the_dialog_keeps_its_proportions_at_720p_and_1080p() {
+    // theme.reference = 1280x720, fit_height: the panel layer scales by window height / 720.
+    let r = talking();
+    let mut seen = vec![];
+    for size in [[1920.0, 1080.0], [1280.0, 720.0]] {
+        let ctx = egui::Context::default();
+        let mut ui = UiState::default();
+        let frame = dialog_frame(&frames_at(&r, &ctx, &mut ui, size, 3, vec![]));
+        let s = size[1] / 720.0;
+        assert!(
+            (frame.width() - 900.0 * s).abs() < 1.0,
+            "{size:?}: {frame:?}"
+        );
+        assert!(
+            (frame.center().x - size[0] / 2.0).abs() < 1.0,
+            "{size:?}: {frame:?}"
+        );
+        assert!(
+            (size[1] - frame.bottom() - 14.0 * s).abs() < 1.0,
+            "{size:?}: {frame:?}"
+        );
+        seen.push((frame.width() / size[0], frame.height() / size[1]));
+        // The choice buttons are clickable where they are drawn: their targets sit inside.
+        for (k, c) in ui.targets.iter().filter(|(k, _)| k.starts_with("choice")) {
+            assert!(
+                frame.contains_rect(*c),
+                "{size:?} {k} {c:?} outside {frame:?}"
+            );
+        }
+    }
+    assert!(
+        (seen[0].0 - seen[1].0).abs() < 0.002 && (seen[0].1 - seen[1].1).abs() < 0.002,
+        "same proportions of the window: {seen:?}"
+    );
+}
+
+#[test]
+fn emotes_sit_in_a_three_column_grid_and_observe_reports_the_layout() {
+    let r = talking();
+    let ctx = egui::Context::default();
+    let mut ui = UiState::default();
+    frames_at(&r, &ctx, &mut ui, [1920.0, 1080.0], 3, vec![]);
+    let layout = r.ui_layout_observation(&ui).expect("ui_layout");
+    let widgets = layout["widgets"].as_array().unwrap();
+    let rect = |id: &str| -> [f64; 4] {
+        let w = widgets
+            .iter()
+            .find(|w| w["id"] == id)
+            .unwrap_or_else(|| panic!("{id} in {layout}"));
+        assert_eq!(
+            w["panel"],
+            if id.starts_with("emote") {
+                "emotes"
+            } else {
+                "dialog"
+            }
+        );
+        serde_json::from_value(w["rect"].clone()).unwrap()
+    };
+    let emotes = [
+        "emote_wave",
+        "emote_bow",
+        "emote_dance",
+        "emote_cheer",
+        "emote_pose",
+        "emote_think",
+    ];
+    let rects: Vec<[f64; 4]> = emotes.iter().map(|id| rect(id)).collect();
+    let rows: std::collections::BTreeSet<i64> = rects.iter().map(|r| r[1].round() as i64).collect();
+    let cols: std::collections::BTreeSet<i64> = rects.iter().map(|r| r[0].round() as i64).collect();
+    assert_eq!(
+        (rows.len(), cols.len()),
+        (2, 3),
+        "2 rows x 3 columns: {rects:?}"
+    );
+    // Row-major: wave, bow, dance on the first row.
+    assert!(rects[0][1] < rects[3][1] && rects[0][0] < rects[1][0] && rects[1][0] < rects[2][0]);
+    rect("line");
+    let panels: Vec<&str> = layout["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(panels, ["dialog", "emotes"], "{layout}");
+    assert_eq!(layout["scale"], 1.5, "1080 / the 720 reference");
+    assert_eq!(
+        layout["diagnostics"],
+        serde_json::json!([]),
+        "no overlap or off-screen HUD: {layout}"
+    );
+}
+
+#[test]
+fn observe_reports_overlapping_and_offscreen_panels() {
+    // Put the emote grid onto the dialog and make it wider than the window (egui keeps an
+    // area that fits inside the window, so off-screen means "larger than the window").
+    let mut world = town();
+    let doc = world.resources.get_mut("ui.document").unwrap();
+    let emotes = doc["panels"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["id"] == "emotes")
+        .unwrap();
+    emotes["anchor"] = serde_json::json!("bottom");
+    emotes["offset"] = serde_json::json!([0, -20]);
+    emotes["width"] = serde_json::json!(4000);
+    let mut r = WorldRuntime::new(world, 1, installed_registry()).unwrap();
+    r.step(&ActionMap::default());
+    let ctx = egui::Context::default();
+    let mut ui = UiState::default();
+    frames_at(&r, &ctx, &mut ui, [1920.0, 1080.0], 3, vec![]);
+    let layout = r.ui_layout_observation(&ui).expect("ui_layout");
+    let codes: Vec<(String, String)> = layout["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["code"].as_str().unwrap().to_owned(), d.to_string()))
+        .collect();
+    assert!(
+        codes
+            .iter()
+            .any(|(c, d)| c == "ui_offscreen" && d.contains("panel:emotes")),
+        "{codes:?}"
+    );
+    assert!(
+        codes.iter().any(|(c, d)| c == "ui_overlap"
+            && d.contains("panel:emotes")
+            && d.contains("panel:dialog")),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn scaled_emote_buttons_still_hover_and_press_where_they_are_drawn() {
+    // At 1280x720 the panel layer is scaled by 2/3; targets and hit tests use screen space.
+    let r = WorldRuntime::new(town(), 1, installed_registry()).unwrap();
+    let ctx = egui::Context::default();
+    let mut ui = UiState {
+        playing: true,
+        ..Default::default()
+    };
+    let size = [1280.0, 720.0];
+    frames_at(&r, &ctx, &mut ui, size, 3, vec![]);
+    let button = ui.targets["button/emote_wave"];
+    assert!(
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0)).contains_rect(button),
+        "{button:?}"
+    );
+    let normal = frame_texture_in(&frames_at(&r, &ctx, &mut ui, size, 1, vec![]), button)
+        .expect("normal frame");
+    let at = button.center();
+    let hover = frame_texture_in(
+        &frames_at(
+            &r,
+            &ctx,
+            &mut ui,
+            size,
+            1,
+            vec![egui::Event::PointerMoved(at)],
+        ),
+        button,
+    )
+    .expect("hover frame");
+    assert_ne!(normal, hover, "hovering the drawn button highlights it");
+    let press = egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    };
+    let release = egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    };
+    frames_at(&r, &ctx, &mut ui, size, 1, vec![press]);
+    let ctx2 = ctx.clone();
+    let mut clicked = vec![];
+    let raw = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0))),
+        events: vec![release],
+        ..Default::default()
+    };
+    let _ = ctx2.run(raw, |ctx| clicked = r.draw_ui(ctx, &mut ui));
+    assert!(
+        clicked
+            .iter()
+            .any(|a| matches!(a, axiom_runtime::ui::Action::Gameplay(_))),
+        "the click reaches the scaled button"
     );
 }

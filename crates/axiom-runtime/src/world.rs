@@ -1745,6 +1745,12 @@ impl WorldRuntime {
                 .map_or(self.bindings.capture_pointer, |c| c.capture())
             && self.systems.iter().all(|(_, s)| s.pointer_allowed())
     }
+    /// `ui_layout` of the HUD last drawn with `ui` (plan M3); none without a
+    /// `ui.document` or before a frame placed any region or panel.
+    pub fn ui_layout_observation(&self, ui: &UiState) -> Option<serde_json::Value> {
+        crate::bound_ui::layout_observation(self.state.gameplay.as_ref()?, &ui.layout)
+    }
+
     pub fn draw_ui(&self, ctx: &egui::Context, ui: &mut UiState) -> Vec<Action> {
         let mut actions = vec![];
         let mut drawn = false;

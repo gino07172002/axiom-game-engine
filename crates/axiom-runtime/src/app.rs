@@ -1706,6 +1706,12 @@ impl App {
                 .metrics
                 .insert("editor".into(), editor.observation());
         }
+        // Only documents with panels: their layout is what AI agents check (plan M3).
+        if !self.ui.layout.panels.is_empty() {
+            if let Some(layout) = self.runtime.ui_layout_observation(&self.ui) {
+                observation.metrics.insert("ui_layout".into(), layout);
+            }
+        }
         if let Some(reload) = self.reload_metrics() {
             observation.metrics.insert("reload".into(), reload);
         }
