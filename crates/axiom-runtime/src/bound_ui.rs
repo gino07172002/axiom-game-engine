@@ -7,6 +7,13 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use axiom_core::gameplay::{BoundText, BoundWidget, Region, RuntimeCommand, Scalar, TextStyle};
 use egui::{Color32, RichText, Vec2};
+/// A content font (plan M4): bytes read and parsed off the main thread, and the egui family
+/// it is installed under (`ui:ID:FINGERPRINT`, so a changed file installs as a new family).
+pub struct PreparedFont {
+    pub bytes: std::sync::Arc<Vec<u8>>,
+    pub family: egui::FontFamily,
+}
+
 #[derive(Clone)]
 pub struct PreparedImage {
     pub key: String,
@@ -37,7 +44,86 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
             }),
         );
     }
+    // Content fonts: one bounded read and a parse check here (world activation runs off the
+    // main thread), so the main thread only hands checked bytes to egui.
+    for (id, font) in ui.theme.iter().flat_map(|t| &t.fonts) {
+        let raw = axiom_core::read_bounded(
+            std::path::Path::new(&font.path),
+            axiom_core::ui_theme::FONT_BYTES as usize,
+            "UI font asset",
+        )
+        .with_context(|| format!("ui.document font {id}"))?;
+        ttf_parser::Face::parse(&raw, 0).map_err(|e| {
+            anyhow::anyhow!("ui.document font {id}: not a TrueType / OpenType font ({e})")
+        })?;
+        let fingerprint = raw.iter().fold(0xcbf29ce484222325u64, |h, b| {
+            (h ^ *b as u64).wrapping_mul(0x100000001b3)
+        });
+        g.fonts.insert(
+            id.clone(),
+            std::sync::Arc::new(PreparedFont {
+                bytes: std::sync::Arc::new(raw),
+                family: egui::FontFamily::Name(format!("ui:{id}:{fingerprint:x}").into()),
+            }),
+        );
+    }
     Ok(())
+}
+
+/// Installs the document's content fonts into `ctx` when they are missing there. egui applies
+/// new fonts at the next pass, so this returns false until they are usable; classes draw
+/// with the default font until then. Checks what the context really has (another
+/// `set_fonts`, e.g. the editor theme, may have replaced them) and asks again after two
+/// passes, never every pass.
+fn ensure_fonts(ctx: &egui::Context, g: &Gameplay) -> bool {
+    if g.fonts.is_empty() {
+        return true;
+    }
+    let ready = ctx.fonts(|f| {
+        let lock = f.lock();
+        let families = &lock.fonts.definitions().families;
+        g.fonts
+            .values()
+            .all(|font| families.contains_key(&font.family))
+    });
+    if ready {
+        return true;
+    }
+    let id = egui::Id::new("axiom_ui_fonts_requested");
+    let pass = ctx.cumulative_pass_nr();
+    let asked: Option<u64> = ctx.data(|d| d.get_temp(id));
+    if asked.is_some_and(|at| pass < at + 2) {
+        return false;
+    }
+    let mut defs = crate::ui::base_fonts().cloned().unwrap_or_default();
+    let fallback = defs
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for font in g.fonts.values() {
+        let egui::FontFamily::Name(name) = &font.family else {
+            continue;
+        };
+        defs.font_data.insert(
+            name.to_string(),
+            std::sync::Arc::new(egui::FontData::from_owned((*font.bytes).clone())),
+        );
+        let mut list = vec![name.to_string()];
+        list.extend(fallback.iter().cloned());
+        defs.families.insert(font.family.clone(), list);
+    }
+    ctx.set_fonts(defs);
+    ctx.data_mut(|d| d.insert_temp(id, pass));
+    false
+}
+
+/// The egui family of a class's font, when it is installed in this pass.
+fn font_family(g: &Gameplay, fonts_ready: bool, font: &Option<String>) -> egui::FontFamily {
+    match font.as_ref().and_then(|f| g.fonts.get(f)) {
+        Some(p) if fonts_ready => p.family.clone(),
+        _ => egui::FontFamily::Proportional,
+    }
 }
 /// Byte budget of one image asset file (UI images, mesh decals).
 pub(crate) const IMAGE_BYTES: u64 = 4_194_304;
@@ -127,6 +213,7 @@ pub fn draw(
     };
     let mut actions = vec![];
     state.targets.clear();
+    state.fonts_ready = ensure_fonts(ctx, g);
     // Only the currently prepared assets remain cached after a content switch/reload.
     state
         .textures
@@ -308,6 +395,7 @@ pub fn draw_canvas(
     let mut actions = vec![];
     let mut rects = vec![];
     state.targets.clear();
+    state.fonts_ready = ensure_fonts(ctx, g);
     let mut surface = Surface {
         area: Some(screen),
         top,
@@ -539,7 +627,8 @@ fn draw_widgets(
                     drawn = Some(
                         ui.push_id(id, |ui| {
                             with_effects(ui, visual, |ui| {
-                                themed_text(ui, text, class);
+                                let family = font_family(g, state.fonts_ready, &class.font);
+                                themed_text(ui, text, class, family);
                             })
                         })
                         .inner,
@@ -1506,6 +1595,7 @@ fn themed_text(
     ui: &mut egui::Ui,
     text: String,
     class: &axiom_core::ui_theme::TextClass,
+    family: egui::FontFamily,
 ) -> egui::Response {
     let size = class.size.unwrap_or(15.0);
     let color = class
@@ -1514,7 +1604,7 @@ fn themed_text(
         .unwrap_or_else(|| ui.visuals().text_color());
     let galley = ui.painter().layout(
         text,
-        egui::FontId::proportional(size),
+        egui::FontId::new(size, family),
         Color32::PLACEHOLDER,
         ui.available_width(),
     );
@@ -1556,7 +1646,10 @@ fn themed_button(
     let padding = class.padding.unwrap_or(10.0);
     let galley = ui.painter().layout_no_wrap(
         text,
-        egui::FontId::proportional(class.size.unwrap_or(15.0)),
+        egui::FontId::new(
+            class.size.unwrap_or(15.0),
+            font_family(g, state.fonts_ready, &class.font),
+        ),
         Color32::PLACEHOLDER,
     );
     let desired = (galley.size() + Vec2::splat(2.0 * padding)).max(min);

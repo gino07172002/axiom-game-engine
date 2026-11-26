@@ -699,6 +699,17 @@ pub fn set_ui_screen(
     checked_edits(put(raw))
 }
 
+/// UI Editor ▸ font / ACL `ui font ID PATH license=SPDX | ui font ID none` (plan M4). Removing a
+/// font a class still uses is refused.
+pub fn set_ui_font(
+    world: &World,
+    id: &str,
+    font: Option<crate::ui_theme::UiFont>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(raw, "fonts", id, font.map(|f| json!(f))))
+}
+
 /// UI Editor ▸ text class / ACL `ui textclass CLASS [size=] [color=] [shadow=] | none` (plan M2).
 pub fn set_ui_text_class(
     world: &World,

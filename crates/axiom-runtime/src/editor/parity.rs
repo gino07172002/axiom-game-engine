@@ -3404,6 +3404,17 @@ fn ui_theme_and_panel_commands_match_acl() {
             "ui buttonclass chip size=14 padding=6 normal.frame=scroll hover.fill=202020FF",
         ),
         ("ui.class", "title title_gold", "ui class title title_gold"),
+        // Plan M4: a content font used by a text class.
+        (
+            "ui.font",
+            "serif ui/serif.otf license=OFL-1.1",
+            "ui font serif ui/serif.otf license=OFL-1.1",
+        ),
+        (
+            "ui.text_class",
+            "title_gold size=22 font=serif color=E9C478 shadow=000000AA",
+            "ui textclass title_gold size=22 font=serif color=E9C478 shadow=000000AA",
+        ),
         // Plan M3: the reference screen, and a grid panel holding the tracker panel.
         ("ui.screen", "1920 1080 scale=fit", "ui screen 1920 1080 scale=fit"),
         (
@@ -3441,6 +3452,21 @@ fn ui_theme_and_panel_commands_match_acl() {
     assert_eq!(hud["width"], "40%");
     assert_eq!(hud["layout"], "grid");
     assert_eq!(hud["children"], serde_json::json!(["tracker"]));
+    assert_eq!(theme["fonts"]["serif"]["license"], "OFL-1.1");
+    assert_eq!(theme["text"]["title_gold"]["font"], "serif");
+    // Repeating a step that changes nothing writes nothing (no empty batch for the store to
+    // refuse) and is not an error.
+    let mut same = Editor::new(at.clone(), 1, None);
+    same.set_component_hints(&crate::installed_registry().authoring);
+    let actions = same
+        .run_command_with("ui.class", Some("title title_gold"))
+        .unwrap();
+    assert!(actions.is_empty(), "{} writes", actions.len());
+    assert!(
+        same.problem_codes().is_empty(),
+        "{:?}",
+        same.problem_codes()
+    );
     // A refused edit writes nothing and reports the field.
     let mut e = Editor::new(start, 1, None);
     e.set_component_hints(&crate::installed_registry().authoring);

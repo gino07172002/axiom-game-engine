@@ -128,8 +128,11 @@ EDIT (any number, atomic):
   ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none
                                   reference screen: panels are laid out in W x H pixels and the panel layer
                                   scales to the window (N% lengths are of W / H); live: observe ui.layout
-  ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
-  ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | none
+  ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none
+                                  content font (.ttf/.otf <= 24 MiB, package-relative; at most 4); used by
+                                  text / button classes (font=ID); CJK falls back to the system UI font
+  ui textclass CLASS [size=N] [font=ID] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
+  ui buttonclass CLASS [size=N] [font=ID] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | none
                                   STATE: normal|hover|pressed|disabled (unset fields use normal)
   ui class WIDGET CLASS|none      text widget -> text class, button -> button class (not with ui style)
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
@@ -787,6 +790,8 @@ enum UiStatement {
     Frame(String, Option<crate::ui_theme::UiFrame>),
     PanelStyle(String, Option<crate::ui_theme::PanelStyle>),
     Panel(String, Option<crate::ui_theme::UiPanel>),
+    /// `ui font ID PATH license=SPDX` / `ui font ID none`.
+    Font(String, Option<crate::ui_theme::UiFont>),
     /// `ui screen W H [scale=]` / `ui screen none`.
     Screen(Option<[f32; 2]>, Option<crate::ui_theme::UiScale>),
     TextClass(String, Option<crate::ui_theme::TextClass>),
@@ -945,6 +950,20 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             let class = (tokens[3] != "none").then(|| tokens[3].clone());
             UiStatement::Class(tokens[2].clone(), class)
         }
+        "font" => {
+            let usage = "use: ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none";
+            match tokens.len() {
+                4 if tokens[3] == "none" => UiStatement::Font(tokens[2].clone(), None),
+                n if n >= 4 => UiStatement::Font(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::font_from(
+                        &tokens[3],
+                        &key_values(&tokens[4..])?,
+                    )?),
+                ),
+                _ => bail!("{usage}"),
+            }
+        }
         "screen" => {
             let usage = "use: ui screen WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | ui screen none";
             match tokens.len() {
@@ -1032,7 +1051,7 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             }
             other => bail!("unknown ui effect verb '{other}' (add, set, remove)"),
         },
-        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, textclass, buttonclass, class)"),
+        other => bail!("unknown ui verb '{other}' (place, style, button, slider, effect, frame, panelstyle, panel, screen, font, textclass, buttonclass, class)"),
     })
 }
 
@@ -1045,6 +1064,7 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
         }
         UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
         UiStatement::Screen(reference, scale) => crate::ops::set_ui_screen(w, *reference, *scale),
+        UiStatement::Font(id, font) => crate::ops::set_ui_font(w, id, font.clone()),
         UiStatement::TextClass(class, text) => {
             crate::ops::set_ui_text_class(w, class, text.clone())
         }

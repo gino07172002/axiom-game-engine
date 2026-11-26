@@ -21,6 +21,12 @@ pub const MAX_CLASSES: usize = 32;
 /// Deepest panel nesting (a root panel is depth 1).
 pub const MAX_PANEL_DEPTH: usize = 4;
 pub const MAX_GRID_COLUMNS: u8 = 16;
+/// Content fonts per document (plan M4).
+pub const MAX_FONTS: usize = 4;
+/// Byte budget of one font file.
+pub const FONT_BYTES: u64 = 25_165_824;
+/// Licences a content font may declare (SPDX IDs): open licences that allow redistribution.
+pub const FONT_LICENSES: [&str; 4] = ["OFL-1.1", "Apache-2.0", "MIT", "CC0-1.0"];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +43,9 @@ pub struct UiTheme {
     /// Button class -> look of the buttons that use it, per state (plan M2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub button: BTreeMap<String, ButtonClass>,
+    /// Font ID -> TrueType / OpenType file shipped with the content (plan M4).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fonts: BTreeMap<String, UiFont>,
     /// Reference screen [width, height] the panels are authored for (plan M3); none = panels
     /// are laid out in screen pixels, unscaled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,6 +169,7 @@ impl UiTheme {
             && self.panel.is_empty()
             && self.text.is_empty()
             && self.button.is_empty()
+            && self.fonts.is_empty()
             && self.reference.is_none()
             && self.scale.is_none()
     }
@@ -179,12 +189,24 @@ fn is_stretch(c: &FrameCenter) -> bool {
     *c == FrameCenter::Stretch
 }
 
+/// A content font: a .ttf / .otf path (package-relative in content, absolute once imported)
+/// and its SPDX licence (one of `FONT_LICENSES`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UiFont {
+    pub path: String,
+    pub license: String,
+}
+
 /// A text class: size (px), colour and an optional drop shadow colour (2 px down-right).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TextClass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f32>,
+    /// Theme font ID; none = the default UI font.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 4]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,6 +248,9 @@ impl ButtonLook {
 pub struct ButtonClass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f32>,
+    /// Theme font ID of the label; none = the default UI font.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding: Option<f32>,
     #[serde(default, skip_serializing_if = "ButtonLook::is_empty")]
@@ -422,6 +447,49 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
                 format!("{DOC}/theme/scale"),
                 "scale needs a theme.reference screen size".into(),
             ));
+        }
+        if theme.fonts.len() > MAX_FONTS {
+            return Err(invalid(
+                format!("{DOC}/theme/fonts"),
+                format!("at most {MAX_FONTS} fonts"),
+            ));
+        }
+        for (id, f) in &theme.fonts {
+            let path = format!("{DOC}/theme/fonts/{id}");
+            valid_id(id).map_err(|e| invalid(path.clone(), e.to_string()))?;
+            let font_file = std::path::Path::new(&f.path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"));
+            if f.path.len() > 1024 || !font_file {
+                return Err(invalid(
+                    format!("{path}/path"),
+                    "a font is a .ttf or .otf file (path <= 1024 bytes)".into(),
+                ));
+            }
+            if !FONT_LICENSES.contains(&f.license.as_str()) {
+                return Err(invalid(
+                    format!("{path}/license"),
+                    format!(
+                        "license '{}' is not accepted; use one of {} (fonts ship with the game)",
+                        f.license,
+                        FONT_LICENSES.join(", ")
+                    ),
+                ));
+            }
+        }
+        let font_ref = |path: String, font: &Option<String>| -> Result<()> {
+            match font {
+                Some(f) if !theme.fonts.contains_key(f) => {
+                    Err(invalid(path, format!("font '{f}' is not in theme.fonts")))
+                }
+                _ => Ok(()),
+            }
+        };
+        for (class, t) in &theme.text {
+            font_ref(format!("{DOC}/theme/text/{class}/font"), &t.font)?;
+        }
+        for (class, b) in &theme.button {
+            font_ref(format!("{DOC}/theme/button/{class}/font"), &b.font)?;
         }
         if theme.text.len() > MAX_CLASSES || theme.button.len() > MAX_CLASSES {
             return Err(invalid(
@@ -762,7 +830,27 @@ pub fn panel_from(id: &str, anchor: Region, options: &[(String, String)]) -> Res
     Ok(p)
 }
 
-/// `ui textclass CLASS size=N color=RRGGBB[AA] shadow=RRGGBB[AA]` options.
+/// `ui font ID PATH license=SPDX`: a content font.
+pub fn font_from(path: &str, options: &[(String, String)]) -> Result<UiFont> {
+    let mut license = None;
+    for (k, v) in options {
+        match k.as_str() {
+            "license" => license = Some(v.clone()),
+            _ => anyhow::bail!("unknown font option '{k}' (license)"),
+        }
+    }
+    Ok(UiFont {
+        path: path.to_owned(),
+        license: license.ok_or_else(|| {
+            anyhow::anyhow!(
+                "a font needs license=SPDX (one of {})",
+                FONT_LICENSES.join(", ")
+            )
+        })?,
+    })
+}
+
+/// `ui textclass CLASS size=N font=ID color=RRGGBB[AA] shadow=RRGGBB[AA]` options.
 pub fn text_class_from(options: &[(String, String)]) -> Result<TextClass> {
     let mut t = TextClass::default();
     for (k, v) in options {
@@ -775,7 +863,8 @@ pub fn text_class_from(options: &[(String, String)]) -> Result<TextClass> {
             }
             "color" => t.color = Some(parse_rgba(v)?),
             "shadow" => t.shadow = Some(parse_rgba(v)?),
-            _ => anyhow::bail!("unknown text class option '{k}' (size, color, shadow)"),
+            "font" => t.font = Some(v.clone()),
+            _ => anyhow::bail!("unknown text class option '{k}' (size, font, color, shadow)"),
         }
     }
     Ok(t)
@@ -793,10 +882,11 @@ pub fn button_class_from(options: &[(String, String)]) -> Result<ButtonClass> {
         match k.as_str() {
             "size" => b.size = Some(number()?),
             "padding" => b.padding = Some(number()?),
+            "font" => b.font = Some(v.clone()),
             _ => {
                 let (state, field) = k.split_once('.').ok_or_else(|| {
                     anyhow::anyhow!(
-                        "unknown button class option '{k}' (size, padding, STATE.frame|fill|text; STATE: {})",
+                        "unknown button class option '{k}' (size, font, padding, STATE.frame|fill|text; STATE: {})",
                         BUTTON_STATES.join(", ")
                     )
                 })?;

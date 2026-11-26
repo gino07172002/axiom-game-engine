@@ -74,8 +74,9 @@ ui frame ID IMAGE L T R B | ui frame ID none        # 主題九宮格邊框:imag
 ui panelstyle CLASS [fill=RRGGBB[AA]] [corner=N] [padding=N] [frame=ID] | ui panelstyle CLASS none
 ui panel ID ANCHOR [at=X,Y] [width=W|N%] [height=H|N%] [layout=column|row|grid|stack] [columns=N] [gap=N] [z=N] [style=CLASS] [widgets=A,B] | ui panel ID none
 ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none   # 參考畫面:面板層整體縮放
-ui textclass CLASS [size=N] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
-ui buttonclass CLASS [size=N] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | ui buttonclass CLASS none
+ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none   # 內容包字型
+ui textclass CLASS [size=N] [font=ID] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
+ui buttonclass CLASS [size=N] [font=ID] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | ui buttonclass CLASS none
 ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → button class
 ```
 
@@ -112,6 +113,18 @@ ui class WIDGET CLASS|none            # 文字元件 → text class;按鈕 → b
 - `theme.frames.ID = {image, slice:[l,t,r,b]}`:四個角保持原像素大小,四邊和中央拉伸。面板比兩個角加起來還小時,角會等比縮小。
 - 示範:Axiom Town 的對話框是 `dialog` 面板(底部置中、寬 900,使用 `ui/dialog-frame.png`)。這張圖由 `cargo run -p axiom-runtime --example build_ui_frames` 產生,是原創、不含第三方素材的圖,而且每次產生的結果都相同。
 - 回歸檢查:`scripts/ui-screenshot-ab.ps1 -Old OLD.exe` 對每個有 `ui.document` 的內容包做新舊截圖逐位元比較。
+
+**內容包字型(plan M4)**
+
+- `theme.fonts.ID = {path, license}`:內容包裡的 .ttf / .otf(路徑相對於內容包,匯入時換成絕對路徑),每份文件最多 4 個,每個 24 MiB 以內。
+- `license` 必須是可以隨遊戲散布的開放授權:`OFL-1.1`、`Apache-2.0`、`MIT`、`CC0-1.0`。
+- text class 和 button class 用 `font=ID` 指定字型;字型沒有的字(例如中文)會退回預設 UI 字型,再退回系統的微軟正黑體(系統字型只在本機讀取,不會被打包)。
+- 載入:
+  - 世界啟用時(不在主執行緒)讀檔並檢查是不是 TrueType / OpenType;壞掉的檔案讓啟用失敗,錯誤寫出字型 ID。
+  - 主執行緒只把檢查過的字型交給 egui;egui 在下一幀才套用,所以第一幀用預設字型畫。
+  - 字型組合沒變時不會重新安裝;別的 `set_fonts`(例如編輯器主題)把字型換掉時,會自動補回。
+- `axiom package` 打包遊戲時會一起複製字型檔。
+- 示範:Axiom Town 的 `ui/axiom-pixel.ttf` 是 `cargo run -p axiom-runtime --example build_ui_font` 產生的原創 5×7 點陣字(大寫、數字、常用標點,小寫對應到大寫;MIT),用在講者名字、對話台詞和表情按鈕;每次產生的結果都相同。
 
 **自由版面與縮放(plan M3)**
 

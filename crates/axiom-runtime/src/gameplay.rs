@@ -64,6 +64,8 @@ pub struct Gameplay {
     trace_sequence: u64,
     entry_depth: usize,
     pub images: BTreeMap<String, std::sync::Arc<crate::bound_ui::PreparedImage>>,
+    /// Content fonts read and checked off the main thread (plan M4), by theme font ID.
+    pub fonts: BTreeMap<String, std::sync::Arc<crate::bound_ui::PreparedFont>>,
     pub compiled: std::sync::Arc<CompiledGameplay>,
     pub values: Vec<Scalar>,
     pub node: Option<usize>,
@@ -105,6 +107,7 @@ impl Gameplay {
             trace_sequence: 0,
             entry_depth: 0,
             images: BTreeMap::new(),
+            fonts: BTreeMap::new(),
             values: compiled.initial.clone(),
             node: None,
             ending: None,

@@ -562,6 +562,22 @@ impl Loader<'_> {
                 );
                 *source = asset.to_string_lossy().into_owned();
             }
+            // Content fonts (plan M4): resolved and bounded like images.
+            for font in ui.theme.iter_mut().flat_map(|t| t.fonts.values_mut()) {
+                let asset = root
+                    .join(&font.path)
+                    .canonicalize()
+                    .context("missing UI font asset")?;
+                ensure!(
+                    asset.starts_with(root),
+                    "UI font path escapes package directory"
+                );
+                ensure!(
+                    std::fs::metadata(&asset)?.len() <= crate::ui_theme::FONT_BYTES,
+                    "UI font exceeds 24 MiB"
+                );
+                font.path = asset.to_string_lossy().into_owned();
+            }
             *doc = serde_json::to_value(ui)?;
         }
         for resolve in &registry.package_resolvers {

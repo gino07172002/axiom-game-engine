@@ -888,6 +888,18 @@ pub fn resolved_files(world: &Value) -> Vec<(String, String)> {
             add(format!("/resources/ui.document/images/{}", esc(id)), path);
         }
     }
+    // Content fonts (plan M4), resolved like images.
+    if let Some(fonts) = world
+        .pointer("/resources/ui.document/theme/fonts")
+        .and_then(Value::as_object)
+    {
+        for (id, font) in fonts {
+            add(
+                format!("/resources/ui.document/theme/fonts/{}/path", esc(id)),
+                &font["path"],
+            );
+        }
+    }
     if let Some(assets) = world
         .pointer("/resources/animation.library/assets")
         .and_then(Value::as_object)

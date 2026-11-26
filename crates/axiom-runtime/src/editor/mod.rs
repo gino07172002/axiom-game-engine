@@ -1219,6 +1219,12 @@ impl Editor {
         select: Option<String>,
     ) -> Option<Action> {
         match result {
+            // An op that changes nothing (e.g. setting a value it already has) writes nothing;
+            // an empty batch would be refused by the store as an error.
+            Ok(edits) if edits.is_empty() => {
+                self.notice("no change");
+                None
+            }
             Ok(edits) => Some(self.write(edits, select)),
             Err(error) => {
                 self.problem(&error);

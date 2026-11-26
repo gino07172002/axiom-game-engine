@@ -23,6 +23,8 @@ pub struct UiState {
     pub fps: f32,
     pub gpu: String,
     pub port: u16,
+    /// The document's content fonts are installed in the context drawing this pass (plan M4).
+    pub fonts_ready: bool,
     /// Game HUD layout of the last frame (plan M3, `observe` `ui_layout`).
     pub layout: crate::bound_ui::UiLayout,
     /// Panel layer transform applied to the `targets` drawn inside it (layout -> screen).
@@ -50,30 +52,36 @@ pub enum Action {
     Apply(String),
 }
 
-pub fn configure(ctx: &egui::Context) {
-    // Windows CJK fallback; never redistribute proprietary system font files. Read once per
-    // process: a second context (the editor's Game tab) shares the same font bytes.
+/// The UI fonts every context starts with: egui's defaults plus the Windows CJK fallback
+/// (never redistributed: read from the system once per process). Content fonts (plan M4) are
+/// added on top of these.
+pub fn base_fonts() -> Option<&'static egui::FontDefinitions> {
     static FONTS: std::sync::OnceLock<Option<egui::FontDefinitions>> = std::sync::OnceLock::new();
-    let fonts = FONTS.get_or_init(|| {
-        let font = std::env::var_os("WINDIR")
-            .map(std::path::PathBuf::from)
-            .map(|p| p.join("Fonts/msjh.ttc"))
-            .and_then(|p| std::fs::read(p).ok())?;
-        // Borrowed bytes: epaint copies owned font data into every context's atlas; the
-        // process keeps one copy for all of them.
-        let font: &'static [u8] = Box::leak(font.into_boxed_slice());
-        let mut fonts = egui::FontDefinitions::default();
-        fonts
-            .font_data
-            .insert("cjk".into(), egui::FontData::from_static(font).into());
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .push("cjk".into());
-        Some(fonts)
-    });
-    if let Some(fonts) = fonts {
+    FONTS
+        .get_or_init(|| {
+            let font = std::env::var_os("WINDIR")
+                .map(std::path::PathBuf::from)
+                .map(|p| p.join("Fonts/msjh.ttc"))
+                .and_then(|p| std::fs::read(p).ok())?;
+            // Borrowed bytes: epaint copies owned font data into every context's atlas; the
+            // process keeps one copy for all of them.
+            let font: &'static [u8] = Box::leak(font.into_boxed_slice());
+            let mut fonts = egui::FontDefinitions::default();
+            fonts
+                .font_data
+                .insert("cjk".into(), egui::FontData::from_static(font).into());
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push("cjk".into());
+            Some(fonts)
+        })
+        .as_ref()
+}
+
+pub fn configure(ctx: &egui::Context) {
+    if let Some(fonts) = base_fonts() {
         ctx.set_fonts(fonts.clone());
     }
     let mut style = (*ctx.style()).clone();

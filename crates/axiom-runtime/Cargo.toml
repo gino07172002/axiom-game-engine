@@ -20,6 +20,8 @@ wgpu = "24"
 naga = { version = "24", features = ["wgsl-in"] }
 winit = "0.30"
 egui = "0.31"
+# Already in the tree through egui's font stack; checks content fonts before egui sees them.
+ttf-parser = "0.25"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
 egui_dock = "=0.16.0"

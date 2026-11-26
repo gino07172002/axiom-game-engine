@@ -424,3 +424,43 @@ theme: {
   - 這是 CPU 時間,沒有量 GPU。
 - **編輯器畫布**:`ui_editor_tests::canvas_panels_scale_with_the_reference_screen`:畫布在 1280×720 和 1920×1080 下,面板元件占畫布的比例相同(第一次寫測試時忘了等 grid 欄寬穩定,量到前一幀的位置;多畫兩幀後通過)。
 - **未驗證**:沒有在 GPU 上截對話中(對話框變高)的畫面,這部分由 headless 測試涵蓋;編輯器畫布沒有截圖檢查。
+
+### 補記 2026-11-26:M4 和 ADR-7 的差異(原計畫 → 現在 → 原因)
+
+1. **示範字型**
+   - 原計畫:town 對話用一套 OFL 字型。
+   - 現在:用 `examples/build_ui_font.rs` 產生的原創 5×7 點陣字(MIT,和 repo 相同)。
+   - 原因:使用者的規則是不推送第三方素材;OFL 字型雖然可以散布,仍是第三方素材。格式和驗證照樣接受 OFL / Apache / MIT / CC0。
+2. **授權寫在哪裡**:寫在 `theme.fonts.ID.license`(和字型路徑同一處),不另外寫進 manifest;驗證只接受白名單裡的 SPDX ID。
+3. **button class 也能指定字型**:原計畫只寫 text class;按鈕標籤是同一種文字,一起支援。
+
+### M4 完成(分支 `ui-v2`)
+
+- **格式**:`theme.fonts.ID = {path, license}`(.ttf / .otf,≤ 4 個,每個 ≤ 24 MiB,license ∈ OFL-1.1 / Apache-2.0 / MIT / CC0-1.0);text class 和 button class 加 `font`。
+- **驗證**:授權不在白名單、副檔名不對、類別引用不存在的字型、超過 4 個、刪除仍被使用的字型,都回報欄位路徑。
+- **ops / ACL / 編輯器**:`set_ui_font`;ACL `ui font ID PATH license=SPDX | ui font ID none`、`textclass` / `buttonclass` 的 `font=`;編輯器命令 `ui.font`;parity 測試多兩步,parity 表加一列。
+- **內容包與打包**:匯入時字型路徑和圖片一樣換成內容包裡的絕對路徑(不能跑出內容包、≤ 24 MiB);`axiom package` 的檔案清單包含字型,打包後的 SHA-256 和原檔相同。
+- **執行期**:
+  - 世界啟用時(背景)讀檔並用 `ttf-parser`(egui 字型堆疊原本就有的 crate)檢查格式;壞檔案讓啟用失敗並寫出字型 ID。
+  - 主執行緒的 `ensure_fonts` 只在 context 缺字型時呼叫一次 `set_fonts`(基底 = egui 預設 + 微軟正黑體後備,`ui::base_fonts`);family 名稱含檔案指紋,換檔就是新 family;被別的 `set_fonts` 換掉時兩個 pass 後補回。
+  - egui 下一個 pass 才套用新字型,這之前類別用預設字型畫,不會引用還不存在的 family(egui 會 panic)。
+- **原創素材**:`examples/build_ui_font.rs` 產生 `content/axiom-town/ui/axiom-pixel.ttf`(11,724 bytes、51 個字符;5×7 點陣大寫、數字、常用標點與 `·`,小寫對應大寫)。連跑兩次 SHA-256 相同(D8D29382…)。
+- **內容**:講者名字、對話台詞(新類別 `dialog_line`)、表情按鈕使用 `pixel` 字型;中文退回系統字型。
+- **實作中發現並修正**:編輯器命令的 op 沒有任何改變時,原本會送出空的 Apply,被 store 以 `batch must contain 1..256 edits` 拒絕(M1a 起的 UI 主題 op 對「設成相同的值」回傳空的編輯)。改成不寫入、顯示「no change」;parity 測試加了這個情況。
+- **測試**:core `ui_theme.rs` 新增 1 個;`ui_panels.rs` 新增 2 個(安裝後台詞改用內容字型、被別的 set_fonts 換掉後補回;不是字型的檔案讓啟用失敗並寫出 ID)。既有的滑過 / 按下測試要多等幾幀:字型換上後按鈕變寬,grid 下一幀才重新算欄寬。
+- **量測**(`examples/ui_font_bench.rs`,1280×720,context 先載入遊戲的基底字型;每幀 = egui pass + tessellate 的 CPU 時間):
+
+  | | 第 0 幀 | 第 1 幀(套用字型) | 之後 |
+  |---|---|---|---|
+  | debug,有內容字型 | 3.72 ms | 5.89 ms | 0.47–0.84 ms |
+  | debug,沒有內容字型 | 3.53 ms | 0.71 ms | 0.53–2.84 ms |
+  | release,有內容字型 | 2.98 ms | 6.79 ms | 0.40–0.93 ms |
+  | release,沒有內容字型 | 3.80 ms | 0.85 ms | 0.52–0.66 ms |
+
+  - 套用字型的那一幀多約 5–6 ms(egui 重建字型與 atlas,含 21 MB 的微軟正黑體後備),在 16 ms 預算內。
+  - debug 和 release 接近,原因同 M3(相依套件 opt-level 2)。
+- **GPU 截圖**(實際看過,1920×1080):台詞裡的 WASD、Z/C、SPACE、數字和表情按鈕的數字、YA 是點陣字,中文是系統字型;`ui_layout` 0 個診斷。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace` 1140 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+  - 中途一次 `inspector_on_a_4096_object_world_stays_within_budget`(時間預算 96 ms)在 GPU 截圖同時跑的時候失敗;單獨的完整重跑通過,這個測試和 M4 的改動無關。
+- **截圖 A/B**(M3 exe 對 M4 exe):9 個內容沒變的包逐位元相同,第一個包重跑一次確認穩定。
+- **打包**:`axiom package --pack content/axiom-town` 的輸出包含 `content/ui/axiom-pixel.ttf`,SHA-256 和原檔相同,打包的重新載入檢查通過;沒有實際啟動打包出來的遊戲。

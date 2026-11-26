@@ -197,7 +197,7 @@ fn emote_buttons_switch_frames_for_hover_and_press() {
         playing: true,
         ..Default::default()
     };
-    for _ in 0..3 {
+    for _ in 0..6 {
         frame_with(&r, &ctx, &mut ui, vec![]);
     }
     let button = ui.targets["button/emote_wave"];
@@ -460,7 +460,8 @@ fn scaled_emote_buttons_still_hover_and_press_where_they_are_drawn() {
         ..Default::default()
     };
     let size = [1280.0, 720.0];
-    frames_at(&r, &ctx, &mut ui, size, 3, vec![]);
+    // The content font arrives on frame 2 and the grid settles its columns after it.
+    frames_at(&r, &ctx, &mut ui, size, 6, vec![]);
     let button = ui.targets["button/emote_wave"];
     assert!(
         Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 720.0)).contains_rect(button),
@@ -509,4 +510,67 @@ fn scaled_emote_buttons_still_hover_and_press_where_they_are_drawn() {
             .any(|a| matches!(a, axiom_runtime::ui::Action::Gameplay(_))),
         "the click reaches the scaled button"
     );
+}
+
+/// The families of every text shape drawn with `text`.
+fn families_of(shapes: &[egui::epaint::ClippedShape], text: &str) -> Vec<egui::FontFamily> {
+    shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Text(t) if t.galley.text() == text => {
+                Some(t.galley.job.sections[0].format.font_id.family.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_dialog_line_switches_to_the_content_font_once_installed() {
+    // Plan M4: the pack's own font (content/axiom-town/ui/axiom-pixel.ttf). egui applies new
+    // fonts at the next pass: on the first frame they are not usable yet (classes would draw
+    // the default font; areas are only measured on their first frame) and nothing panics.
+    let mut r = WorldRuntime::new(town(), 1, installed_registry()).unwrap();
+    r.step(&ActionMap::default());
+    let line = r.observation().metrics["gameplay"]["bindings"]["line"]
+        .as_str()
+        .map(str::to_owned)
+        .expect("the opening line");
+    let ctx = egui::Context::default();
+    axiom_runtime::ui::configure(&ctx);
+    let mut ui = UiState::default();
+    frames_at(&r, &ctx, &mut ui, [1280.0, 720.0], 1, vec![]);
+    assert!(!ui.fonts_ready, "not installed on the first frame");
+    let later = frames_at(&r, &ctx, &mut ui, [1280.0, 720.0], 2, vec![]);
+    let families = families_of(&later, &line);
+    assert_eq!(families.len(), 1, "{families:?}");
+    assert!(
+        matches!(&families[0], egui::FontFamily::Name(n) if n.starts_with("ui:pixel:")),
+        "{families:?}"
+    );
+    assert!(ui.fonts_ready);
+    // A context that loses the fonts (another set_fonts) gets them back.
+    axiom_runtime::ui::configure(&ctx);
+    frames_at(&r, &ctx, &mut ui, [1280.0, 720.0], 4, vec![]);
+    assert!(ui.fonts_ready, "reinstalled after being replaced");
+}
+
+#[test]
+fn a_font_file_that_is_not_a_font_fails_activation_with_its_id() {
+    let dir = std::env::temp_dir().join(format!("axiom-ui-font-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.ttf");
+    std::fs::write(&bad, b"not a font at all").unwrap();
+    let mut world = town();
+    world.resources.get_mut("ui.document").unwrap()["theme"]["fonts"]["pixel"]["path"] =
+        serde_json::json!(bad.to_string_lossy());
+    let error = WorldRuntime::new(world, 1, installed_registry())
+        .err()
+        .expect("refused");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("ui.document font pixel") && text.contains("TrueType"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }

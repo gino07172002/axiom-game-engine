@@ -336,3 +336,61 @@ fn panel_layouts_nest_and_the_reference_screen_round_trips() {
     acl(&mut s, "ui screen none").unwrap();
     assert_eq!(doc(&s), raw);
 }
+
+/// Plan M4: content fonts with an accepted licence, used by text and button classes.
+#[test]
+fn content_fonts_need_an_open_licence_and_known_ids() {
+    let mut s = store();
+    let raw = doc(&s);
+    acl(&mut s, "ui font pixel ui/pixel.ttf license=MIT").unwrap();
+    acl(&mut s, "ui textclass big size=30 font=pixel").unwrap();
+    acl(&mut s, "ui buttonclass chip font=pixel").unwrap();
+    let d = doc(&s);
+    assert_eq!(
+        d["theme"]["fonts"],
+        json!({"pixel": {"path": "ui/pixel.ttf", "license": "MIT"}})
+    );
+    assert_eq!(d["theme"]["text"]["big"]["font"], "pixel");
+    assert_eq!(d["theme"]["button"]["chip"]["font"], "pixel");
+    let start = rev(&s);
+    for (script, path) in [
+        (
+            "ui font f2 ui/x.ttf license=Proprietary",
+            "/theme/fonts/f2/license",
+        ),
+        ("ui font f2 ui/x.png license=MIT", "/theme/fonts/f2/path"),
+        ("ui textclass t2 font=nope", "/theme/text/t2/font"),
+        ("ui buttonclass b2 font=nope", "/theme/button/b2/font"),
+        ("ui font pixel none", "/theme/text/big/font"),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        let at = e["diagnostics"][0]["path"].as_str().unwrap_or_default();
+        assert!(
+            at.ends_with(path),
+            "{script}: path {at} (want …{path}): {e}"
+        );
+        assert_eq!(rev(&s), start, "{script} must not commit");
+    }
+    for (script, needle) in [
+        ("ui font f2 ui/x.ttf", "license="),
+        (
+            "ui font f2 ui/x.ttf size=3 license=MIT",
+            "unknown font option",
+        ),
+    ] {
+        let e = acl(&mut s, script).expect_err(script);
+        assert!(e.to_string().contains(needle), "{script}: {e}");
+    }
+    for k in 2..=4 {
+        acl(&mut s, &format!("ui font f{k} ui/f{k}.otf license=OFL-1.1")).unwrap();
+    }
+    let e = acl(&mut s, "ui font f5 ui/f5.ttf license=OFL-1.1").expect_err("5 fonts");
+    assert!(e.to_string().contains("at most 4 fonts"), "{e}");
+    for k in 2..=4 {
+        acl(&mut s, &format!("ui font f{k} none")).unwrap();
+    }
+    acl(&mut s, "ui buttonclass chip none").unwrap();
+    acl(&mut s, "ui textclass big none").unwrap();
+    acl(&mut s, "ui font pixel none").unwrap();
+    assert_eq!(doc(&s), raw);
+}

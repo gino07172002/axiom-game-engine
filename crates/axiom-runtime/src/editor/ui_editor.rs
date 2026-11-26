@@ -337,6 +337,7 @@ impl Editor {
             "ui.panel_style" => format!("panelstyle {arg}"),
             "ui.panel" => format!("panel {arg}"),
             "ui.screen" => format!("screen {arg}"),
+            "ui.font" => format!("font {arg}"),
             "ui.text_class" => format!("textclass {arg}"),
             "ui.button_class" => format!("buttonclass {arg}"),
             "ui.class" => format!("class {arg}"),
