@@ -1764,14 +1764,14 @@ fn inspector_arrays_reset_paste_and_play_on_match_acl() {
 fn ui_editor_edits_match_acl() {
     use axiom_core::gameplay::{Region, RuntimeCommand, TextStyle, UiEffect, UiEffectKind};
     let town = || {
-        authored(
+        with_regions(authored(
             axiom_core::ContentPackage::load(
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../../content/axiom-town"),
                 &crate::installed_registry().authoring,
             )
             .unwrap()
             .world,
-        )
+        ))
     };
     assert_parity(
         town(),
@@ -2005,6 +2005,21 @@ fn town() -> World {
     authored(
         serde_json::from_str(include_str!("../../../../content/axiom-town/world.json")).unwrap(),
     )
+}
+
+/// Axiom Town with its status HUD in the legacy top-left / top regions (its layout before
+/// plan M8 moved it into panels), for the tests of the region features.
+fn with_regions(mut world: World) -> World {
+    let doc = world.resources.get_mut("ui.document").unwrap();
+    doc["panels"].as_array_mut().unwrap().retain(|p| {
+        !matches!(
+            p["id"].as_str(),
+            Some("tracker" | "coins_row" | "prompt_bar")
+        )
+    });
+    doc["regions"] = serde_json::json!({"title": "top_left", "quest": "top_left",
+        "prompt": "top", "coins_label": "top_left", "coins": "top_left", "affection": "top_left"});
+    world
 }
 
 /// Axiom Town as its UI compiles: the template uses (plan M5, the emote buttons) expanded into
@@ -3389,7 +3404,7 @@ fn stylized_mesh_components_match_acl() {
 /// compile through the ACL `ui frame|panelstyle|panel` verbs to the same ops.
 #[test]
 fn ui_theme_and_panel_commands_match_acl() {
-    let mut start = town();
+    let mut start = with_regions(town());
     let doc = start.resources.get_mut("ui.document").unwrap();
     doc["images"]["parchment"] = serde_json::json!("ui/parchment.png");
     doc["regions"].as_object_mut().unwrap().remove("quest");

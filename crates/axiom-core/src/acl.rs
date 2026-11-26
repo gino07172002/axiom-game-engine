@@ -1027,13 +1027,21 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
             let usage = "use: ui font ID PATH license=OFL-1.1|Apache-2.0|MIT|CC0-1.0 | ui font ID none";
             match tokens.len() {
                 4 if tokens[3] == "none" => UiStatement::Font(tokens[2].clone(), None),
-                n if n >= 4 => UiStatement::Font(
-                    tokens[2].clone(),
-                    Some(crate::ui_theme::font_from(
-                        &tokens[3],
-                        &key_values(&tokens[4..])?,
-                    )?),
-                ),
+                n if n >= 4 => {
+                    // A JSON string ("C:/My Fonts/a.ttf") for paths with spaces.
+                    let path = match tokens[3].starts_with('"') {
+                        true => serde_json::from_str::<String>(&tokens[3])
+                            .with_context(|| format!("'{}' is not a JSON string path", tokens[3]))?,
+                        false => tokens[3].clone(),
+                    };
+                    UiStatement::Font(
+                        tokens[2].clone(),
+                        Some(crate::ui_theme::font_from(
+                            &path,
+                            &key_values(&tokens[4..])?,
+                        )?),
+                    )
+                }
                 _ => bail!("{usage}"),
             }
         }

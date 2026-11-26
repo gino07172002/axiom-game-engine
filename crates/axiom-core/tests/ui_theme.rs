@@ -371,6 +371,13 @@ fn content_fonts_need_an_open_licence_and_known_ids() {
         );
         assert_eq!(rev(&s), start, "{script} must not commit");
     }
+    // A quoted path (spaces) is decoded, not kept with its quotes.
+    acl(&mut s, r#"ui font spaced "ui/My Fonts/a.ttf" license=MIT"#).unwrap();
+    assert_eq!(
+        doc(&s)["theme"]["fonts"]["spaced"]["path"],
+        "ui/My Fonts/a.ttf"
+    );
+    acl(&mut s, "ui font spaced none").unwrap();
     for (script, needle) in [
         ("ui font f2 ui/x.ttf", "license="),
         (

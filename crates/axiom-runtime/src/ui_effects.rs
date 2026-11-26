@@ -606,6 +606,20 @@ pub fn register(r: &mut RuntimeRegistry) {
             "checkpoint":"refused while an effect runs",
             "acl":"ui place|style|button|effect add|effect set|effect remove"}),
     );
+    // ui.document v2 (docs/plan-ui-styling.zh-TW.md M1-M7): one topic for AI agents.
+    r.authoring.topics.insert(
+        "ui_styling".into(),
+        json!({"resource":"ui.document (theme, panels, classes, templates, uses, pages)",
+            "theme":{"frames":"ID -> {image, slice [l,t,r,b] px, center stretch|tile|hidden} (ui frame)","panel":"CLASS -> {fill, corner, padding, frame} (ui panelstyle)","text":"CLASS -> {size, font, color, shadow} (ui textclass)","button":"CLASS -> {size, font, padding, normal|hover|pressed|disabled {frame, fill, text}} (ui buttonclass)","fonts":"ID -> {path .ttf|.otf, license OFL-1.1|Apache-2.0|MIT|CC0-1.0} <= 4, <= 24 MiB (ui font)","reference":"[w,h] + scale fit_height|fit_width|fit|none: panels lay out in reference px, the panel layer scales (ui screen)"},
+            "panels":"[{id, anchor REGION, offset, width/height px|N%, layout column|row|grid|stack, columns, gap, z, style, children: widget or panel IDs}] nested <= 4 (ui panel)",
+            "classes":"widget -> text class (text) / button class (button) (ui class)",
+            "templates":"ID -> {params, widgets with {PARAM}/{i}, panel?, classes?} + uses [{id, template, instances, into?, count?}] expanded at compile time, <= 64 widgets (ui template / ui use)",
+            "pages":"ID -> {panels, modal, pause, escape}; commands {kind:open,page} / {kind:close,page?}; open pages saved in checkpoints (ui page; ui button W open PAGE|close)",
+            "observe":"ui_layout (live, --connect): screen, scale, regions/panels/widgets rects [x,y,w,h] in window px, diagnostics ui_overlap|ui_offscreen; gameplay.pages",
+            "editor":"UI Editor: drag panels / edge handle (8 px snap), panel style steps, nine-slice guides; commands ui.frame|panel_style|panel|screen|font|template|use|page|text_class|button_class|class",
+            "budget":{"frames":axiom_core::ui_theme::MAX_FRAMES,"panels":axiom_core::ui_theme::MAX_PANELS,"panel_children":axiom_core::ui_theme::MAX_PANEL_CHILDREN,"classes":axiom_core::ui_theme::MAX_CLASSES,"fonts":axiom_core::ui_theme::MAX_FONTS,"pages":axiom_core::ui_theme::MAX_PAGES,"templates":axiom_core::ui_template::MAX_TEMPLATES,"widgets_after_expansion":axiom_core::ui_template::MAX_EXPANDED_WIDGETS},
+            "doc":"docs/ui-styling.zh-TW.md"}),
+    );
     r.authoring.world_validators.push(|w| {
         let has_effects = w
             .resources

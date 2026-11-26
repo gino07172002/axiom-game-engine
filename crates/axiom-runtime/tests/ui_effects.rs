@@ -31,7 +31,16 @@ fn town_ui_effects_scenario_passes_headless() {
         .unwrap();
     let (rev, world) = store.current().unwrap();
     let doc = &world.resources["ui.document"];
-    assert_eq!(doc["regions"]["affection"], "top_right");
+    // The bar stays in the town's tracker panel (plan M8); the example restyles it.
+    assert!(doc["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == "tracker"
+            && p["children"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("affection"))));
     assert_eq!(doc["styles"]["affection"], "value");
     let plan: scenario::Scenario =
         serde_json::from_str(&example("town-ui-effects.scenario.json")).unwrap();

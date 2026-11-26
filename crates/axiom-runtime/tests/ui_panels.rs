@@ -77,8 +77,9 @@ fn the_town_dialog_draws_in_a_framed_bottom_panel() {
         .iter()
         .filter(|m| m.vertices.len() == 36 && m.texture_id != egui::TextureId::default())
         .map(|m| Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>()))
-        // The emote buttons draw their own (small) frames since M2; the panel is the wide one.
-        .filter(|r| r.width() > 400.0)
+        // The emote buttons draw their own (small) frames since M2 and the tracker (top left)
+        // has its own frame since M8: the dialog is the framed panel in the lower half.
+        .filter(|r| r.width() > 400.0 && r.center().y > 540.0)
         .collect();
     assert_eq!(frames.len(), 1, "one framed panel: {frames:?}");
     let frame = frames[0];
@@ -309,7 +310,8 @@ fn dialog_frame(shapes: &[egui::epaint::ClippedShape]) -> Rect {
         .iter()
         .filter(|m| m.vertices.len() == 36 && m.texture_id != egui::TextureId::default())
         .map(|m| Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>()))
-        .filter(|r| r.width() > 200.0)
+        // The dialog is the wide framed panel in the lower half (the tracker is top left).
+        .filter(|r| r.width() > 200.0 && r.center().y > r.height())
         .collect();
     assert_eq!(frames.len(), 1, "{frames:?}");
     frames[0]
@@ -400,7 +402,12 @@ fn emotes_sit_in_a_three_column_grid_and_observe_reports_the_layout() {
         .iter()
         .map(|p| p["id"].as_str().unwrap())
         .collect();
-    assert_eq!(panels, ["dialog", "emotes"], "{layout}");
+    // Child panels are recorded before their parent (coins_row sits in tracker).
+    assert_eq!(
+        panels,
+        ["coins_row", "tracker", "prompt_bar", "dialog", "emotes"],
+        "{layout}"
+    );
     assert_eq!(layout["scale"], 1.5, "1080 / the 720 reference");
     assert_eq!(
         layout["diagnostics"],

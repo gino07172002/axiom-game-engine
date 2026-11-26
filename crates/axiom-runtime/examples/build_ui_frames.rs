@@ -7,6 +7,8 @@
 //! a double gold border, rounded corners and a small diamond in each corner.
 //! `button-normal.png`, `button-hover.png`, `button-pressed.png` (48 x 48, slice 14): a
 //! rounded wine-red plate with a gold edge; hover is lighter, pressed darker with a thin edge.
+//! `tracker-frame.png` (64 x 64, slice 20): a translucent teal card with a thin mint rim and
+//! L-shaped corner brackets (the quest tracker; plan M8).
 use std::path::PathBuf;
 
 const SIZE: usize = 96;
@@ -87,6 +89,44 @@ fn dialog_frame() -> Vec<u8> {
     rgba
 }
 
+fn tracker_frame() -> Vec<u8> {
+    const T: usize = 64;
+    let mint = [102.0, 245.0, 205.0, 255.0];
+    let mut rgba = Vec::with_capacity(T * T * 4);
+    for y in 0..T {
+        for x in 0..T {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let outer = rounded_in(T, fx, fy, 31.0, 6.0);
+            // Translucent teal body, a little lighter at the top.
+            let body = mix(
+                [26.0, 70.0, 74.0, 150.0],
+                [14.0, 36.0, 42.0, 175.0],
+                fy / T as f32,
+            );
+            let mut c = mix([0.0; 4], body, 0.5 - outer);
+            // Thin rim (1 px) at half strength.
+            let rim = (1.0 - (outer + 0.75).abs() * 1.5).clamp(0.0, 1.0);
+            c = mix(c, [mint[0], mint[1], mint[2], 150.0], rim);
+            // L-shaped brackets, 12 px long and 2 px thick, 4 px in from each corner.
+            for (cx, cy, sx, sy) in [
+                (4.0, 4.0, 1.0, 1.0),
+                (60.0, 4.0, -1.0, 1.0),
+                (4.0, 60.0, 1.0, -1.0),
+                (60.0, 60.0, -1.0, -1.0),
+            ] {
+                let (dx, dy) = ((fx - cx) * sx, (fy - cy) * sy);
+                let horizontal = (0.0..12.0).contains(&dx) && (0.0..2.0).contains(&dy);
+                let vertical = (0.0..12.0).contains(&dy) && (0.0..2.0).contains(&dx);
+                if horizontal || vertical {
+                    c = mint;
+                }
+            }
+            rgba.extend(c.map(|v| v.round().clamp(0.0, 255.0) as u8));
+        }
+    }
+    rgba
+}
+
 fn write_png(path: &PathBuf, size: usize, rgba: &[u8]) {
     let file = std::fs::File::create(path).expect("create PNG");
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), size as u32, size as u32);
@@ -108,6 +148,7 @@ fn main() {
     let gold = [233.0, 196.0, 120.0, 255.0];
     let images = [
         ("dialog-frame.png", SIZE, dialog_frame()),
+        ("tracker-frame.png", 64, tracker_frame()),
         (
             "button-normal.png",
             48,

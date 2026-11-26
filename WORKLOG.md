@@ -1,5 +1,15 @@
 # WORKLOG
 
+## 2026-11-27 — Claude (Opus 5.5) — UI styling program done: M3–M8 on branch `ui-v2`
+
+**Done:** M3 free layout + reference scaling + `observe ui_layout` (f1a864c), M4 content fonts with licence check and an original pixel font (86e32a5), M5 templates / uses (c76ce7b), M6 pages: modal, pause, escape, keyboard / gamepad focus, checkpointed (18d3ec6), M7 UI Editor panel drag / resize, style steps, nine-slice guides (f732aec), M8 town HUD fully on panels, `discover ui_styling`, `docs/ui-styling.zh-TW.md`. M3–M5 pushed (c76ce7b); M6–M8 local. Plan + per-milestone records and the demo table: `docs/plan-ui-styling.zh-TW.md`.
+
+**Verification (M8, debug):** fmt + clippy clean; `cargo test --workspace` 1150 / 0 / 7; editor smoke, world + street parity identical, M0 PASS; screenshot A/B M2 exe vs M8 exe: 9 unchanged packs byte-identical; GPU: new HUD, live ACL restyle (rev 2, tracker 223 → 256 px, 0 diagnostics), pause page.
+
+**Not verified / open:** real Esc key and a physical gamepad (bridge commands and headless keys only); speaker portrait (no art); full theme editor, panel height handle, `when` on panels, rule action to open pages. `inspector_on_a_4096_object_world_stays_within_budget` and `a_full_capture_queue_refuses_editor_view_before_its_edit` (database is locked) fail now and then under full parallel load; alone they pass and timings match M3.
+
+**Gotchas:** observe flattens metrics (`observation.ui_layout`). The editor preview reuses the runtime decoded images / fonts; ensure_fonts adds content fonts on top of the current context fonts. The editor element panel scroll jumps after a revision (cause unknown): the panel section is pinned above it. Test fixtures: `authored` (templates expanded) and `with_regions` (legacy town HUD). The user DB `data\axiom-town.sqlite` is at rev 6 (M3–M5 applied); M6–M8 are not in it.
+
 ## 2026-11-26 — Claude (Opus 5.5) — UI styling program (plan `docs/plan-ui-styling.zh-TW.md`): M1a–M3 on branch `ui-v2`
 
 **Done:** `ui.document` v2 in `axiom-core/src/ui_theme.rs` + `bound_ui.rs`. M1a/M1b nine-slice framed panels (pushed 746e699, 61cbc09), M2 text/button classes with hover/pressed/disabled looks and frame centre modes (pushed 6efcc5a), M3 panel sizes (px / %), row/grid/stack layouts, nesting ≤ 4, z, `theme.reference` + `scale` (whole panel layer scaled; hit tests follow), live `observe` `ui_layout` with `ui_overlap` / `ui_offscreen` (f1a864c, local only so far). Every edit has ops + ACL (`ui frame|panelstyle|panel|screen|textclass|buttonclass|class`) + editor command + parity test. Original frame PNGs from `examples/build_ui_frames.rs`.

@@ -549,3 +549,38 @@ theme: {
   - 畫布上的內容字型:預覽同樣沿用執行中遊戲已讀取的字型(同一個檔案);\`ensure_fonts\` 改成在 context 目前的字型上加入內容字型,不再換成遊戲的基底字型,所以不會蓋掉編輯器自己的字型。截圖中畫布的台詞和表情按鈕是點陣字,編輯器介面字型不變。
   - 元件清單把放在面板裡的元件標成「(bottom panel)」,改成「panel dialog」這類面板名稱。
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1150 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS(smoke 在字型修正之前跑;之後只改了編輯器預覽與 `ensure_fonts`,完整測試重跑通過)。
+
+### M8 完成(分支 `ui-v2`)
+
+- **town 改版**:Axiom Town 的 HUD 全部改用新模型,文件裡不再有 `regions`:
+  - 左上角 `tracker` 面板:新的原創邊框 `ui/tracker-frame.png`(半透明青綠底、薄薄的薄荷色邊、四角 L 形括號,64×64、切割 20;沒有深色預設底);標題用 `tracker_title` 文字類別;硬幣標籤和數字放在 `coins_row` 子面板裡橫排。
+  - 上方 `prompt_bar` 面板放互動提示。
+  - 對話框、表情格(模板)、暫停頁面維持 M3–M6 的做法。
+  - `build_ui_frames` 加了 tracker 邊框;原有 4 張圖重新產生後逐位元相同,新圖連跑兩次相同。
+- **AI 代理**:`discover ui_styling` 一次列出 theme、面板、版面與縮放、字型、模板、頁面、`observe` 欄位、編輯器命令與預算。
+- **文件**:新的入口文件 `docs/ui-styling.zh-TW.md`(五分鐘範例、功能表、編輯器用法、town 範例、限制)。
+- **小修正**:`ui font` 接受加引號的路徑(路徑有空格時),有測試。
+- **測試的夾具**:5 個測試 region 功能的編輯器測試改用 `with_regions`(town 的狀態列放回舊的左上 / 上方 region);`examples/town-ui-effects.acl` 不再把好感度移到右上角(它現在在 tracker 面板裡),只套數值樣式和效果;3 個 `ui_panels` 測試改成以位置找對話框的邊框(tracker 也有邊框了)。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1150 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+- **最後的截圖 A/B(M2 exe 對 M8 exe)**:9 個內容沒變的包逐位元相同,第一個包重跑一次確認穩定 — M3 到 M8 沒有改變任何舊內容的畫面。
+- **GPU demo**(實際看過,1920×1080,新資料庫):
+  - HUD:左上角青綠邊框的 tracker、硬幣橫排、底部金框對話框、右側表情格、點陣字;`ui_layout` 0 個診斷。
+  - demo 第 6 步:用 bridge 對執行中的遊戲送 ACL(`ui panelstyle tracker padding=24 frame=tracker`、`ui textclass tracker_title size=22 color=FFD666FF`),rev 2 生效,tracker 從 223 變 256 px 高,標題變金色,`ui_layout` 仍然 0 個診斷。
+  - 暫停頁面開在新 HUD 上,背景變暗、表情按鈕停用。
+
+## 計畫完成總結(2026-11-27)
+
+Phase 0 的 demo 逐步對照:
+
+| 步驟 | 結果 | 證據 |
+|---|---|---|
+| 1 新資料庫開 town | ✅ | 每個 milestone 的 GPU 截圖都用新資料庫 |
+| 2 對話框:自訂九宮格邊框、等比縮放、自帶字型 | ✅(左側講者立繪沒做:town 沒有立繪素材) | M3 / M4 截圖、`the_dialog_keeps_its_proportions_at_720p_and_1080p` |
+| 3 任務追蹤:另一種邊框、沒有深色預設底 | ✅ | M8 截圖 |
+| 4 表情格:2×3、normal / hover / pressed 底圖 | ✅ | M2 / M3 測試與截圖 |
+| 5 Esc 暫停選單:模態、暫停、方向鍵 / 手把 | ✅(真實 Esc 鍵和實體手把沒實測) | M6 測試、GPU 截圖與像素比較 |
+| 6 AI 用 ACL 改樣式,即時套用,`ui_layout` 沒有重疊或出界 | ✅ | M8 GPU demo |
+| 7 編輯器拖動、縮放對話框,和 ACL 相同 | ✅ | M7 parity 測試 |
+| 8 舊內容截圖逐位元相同 | ✅ | M8 截圖 A/B(M2 對 M8) |
+
+之後的工作(不在這份計畫內):完整的主題編輯器(顏色、文字 / 按鈕類別的表單)、面板高度把手、`when` 條件顯示的面板、規則動作開頁面、下拉選單和輸入框等新元件、講者立繪。

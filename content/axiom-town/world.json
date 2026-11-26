@@ -287,20 +287,20 @@
     },
     "ui.document": {
       "locale":"zh-TW",
-      "images":{"dialog":"ui/dialog-frame.png","btn_normal":"ui/button-normal.png","btn_hover":"ui/button-hover.png","btn_pressed":"ui/button-pressed.png"},
+      "images":{"dialog":"ui/dialog-frame.png","tracker":"ui/tracker-frame.png","btn_normal":"ui/button-normal.png","btn_hover":"ui/button-hover.png","btn_pressed":"ui/button-pressed.png"},
       "theme":{
-        "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]},
+        "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]},"tracker":{"image":"tracker","slice":[20,20,20,20]},
           "btn_normal":{"image":"btn_normal","slice":[14,14,14,14]},"btn_hover":{"image":"btn_hover","slice":[14,14,14,14]},"btn_pressed":{"image":"btn_pressed","slice":[14,14,14,14]}},
-        "panel":{"dialog":{"padding":26,"frame":"dialog"},"hud":{"fill":[12,16,24,205],"corner":8,"padding":10}},
+        "panel":{"dialog":{"padding":26,"frame":"dialog"},"tracker":{"padding":16,"frame":"tracker"},"hud":{"fill":[12,16,24,205],"corner":8,"padding":10}},
         "fonts":{"pixel":{"path":"ui/axiom-pixel.ttf","license":"MIT"}},
-        "text":{"speaker":{"size":20,"font":"pixel","color":[233,196,120,255],"shadow":[0,0,0,170]},
+        "text":{"tracker_title":{"size":17,"color":[102,245,205,255]},"speaker":{"size":20,"font":"pixel","color":[233,196,120,255],"shadow":[0,0,0,170]},
           "dialog_line":{"size":18,"font":"pixel","color":[236,232,222,255]}},
         "button":{"emote":{"size":15,"font":"pixel","padding":9,
           "normal":{"frame":"btn_normal","text":[243,230,200,255]},"hover":{"frame":"btn_hover","text":[255,244,214,255]},
           "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}},
         "reference":[1280,720]
       },
-      "classes":{"speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote"},
+      "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote"},
       "pages":{"pause":{"panels":["pause_menu"],"pause":true,"escape":true}},
       "templates":{
         "emote_button":{"params":["name"],
@@ -312,13 +312,14 @@
           "instances":[{"name":"wave"},{"name":"bow"},{"name":"dance"},{"name":"cheer"},{"name":"pose"},{"name":"think"}]}
       ],
       "panels":[
+        {"id":"tracker","anchor":"top_left","offset":[12,10],"width":300,"style":"tracker","gap":6,
+          "children":["title","quest","coins_row","affection"]},
+        {"id":"coins_row","anchor":"top_left","layout":"row","gap":8,"children":["coins_label","coins"]},
+        {"id":"prompt_bar","anchor":"top","offset":[0,10],"style":"hud","children":["prompt"]},
         {"id":"dialog","anchor":"bottom","offset":[0,-14],"width":900,"style":"dialog","children":["speaker","line","choices"]},
         {"id":"emotes","anchor":"right","offset":[-12,-60],"style":"hud","layout":"grid","columns":3,"gap":8,"children":[]},
         {"id":"pause_menu","anchor":"center","width":360,"style":"dialog","gap":12,"children":["pause_title","pause_resume","pause_en","pause_zh"]}
       ],
-      "regions":{
-        "title":"top_left","quest":"top_left","prompt":"top","coins_label":"top_left","coins":"top_left","affection":"top_left"
-      },
       "catalogs":{
         "zh-TW":{
           "pause_title":"暫停","pause_resume":"繼續遊戲","pause_en":"英文 English","pause_zh":"中文",

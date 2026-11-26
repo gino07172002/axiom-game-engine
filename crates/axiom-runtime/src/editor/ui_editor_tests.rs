@@ -7,7 +7,22 @@ use axiom_core::{Edit, Request, Store, World};
 use egui::{epaint::Shape, vec2, Event, Modifiers, PointerButton, Pos2, Rect};
 
 fn town() -> World {
-    authored(raw_town())
+    with_regions(authored(raw_town()))
+}
+
+/// Axiom Town with its status HUD in the legacy top-left / top regions (its layout before
+/// plan M8 moved it into panels), for the tests of the region features.
+fn with_regions(mut world: World) -> World {
+    let doc = world.resources.get_mut("ui.document").unwrap();
+    doc["panels"].as_array_mut().unwrap().retain(|p| {
+        !matches!(
+            p["id"].as_str(),
+            Some("tracker" | "coins_row" | "prompt_bar")
+        )
+    });
+    doc["regions"] = serde_json::json!({"title": "top_left", "quest": "top_left",
+        "prompt": "top", "coins_label": "top_left", "coins": "top_left", "affection": "top_left"});
+    world
 }
 
 /// The town package as shipped (templates not expanded).
