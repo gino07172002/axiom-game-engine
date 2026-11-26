@@ -639,10 +639,14 @@ def add_clips(rig):
 
 # ---------------------------------------------------------------------------
 # Town clips (everyday / emote motion for the third-person town demo).
-# Angles are degrees about armature axes, applied X then Y then Z in the parent's
-# rest frame: X+ tips an upward bone forward and swings a hanging limb backward;
-# Y+ leans an upward bone toward the character's left (+X) and swings a hanging
-# limb toward the character's right; Z+ turns toward the character's left.
+# Angles are degrees about armature axes in the parent's rest frame. key_pose builds
+# q = Rx @ Ry @ Rz, so a bone is turned by Z first, then Y, and X LAST: X acts on the
+# bone where Y left it. X+ tips an upward bone forward and swings a hanging limb
+# backward; Y+ leans an upward bone toward the character's left (+X) and swings a
+# hanging limb toward the character's right; Z+ turns toward the character's left.
+# So for an arm raised by Y (wave, cheer) the arm already points up when X applies:
+# X+ moves the raised hand forward, X- moves it behind the head (the character faces
+# -Y here, +Z after glTF export). Check hand positions after changing raised-arm clips.
 # Hip translation is vertical only (sit, hop, dance, cheer); nothing moves the root.
 # ---------------------------------------------------------------------------
 FPS = 30
@@ -716,7 +720,7 @@ def clip_wave(t):
     k = envelope(t, 0, .32, 1.28, 1.6)
     osc = math.sin(TAU * 3 * (t - .32) / .96) if .32 <= t <= 1.28 else 0.0
     return one_shot({
-        "upper.R": (-20, 92, 0),
+        "upper.R": (20, 92, 0),
         "fore.R": (0, 80 + 22 * osc, 0),
         "chest": (0, -3, 4),
         "head": (0, -7, 5),
@@ -781,8 +785,8 @@ def clip_cheer(t):
     k = envelope(t, 0, .25, .85, 1.2)
     j = math.sin(math.pi * (t - .3) / .4) if .3 <= t <= .7 else 0.0
     target = {
-        "upper.L": (-14, -142, 0),
-        "upper.R": (-14, 142, 0),
+        "upper.L": (14, -142, 0),
+        "upper.R": (14, 142, 0),
         "fore.L": (-8, 6, 0),
         "fore.R": (-8, -6, 0),
         "chest": (-6, 0, 0),
