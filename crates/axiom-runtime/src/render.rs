@@ -75,6 +75,10 @@ pub struct Renderer {
     pub config: wgpu::SurfaceConfiguration,
     /// Present modes this surface supports (player `display.vsync`, plan S3).
     present_modes: Vec<wgpu::PresentMode>,
+    /// Sun shadow map size (player `quality.shadows`, plan S4).
+    shadow_texels: u32,
+    /// Player `quality.fxaa`: false turns off the FXAA the world asks for (it never adds it).
+    pub player_fxaa: bool,
     pub egui: egui_wgpu::Renderer,
     /// Second egui renderer for the game interface drawn inside the editor's Game tab (its own
     /// egui context, so its own textures); created on first use.
@@ -371,6 +375,8 @@ impl Renderer {
             queue,
             config,
             present_modes,
+            shadow_texels: 2048,
+            player_fxaa: true,
             egui,
             game_egui: None,
             gpu,
@@ -496,6 +502,39 @@ impl Renderer {
         }
     }
 
+    /// Player `quality.shadows` (plan S4): the sun shadow map's size. A change replaces the
+    /// depth texture (allocation only, no upload) and rebinds the scene; the next frame's
+    /// depth pass fills it.
+    pub fn set_shadow_texels(&mut self, texels: u32) {
+        let texels = texels.clamp(512, 8192);
+        if texels == self.shadow_texels {
+            return;
+        }
+        self.shadow_texels = texels;
+        self.shadow = depth_view(&self.device, texels, texels, "sun shadow", true);
+        self.bind = scene_bind(
+            &self.device,
+            &self.scene_layout,
+            &self.uniform,
+            &self.shadow,
+            &self.shadow_sampler,
+            &self.local_shadows,
+        );
+        self.meshes.rebind_camera(
+            &self.device,
+            &self.uniform,
+            &self.shadow,
+            &self.shadow_sampler,
+            &self.local_shadows,
+        );
+    }
+
+    /// `observe` -> `metrics.quality`: the sun shadow map size and whether the player
+    /// allows FXAA.
+    pub fn quality_observation(&self) -> serde_json::Value {
+        serde_json::json!({"shadow_map":self.shadow_texels,"fxaa":self.player_fxaa})
+    }
+
     /// The present mode the surface is configured with, as `observe` reports it.
     pub fn present_mode(&self) -> &'static str {
         match self.config.present_mode {
@@ -613,7 +652,8 @@ impl Renderer {
         // Without a world pass the post state stays as it is (nothing to finish). The pipelines
         // a setting needs are built on a worker (`hdr_build`); until all are installed the
         // frame keeps the legacy output, then switches in one frame.
-        let requested = crate::hdr::Settings::of(snapshot.environment.post.as_ref());
+        let mut requested = crate::hdr::Settings::of(snapshot.environment.post.as_ref());
+        requested.fxaa &= self.player_fxaa;
         let mut post = crate::hdr::Settings::default();
         let (mut started_build, mut installed_build) = (false, false);
         if snapshot.draw_world {

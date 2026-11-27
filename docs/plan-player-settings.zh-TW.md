@@ -186,3 +186,25 @@
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 S3):10 個包逐位元相同。
 - **未驗證**:mailbox 是否真的讓幀率超過螢幕更新率(沒量測幀率);多螢幕;實際按 Alt+Enter 等系統快捷鍵和設定的互動。
 - **已知外觀問題**:設定頁按鈕列之間的空隙偏大(S2 的反轉列就有),留給 U1 一起整理。
+
+### 補記 2026-11-27:S4 的 FXAA 語意
+
+- 原計畫只寫「FXAA 開關」。實作定為:`quality.fxaa` 只能關掉世界要求的 FXAA,不會替沒開的世界加上。
+- 理由:
+  - 預設值是 true,如果 true 代表「強制開」,所有舊內容包的畫面都會變,違反「舊內容包截圖逐位元相同」。
+  - 作者沒開 FXAA 可能是刻意的(像素風、銳利的 UI)。
+- 後果:沒開 FXAA 的世界(目前所有內容包),這個開關沒有效果。所以 town 的設定頁不放 FXAA 按鈕。
+
+### S4 完成(分支 `ui-v2`)
+
+- **陰影**:`Renderer::set_shadow_texels`。大小改變時換一張深度貼圖(只配置,不上傳),並重建場景和網格的 bind group;下一幀的深度 pass 填滿它。
+  - `shadow.wgsl` 的 PCF 偏移改用 `textureDimensions(shadow_map)`,不再寫死 2048。2048 時算出的值相同。
+- **FXAA**:`Renderer.player_fxaa`,在 render 開頭 `requested.fxaa &= player_fxaa`。關掉時走原本「沒有後處理」的路徑,沒有額外的管線建置。
+- **observe**:`quality {shadow_map, fxaa}`。
+- **內容**:town 設定頁加「陰影 低 / 中 / 高」。
+- **GPU**(新資料庫,port 5314,debug,1440×900):先用 ACL `post antialiasing fxaa` 在測試資料庫開 FXAA(rev 2)。
+  - 依序:medium(`shadow_map` 2048、FXAA pass 0.95 ms)→ low(1024)→ high(4096)→ 關 FXAA(`render_post` 消失,沒有 FXAA pass)。
+  - stderr 只有後處理管線建置的訊息。
+  - 截圖看過:low 和 high 都有正常的陰影(換貼圖後 bind group 正確)。在這個距離肉眼看不太出解析度差別;解析度改變以 `observe` 為證據。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 S4):10 個包逐位元相同(也證明 `textureDimensions` 的改動在 2048 時不影響畫面)。
+- **未驗證**:沒有量測換陰影貼圖那一幀的主執行緒時間(只有配置一張貼圖和兩個 bind group);沒有量測 4096 的 GPU 成本。

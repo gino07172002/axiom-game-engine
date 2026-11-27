@@ -7,7 +7,7 @@ fn scene_shadow(light: vec4<f32>) -> f32 {
     if all(uv>vec2<f32>(0.0)) && all(uv<vec2<f32>(1.0)) && proj.z<1.0 {
         shadow=0.0;
         for(var x=-1;x<=1;x=x+1) {for(var y=-1;y<=1;y=y+1) {
-            shadow+=textureSampleCompareLevel(shadow_map,shadow_sampler,uv+vec2<f32>(f32(x),f32(y))/2048.0,proj.z-0.0018)/9.0;
+            shadow+=textureSampleCompareLevel(shadow_map,shadow_sampler,uv+vec2<f32>(f32(x),f32(y))/vec2<f32>(textureDimensions(shadow_map)),proj.z-0.0018)/9.0;
         }}
     }
     return shadow;

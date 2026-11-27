@@ -73,7 +73,10 @@ ui button resume close pause
     - 關掉垂直同步時用 mailbox,不支援就用 immediate,都不支援時維持 FIFO。
     - `observe` 的 `metrics.display` 回報實際的模式、present mode 和視窗大小。
     - 編輯器裡不套用視窗模式,編輯器有自己的全螢幕切換。
-- `quality.*` 已經可以設定和保存,會在之後的 milestone 接上(`docs/plan-player-settings.zh-TW.md`)。
+  - 畫質:`quality.shadows` 把太陽陰影貼圖設成 1024 / 2048 / 4096(預設 medium = 2048,和以前一樣)。
+    - `quality.fxaa` 關掉時,即使世界的 `post antialiasing fxaa` 開著也不跑 FXAA。
+    - 開著時照世界的設定,不會替沒開 FXAA 的世界加上。
+    - `observe` 的 `metrics.quality` 回報 `shadow_map` 和 `fxaa`。
 
 ## 在編輯器裡
 

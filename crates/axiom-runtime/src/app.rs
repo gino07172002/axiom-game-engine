@@ -1790,6 +1790,9 @@ impl App {
                     Some(winit::window::Fullscreen::Exclusive(_)) => "fullscreen",
                 };
                 let size = window.inner_size();
+                observation
+                    .metrics
+                    .insert("quality".into(), renderer.quality_observation());
                 observation.metrics.insert(
                     "display".into(),
                     serde_json::json!({"mode":mode,"present_mode":renderer.present_mode(),"size":[size.width,size.height]}),
@@ -1901,6 +1904,8 @@ impl App {
         if rev != self.display_applied {
             if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
                 renderer.set_vsync(settings.vsync);
+                renderer.set_shadow_texels(settings.shadows.texels());
+                renderer.player_fxaa = settings.fxaa;
                 // The editor owns its window (View ▸ Fullscreen); the player's display mode
                 // applies to a played game only.
                 if self.editor.is_none() {
