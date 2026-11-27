@@ -202,6 +202,10 @@ EDIT (any number, atomic):
   system add|remove ID            scheduled system (+ its capability and the systems it runs after)
   resource create ID [JSON]       registered resource with JSON or its default (+ capability/systems)
   resource remove ID
+  settings default KEY VALUE|none  author default of a player setting (game.settings): audio.master|music|sfx 0..1,
+                                  mouse.sensitivity 0.1..5, mouse.invert_y, display.mode window|borderless|fullscreen,
+                                  display.vsync, quality.shadows low|medium|high, quality.fxaa (players change them with
+                                  the command {kind:setting,key,value}; kept in the player's settings file, observe settings)
   sky gradient|procedural|none    render.environment sky preset (+ ambient mode sky when no ambient);
                                   none removes the sky and a sky ambient (World ▸ Sky)
   post antialiasing none|fxaa | post hdr|bloom on|off | post exposure|threshold|intensity|radius V | post none
@@ -496,6 +500,8 @@ enum Statement {
     ResourceCreate(String, Option<Value>),
     ResourceRemove(String),
     Sky(String),
+    /// `settings default KEY VALUE|none`.
+    SettingDefault(String, Option<Value>),
     Post(String, String),
     AddComponent(Box<Selection>, String, Option<Value>),
     Array(Box<Selection>, String, crate::ops::ArrayEdit),
@@ -1432,6 +1438,13 @@ fn parse(tokens: &[String]) -> Result<Statement> {
         "sky" => {
             ensure!(tokens.len() == 2, "use: sky gradient|procedural|none");
             Statement::Sky(arg(1)?.clone())
+        }
+        "settings" => {
+            ensure!(
+                tokens.len() == 4 && tokens[1] == "default",
+                "use: settings default KEY VALUE|none"
+            );
+            Statement::SettingDefault(tokens[2].clone(), crate::settings::parse_token(&tokens[3]))
         }
         "post" => {
             ensure!(
@@ -2761,6 +2774,9 @@ pub fn run(
             Statement::ResourceCreate(id, value) => crate::ops::create_resource(w, r, &id, value),
             Statement::ResourceRemove(id) => crate::ops::remove_resource(w, &id),
             Statement::Sky(mode) => crate::ops::set_sky(w, r, &mode),
+            Statement::SettingDefault(key, value) => {
+                crate::ops::set_setting_default(w, r, &key, value)
+            }
             Statement::Post(setting, value) => crate::ops::set_post(w, r, &setting, &value),
             Statement::AddComponent(select, component, value) => entity_ids(w, r, &select, line)
                 .and_then(|ids| crate::ops::add_component(w, r, &ids, &component, value)),

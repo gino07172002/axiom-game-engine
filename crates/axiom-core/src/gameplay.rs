@@ -278,6 +278,13 @@ pub enum RuntimeCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page: Option<String>,
     },
+    /// Changes a player setting (`settings::KEYS`); applied by the host, never batched.
+    /// As a slider command, `value` is omitted: the slider fills it in.
+    Setting {
+        key: String,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        value: Value,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -658,6 +665,8 @@ pub struct BoundSlider {
     pub value: f64,
     /// (capability, action, args, arg) of the command sent on change.
     pub command: Option<(String, String, Value, String)>,
+    /// Player setting the slider shows and changes (plan S1), instead of a call.
+    pub setting: Option<String>,
     pub when: Test,
 }
 impl BoundSlider {
@@ -674,8 +683,14 @@ impl BoundSlider {
         }
         Ok(v)
     }
-    /// The `call` command a change to `value` sends, if the slider has one.
+    /// The `call` (or `setting`) command a change to `value` sends, if the slider has one.
     pub fn call(&self, value: f64) -> Option<RuntimeCommand> {
+        if let Some(key) = &self.setting {
+            return Some(RuntimeCommand::Setting {
+                key: key.clone(),
+                value: json!(value),
+            });
+        }
         let (capability, action, args, arg) = self.command.as_ref()?;
         let mut args = args.clone();
         args[arg.as_str()] = json!(value);
@@ -1364,7 +1379,21 @@ impl CompiledGameplay {
                                     start.is_finite() && (*min..=*max).contains(&start),
                                     "slider value must lie within min..max"
                                 );
+                                let mut setting = None;
                                 let command = match (command, arg) {
+                                    (Some(RuntimeCommand::Setting { key, .. }), None) => {
+                                        let (lo, hi) = crate::settings::range(key).ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "slider setting '{key}' must be a number setting (audio.master, audio.music, audio.sfx, mouse.sensitivity)"
+                                            )
+                                        })?;
+                                        ensure!(
+                                            *min >= lo && *max <= hi,
+                                            "slider for setting {key} must stay within {lo}..{hi}"
+                                        );
+                                        setting = Some(key.clone());
+                                        None
+                                    }
                                     (
                                         Some(RuntimeCommand::Call {
                                             capability,
@@ -1388,7 +1417,7 @@ impl CompiledGameplay {
                                         "a slider command needs `arg`: the argument that receives the value"
                                     ),
                                     (Some(_), _) => {
-                                        anyhow::bail!("a slider command must be a call command")
+                                        anyhow::bail!("a slider command must be a call or setting command")
                                     }
                                     (None, Some(_)) => {
                                         anyhow::bail!("`arg` goes with a slider command")
@@ -1405,6 +1434,7 @@ impl CompiledGameplay {
                                     integer,
                                     value: start,
                                     command,
+                                    setting,
                                     when: c.test(when, &[], 0)?,
                                 })
                             })(),
@@ -1708,6 +1738,16 @@ pub fn validate_command(
         RuntimeCommand::Close { page: None } => {
             ensure!(ui.is_some_and(|u| !u.pages.is_empty()), "no pages to close")
         }
+        // A button sends the value it was authored with; a slider fills it in (null here).
+        RuntimeCommand::Setting { key, value } => {
+            let mut s = crate::settings::PlayerSettings::default();
+            match value {
+                Value::Null => {
+                    s.get(key)?;
+                }
+                v => s.set(key, v)?,
+            }
+        }
         RuntimeCommand::Batch { commands } => {
             ensure!(
                 (1..=MAX_BATCH).contains(&commands.len()),
@@ -1720,9 +1760,11 @@ pub fn validate_command(
                         ensure!(
                             !matches!(
                                 c,
-                                RuntimeCommand::Batch { .. } | RuntimeCommand::Slide { .. }
+                                RuntimeCommand::Batch { .. }
+                                    | RuntimeCommand::Slide { .. }
+                                    | RuntimeCommand::Setting { .. }
                             ),
-                            "a batch cannot hold batch or slide commands"
+                            "a batch cannot hold batch, slide or setting commands"
                         );
                         validate_command(c, p, n, ui)
                     })(),
@@ -1867,7 +1909,8 @@ pub fn register(r: &mut Registry) {
     }
     r.resource("behavior.program","behavior",json!({"variables":"id -> bool/i64/f64/string defaults","events":"id -> typed payload fields","rules":"event + condition + actions","inputs":"rising-edge action -> event"}),|v|{let _:Program=serde_json::from_value(v.clone())?;Ok(())});
     r.resource("narrative.graph","narrative",json!({"start":"node ID","nodes":"id,speaker/text localization keys,on_enter,conditional choices,next,ending"}),|v|{let _:Narrative=serde_json::from_value(v.clone())?;Ok(())});
-    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects","theme?":"{frames: ID -> {image: images ID, slice: [l,t,r,b] px, center?: stretch|tile|hidden}, panel: CLASS -> {fill?: [r,g,b,a], corner? 0..64, padding? 0..128, frame? ID}, fonts: ID -> {path: .ttf|.otf, license: OFL-1.1|Apache-2.0|MIT|CC0-1.0} (<= 4), text: CLASS -> {size? 8..96, font? ID, color?, shadow?}, button: CLASS -> {size?, font? ID, padding? 0..64, normal|hover|pressed|disabled: {frame?, fill?, text?} (unset = normal)}, reference?: [w,h] px, scale?: fit_height|fit_width|fit|none} (ACL ui frame / panelstyle / textclass / buttonclass / screen)","classes?":"widget ID -> text class (text widgets) or button class (buttons); not together with styles (ACL ui class)","templates?":"ID -> {params?: [NAME], widgets: [widget with {NAME} / {i} in strings], panel?: panel without children, classes?: {widget ID: class}} (ACL ui template; <= 16, <= 16 widgets each)","uses?":"[{id, template, instances: [{NAME: value}] 1..32, into?: panel ID, count?: number variable (instance i shown while > i)}] expanded at compile time after the authored widgets (ACL ui use); <= 64 widgets after expansion","pages?":"ID -> {panels: [root panel IDs], modal? (default true: dims and disables the HUD, takes keyboard/gamepad focus), pause? (stops the fixed step while open), escape? (Esc / pad Start toggles it; at most one)} opened by commands {kind: open, page} / {kind: close, page?}; the open stack is saved in checkpoints (ACL ui page)","panels?":"[{id, anchor: REGION, offset?: [x,y] px, width?/height?: 16..4096 px | \"N%\", layout?: column|row|grid|stack, columns? 1..16 (grid), gap? 0..128, z? -100..100, style? CLASS, children: [widget or panel IDs]}] (ACL ui panel); a widget sits in one panel or one region; child panels nest <= 4 deep; root panels are anchored over the view in reference pixels (theme.reference), scaled to the window; live layout: observe ui_layout"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("ui.document","ui",json!({"locale":"default catalog","catalogs":"locale -> key -> text","widgets":"text binding (key|variable|localized_variable|speaker|line|ending|prompt) / button command (call|emit|choose|locale|batch|open|close|setting) / choices / image / progress / slider {text, min, max, step?, variable?, value?, command? (call, or {kind: setting, key} for a number setting), arg?, when?}","images":"asset ID -> PNG path","regions":"widget ID -> screen region (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right)","styles":"widget ID -> text style (title, heading, banner, value, label, muted) for text and progress widgets","effects":"[{id, widget, kind: fade_in|fade_out|slide_in|slide_out|scale_in|scale_out|pulse|shake|number_roll, on?: show|hide|change|event|when, event?, when?, ticks? 1..1200 steps, ease?, direction?: left|right|up|down, amount?, from?}] run by system ui.effects","theme?":"{frames: ID -> {image: images ID, slice: [l,t,r,b] px, center?: stretch|tile|hidden}, panel: CLASS -> {fill?: [r,g,b,a], corner? 0..64, padding? 0..128, frame? ID}, fonts: ID -> {path: .ttf|.otf, license: OFL-1.1|Apache-2.0|MIT|CC0-1.0} (<= 4), text: CLASS -> {size? 8..96, font? ID, color?, shadow?}, button: CLASS -> {size?, font? ID, padding? 0..64, normal|hover|pressed|disabled: {frame?, fill?, text?} (unset = normal)}, reference?: [w,h] px, scale?: fit_height|fit_width|fit|none} (ACL ui frame / panelstyle / textclass / buttonclass / screen)","classes?":"widget ID -> text class (text widgets) or button class (buttons); not together with styles (ACL ui class)","templates?":"ID -> {params?: [NAME], widgets: [widget with {NAME} / {i} in strings], panel?: panel without children, classes?: {widget ID: class}} (ACL ui template; <= 16, <= 16 widgets each)","uses?":"[{id, template, instances: [{NAME: value}] 1..32, into?: panel ID, count?: number variable (instance i shown while > i)}] expanded at compile time after the authored widgets (ACL ui use); <= 64 widgets after expansion","pages?":"ID -> {panels: [root panel IDs], modal? (default true: dims and disables the HUD, takes keyboard/gamepad focus), pause? (stops the fixed step while open), escape? (Esc / pad Start toggles it; at most one)} opened by commands {kind: open, page} / {kind: close, page?}; the open stack is saved in checkpoints (ACL ui page)","panels?":"[{id, anchor: REGION, offset?: [x,y] px, width?/height?: 16..4096 px | \"N%\", layout?: column|row|grid|stack, columns? 1..16 (grid), gap? 0..128, z? -100..100, style? CLASS, children: [widget or panel IDs]}] (ACL ui panel); a widget sits in one panel or one region; child panels nest <= 4 deep; root panels are anchored over the view in reference pixels (theme.reference), scaled to the window; live layout: observe ui_layout"}),|v|{let _:UiDocument=serde_json::from_value(v.clone())?;Ok(())});
+    r.resource("game.settings","core",json!({"defaults?":"player setting KEY -> default value; keys: audio.master|audio.music|audio.sfx (0..1), mouse.sensitivity (0.1..5), mouse.invert_y, display.mode (window|borderless|fullscreen), display.vsync, quality.shadows (low|medium|high), quality.fxaa. Players change settings with the command {kind: setting, key, value}; the host keeps them in its own settings file (not revisions, not checkpoints); observe settings (ACL settings default)"}),|v|{crate::settings::defaults(Some(v))?;Ok(())});
     r.systems.insert(
         "behavior.execute".into(),
         SystemDescriptor {

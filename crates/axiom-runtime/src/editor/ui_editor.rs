@@ -1576,6 +1576,7 @@ impl Editor {
             RuntimeCommand::Slide { .. } => "slide",
             RuntimeCommand::Open { .. } => "open",
             RuntimeCommand::Close { .. } => "close",
+            RuntimeCommand::Setting { .. } => "setting",
         };
         let mut picked: Option<RuntimeCommand> = None;
         ui.horizontal_wrapped(|ui| {
@@ -1650,6 +1651,9 @@ impl Editor {
                 }
                 RuntimeCommand::Choose { node, choice } => {
                     caption(ui, format!("{node} / {choice} (Fields to change)"));
+                }
+                RuntimeCommand::Setting { key, value } => {
+                    caption(ui, format!("{key} = {value} (Fields to change)"));
                 }
                 RuntimeCommand::Call {
                     capability, action, ..

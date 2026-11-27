@@ -57,6 +57,16 @@ ui button resume close pause
 | 選單、彈窗、暫停 | `pages`(modal / pause / escape)、指令 `open` / `close` | `ui page`、`ui button W open|close` |
 | 檢查排版 | `observe` 的 `ui_layout`(視窗像素、重疊、超出畫面) | — |
 
+## 玩家設定(音量等)
+
+- 引擎定義固定的設定鍵:`audio.master`、`audio.music`、`audio.sfx`(0–1)、`mouse.sensitivity`(0.1–5)、`mouse.invert_y`、`display.mode`(window / borderless / fullscreen)、`display.vsync`、`quality.shadows`(low / medium / high)、`quality.fxaa`。
+- 作者用 `settings default KEY VALUE` 寫預設值(`game.settings` 資源)。
+- 玩家改設定用指令 `{"kind":"setting","key":…,"value":…}`:按鈕直接送,滑桿寫成 `"command":{"kind":"setting","key":"audio.master"}`(值由滑桿填入)。
+- 設定存在玩家自己的設定檔 `settings/<world id>.json`(資料庫旁;打包的遊戲在 `%APPDATA%\Axiom\<id>\settings\`),不進世界的修訂、也不進存檔;重開遊戲時讀回。設定檔壞掉時用預設值並回報。
+- `observe` 的 `settings` 是目前的值(世界有 `game.settings` 或玩家改過時才出現);設定不影響 `state_hash`。
+- 從暫停選單打開的設定頁:模態頁面打開時,在它下面的頁面不畫,只留變暗的 HUD。
+- 目前接上的:總音量。其他鍵已經可以設定和保存,會在之後的 milestone 接上(`docs/plan-player-settings.zh-TW.md`)。
+
 ## 在編輯器裡
 
 UI Editor 分頁:

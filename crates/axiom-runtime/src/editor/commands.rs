@@ -366,6 +366,12 @@ pub(crate) const COMMANDS: &[Command] = &[
     ),
     a("world.sky", "Sky…", "World", "gradient|procedural|none"),
     a(
+        "world.setting_default",
+        "Player Setting Default…",
+        "World",
+        "KEY VALUE|none",
+    ),
+    a(
         "world.post",
         "Post Processing…",
         "World",
@@ -765,6 +771,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "world.resource_create",
     "world.resource_remove",
     "world.sky",
+    "world.setting_default",
     "world.post",
     "event.declare",
     "world.migrate_camera_blockers",
@@ -1322,6 +1329,7 @@ impl Editor {
             | "world.resource_create"
             | "world.resource_remove"
             | "world.sky"
+            | "world.setting_default"
             | "world.post"
             | "event.declare"
             | "world.migrate_camera_blockers"

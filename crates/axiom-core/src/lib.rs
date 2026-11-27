@@ -34,6 +34,7 @@ pub mod raycast;
 pub mod registry;
 pub mod retry;
 pub mod scene_edit;
+pub mod settings;
 pub mod store;
 pub mod style;
 pub mod tags;

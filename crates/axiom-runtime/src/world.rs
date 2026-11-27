@@ -696,6 +696,10 @@ pub struct WorldRuntime {
     registry: RuntimeRegistry,
     systems: Vec<(String, Box<dyn RuntimeSystem>)>,
     pub bindings: InputBindings,
+    /// Player settings (plan S1): the host loads and saves them in its settings file; never
+    /// part of revisions, checkpoints or `state_hash`. `player_rev` counts changes.
+    player: axiom_core::settings::PlayerSettings,
+    player_rev: u64,
     settings: RenderSettings,
     environment: axiom_core::RenderEnvironment,
     shaders: std::sync::Arc<crate::shader::Prepared>,
@@ -967,7 +971,42 @@ impl WorldRuntime {
         }
     }
     /// One non-batch command (the body of `command`).
+    /// The player's settings and their change count (the host applies and saves them).
+    pub fn player_settings(&self) -> (&axiom_core::settings::PlayerSettings, u64) {
+        (&self.player, self.player_rev)
+    }
+
+    /// Gives `next` (a rebuilt runtime: checkpoint load) this runtime's player settings.
+    pub(crate) fn carry_player_settings(&self, next: &mut WorldRuntime) {
+        next.player = self.player;
+        next.player_rev = self.player_rev;
+        if let Some(g) = &mut next.state.gameplay {
+            g.settings = self.player;
+        }
+    }
+
+    /// Replaces the player's settings (the host's settings file at start).
+    pub fn restore_player_settings(&mut self, settings: axiom_core::settings::PlayerSettings) {
+        if settings != self.player {
+            self.player = settings;
+            self.player_rev += 1;
+            if let Some(g) = &mut self.state.gameplay {
+                g.settings = settings;
+            }
+        }
+    }
+
     fn single(&mut self, command: &axiom_core::gameplay::RuntimeCommand) -> Result<Value> {
+        // Player settings (plan S1): host preferences, not simulation state.
+        if let axiom_core::gameplay::RuntimeCommand::Setting { key, value } = command {
+            ensure!(!value.is_null(), "a setting command needs a value");
+            let mut next = self.player;
+            next.set(key, value)?;
+            self.restore_player_settings(next);
+            return Ok(
+                serde_json::json!({"ok":true,"rev":self.rev,"tick":self.state.tick,"settings":self.player.to_json()}),
+            );
+        }
         if let axiom_core::gameplay::RuntimeCommand::Emit { event, .. } = command {
             ensure!(
                 !self.state.events.owns(event),
@@ -1282,7 +1321,14 @@ impl WorldRuntime {
             systems_ms: ms(phase),
             total_ms: ms(started),
         };
+        let player =
+            axiom_core::settings::defaults(state.compiled.source.resources.get("game.settings"))?;
+        if let Some(g) = &mut state.gameplay {
+            g.settings = player;
+        }
         Ok(Self {
+            player,
+            player_rev: 0,
             build_timings,
             system_build_ms,
             reconcile_timings: None,
@@ -1416,6 +1462,14 @@ impl WorldRuntime {
     fn transfer_state(&self, next: &mut Self) -> Result<()> {
         {
             next.state.tick = self.state.tick;
+            // The player's settings stay across content reloads of the same world.
+            if next.state.compiled.source.id == self.state.compiled.source.id {
+                next.player = self.player;
+                next.player_rev = self.player_rev;
+                if let Some(g) = &mut next.state.gameplay {
+                    g.settings = self.player;
+                }
+            }
             // Content edits continue the random stream; editing the seed restarts it.
             if next.state.compiled.source.resources.get("core.rng")
                 == self.state.compiled.source.resources.get("core.rng")
@@ -1939,6 +1993,17 @@ impl WorldRuntime {
         }
         if !self.facing.is_empty() {
             metrics.insert("facing".into(), self.facing.observation());
+            // Player settings: when the world declares defaults or the player changed one.
+            if self
+                .state
+                .compiled
+                .source
+                .resources
+                .contains_key("game.settings")
+                || self.player != axiom_core::settings::PlayerSettings::default()
+            {
+                metrics.insert("settings".into(), self.player.to_json());
+            }
         }
         if !self.event_bindings.events.is_empty() {
             metrics.insert(

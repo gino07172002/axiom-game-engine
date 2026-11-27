@@ -211,6 +211,8 @@ enum WorldRequest {
     ResourceRemove(String),
     ResourceOpen(String),
     Sky(String),
+    /// `ops::set_setting_default` (key, value token).
+    SettingDefault(String, String),
     /// `ops::set_post` (setting, value).
     Post(String, String),
 }
@@ -442,6 +444,12 @@ impl Editor {
             }
             WorldRequest::ResourceRemove(id) => ops::remove_resource(&world, &id),
             WorldRequest::Sky(mode) => ops::set_sky(&world, &registry, &mode),
+            WorldRequest::SettingDefault(key, value) => ops::set_setting_default(
+                &world,
+                &registry,
+                &key,
+                axiom_core::settings::parse_token(&value),
+            ),
             WorldRequest::Post(setting, value) => {
                 ops::set_post(&world, &registry, &setting, &value)
             }
@@ -550,6 +558,10 @@ impl Editor {
             }
             "world.resource_remove" => self.world_request(WorldRequest::ResourceRemove(arg.into())),
             "world.sky" => self.world_request(WorldRequest::Sky(arg.into())),
+            "world.setting_default" => {
+                let (key, value) = split(arg);
+                self.world_request(WorldRequest::SettingDefault(key, value))
+            }
             "world.post" => {
                 let (setting, value) = split(arg);
                 self.world_request(WorldRequest::Post(setting, value))

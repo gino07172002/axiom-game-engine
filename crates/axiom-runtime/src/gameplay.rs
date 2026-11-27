@@ -96,6 +96,8 @@ pub struct Gameplay {
     pub slider_values: BTreeMap<String, f64>,
     /// Open `ui.document` pages, bottom to top (`open` / `close` commands, plan M6).
     pub pages: Vec<String>,
+    /// A copy of the player's settings (kept by `WorldRuntime`), for setting sliders.
+    pub settings: axiom_core::settings::PlayerSettings,
 }
 struct Budget(usize);
 impl Budget {
@@ -128,6 +130,7 @@ impl Gameplay {
             call_stats: CallStats::default(),
             slider_values: BTreeMap::new(),
             pages: vec![],
+            settings: Default::default(),
             animation: compiled
                 .animation_reads
                 .iter()
@@ -320,6 +323,9 @@ impl Gameplay {
     }
     /// The committed value of slider `s`: its variable, else its last successful `slide`.
     pub fn slider_value(&self, s: &BoundSlider) -> f64 {
+        if let Some(key) = &s.setting {
+            return self.settings.number(key).unwrap_or(s.value);
+        }
         match s.variable {
             Some(i) => crate::ui_effects::number(&self.values[i]),
             None => self.slider_values.get(&s.id).copied().unwrap_or(s.value),
@@ -340,9 +346,11 @@ impl Gameplay {
                     ensure!(
                         !matches!(
                             c,
-                            RuntimeCommand::Batch { .. } | RuntimeCommand::Slide { .. }
+                            RuntimeCommand::Batch { .. }
+                                | RuntimeCommand::Slide { .. }
+                                | RuntimeCommand::Setting { .. }
                         ),
-                        "a batch cannot hold batch or slide commands"
+                        "a batch cannot hold batch, slide or setting commands"
                     );
                     axiom_core::local::at(&format!("/commands/{i}"), next.apply(c, tick, b))?;
                 }
@@ -416,6 +424,9 @@ impl Gameplay {
                     "unknown locale"
                 );
                 next.locale = Some(locale.clone());
+            }
+            RuntimeCommand::Setting { .. } => {
+                anyhow::bail!("setting commands are applied by WorldRuntime (never batched)")
             }
             RuntimeCommand::Open { page } => {
                 ensure!(
@@ -814,7 +825,9 @@ impl Gameplay {
                     };
                     Some((id.clone(), json!((n / max).clamp(0.0, 1.0))))
                 }
-                BoundWidget::Slider(s) if self.test(&s.when) => {
+                // A setting slider shows a player preference, not game state (observe
+                // `settings` has it): kept out of bindings and so out of state_hash.
+                BoundWidget::Slider(s) if self.test(&s.when) && s.setting.is_none() => {
                     Some((s.id.clone(), json!(self.slider_value(s))))
                 }
                 _ => None,

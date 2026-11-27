@@ -1228,6 +1228,14 @@ fn draw_panels(
         if page.is_some_and(|p| !g.pages.iter().any(|open| open == p)) {
             continue;
         }
+        // Pages opened below the top modal page are hidden while it is open (a settings page
+        // opened from the pause menu replaces it on screen); the HUD stays, dimmed.
+        if let (Some(p), Some(top)) = (page, modal) {
+            let at = |id: &str| g.pages.iter().position(|open| open == id);
+            if p != top && at(p) < at(top) {
+                continue;
+            }
+        }
         let on_top = page.is_some() && page == modal;
         if !panel_visible(&pc, i, 1) {
             continue;

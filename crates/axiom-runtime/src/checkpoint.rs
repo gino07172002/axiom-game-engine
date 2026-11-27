@@ -164,6 +164,8 @@ impl WorldRuntime {
         next.state.ids = self.state.ids.clone();
         next.runtime_session = self.runtime_session.clone();
         next.runtime_epoch = self.runtime_epoch + 1;
+        // The player's settings are not part of a save: loading keeps the current ones.
+        self.carry_player_settings(&mut next);
         next.state.next_generation = self.state.next_generation;
         next.state.sync_scenes();
         next.load_system_states(&c.systems)?;

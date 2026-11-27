@@ -136,6 +136,11 @@ struct App {
     gamepads: crate::gamepad::Gamepads,
     /// Gamepad menu buttons held last frame (D-pad up/down/left/right, A, B, Start; plan M6).
     pad_menu: [bool; 7],
+    /// Player settings file (plan S1): the world it was loaded for, and the settings change
+    /// counts already applied to the host and written to the file.
+    settings_world: String,
+    settings_applied: u64,
+    settings_written: u64,
     /// File ▸ Exit requested from the editor.
     quit: bool,
     /// Main-thread phases of the last revision reload; reported as `metrics.reload`.
@@ -864,6 +869,9 @@ impl App {
             audio: crate::audio::Output::new(),
             gamepads: crate::gamepad::Gamepads::new(false),
             pad_menu: [false; 7],
+            settings_world: String::new(),
+            settings_applied: u64::MAX,
+            settings_written: 0,
             game_ctx: None,
             game_input: false,
             game_pointer: false,
@@ -1807,6 +1815,69 @@ impl App {
     /// Records a runtime command that ran during a recorded Play. A batch that failed after
     /// applying a prefix changed state the recording cannot reproduce (only successful
     /// commands are written), so the recording becomes inexact (no `state_hash` assertion).
+    /// The player's settings file for world `id`: `<database folder>/settings/<id>.json`
+    /// (`%APPDATA%\Axiom\<game>\settings\` for a packaged game).
+    fn settings_file(&self, id: &str) -> std::path::PathBuf {
+        self.options
+            .db
+            .parent()
+            .unwrap_or(std::path::Path::new("data"))
+            .join("settings")
+            .join(format!("{id}.json"))
+    }
+
+    /// Player settings (plan S1), once per frame and only on change: loads the file when the
+    /// world changes, applies changed settings to the host (master volume), and writes them
+    /// back (atomically, on a short-lived thread: never file I/O on the frame).
+    fn sync_player_settings(&mut self) {
+        if self.runtime.state.compiled.source.id != self.settings_world {
+            self.settings_world = self.runtime.state.compiled.source.id.clone();
+            let path = self.settings_file(&self.settings_world);
+            if let Ok(raw) = axiom_core::read_bounded_string(&path, 65_536, "player settings") {
+                let base = *self.runtime.player_settings().0;
+                let (settings, problems) = match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(v) => axiom_core::settings::PlayerSettings::merged(base, &v),
+                    Err(e) => (base, vec![format!("not JSON: {e}")]),
+                };
+                for p in problems {
+                    // A damaged file never stops the game: the default is kept.
+                    self.ui.output.push(format!(
+                        "settings {}: {p} (kept the default)",
+                        path.display()
+                    ));
+                }
+                self.runtime.restore_player_settings(settings);
+            }
+            self.settings_written = self.runtime.player_settings().1;
+        }
+        let (settings, rev) = self.runtime.player_settings();
+        let settings = *settings;
+        if rev != self.settings_applied {
+            self.audio.set_master(settings.master);
+            self.settings_applied = rev;
+        }
+        if rev != self.settings_written {
+            self.settings_written = rev;
+            let path = self.settings_file(&self.settings_world);
+            let text = serde_json::to_string_pretty(&settings.to_json()).unwrap_or_default();
+            let _ = std::thread::Builder::new()
+                .name("axiom-settings-write".into())
+                .spawn(move || {
+                    let write = || -> std::io::Result<()> {
+                        if let Some(dir) = path.parent() {
+                            std::fs::create_dir_all(dir)?;
+                        }
+                        let partial = path.with_extension("json.partial");
+                        std::fs::write(&partial, text)?;
+                        std::fs::rename(&partial, &path)
+                    };
+                    if let Err(e) = write() {
+                        eprintln!("settings: could not write {}: {e}", path.display());
+                    }
+                });
+        }
+    }
+
     /// Esc / gamepad Start (plan M6): opens or closes the document's escape page. False when
     /// the document has none (Esc then pauses the host as before).
     fn toggle_escape_page(&mut self) -> bool {
@@ -3588,6 +3659,7 @@ impl App {
         self.poll_changes();
         // Likewise a commit that finished during the present.
         self.poll_writes(std::time::Duration::ZERO)?;
+        self.sync_player_settings();
         let mut obs = self.observation();
         obs.fps = self.fps_smooth;
         obs.frame_ms_cpu = now.elapsed().as_secs_f32() * 1000.0;

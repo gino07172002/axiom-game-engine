@@ -122,6 +122,8 @@ pub fn state_hash(runtime: &WorldRuntime) -> Result<String> {
     // Derived from the transforms (hashed below): recordings made before the facing monitor
     // keep their hash.
     metrics.remove("facing");
+    // The player's preferences (volume, mouse, display) are not simulation state.
+    metrics.remove("settings");
     // The navigation grid's build wall time and process-cache hit describe this process, not
     // the simulation (an editor Play and a fresh `axiom scenario` process differ there).
     if let Some(grid) = metrics

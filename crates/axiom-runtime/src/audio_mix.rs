@@ -208,6 +208,9 @@ pub struct Mixer {
     voiced_tokens: Tokens,
     shot_tokens: Tokens,
     scratch: Box<[f32; 2 * MAX_FRAMES]>,
+    /// Master gain now and the one it ramps to across the next buffer (player setting).
+    master: f32,
+    master_target: f32,
     pub stats: MixStats,
 }
 
@@ -224,6 +227,8 @@ impl Default for Mixer {
             voiced_tokens: Tokens::default(),
             shot_tokens: Tokens::default(),
             scratch: Box::new([0.0; 2 * MAX_FRAMES]),
+            master: 1.0,
+            master_target: 1.0,
             stats: MixStats::default(),
         }
     }
@@ -271,6 +276,10 @@ fn mix_voice(v: &mut MixVoice, pcm: &[i16], mix: &mut [f32], target: (f32, f32))
 }
 
 impl Mixer {
+    /// The master gain (0..1) the next buffer ramps to.
+    pub fn set_master(&mut self, gain: f32) {
+        self.master_target = gain.clamp(0.0, 1.0);
+    }
     /// Replaces the voice block (from `SharedVoices::read` or a test).
     pub fn set_params(&mut self, params: &[VoiceParams; MAX_VOICES]) {
         self.params = *params;
@@ -414,14 +423,19 @@ impl Mixer {
                 *at += 1;
             }
         }
-        for (o, m) in out.iter_mut().zip(mix.iter()) {
-            let x = (m * 32768.0).round();
+        // Master gain, ramped across the buffer so a change never clicks.
+        let (from, to) = (self.master, self.master_target);
+        let step = (to - from) / frames.max(1) as f32;
+        for (i, (o, m)) in out.iter_mut().zip(mix.iter()).enumerate() {
+            let gain = from + step * (i / 2) as f32;
+            let x = (m * gain * 32768.0).round();
             if !(-32768.0..=32767.0).contains(&x) {
                 self.stats.clipped_samples += 1;
             }
             *o = x.clamp(-32768.0, 32767.0) as i16;
         }
         out[frames * 2..].fill(0);
+        self.master = to;
         self.stats.voices = voiced;
         self.stats.renders += 1;
     }

@@ -135,7 +135,9 @@ fn the_open_modal_page_blocks_the_hud_and_takes_arrow_key_focus() {
         let _ = ctx.run(raw, |ctx| clicked.extend(r.draw_ui(ctx, &mut ui)));
     }
     assert!(clicked.is_empty(), "HUD blocked: {} actions", clicked.len());
-    // Down moves to English; Enter fires it (locale en).
+    // Down twice (Settings, then English); Enter fires it (locale en).
+    frame(&r, &ctx, &mut ui, &[egui::Key::ArrowDown]);
+    assert_eq!(focused(&r, &ui), "pause_settings");
     frame(&r, &ctx, &mut ui, &[egui::Key::ArrowDown]);
     assert_eq!(focused(&r, &ui), "pause_en");
     let fired = frame(&r, &ctx, &mut ui, &[egui::Key::Enter]);
@@ -144,7 +146,8 @@ fn the_open_modal_page_blocks_the_hud_and_takes_arrow_key_focus() {
         "{} actions",
         fired.len()
     );
-    // Up wraps back to Resume; Enter closes the page.
+    // Up twice back to Resume; Enter closes the page.
+    frame(&r, &ctx, &mut ui, &[egui::Key::ArrowUp]);
     frame(&r, &ctx, &mut ui, &[egui::Key::ArrowUp]);
     assert_eq!(focused(&r, &ui), "pause_resume");
     let fired = frame(&r, &ctx, &mut ui, &[egui::Key::Enter]);

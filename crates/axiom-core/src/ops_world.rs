@@ -602,6 +602,64 @@ pub fn set_sky(world: &World, registry: &Registry, mode: &str) -> Result<Vec<Edi
     })])
 }
 
+/// World ▸ setting default / ACL `settings default KEY VALUE|none` (plan S1): the author's
+/// default for a player setting, in `game.settings.defaults`. The resource is created when
+/// missing and removed when its last default goes. Unchanged = empty batch.
+pub fn set_setting_default(
+    world: &World,
+    registry: &Registry,
+    key: &str,
+    value: Option<Value>,
+) -> Result<Vec<Edit>> {
+    let path = format!("/resources/game.settings/defaults/{}", escape(key));
+    let mut check = crate::settings::PlayerSettings::default();
+    match &value {
+        Some(v) => check.set(key, v),
+        None => check.get(key).map(|_| ()),
+    }
+    .map_err(|e| invalid(&path, format!("{e:#}")))?;
+    let current = world.resources.get("game.settings");
+    let mut resource = current.cloned().unwrap_or_else(|| json!({}));
+    let Some(object) = resource.as_object_mut() else {
+        return Err(invalid(
+            "/resources/game.settings",
+            "game.settings must be an object",
+        ));
+    };
+    let defaults = object.entry("defaults").or_insert_with(|| json!({}));
+    let Some(map) = defaults.as_object_mut() else {
+        return Err(invalid(
+            "/resources/game.settings/defaults",
+            "game.settings.defaults must be an object",
+        ));
+    };
+    match value {
+        Some(v) => {
+            map.insert(key.to_owned(), v);
+        }
+        None => {
+            map.remove(key);
+        }
+    }
+    if map.is_empty() {
+        object.remove("defaults");
+    }
+    let empty = object.is_empty();
+    if current == Some(&resource) || (current.is_none() && empty) {
+        return Ok(vec![]);
+    }
+    if empty {
+        return remove_resource(world, "game.settings");
+    }
+    if current.is_none() {
+        return create_resource(world, registry, "game.settings", Some(resource));
+    }
+    Ok(vec![Edit::Core(CoreEdit::SetResource {
+        id: "game.settings".into(),
+        value: resource,
+    })])
+}
+
 /// World ▸ POST row / ACL `post SETTING VALUE` (`render.environment.post`, see
 /// `crate::post`): `antialiasing none|fxaa`, `hdr on|off`, `bloom on|off` (on also turns HDR
 /// on), `exposure V` (needs HDR), `threshold|intensity|radius V` (need bloom), and `none`

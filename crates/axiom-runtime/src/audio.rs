@@ -154,6 +154,8 @@ struct Shared {
     shots: AtomicU64,
     late_frees: AtomicU64,
     write_errors: AtomicU64,
+    /// Player master volume (`audio.master`) as f32 bits.
+    master: AtomicU32,
 }
 
 pub(crate) struct Output {
@@ -180,6 +182,7 @@ impl Output {
     /// still accepted and counted.
     pub fn with_device(device: bool) -> Self {
         let shared = Arc::new(Shared::default());
+        shared.master.store(1.0f32.to_bits(), Ordering::Relaxed);
         let (sender, receiver) = mpsc::sync_channel::<Message>(16);
         let (bin, garbage) = mpsc::sync_channel::<Message>(64);
         let worker = if device {
@@ -289,6 +292,18 @@ impl Output {
         };
         self.shared.voices.publish(voices);
     }
+    /// Player master volume 0..1 (`audio.master`); the audio thread ramps to it.
+    pub fn set_master(&self, gain: f32) {
+        self.shared
+            .master
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// The master volume the audio thread mixes with.
+    pub fn master(&self) -> f32 {
+        f32::from_bits(self.shared.master.load(Ordering::Relaxed))
+    }
+
     pub fn observation(&self) -> Value {
         let s = &self.shared;
         let device = match s.device.load(Ordering::Relaxed) {
@@ -298,7 +313,7 @@ impl Output {
             _ => format!("unavailable (error {})", s.error.load(Ordering::Relaxed)),
         };
         json!({"backend":if cfg!(windows){"winmm_waveout"}else{"unavailable"},
-            "device":device,"rate":SAMPLE_RATE,"buffer_frames":BUFFER_FRAMES,"buffers":BUFFERS,
+            "device":device,"master":self.master(),"rate":SAMPLE_RATE,"buffer_frames":BUFFER_FRAMES,"buffers":BUFFERS,
             "rendered":s.buffers.load(Ordering::Relaxed),"underruns":s.underruns.load(Ordering::Relaxed),
             "mix_us_max":s.mix_us_max.load(Ordering::Relaxed),"voices_mixed":s.voices_mixed.load(Ordering::Relaxed),
             "clipped_samples":s.clipped.load(Ordering::Relaxed),"played":s.cues.load(Ordering::Relaxed),"shots_played":s.shots.load(Ordering::Relaxed),
@@ -362,6 +377,7 @@ fn mix(shared: &Shared, mixer: &mut Mixer, out: &mut [i16]) {
     if shared.voices.read(&mut voices) {
         mixer.set_params(&voices);
     }
+    mixer.set_master(f32::from_bits(shared.master.load(Ordering::Relaxed)));
     mixer.render(out);
     shared
         .mix_us_max

@@ -2007,6 +2007,38 @@ fn town() -> World {
     )
 }
 
+/// Plan S1: the editor command for player setting defaults compiles to the same op as ACL.
+#[test]
+fn setting_default_command_matches_acl() {
+    for (arg, script) in [
+        ("audio.master 0.6", "settings default audio.master 0.6"),
+        (
+            "display.mode borderless",
+            "settings default display.mode borderless",
+        ),
+    ] {
+        assert_parity(
+            town(),
+            |e| {
+                vec![e
+                    .run_command_with("world.setting_default", Some(arg))
+                    .unwrap()]
+            },
+            script,
+        );
+    }
+    let start = headless(&town(), "settings default audio.sfx 0.5");
+    assert_parity(
+        start,
+        |e| {
+            vec![e
+                .run_command_with("world.setting_default", Some("audio.sfx none"))
+                .unwrap()]
+        },
+        "settings default audio.sfx none",
+    );
+}
+
 /// Axiom Town with its status HUD in the legacy top-left / top regions (its layout before
 /// plan M8 moved it into panels), for the tests of the region features.
 fn with_regions(mut world: World) -> World {

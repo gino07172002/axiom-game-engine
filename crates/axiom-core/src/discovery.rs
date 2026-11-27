@@ -94,6 +94,8 @@ pub fn gameplay_schema() -> Value {
     let mut command = plain.clone();
     let commands = command["oneOf"].as_array_mut().unwrap();
     commands.push(tagged("batch",json!({"commands":{"type":"array","minItems":1,"maxItems":crate::gameplay::MAX_BATCH,"items":{"$ref":"#/$defs/batch_command"},"description":"run in order in one tick, all validated first; no nested batch or slide"}}),&["commands"]));
+    // Player settings are applied by the host: never inside a batch.
+    commands.push(tagged("setting",json!({"key":{"type":"string","description":"player setting (discover resource game.settings)"},"value":{"description":"number, bool or name; a slider fills it in"}}),&["key"]));
     commands.push(tagged(
         "slide",
         json!({"widget":{"type":"string"},"value":{"type":"number"}}),
