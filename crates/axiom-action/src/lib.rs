@@ -225,9 +225,95 @@ pub struct Session {
     /// third-person distance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_person: Option<FirstPerson>,
+    /// Follow-camera feel (plan C1): zoom step and easing, first-person thresholds, orbit
+    /// speed. Unset fields keep the engine defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_tuning: Option<CameraTuning>,
 }
 fn combat_hud() -> bool {
     true
+}
+
+/// `action.session.camera_tuning` (plan C1). Every field is optional; the defaults are the
+/// values the follow camera always used.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraTuning {
+    /// Each wheel notch toward the scene multiplies the distance by this (0.5..0.95, default 0.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom_step: Option<f32>,
+    /// Closest third-person distance; zooming in past it goes first person (meters, default 1.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person_from: Option<f32>,
+    /// At this distance and closer the view is fully first person (meters, default 0.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person_at: Option<f32>,
+    /// Fraction of the remaining distance covered per fixed step (0.01..1, default 0.08).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom_ease: Option<f32>,
+    /// The hero is hidden while the camera is this close to its eye point (meters, default 0.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_within: Option<f32>,
+    /// Orbit speed at full axis (radians per second, default 1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orbit_speed: Option<f32>,
+}
+impl CameraTuning {
+    pub fn zoom_step(&self) -> f32 {
+        self.zoom_step.unwrap_or(0.8)
+    }
+    pub fn first_person_from(&self) -> f32 {
+        self.first_person_from.unwrap_or(1.6)
+    }
+    pub fn first_person_at(&self) -> f32 {
+        self.first_person_at.unwrap_or(0.5)
+    }
+    pub fn zoom_ease(&self) -> f32 {
+        self.zoom_ease.unwrap_or(0.08)
+    }
+    pub fn hide_within(&self) -> f32 {
+        self.hide_within.unwrap_or(0.6)
+    }
+    pub fn orbit_speed(&self) -> f32 {
+        self.orbit_speed.unwrap_or(1.5)
+    }
+    fn validate(&self, camera_distance: f32) -> Result<()> {
+        let all = [
+            self.zoom_step(),
+            self.first_person_from(),
+            self.first_person_at(),
+            self.zoom_ease(),
+            self.hide_within(),
+            self.orbit_speed(),
+        ];
+        ensure!(
+            all.iter().all(|v| v.is_finite()),
+            "camera_tuning: numbers must be finite"
+        );
+        ensure!(
+            (0.5..=0.95).contains(&self.zoom_step()),
+            "camera_tuning: zoom_step must be 0.5..0.95"
+        );
+        ensure!(
+            (0.01..=1.0).contains(&self.zoom_ease()),
+            "camera_tuning: zoom_ease must be 0.01..1"
+        );
+        ensure!(
+            self.first_person_at() >= 0.0
+                && self.first_person_at() < self.first_person_from()
+                && self.first_person_from() < camera_distance,
+            "camera_tuning: 0 <= first_person_at < first_person_from < camera_distance"
+        );
+        ensure!(
+            (0.0..=3.0).contains(&self.hide_within()),
+            "camera_tuning: hide_within must be 0..3 m"
+        );
+        ensure!(
+            (0.1..=10.0).contains(&self.orbit_speed()),
+            "camera_tuning: orbit_speed must be 0.1..10 rad/s"
+        );
+        Ok(())
+    }
 }
 /// The hero's eye point for the first-person end of the zoom range.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -282,6 +368,9 @@ impl Session {
                 && (1.0..=50.0).contains(&self.enemy_notice_range),
             "camera or target range out of bounds"
         );
+        if let Some(c) = &self.camera_tuning {
+            c.validate(self.camera_distance)?;
+        }
         if let Some(f) = &self.first_person {
             ensure!(
                 f.eye_height.is_finite()
@@ -438,7 +527,7 @@ pub fn register(r: &mut Registry) {
     r.movers
         .insert("action.actor".into(), "action.simulate".into());
     r.resource(ABILITIES,"action",json!({"abilities":"stable ID -> {kind:attack|dodge,clip,duration,cost,cooldown,active?,invulnerable?,chain?,chain_window?,dodge_window?,damage,range,arc_degrees,travel_speed,events:[{tick,sound}]}","windows":"half-open [start,end), fixed 120 Hz ticks","duration":"1..2400","cost":"0..1000","range":"0..6"}),|v|serde_json::from_value::<Library>(v.clone())?.validate());
-    r.resource(SESSION,"action",json!({"hero":"entity ID","camera":"entity ID","bounds":"{min:[x,z],max:[x,z]}","obstacles":"bounded planar rectangles","input_buffer_ticks":"0..60","lock_range":"meters","camera_distance":"meters","camera_height":"meters","camera_yaw":"radians","enemy_notice_range":"meters","hit_sound":"audio cue ID","hud?":"bool, default true","first_person?":"{eye_height: meters 0.2..3, eye_forward?: meters 0..1 (default 0.25)}: the optional zoom axis (input.bindings, e.g. WheelUp/WheelDown) ends in a first-person view; without it zoom stops at the closest third-person distance"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
+    r.resource(SESSION,"action",json!({"hero":"entity ID","camera":"entity ID","bounds":"{min:[x,z],max:[x,z]}","obstacles":"bounded planar rectangles","input_buffer_ticks":"0..60","lock_range":"meters","camera_distance":"meters","camera_height":"meters","camera_yaw":"radians","enemy_notice_range":"meters","hit_sound":"audio cue ID","hud?":"bool, default true","first_person?":"{eye_height: meters 0.2..3, eye_forward?: meters 0..1 (default 0.25)}: the optional zoom axis (input.bindings, e.g. WheelUp/WheelDown) ends in a first-person view; without it zoom stops at the closest third-person distance","camera_tuning?":"{zoom_step? 0.5..0.95 (default 0.8, distance x per wheel notch), first_person_from? m (1.6), first_person_at? m (0.5), zoom_ease? 0.01..1 per step (0.08), hide_within? m (0.6), orbit_speed? rad/s (1.5)}"}),|v|serde_json::from_value::<Session>(v.clone())?.validate());
     r.systems.insert(
         "action.simulate".into(),
         SystemDescriptor {
@@ -472,7 +561,7 @@ pub fn register(r: &mut Registry) {
     r.action(
         "action.zoom",
         "action",
-        json!({"distance":"meters from the hero, 0..camera_distance; 0 = first person when action.session.first_person is set (else the closest third-person distance, 1.6)"}),
+        json!({"distance":"meters from the hero, 0..camera_distance; 0 = first person when action.session.first_person is set (else the closest third-person distance, camera_tuning.first_person_from, default 1.6)"}),
         |v| {
             let d = v
                 .as_object()

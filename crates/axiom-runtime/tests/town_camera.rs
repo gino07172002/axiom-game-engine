@@ -205,3 +205,52 @@ fn the_zoom_command_reaches_the_same_first_person_view_as_the_wheel() {
     }
     assert_eq!(camera(&agent)["target_distance"], 0.0);
 }
+
+#[test]
+fn camera_tuning_changes_the_wheel_step_and_the_closest_distance() {
+    // One wheel notch: the default step is 0.8 of the distance, camera_tuning sets it.
+    let notch = |tuning: Option<Value>| {
+        let mut w = pack("axiom-town");
+        let session = w.resources.get_mut("action.session").unwrap();
+        if let Some(t) = tuning {
+            session["camera_tuning"] = t;
+        }
+        let full = session["camera_distance"].as_f64().unwrap();
+        let mut r = WorldRuntime::new(w, 1, installed_registry()).unwrap();
+        run(&mut r, &input(&[("zoom", -1.0)]), 1);
+        camera(&r)["target_distance"].as_f64().unwrap() / full
+    };
+    assert!((notch(None) - 0.8).abs() < 1e-5);
+    assert!((notch(Some(json!({"zoom_step":0.5}))) - 0.5).abs() < 1e-5);
+    // Without first person, zoom stops at first_person_from.
+    let mut w = pack("action");
+    w.resources.get_mut("input.bindings").unwrap()["axes"]["zoom"] =
+        json!({"positive":"WheelDown","negative":"WheelUp"});
+    w.resources.get_mut("action.session").unwrap()["camera_tuning"] =
+        json!({"first_person_from":3.0,"zoom_ease":0.5});
+    let mut r = WorldRuntime::new(w, 1, installed_registry()).unwrap();
+    run(&mut r, &input(&[("zoom", -1.0)]), 30);
+    run(&mut r, &ActionMap::default(), 60);
+    let c = camera(&r);
+    assert!((c["distance"].as_f64().unwrap() - 3.0).abs() < 1e-3, "{c}");
+    // Out-of-range values are refused with the field named.
+    for (bad, needle) in [
+        (json!({"zoom_step":0.99}), "zoom_step"),
+        (
+            json!({"first_person_from":0.4,"first_person_at":0.5}),
+            "first_person_at",
+        ),
+        (json!({"orbit_speed":0.0}), "orbit_speed"),
+        (json!({"spin":1}), "spin"),
+    ] {
+        let mut w = pack("axiom-town");
+        w.resources.get_mut("action.session").unwrap()["camera_tuning"] = bad.clone();
+        let msg = format!(
+            "{:#}",
+            WorldRuntime::new(w, 1, installed_registry())
+                .err()
+                .expect("refused")
+        );
+        assert!(msg.contains(needle), "{bad}: {msg}");
+    }
+}

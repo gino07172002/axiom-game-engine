@@ -259,3 +259,23 @@
 - **順便修掉的不穩定測試**:`a_full_capture_queue_refuses_editor_view_before_its_edit` 和 `…_before_its_command` 用同一個資料庫檔名 `capture-full.sqlite`,同一個行程平行執行時互相刪檔、鎖檔("database is locked")。只跑這兩個時重現失敗;改成各自的檔名後一起跑 4 次都通過。之前 N1 和更早的 gate 記錄的不穩定失敗就是這個原因。
 - **測試期望的更新**(內容刻意改變):`ui_panels.rs` 找對話框邊框時多加「高度 > 120」(選項按鈕現在也有邊框,但很矮);工作列文字改成 town 自己的「存檔 / 讀檔」。
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1167 passed / 0 failed / 7 ignored(第一次 7 個失敗,原因和修正見上面);editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 U1):town 以外 9 個包逐位元相同。
+
+### 補記 2026-11-27:C1 和 ADR-6 的差異
+
+- ADR-6 寫的是 `action.session.camera` 底下加欄位。但 `camera` 已經是相機物件的 ID(字串),不能放設定;改成新的選用物件 `action.session.camera_tuning`,欄位名稱照 ADR-6。
+- 沒有新增專用的 ops / ACL 動詞:`camera_tuning` 是 `action.session` 資源裡的資料,用既有的資源編輯(ACL `set resources[id=action.session] …`、編輯器資源表單)就能改,兩邊走同一個通用路徑。
+
+### C1 完成(分支 `ui-v2`)
+
+- **資料**:`CameraTuning {zoom_step, first_person_from, first_person_at, zoom_ease, hide_within, orbit_speed}`,全部選用,預設等於原本的常數(0.8、1.6、0.5、0.08、0.6、1.5 rad/s)。檢查範圍與 0 ≤ at < from < `camera_distance`。
+- **執行**:`action.rs` 的五個常數和寫死的 1.5 改成讀 `tuning(session)`;沒有 `camera_tuning` 時用同樣的數字、同樣的算式順序。
+- **測試**:`town_camera.rs` 1 個(預設一格 = 0.8;`zoom_step 0.5` 一格 = 0.5;沒有第一人稱時停在 `first_person_from 3.0`;4 種錯誤)。原本的 6 個鏡頭測試照樣通過。
+- **ACL**(獨立資料庫):`set resources[id=action.session] camera_tuning {"zoom_step":0.6,"orbit_speed":2.5}` 寫入 rev 2;`zoom_step 2` 被拒絕,訊息是 `camera_tuning: zoom_step must be 0.5..0.95`。
+- **文件**:`docs/camera-follow.zh-TW.md` 的縮放一節。
+- **未驗證**:沒有 GPU 截圖(這個 milestone 沒有改繪製;行為用 `observe action.camera` 的距離驗證)。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1168 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 C1):town 以外 9 個包逐位元相同。
+
+### 計畫完成(2026-11-27)
+
+- S1–S4、N1、U1、C1 都在 `ui-v2` 本機提交,尚未推送、尚未合併到本機 main、尚未寫進使用者資料庫。
+- 寫進 `data\axiom-town.sqlite` 前必須先合併到本機 main(town 用了舊版執行檔讀不了的 `theme.nameplate` 等欄位)。

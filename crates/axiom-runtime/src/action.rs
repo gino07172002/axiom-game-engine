@@ -237,11 +237,12 @@ impl ActionSystem {
     /// it is first person (0) when the session has one, else the closest third-person view.
     fn set_zoom(&mut self, distance: f32) {
         let session = &self.sim.session;
-        self.zoom_target = if distance < FIRST_PERSON_FROM {
+        let closest = tuning(session).first_person_from();
+        self.zoom_target = if distance < closest {
             if session.first_person.is_some() {
                 0.0
             } else {
-                FIRST_PERSON_FROM
+                closest
             }
         } else {
             distance.min(session.camera_distance)
@@ -253,24 +254,26 @@ impl ActionSystem {
     fn zoom(&mut self, axis: f32) {
         let session = &self.sim.session;
         let full = session.camera_distance;
+        let tune = tuning(session);
+        let closest = tune.first_person_from();
         if axis < 0.0 {
-            self.zoom_target *= ZOOM_NOTCH;
-            if self.zoom_target < FIRST_PERSON_FROM {
+            self.zoom_target *= tune.zoom_step();
+            if self.zoom_target < closest {
                 self.zoom_target = if session.first_person.is_some() {
                     0.0
                 } else {
-                    FIRST_PERSON_FROM
+                    closest
                 };
             }
         } else if axis > 0.0 {
-            self.zoom_target = (self.zoom_target / ZOOM_NOTCH).max(FIRST_PERSON_FROM);
+            self.zoom_target = (self.zoom_target / tune.zoom_step()).max(closest);
         }
         self.zoom_target = self.zoom_target.min(full);
         let gap = self.zoom_target - self.zoom;
         self.zoom = if gap.abs() < 1e-3 {
             self.zoom_target
         } else {
-            self.zoom + gap * ZOOM_EASE
+            self.zoom + gap * tune.zoom_ease()
         };
     }
     fn input(&mut self, input: &ActionMap) {
@@ -299,16 +302,18 @@ impl ActionSystem {
         (right * input.axis("move_x") + forward * input.axis("move_z")).clamp_length_max(1.0)
     }
 }
-/// Each wheel notch toward the scene multiplies the camera distance by this.
-const ZOOM_NOTCH: f32 = 0.8;
-/// The closest third-person distance (meters); zooming in past it goes first person.
-const FIRST_PERSON_FROM: f32 = 1.6;
-/// At this distance and closer the view is fully first person.
-const FIRST_PERSON_AT: f32 = 0.5;
-/// Fraction of the remaining distance the camera covers per fixed step (about 10/s).
-const ZOOM_EASE: f32 = 0.08;
-/// The hero is not drawn while the camera is this close to its eye point (meters).
-const HIDE_WITHIN: f32 = 0.6;
+/// The session's camera feel (plan C1); the defaults when it has none.
+fn tuning(session: &Session) -> &axiom_action::CameraTuning {
+    static DEFAULT: axiom_action::CameraTuning = axiom_action::CameraTuning {
+        zoom_step: None,
+        first_person_from: None,
+        first_person_at: None,
+        zoom_ease: None,
+        hide_within: None,
+        orbit_speed: None,
+    };
+    session.camera_tuning.as_ref().unwrap_or(&DEFAULT)
+}
 
 /// The follow camera at `zoom` meters: the authored third-person view at
 /// `camera_distance`, moving in along the same direction toward the hero's eyes, and blended
@@ -329,10 +334,11 @@ pub(crate) fn camera_view(session: &Session, hero: Vec2, yaw: f32, zoom: f32) ->
         .first_person
         .as_ref()
         .map(|f| Vec3::new(hero.x, f.eye_height, hero.y));
+    let tune = tuning(session);
+    let (from, at) = (tune.first_person_from(), tune.first_person_at());
     let weight = match &session.first_person {
         Some(_) => {
-            let t = ((FIRST_PERSON_FROM - zoom) / (FIRST_PERSON_FROM - FIRST_PERSON_AT))
-                .clamp(0.0, 1.0);
+            let t = ((from - zoom) / (from - at)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         }
         None => 0.0,
@@ -363,7 +369,7 @@ pub(crate) fn camera_view(session: &Session, hero: Vec2, yaw: f32, zoom: f32) ->
     };
     let hide_hero = eye_point.is_some_and(|p| {
         let f = session.first_person.as_ref().map_or(0.0, |f| f.eye_forward);
-        weight > 0.0 && eye.distance(p) < HIDE_WITHIN.max(f + 0.1)
+        weight > 0.0 && eye.distance(p) < tune.hide_within().max(f + 0.1)
     });
     CameraView {
         eye,
@@ -389,8 +395,9 @@ impl RuntimeSystem for ActionSystem {
     }
     fn step(&mut self, state: &mut RuntimeState, input: &ActionMap) {
         self.sim.combat = state.combat.as_ref().map(|c| c.scene.clone());
-        self.yaw =
-            (self.yaw + input.axis("orbit") * FIXED_DT * 1.5).rem_euclid(std::f32::consts::TAU);
+        self.yaw = (self.yaw
+            + input.axis("orbit") * FIXED_DT * tuning(&self.sim.session).orbit_speed())
+        .rem_euclid(std::f32::consts::TAU);
         self.zoom(input.axis("zoom"));
         self.input(input);
         self.sim.step(self.direction(input));

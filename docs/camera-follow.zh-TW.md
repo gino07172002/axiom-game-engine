@@ -131,6 +131,13 @@ action 控制器的相機也能用滑鼠滾輪縮放,不必換成 `camera.follow
 - 沒有 `first_person` 的世界,縮放停在 1.6 m。沒綁 `zoom` 的世界行為不變;沒用到縮放的世界,`observe` 與錄影的 `state_hash` 也不變。用到時 `observe action.camera` 回報 `distance`、`target_distance`、`first_person`(0..1)與 `hero_hidden`。
 - 腳本與 AI 代理用 `command {kind:"call", capability:"action", action:"zoom", args:{distance}}` 設定同一個目標距離(0 = 第一人稱),相機一樣平滑過去。
 - 第一人稱沒有上下看(pitch);滑鼠只在捕捉指標時轉 yaw,和第三人稱相同。
+- 上面的數字都可以用 `action.session.camera_tuning` 改(每個欄位都可省略,省略時就是上面的值):
+  - `zoom_step`:每格滾輪乘上的倍數(0.5..0.95,預設 0.8;越小每格走越遠)。
+  - `zoom_ease`:每個固定步追上剩下距離的比例(0.01..1,預設 0.08)。
+  - `first_person_from` / `first_person_at`:開始混成第一人稱的距離和完全第一人稱的距離(預設 1.6 / 0.5 m;沒有 `first_person` 時縮放停在 `first_person_from`)。要滿足 0 ≤ at < from < `camera_distance`。
+  - `hide_within`:相機離眼睛多近時不畫英雄(0..3 m,預設 0.6)。
+  - `orbit_speed`:轉視角軸全推時每秒轉幾弧度(0.1..10,預設 1.5)。
+  - 用一般的資源編輯修改,例如 ACL `set resources[id=action.session] camera_tuning {"zoom_step":0.6}`,或編輯器的資源表單。
 
 ## 限制
 
