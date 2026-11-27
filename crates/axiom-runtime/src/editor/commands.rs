@@ -570,6 +570,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         "WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | none",
     ),
     a(
+        "ui.nameplate",
+        "UI: Nameplate Look and Distances…",
+        "World",
+        "[fade=METERS] [hide=METERS] [class=TEXT_CLASS] [style=PANEL_STYLE] | none",
+    ),
+    a(
         "ui.text_class",
         "UI: Text Class…",
         "World",
@@ -796,6 +802,7 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.panel_style",
     "ui.panel",
     "ui.screen",
+    "ui.nameplate",
     "ui.font",
     "ui.page",
     "ui.template",
@@ -1369,8 +1376,8 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
-            | "ui.screen" | "ui.font" | "ui.page" | "ui.template" | "ui.use" | "ui.text_class"
-            | "ui.button_class" | "ui.class"
+            | "ui.screen" | "ui.nameplate" | "ui.font" | "ui.page" | "ui.template" | "ui.use"
+            | "ui.text_class" | "ui.button_class" | "ui.class"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")

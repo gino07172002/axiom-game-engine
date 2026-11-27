@@ -56,6 +56,21 @@ ui button resume close pause
 | 同一組元件用很多次 | `templates` + `uses`(`{參數}`、`{i}`、`count`) | `ui template`、`ui use` |
 | 選單、彈窗、暫停 | `pages`(modal / pause / escape)、指令 `open` / `close` | `ui page`、`ui button W open|close` |
 | 檢查排版 | `observe` 的 `ui_layout`(視窗像素、重疊、超出畫面) | — |
+| 角色頭上的名牌 | `theme.nameplate`(預設的文字類別、面板樣式、淡出和隱藏距離);每個 `ui.nameplate` 可以有自己的 `key`、`class`、`style` | `ui nameplate` |
+
+## 名牌
+
+- `ui.nameplate`(元件):
+  - `text` 是固定的文字;`key` 從語系表取文字,切語系時跟著換。兩個都有時,語系表沒有這個鍵就顯示 `text`。
+  - `class` 是 `theme.text` 的文字類別(字型、大小、顏色、陰影);類別沒有顏色時用名牌自己的 `color`。
+  - `style` 是 `theme.panel` 的面板樣式(底色、圓角、padding、九宮格邊框)。
+  - 寫了不存在的類別或樣式,世界會被拒絕,錯誤訊息指出是哪個物件。
+- `theme.nameplate`(`ui nameplate [fade=M] [hide=M] [class=C] [style=S] | ui nameplate none`):
+  - `class` / `style` 是沒有自己設定的名牌用的預設值。
+  - `fade=M`:離鏡頭 M 公尺開始淡出;`hide=M`:超過 M 公尺不畫(預設 40)。
+  - 沒有寫 `theme.nameplate` 時名牌和以前一樣:14 px 文字、深色圓角底、40 公尺外不畫、不淡出。
+- 名牌用螢幕像素,不跟 `theme.reference` 縮放。
+- UI Editor 畫布下方的名牌預覽用同一套外觀和目前的語系。
 
 ## 玩家設定(音量等)
 

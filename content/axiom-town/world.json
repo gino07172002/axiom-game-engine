@@ -28,21 +28,21 @@
       "core.health":{"value":100,"max":100},
       "animation.player":{"asset":"axiom-short","clip":"idle"},
       "action.actor":{"faction":0,"speed":3.2,"radius":0.25,"stamina":100,"regen":40,"idle_clip":"idle","run_clip":"run","death_clip":"bow","attack":"wave","dodge":"hop","ai":false,"model_yaw":3.1415927},
-      "ui.nameplate":{"text":"Axi  ·  you","height":1.55,"color":[1,0.85,0.4]}
+      "ui.nameplate":{"key":"plate_you","text":"Axi  ·  you","height":1.55,"color":[1,0.85,0.4]}
     }},
     {"id":"npc/lumi","label":"Lumi","tags":["npc"],"components":{
       "core.transform":{"position":[2.6,0,1.8]},
       "animation.player":{"asset":"axiom-long","clip":"idle","speed":0.9},
       "fsm.agent":{"machine":"lumi"},
       "interact.target":{"range":2.4,"exit_margin":0.8,"prompt":"talk_lumi","event":"talk_lumi"},
-      "ui.nameplate":{"text":"Lumi  ♥","height":1.6,"color":[1,0.6,0.7]}
+      "ui.nameplate":{"key":"plate_lumi","text":"Lumi  ♥","height":1.6,"color":[1,0.6,0.7]}
     }},
     {"id":"npc/rin","label":"Rin (crepe stand)","tags":["npc"],"components":{
       "core.transform":{"position":[9,0,-6.2]},
       "animation.player":{"asset":"axiom-short","clip":"idle"},
       "fsm.agent":{"machine":"shopkeeper"},
       "interact.target":{"range":2.6,"exit_margin":0.8,"prompt":"talk_rin","event":"talk_rin"},
-      "ui.nameplate":{"text":"Rin  ·  Crepes","height":1.55,"color":[0.6,0.9,1]}
+      "ui.nameplate":{"key":"plate_rin","text":"Rin  ·  Crepes","height":1.55,"color":[0.6,0.9,1]}
     }},
     {"id":"pc/nova","label":"Nova (wandering player)","tags":["npc"],"components":{
       "core.transform":{"position":[-7,0,-3]},
@@ -292,14 +292,14 @@
       "theme":{
         "frames":{"dialog":{"image":"dialog","slice":[32,32,32,32]},"tracker":{"image":"tracker","slice":[20,20,20,20]},
           "btn_normal":{"image":"btn_normal","slice":[14,14,14,14]},"btn_hover":{"image":"btn_hover","slice":[14,14,14,14]},"btn_pressed":{"image":"btn_pressed","slice":[14,14,14,14]}},
-        "panel":{"dialog":{"padding":26,"frame":"dialog"},"tracker":{"padding":16,"frame":"tracker"},"hud":{"fill":[12,16,24,205],"corner":8,"padding":10}},
+        "panel":{"dialog":{"padding":26,"frame":"dialog"},"tracker":{"padding":16,"frame":"tracker"},"hud":{"fill":[12,16,24,205],"corner":8,"padding":10},"plate":{"padding":8,"frame":"btn_normal"}},
         "fonts":{"pixel":{"path":"ui/axiom-pixel.ttf","license":"MIT"}},
         "text":{"tracker_title":{"size":17,"color":[102,245,205,255]},"speaker":{"size":20,"font":"pixel","color":[233,196,120,255],"shadow":[0,0,0,170]},
-          "dialog_line":{"size":18,"font":"pixel","color":[236,232,222,255]}},
+          "dialog_line":{"size":18,"font":"pixel","color":[236,232,222,255]},"plate":{"size":15,"font":"pixel","shadow":[0,0,0,190]}},
         "button":{"emote":{"size":15,"font":"pixel","padding":9,
           "normal":{"frame":"btn_normal","text":[243,230,200,255]},"hover":{"frame":"btn_hover","text":[255,244,214,255]},
           "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}},
-        "reference":[1280,720]
+        "reference":[1280,720],"nameplate":{"fade_from":18,"hide_beyond":30,"class":"plate","style":"plate"}
       },
       "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote","pause_settings":"emote","settings_title":"speaker","settings_back":"emote","settings_invert_on":"emote","settings_invert_off":"emote","settings_window":"emote","settings_borderless":"emote","settings_fullscreen":"emote","settings_vsync_on":"emote","settings_vsync_off":"emote","settings_shadow_low":"emote","settings_shadow_medium":"emote","settings_shadow_high":"emote"},
       "pages":{"pause":{"panels":["pause_menu"],"pause":true,"escape":true},"settings":{"panels":["settings_menu"],"pause":true}},
@@ -332,7 +332,8 @@
           "pause_settings":"設定","settings_title":"設定","settings_master":"總音量","settings_back":"返回",
           "settings_music":"音樂","settings_sfx":"音效","settings_mouse":"滑鼠靈敏度","settings_invert_on":"反轉 Y 軸","settings_invert_off":"不反轉",
           "settings_window":"視窗","settings_borderless":"無邊框","settings_fullscreen":"全螢幕","settings_vsync_on":"垂直同步","settings_vsync_off":"不同步",
-          "settings_shadow_low":"陰影 低","settings_shadow_medium":"陰影 中","settings_shadow_high":"陰影 高",
+          "settings_shadow_low":"陰影 低",
+          "plate_you":"Axi · 你","plate_lumi":"露米 ♥","plate_rin":"Rin · 可麗餅","settings_shadow_medium":"陰影 中","settings_shadow_high":"陰影 高",
           "title":"AXIOM TOWN · 中央廣場","town":"廣場","talk_lumi":"和露米聊聊","talk_rin":"和琳說話","lumi":"露米","rin":"琳 · 可麗餅攤",
           "hub":"WASD 移動 · Z/C 轉視角 · Space 小跳 · R 揮手 · 靠近角色按 E 交談 · 1-6 表情。",
           "sit_choice":"坐下休息","stand_choice":"站起來","pickup_choice":"撿起噴泉旁的紅色髮夾",
@@ -353,7 +354,8 @@
           "pause_settings":"Settings","settings_title":"SETTINGS","settings_master":"Master volume","settings_back":"Back",
           "settings_music":"Music","settings_sfx":"Sound effects","settings_mouse":"Mouse sensitivity","settings_invert_on":"Invert Y","settings_invert_off":"Normal Y",
           "settings_window":"Window","settings_borderless":"Borderless","settings_fullscreen":"Fullscreen","settings_vsync_on":"VSync on","settings_vsync_off":"VSync off",
-          "settings_shadow_low":"Shadows low","settings_shadow_medium":"Shadows medium","settings_shadow_high":"Shadows high",
+          "settings_shadow_low":"Shadows low",
+          "plate_you":"Axi · you","plate_lumi":"Lumi ♥","plate_rin":"Rin · Crepes","settings_shadow_medium":"Shadows medium","settings_shadow_high":"Shadows high",
           "title":"AXIOM TOWN · Central Plaza","town":"Plaza","talk_lumi":"Talk to Lumi","talk_rin":"Talk to Rin","lumi":"Lumi","rin":"Rin · Crepe stand",
           "hub":"WASD move · Z/C orbit · Space hop · R wave · E talk when close · 1-6 emotes.",
           "sit_choice":"Sit and rest","stand_choice":"Stand up","pickup_choice":"Pick up the red hair clip by the fountain",

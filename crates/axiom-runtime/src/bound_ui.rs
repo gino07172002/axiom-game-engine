@@ -78,7 +78,7 @@ pub fn prepare_assets(g: Option<&mut Gameplay>) -> Result<()> {
 /// with the default font until then. Checks what the context really has (another
 /// `set_fonts`, e.g. the editor theme, may have replaced them) and asks again after two
 /// passes, never every pass.
-fn ensure_fonts(ctx: &egui::Context, g: &Gameplay) -> bool {
+pub(crate) fn ensure_fonts(ctx: &egui::Context, g: &Gameplay) -> bool {
     if g.fonts.is_empty() {
         return true;
     }
@@ -123,7 +123,11 @@ fn ensure_fonts(ctx: &egui::Context, g: &Gameplay) -> bool {
 }
 
 /// The egui family of a class's font, when it is installed in this pass.
-fn font_family(g: &Gameplay, fonts_ready: bool, font: &Option<String>) -> egui::FontFamily {
+pub(crate) fn font_family(
+    g: &Gameplay,
+    fonts_ready: bool,
+    font: &Option<String>,
+) -> egui::FontFamily {
     match font.as_ref().and_then(|f| g.fonts.get(f)) {
         Some(p) if fonts_ready => p.family.clone(),
         _ => egui::FontFamily::Proportional,
@@ -1690,7 +1694,7 @@ fn rgba(c: [u8; 4]) -> Color32 {
 }
 
 /// A theme frame and its texture (the same cache as image widgets and panels).
-fn frame_texture<'a>(
+pub(crate) fn frame_texture<'a>(
     ctx: &egui::Context,
     g: &'a Gameplay,
     state: &mut UiState,

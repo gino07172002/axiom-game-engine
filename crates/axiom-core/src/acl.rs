@@ -128,6 +128,9 @@ EDIT (any number, atomic):
   ui screen W H [scale=fit_height|fit_width|fit|none] | ui screen none
                                   reference screen: panels are laid out in W x H pixels and the panel layer
                                   scales to the window (N% lengths are of W / H); live: observe ui.layout
+  ui nameplate [fade=M] [hide=M] [class=TEXT_CLASS] [style=PANEL_STYLE] | ui nameplate none
+                                  in-world name tags: default text class and panel style (a ui.nameplate's own
+                                  class / style wins), fade out from M meters, hidden beyond M (default 40)
   ui page ID panels=A,B [modal=on|off] [pause=on|off] [escape=on|off] | ui page ID none
                                   root panels shown only while the page is open (buttons: ui button W open PAGE
                                   | close [PAGE]; commands {kind:open,page} / {kind:close,page?}); modal (default on)
@@ -815,6 +818,8 @@ enum UiStatement {
     Use(String, Option<crate::ui_template::UiUse>),
     /// `ui font ID PATH license=SPDX` / `ui font ID none`.
     Font(String, Option<crate::ui_theme::UiFont>),
+    /// `ui nameplate [fade=] [hide=] [class=] [style=]` / `ui nameplate none`.
+    Nameplate(Option<crate::ui_theme::NameplateTheme>),
     /// `ui screen W H [scale=]` / `ui screen none`.
     Screen(Option<[f32; 2]>, Option<crate::ui_theme::UiScale>),
     TextClass(String, Option<crate::ui_theme::TextClass>),
@@ -1051,6 +1056,29 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                 _ => bail!("{usage}"),
             }
         }
+        "nameplate" => {
+            let usage = "use: ui nameplate [fade=METERS] [hide=METERS] [class=TEXT_CLASS] [style=PANEL_STYLE] | ui nameplate none";
+            if tokens.len() == 3 && tokens[2] == "none" {
+                UiStatement::Nameplate(None)
+            } else {
+                ensure!(tokens.len() >= 3, "{usage}");
+                let mut n = crate::ui_theme::NameplateTheme::default();
+                for (k, v) in key_values(&tokens[2..])? {
+                    let meters = |v: &str| -> Result<f32> {
+                        v.parse()
+                            .with_context(|| format!("'{v}' is not a distance in meters ({usage})"))
+                    };
+                    match k.as_str() {
+                        "fade" => n.fade_from = Some(meters(&v)?),
+                        "hide" => n.hide_beyond = Some(meters(&v)?),
+                        "class" => n.class = Some(v),
+                        "style" => n.style = Some(v),
+                        _ => bail!("unknown option '{k}' ({usage})"),
+                    }
+                }
+                UiStatement::Nameplate(Some(n))
+            }
+        }
         "screen" => {
             let usage = "use: ui screen WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | ui screen none";
             match tokens.len() {
@@ -1151,6 +1179,7 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
         }
         UiStatement::Panel(id, panel) => crate::ops::set_ui_panel(w, id, panel.clone()),
         UiStatement::Screen(reference, scale) => crate::ops::set_ui_screen(w, *reference, *scale),
+        UiStatement::Nameplate(n) => crate::ops::set_ui_nameplate(w, n.clone()),
         UiStatement::Font(id, font) => crate::ops::set_ui_font(w, id, font.clone()),
         UiStatement::Template(id, template) => {
             crate::ops::set_ui_template(w, id, template.as_deref().cloned())

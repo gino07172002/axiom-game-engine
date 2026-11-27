@@ -560,3 +560,46 @@ fn pages_show_root_panels_and_buttons_open_and_close_them() {
     }
     assert_eq!(doc(&s), raw);
 }
+
+#[test]
+fn nameplate_theme_sets_distances_and_defaults_and_checks_them() {
+    let mut s = store();
+    acl(&mut s, "ui textclass tag size=16 color=FFE0A0").unwrap();
+    acl(
+        &mut s,
+        "ui panelstyle tag_box fill=10141Ccc corner=6 padding=4",
+    )
+    .unwrap();
+    acl(
+        &mut s,
+        "ui nameplate fade=12 hide=30 class=tag style=tag_box",
+    )
+    .unwrap();
+    assert_eq!(
+        doc(&s)["theme"]["nameplate"],
+        json!({"fade_from":12.0,"hide_beyond":30.0,"class":"tag","style":"tag_box"})
+    );
+    let n: axiom_core::ui_theme::NameplateTheme =
+        serde_json::from_value(doc(&s)["theme"]["nameplate"].clone()).unwrap();
+    assert_eq!(n.opacity(10.0), 1.0);
+    assert!((n.opacity(21.0) - 0.5).abs() < 1e-6);
+    assert_eq!(n.opacity(30.5), 0.0);
+    // Without a theme: hidden beyond 40 m, no fade (the old behaviour).
+    let plain = axiom_core::ui_theme::NameplateTheme::default();
+    assert_eq!((plain.opacity(39.9), plain.opacity(40.1)), (1.0, 0.0));
+    let at = rev(&s);
+    for (text, needle) in [
+        ("ui nameplate fade=30 hide=20", "/theme/nameplate/fade_from"),
+        ("ui nameplate hide=0", "/theme/nameplate/hide_beyond"),
+        ("ui nameplate class=nope", "/theme/nameplate/class"),
+        ("ui nameplate style=nope", "/theme/nameplate/style"),
+        ("ui nameplate size=3", "unknown option 'size'"),
+        ("ui nameplate fade=far", "not a distance"),
+    ] {
+        let e = acl(&mut s, text).expect_err(text).to_string();
+        assert!(e.contains(needle), "{text}: {e}");
+    }
+    assert_eq!(rev(&s), at, "refused edits commit nothing");
+    acl(&mut s, "ui nameplate none").unwrap();
+    assert!(doc(&s)["theme"].get("nameplate").is_none());
+}

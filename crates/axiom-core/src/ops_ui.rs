@@ -701,6 +701,33 @@ pub fn set_ui_screen(
     checked_edits(put(raw))
 }
 
+/// UI Editor ▸ nameplates / ACL `ui nameplate [fade=M] [hide=M] [class=C] [style=S] | ui nameplate
+/// none` (plan N1): the default look and fade / hide distances of `ui.nameplate` tags.
+pub fn set_ui_nameplate(
+    world: &World,
+    nameplate: Option<crate::ui_theme::NameplateTheme>,
+) -> Result<Vec<Edit>> {
+    let (mut raw, _) = document(world)?;
+    let before = raw.get("theme").cloned();
+    let object = raw
+        .as_object_mut()
+        .expect("ui.document parsed as an object");
+    let theme = object.entry("theme").or_insert_with(|| json!({}));
+    if let Some(t) = theme.as_object_mut() {
+        match nameplate.filter(|n| n != &Default::default()) {
+            Some(n) => t.insert("nameplate".into(), json!(n)),
+            None => t.remove("nameplate"),
+        };
+    }
+    if theme.as_object().is_some_and(|t| t.is_empty()) {
+        object.remove("theme");
+    }
+    if raw.get("theme") == before.as_ref() {
+        return Ok(vec![]);
+    }
+    checked_edits(put(raw))
+}
+
 /// UI Editor ▸ font / ACL `ui font ID PATH license=SPDX | ui font ID none` (plan M4). Removing a
 /// font a class still uses is refused.
 pub fn set_ui_font(

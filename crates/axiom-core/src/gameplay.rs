@@ -1218,6 +1218,7 @@ impl CompiledGameplay {
                     .and_then(|d| crate::ui_template::expand(&d))
             })
             .transpose()?;
+        crate::ui_theme::validate_nameplates(w, ui.as_ref())?;
         let mut widgets = vec![];
         let mut effects = vec![];
         if let Some(u) = &ui {

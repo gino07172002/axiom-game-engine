@@ -83,6 +83,49 @@ pub struct UiTheme {
     /// How the reference screen maps to the window (default fit_height).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<UiScale>,
+    /// In-world name tags (`ui.nameplate`, plan N1): default look and distances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameplate: Option<NameplateTheme>,
+}
+
+/// Default nameplate distance without a theme: farther plates are not drawn.
+pub const NAMEPLATE_HIDE_BEYOND: f32 = 40.0;
+
+/// `theme.nameplate` (plan N1): every field optional; without it plates look as before
+/// (14 px label on a dark box, hidden beyond 40 m, no fade).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NameplateTheme {
+    /// Meters from the camera where plates start to fade out (reach 0 at `hide_beyond`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_from: Option<f32>,
+    /// Meters from the camera beyond which plates are not drawn (default 40).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_beyond: Option<f32>,
+    /// Default text class (`theme.text`) of plates without their own `class`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// Default panel style (`theme.panel`) of plates without their own `style`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+}
+impl NameplateTheme {
+    /// The distance beyond which plates are hidden.
+    pub fn hide(&self) -> f32 {
+        self.hide_beyond.unwrap_or(NAMEPLATE_HIDE_BEYOND)
+    }
+    /// Opacity 0..1 of a plate `distance` meters from the camera (0 = not drawn).
+    pub fn opacity(&self, distance: f32) -> f32 {
+        let hide = self.hide();
+        // NaN (no distance) counts as out of range.
+        if distance.is_nan() || distance > hide {
+            return 0.0;
+        }
+        match self.fade_from {
+            Some(from) if distance > from => ((hide - distance) / (hide - from)).clamp(0.0, 1.0),
+            _ => 1.0,
+        }
+    }
 }
 
 /// Panel scaling against `theme.reference`: the whole panel layer is scaled by one factor.
@@ -404,6 +447,34 @@ fn invalid(path: String, message: String) -> anyhow::Error {
 }
 const DOC: &str = "/resources/ui.document";
 
+/// `ui.nameplate` `class` / `style` (plan N1) must name a text class / panel style of the
+/// document theme; the error names the entity.
+pub fn validate_nameplates(world: &crate::World, doc: Option<&UiDocument>) -> Result<()> {
+    let theme = doc.and_then(|d| d.theme.as_ref());
+    for e in &world.entities {
+        let Some(v) = e.components.get("ui.nameplate") else {
+            continue;
+        };
+        let path = format!("/entities/{}/components/ui.nameplate", e.id);
+        for (field, kind) in [("class", "theme.text"), ("style", "theme.panel")] {
+            let Some(name) = v.get(field).and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let known = theme.is_some_and(|t| match field {
+                "class" => t.text.contains_key(name),
+                _ => t.panel.contains_key(name),
+            });
+            if !known {
+                return Err(invalid(
+                    format!("{path}/{field}"),
+                    format!("'{name}' is not in ui.document {kind}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Checks the theme and panels of `doc` against its images and widgets.
 pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
     if let Some(theme) = &doc.theme {
@@ -515,6 +586,36 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
                 _ => Ok(()),
             }
         };
+        if let Some(n) = &theme.nameplate {
+            let path = format!("{DOC}/theme/nameplate");
+            let hide = n.hide();
+            if !(hide.is_finite() && hide > 0.0 && hide <= 1000.0) {
+                return Err(invalid(
+                    format!("{path}/hide_beyond"),
+                    "hide_beyond is meters 0 < N <= 1000".into(),
+                ));
+            }
+            if let Some(from) = n.fade_from {
+                if !(from.is_finite() && from >= 0.0 && from < hide) {
+                    return Err(invalid(
+                        format!("{path}/fade_from"),
+                        format!("fade_from is meters 0..{hide} (below hide_beyond)"),
+                    ));
+                }
+            }
+            if let Some(c) = n.class.as_ref().filter(|c| !theme.text.contains_key(*c)) {
+                return Err(invalid(
+                    format!("{path}/class"),
+                    format!("text class '{c}' is not in theme.text"),
+                ));
+            }
+            if let Some(s) = n.style.as_ref().filter(|s| !theme.panel.contains_key(*s)) {
+                return Err(invalid(
+                    format!("{path}/style"),
+                    format!("panel style '{s}' is not in theme.panel"),
+                ));
+            }
+        }
         for (class, t) in &theme.text {
             font_ref(format!("{DOC}/theme/text/{class}/font"), &t.font)?;
         }

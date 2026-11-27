@@ -384,6 +384,7 @@ impl Editor {
             "ui.panel_style" => format!("panelstyle {arg}"),
             "ui.panel" => format!("panel {arg}"),
             "ui.screen" => format!("screen {arg}"),
+            "ui.nameplate" => format!("nameplate {arg}"),
             "ui.font" => format!("font {arg}"),
             "ui.page" => format!("page {arg}"),
             "ui.template" => format!("template {arg}"),
@@ -903,19 +904,16 @@ impl Editor {
             let painter = ui.painter_at(strip);
             caption_at(&painter, strip.min + Vec2::new(2.0, 6.0), "ui.nameplate");
             let mut x = strip.min.x + 92.0;
+            // Same look and label as in the game (theme class / style, locale), fully opaque.
+            let fonts_ready = crate::bound_ui::ensure_fonts(ui.ctx(), g);
             for (_, plate) in &preview.nameplates {
-                let width = painter
-                    .layout_no_wrap(
-                        plate.text.clone(),
-                        egui::FontId::proportional(14.0),
-                        Color32::WHITE,
-                    )
-                    .size()
-                    .x
-                    + 10.0;
+                let look =
+                    crate::nameplate::look(ui.ctx(), Some(g), &mut st.canvas, fonts_ready, plate);
+                let text = crate::nameplate::label(Some(g), plate);
+                let width = crate::nameplate::measure(&painter, &text, &look).x;
                 let at = Pos2::new(x + width / 2.0, strip.center().y);
-                let r = crate::nameplate::paint(&painter, at, &plate.text, plate.color);
-                self.rects.insert(format!("ui_nameplate:{}", plate.text), r);
+                let r = crate::nameplate::paint(&painter, at, &text, &look, 1.0);
+                self.rects.insert(format!("ui_nameplate:{text}"), r);
                 x += width + 8.0;
             }
         }

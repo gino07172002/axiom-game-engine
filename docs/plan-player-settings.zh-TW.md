@@ -208,3 +208,24 @@
   - 截圖看過:low 和 high 都有正常的陰影(換貼圖後 bind group 正確)。在這個距離肉眼看不太出解析度差別;解析度改變以 `observe` 為證據。
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 S4):10 個包逐位元相同(也證明 `textureDimensions` 的改動在 2048 時不影響畫面)。
 - **未驗證**:沒有量測換陰影貼圖那一幀的主執行緒時間(只有配置一張貼圖和兩個 bind group);沒有量測 4096 的 GPU 成本。
+
+### 補記 2026-11-27:N1 和 ADR-4 的差異
+
+- ADR-4 寫的是名牌的 `frame`(九宮格)。實作改成 `style`(`theme.panel` 的面板樣式:底色、圓角、padding、邊框)。
+  - 理由:名牌只有一行字,高度約 20 px。只有九宮格的話,邊距大的邊框會被壓扁,也沒辦法調 padding;面板樣式已經有這些欄位,作者也已經會用。
+- 另外加了 `theme.nameplate.class` / `style` 當預設值,不用每個名牌都寫一次。名牌自己的設定優先。
+- 名牌不跟 `theme.reference` 縮放(和以前一樣是螢幕像素),記為限制。
+
+### N1 完成(分支 `ui-v2`)
+
+- **資料**:`ui.nameplate` 加 `key`、`class`、`style`(`text` 有 `key` 時可以省略);`theme.nameplate {fade_from, hide_beyond, class, style}`。
+  - 檢查:距離 0 < hide ≤ 1000、0 ≤ fade < hide;類別和樣式要在主題裡;名牌的類別和樣式在 `Gameplay::compile` 檢查,錯誤路徑指出物件(`/entities/ID/components/ui.nameplate/class`)。
+- **編輯路徑**:`ops::set_ui_nameplate`、ACL `ui nameplate …`、編輯器命令 `ui.nameplate`、parity 步驟(`fade=12 hide=30`)、parity 表一列。名牌元件本身照舊用 Inspector / `set_field` 改。
+- **繪製**:`nameplate::look` 從類別和樣式組出外觀(字型用 `bound_ui` 同一份已安裝的字型、邊框用同一個貼圖快取);`paint` 加透明度。沒有主題時的外觀和以前相同。UI Editor 的名牌預覽用同一套函式。
+- **內容**:town 的名牌用像素字型、按鈕邊框;18 公尺開始淡出、30 公尺外不畫;主角、Lumi、Rin 的名牌改用語系鍵。
+- **測試**:core 1 個(ACL、淡出曲線、沒有主題時的 40 公尺、6 種錯誤、拒絕時不寫入修訂);runtime 2 個(語系切換和找不到鍵時的後備;類別、樣式不存在時的錯誤路徑)。
+- **GPU**(新資料庫,port 5315,debug):中文截圖是「露米 ♥」「AXI · 你」「RIN · 可麗餅」,英文是「LUMI ♥」「AXI · YOU」「RIN · CREPES」;遠處的 Nova、Rin 名牌變淡;邊框和陰影正常。stderr 沒有任何訊息。
+  - 像素字型只有大寫字母,所以英文名字顯示成大寫(對話框原本也是這樣)。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過(第一次 clippy 擋下 `!(distance <= hide)`,改成 `is_nan() || >`);`cargo test --workspace --no-fail-fast` 1163 passed / 1 failed / 7 ignored,失敗的是 `a_full_capture_queue_refuses_editor_view_before_its_edit`(database is locked,之前就記錄過的不穩定測試),單獨重跑通過;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
+  - 截圖 A/B(S2 對 N1):town 以外 9 個包逐位元相同。town 的名牌是刻意改變的,而且舊版執行檔讀不了 `theme.nameplate`,所以 town 不在 A/B 裡,改用上面的 GPU 截圖檢查。
+- **寫進使用者資料庫的順序**:town 用了舊版執行檔讀不了的欄位,必須先合併到本機 main,再寫入 `data\axiom-town.sqlite`。

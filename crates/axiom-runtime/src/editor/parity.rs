@@ -3491,6 +3491,8 @@ fn ui_theme_and_panel_commands_match_acl() {
         ),
         // Plan M3: the reference screen, and a grid panel holding the tracker panel.
         ("ui.screen", "1920 1080 scale=fit", "ui screen 1920 1080 scale=fit"),
+        // Plan N1: nameplate fade / hide distances.
+        ("ui.nameplate", "fade=12 hide=30", "ui nameplate fade=12 hide=30"),
         (
             "ui.panel",
             "hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",
