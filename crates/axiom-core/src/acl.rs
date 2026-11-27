@@ -148,7 +148,13 @@ EDIT (any number, atomic):
   ui textclass CLASS [size=N] [font=ID] [color=RRGGBB[AA]] [shadow=RRGGBB[AA]] | ui textclass CLASS none
   ui buttonclass CLASS [size=N] [font=ID] [padding=N] [STATE.frame=ID] [STATE.fill=..] [STATE.text=..] | none
                                   STATE: normal|hover|pressed|disabled (unset fields use normal)
-  ui class WIDGET CLASS|none      text widget -> text class, button -> button class (not with ui style)
+  ui progressclass CLASS [fill=RRGGBB[AA]] [track=..] [frame=ID] [height=N] [corner=N] [value=on|off] | none
+                                  progress bar look (assign with ui class PROGRESS_WIDGET CLASS)
+  ui prompt [class=TEXT_CLASS] [style=PANEL_STYLE] | ui prompt none
+                                  look of the engine's default interaction prompt
+  ui class WIDGET CLASS|none      text -> text class, button and choices -> button class, progress ->
+                                  progress class (not with ui style)
+  engine UI strings: catalog keys axiom.save, axiom.load, axiom.paused override SAVE / LOAD / PAUSED
  tuning editors (Input Map, Localization, Animation, VFX tabs; material shader source):
   input button ACTION KEY | input axis ACTION POSITIVE NEGATIVE | input remove ACTION
                                   KEY: winit names KeyW Space Digit1 ShiftLeft ArrowUp .. or MouseLeft
@@ -823,6 +829,8 @@ enum UiStatement {
     /// `ui screen W H [scale=]` / `ui screen none`.
     Screen(Option<[f32; 2]>, Option<crate::ui_theme::UiScale>),
     TextClass(String, Option<crate::ui_theme::TextClass>),
+    ProgressClass(String, Option<crate::ui_theme::ProgressClass>),
+    Prompt(Option<crate::ui_theme::PromptTheme>),
     ButtonClass(String, Option<crate::ui_theme::ButtonClass>),
     Class(String, Option<String>),
 }
@@ -963,6 +971,37 @@ fn ui_statement(tokens: &[String]) -> Result<UiStatement> {
                         &tokens[3..],
                     )?)?),
                 )
+            }
+        }
+        "progressclass" => {
+            let usage = "use: ui progressclass CLASS [fill=RRGGBB[AA]] [track=RRGGBB[AA]] [frame=ID] [height=N] [corner=N] [value=on|off] | ui progressclass CLASS none";
+            ensure!(tokens.len() >= 3, "{usage}");
+            if tokens.len() == 4 && tokens[3] == "none" {
+                UiStatement::ProgressClass(tokens[2].clone(), None)
+            } else {
+                UiStatement::ProgressClass(
+                    tokens[2].clone(),
+                    Some(crate::ui_theme::progress_class_from(&key_values(
+                        &tokens[3..],
+                    )?)?),
+                )
+            }
+        }
+        "prompt" => {
+            let usage = "use: ui prompt [class=TEXT_CLASS] [style=PANEL_STYLE] | ui prompt none";
+            if tokens.len() == 3 && tokens[2] == "none" {
+                UiStatement::Prompt(None)
+            } else {
+                ensure!(tokens.len() >= 3, "{usage}");
+                let mut p = crate::ui_theme::PromptTheme::default();
+                for (k, v) in key_values(&tokens[2..])? {
+                    match k.as_str() {
+                        "class" => p.class = Some(v),
+                        "style" => p.style = Some(v),
+                        _ => bail!("unknown option '{k}' ({usage})"),
+                    }
+                }
+                UiStatement::Prompt(Some(p))
             }
         }
         "buttonclass" => {
@@ -1189,6 +1228,10 @@ fn ui_edits(w: &World, r: &Registry, stmt: &UiStatement) -> Result<Vec<Edit>> {
         UiStatement::TextClass(class, text) => {
             crate::ops::set_ui_text_class(w, class, text.clone())
         }
+        UiStatement::ProgressClass(class, progress) => {
+            crate::ops::set_ui_progress_class(w, class, progress.clone())
+        }
+        UiStatement::Prompt(p) => crate::ops::set_ui_prompt(w, p.clone()),
         UiStatement::ButtonClass(class, button) => {
             crate::ops::set_ui_button_class(w, class, button.clone())
         }

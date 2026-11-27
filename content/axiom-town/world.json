@@ -301,7 +301,7 @@
           "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}},
         "reference":[1280,720],"nameplate":{"fade_from":18,"hide_beyond":30,"class":"plate","style":"plate"}
       },
-      "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote","pause_settings":"emote","settings_title":"speaker","settings_back":"emote","settings_invert_on":"emote","settings_invert_off":"emote","settings_window":"emote","settings_borderless":"emote","settings_fullscreen":"emote","settings_vsync_on":"emote","settings_vsync_off":"emote","settings_shadow_low":"emote","settings_shadow_medium":"emote","settings_shadow_high":"emote"},
+      "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote","pause_settings":"emote","settings_title":"speaker","settings_back":"emote","settings_invert_on":"emote","settings_invert_off":"emote","settings_window":"emote","settings_borderless":"emote","settings_fullscreen":"emote","settings_vsync_on":"emote","settings_vsync_off":"emote","settings_shadow_low":"emote","settings_shadow_medium":"emote","settings_shadow_high":"emote","choices":"emote"},
       "pages":{"pause":{"panels":["pause_menu"],"pause":true,"escape":true},"settings":{"panels":["settings_menu"],"pause":true}},
       "templates":{
         "emote_button":{"params":["name"],
@@ -333,7 +333,7 @@
           "settings_music":"音樂","settings_sfx":"音效","settings_mouse":"滑鼠靈敏度","settings_invert_on":"反轉 Y 軸","settings_invert_off":"不反轉",
           "settings_window":"視窗","settings_borderless":"無邊框","settings_fullscreen":"全螢幕","settings_vsync_on":"垂直同步","settings_vsync_off":"不同步",
           "settings_shadow_low":"陰影 低",
-          "plate_you":"Axi · 你","plate_lumi":"露米 ♥","plate_rin":"Rin · 可麗餅","settings_shadow_medium":"陰影 中","settings_shadow_high":"陰影 高",
+          "plate_you":"Axi · 你","axiom.save":"存檔","axiom.load":"讀檔","axiom.paused":"暫停中","plate_lumi":"露米 ♥","plate_rin":"Rin · 可麗餅","settings_shadow_medium":"陰影 中","settings_shadow_high":"陰影 高",
           "title":"AXIOM TOWN · 中央廣場","town":"廣場","talk_lumi":"和露米聊聊","talk_rin":"和琳說話","lumi":"露米","rin":"琳 · 可麗餅攤",
           "hub":"WASD 移動 · Z/C 轉視角 · Space 小跳 · R 揮手 · 靠近角色按 E 交談 · 1-6 表情。",
           "sit_choice":"坐下休息","stand_choice":"站起來","pickup_choice":"撿起噴泉旁的紅色髮夾",
@@ -355,7 +355,7 @@
           "settings_music":"Music","settings_sfx":"Sound effects","settings_mouse":"Mouse sensitivity","settings_invert_on":"Invert Y","settings_invert_off":"Normal Y",
           "settings_window":"Window","settings_borderless":"Borderless","settings_fullscreen":"Fullscreen","settings_vsync_on":"VSync on","settings_vsync_off":"VSync off",
           "settings_shadow_low":"Shadows low",
-          "plate_you":"Axi · you","plate_lumi":"Lumi ♥","plate_rin":"Rin · Crepes","settings_shadow_medium":"Shadows medium","settings_shadow_high":"Shadows high",
+          "plate_you":"Axi · you","axiom.save":"SAVE","axiom.load":"LOAD","axiom.paused":"PAUSED","plate_lumi":"Lumi ♥","plate_rin":"Rin · Crepes","settings_shadow_medium":"Shadows medium","settings_shadow_high":"Shadows high",
           "title":"AXIOM TOWN · Central Plaza","town":"Plaza","talk_lumi":"Talk to Lumi","talk_rin":"Talk to Rin","lumi":"Lumi","rin":"Rin · Crepe stand",
           "hub":"WASD move · Z/C orbit · Space hop · R wave · E talk when close · 1-6 emotes.",
           "sit_choice":"Sit and rest","stand_choice":"Stand up","pickup_choice":"Pick up the red hair clip by the fountain",

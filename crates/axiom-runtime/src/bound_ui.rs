@@ -197,7 +197,58 @@ pub fn draw(
             .widgets
             .iter()
             .any(|w| matches!(w, BoundWidget::Text(_, BoundText::Prompt, _)));
-        if !authored {
+        let theme = g.compiled.ui.as_ref().and_then(|d| d.theme.as_ref());
+        let themed = theme.and_then(|t| t.prompt.as_ref()).map(|p| {
+            (
+                p.class.as_ref().and_then(|c| theme?.text.get(c)),
+                p.style.as_ref().and_then(|s| theme?.panel.get(s)),
+            )
+        });
+        if let (false, Some((class, style))) = (authored, themed) {
+            let fonts_ready = ensure_fonts(ctx, g);
+            egui::Area::new(egui::Id::new("bound_prompt"))
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 110.0])
+                .interactable(false)
+                .show(ctx, |ui| {
+                    // Fill then frame behind the text, like a panel.
+                    let slot = ui.painter().add(egui::Shape::Noop);
+                    let padding = style.and_then(|s| s.padding).unwrap_or(10.0);
+                    let rect = egui::Frame::new()
+                        .inner_margin(egui::Margin::same(padding.round() as i8))
+                        .show(ui, |ui| {
+                            let text = g.prompt_text(prompt);
+                            match class {
+                                Some(class) => {
+                                    let family = font_family(g, fonts_ready, &class.font);
+                                    themed_text(ui, text, class, family);
+                                }
+                                None => {
+                                    ui.label(RichText::new(text).size(18.0).color(Color32::WHITE));
+                                }
+                            }
+                        })
+                        .response
+                        .rect;
+                    let mut background = vec![];
+                    if let Some(fill) = style.and_then(|s| s.fill) {
+                        let corner = style.and_then(|s| s.corner).unwrap_or(0.0);
+                        background.push(egui::Shape::rect_filled(rect, corner, rgba(fill)));
+                    }
+                    if let Some((frame, tex, size)) = style
+                        .and_then(|s| s.frame.as_deref())
+                        .and_then(|f| frame_texture(ui.ctx(), g, state, f))
+                    {
+                        background.push(egui::Shape::mesh(nine_slice(
+                            rect,
+                            tex,
+                            size,
+                            frame.slice,
+                            frame.center,
+                        )));
+                    }
+                    ui.painter().set(slot, egui::Shape::Vec(background));
+                });
+        } else if !authored {
             egui::Area::new(egui::Id::new("bound_prompt"))
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 110.0])
                 .interactable(false)
@@ -633,17 +684,17 @@ fn session_controls(
                 }));
             }
         }
-        if ui.button("SAVE / 存檔").clicked() {
+        if ui.button(chrome(g, "axiom.save", "SAVE / 存檔")).clicked() {
             actions.push(Action::Save);
         }
-        if ui.button("LOAD / 讀檔").clicked() {
+        if ui.button(chrome(g, "axiom.load", "LOAD / 讀檔")).clicked() {
             actions.push(Action::Load);
         }
-        ui.label(if state.playing {
-            ""
+        if state.playing {
+            ui.label("");
         } else {
-            "PAUSED / 按 RUN 繼續"
-        });
+            ui.label(chrome(g, "axiom.paused", "PAUSED / 按 RUN 繼續"));
+        }
     });
 }
 
@@ -807,7 +858,7 @@ fn draw_widgets(
                 drawn = Some(
                     ui.push_id(id, |ui| {
                         with_effects(ui, visual, |ui| {
-                            choice_buttons(ui, g, state, actions, compact)
+                            choice_buttons(ui, g, state, actions, compact, button_class(g, id))
                         })
                     })
                     .inner,
@@ -860,10 +911,15 @@ fn draw_widgets(
                                     strong,
                                 ));
                             }
-                            ui.add(
-                                egui::ProgressBar::new((value / max).clamp(0.0, 1.0) as f32)
-                                    .show_percentage(),
-                            );
+                            let fraction = (value / max).clamp(0.0, 1.0) as f32;
+                            match progress_class(g, id) {
+                                Some(class) => {
+                                    themed_progress(ui, g, state, fraction, class);
+                                }
+                                None => {
+                                    ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                                }
+                            }
                         })
                     })
                     .inner,
@@ -945,25 +1001,51 @@ fn styled(text: String, size: f32, color: Option<Color32>, strong: bool) -> Rich
     rich
 }
 
+/// An engine UI string (plan U1): the catalog's `key` (`axiom.save` …) in the current locale
+/// when the document has it, else the built-in bilingual text.
+fn chrome(g: &Gameplay, key: &str, default: &str) -> String {
+    let text = g.text(key);
+    if text == key {
+        default.to_owned()
+    } else {
+        text
+    }
+}
+
 fn choice_buttons(
     ui: &mut egui::Ui,
     g: &Gameplay,
     state: &mut UiState,
     actions: &mut Vec<Action>,
     flow: bool,
+    class: Option<&axiom_core::ui_theme::ButtonClass>,
 ) {
     for choice in g.choices() {
-        let response = ui.add_enabled(
-            state.playing && !state.console,
-            egui::Button::new(RichText::new(g.text(&choice.text)).size(18.0)).min_size(Vec2::new(
-                if flow {
-                    0.0
-                } else {
-                    ui.available_width().min(900.0)
-                },
-                38.0,
-            )),
+        let enabled = state.playing && !state.console;
+        let min = Vec2::new(
+            if flow {
+                0.0
+            } else {
+                ui.available_width().min(900.0)
+            },
+            38.0,
         );
+        let response = match class {
+            Some(class) => themed_button(
+                ui,
+                g,
+                state,
+                g.text(&choice.text),
+                class,
+                enabled,
+                min,
+                false,
+            ),
+            None => ui.add_enabled(
+                enabled,
+                egui::Button::new(RichText::new(g.text(&choice.text)).size(18.0)).min_size(min),
+            ),
+        };
         state.target(format!("choice/{}", choice.id), response.rect);
         if response.clicked() {
             actions.push(Action::Gameplay(RuntimeCommand::Choose {
@@ -1716,6 +1798,71 @@ pub(crate) fn frame_texture<'a>(
 fn text_class<'a>(g: &'a Gameplay, id: &str) -> Option<&'a axiom_core::ui_theme::TextClass> {
     let doc = g.compiled.ui.as_ref()?;
     doc.theme.as_ref()?.text.get(doc.classes.get(id)?)
+}
+
+fn progress_class<'a>(
+    g: &'a Gameplay,
+    id: &str,
+) -> Option<&'a axiom_core::ui_theme::ProgressClass> {
+    let doc = g.compiled.ui.as_ref()?;
+    doc.theme.as_ref()?.progress.get(doc.classes.get(id)?)
+}
+
+/// A progress bar in a theme progress class (plan U1): track, filled part, optional frame
+/// over both, and the percentage unless `value` is off.
+fn themed_progress(
+    ui: &mut egui::Ui,
+    g: &Gameplay,
+    state: &mut UiState,
+    fraction: f32,
+    class: &axiom_core::ui_theme::ProgressClass,
+) -> egui::Response {
+    let height = class.height.unwrap_or(18.0);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    if ui.is_rect_visible(rect) {
+        let corner = class.corner.unwrap_or(4.0);
+        let painter = ui.painter();
+        let track = class
+            .track
+            .map(rgba)
+            .unwrap_or(ui.visuals().extreme_bg_color);
+        painter.rect_filled(rect, corner, track);
+        if fraction > 0.0 {
+            let mut filled = rect;
+            filled.set_width(rect.width() * fraction);
+            let fill = class
+                .fill
+                .map(rgba)
+                .unwrap_or(ui.visuals().selection.bg_fill);
+            painter.rect_filled(filled, corner, fill);
+        }
+        if let Some((frame, tex, size)) = class
+            .frame
+            .as_deref()
+            .and_then(|f| frame_texture(ui.ctx(), g, state, f))
+        {
+            ui.painter().add(egui::Shape::mesh(nine_slice(
+                rect,
+                tex,
+                size,
+                frame.slice,
+                frame.center,
+            )));
+        }
+        if class.value != Some(false) {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("{}%", (fraction * 100.0).round() as u32),
+                egui::FontId::proportional((height * 0.7).clamp(9.0, 20.0)),
+                ui.visuals().text_color(),
+            );
+        }
+    }
+    response
 }
 
 fn button_class<'a>(g: &'a Gameplay, id: &str) -> Option<&'a axiom_core::ui_theme::ButtonClass> {

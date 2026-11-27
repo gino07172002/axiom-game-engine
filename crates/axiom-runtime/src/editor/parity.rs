@@ -3493,6 +3493,17 @@ fn ui_theme_and_panel_commands_match_acl() {
         ("ui.screen", "1920 1080 scale=fit", "ui screen 1920 1080 scale=fit"),
         // Plan N1: nameplate fade / hide distances.
         ("ui.nameplate", "fade=12 hide=30", "ui nameplate fade=12 hide=30"),
+        // Plan U1: a progress class and the prompt look.
+        (
+            "ui.progress_class",
+            "bar fill=66F5CD track=101820CC height=12 value=off",
+            "ui progressclass bar fill=66F5CD track=101820CC height=12 value=off",
+        ),
+        (
+            "ui.prompt",
+            "class=title_gold style=quest_box",
+            "ui prompt class=title_gold style=quest_box",
+        ),
         (
             "ui.panel",
             "hud top_right width=40% height=300 layout=grid columns=2 gap=4 z=3 widgets=tracker",

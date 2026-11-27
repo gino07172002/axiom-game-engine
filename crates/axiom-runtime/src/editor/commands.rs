@@ -570,6 +570,18 @@ pub(crate) const COMMANDS: &[Command] = &[
         "WIDTH HEIGHT [scale=fit_height|fit_width|fit|none] | none",
     ),
     a(
+        "ui.progress_class",
+        "UI: Progress Bar Class…",
+        "World",
+        "CLASS [fill=RRGGBB[AA]] [track=RRGGBB[AA]] [frame=ID] [height=N] [corner=N] [value=on|off] | CLASS none",
+    ),
+    a(
+        "ui.prompt",
+        "UI: Interaction Prompt Look…",
+        "World",
+        "[class=TEXT_CLASS] [style=PANEL_STYLE] | none",
+    ),
+    a(
         "ui.nameplate",
         "UI: Nameplate Look and Distances…",
         "World",
@@ -803,6 +815,8 @@ pub(crate) const CONTENT_COMMANDS: &[&str] = &[
     "ui.panel",
     "ui.screen",
     "ui.nameplate",
+    "ui.progress_class",
+    "ui.prompt",
     "ui.font",
     "ui.page",
     "ui.template",
@@ -1376,8 +1390,9 @@ impl Editor {
             }
             "ui.place" | "ui.style" | "ui.button" | "ui.slider" | "ui.effect_add"
             | "ui.effect_set" | "ui.effect_remove" | "ui.frame" | "ui.panel_style" | "ui.panel"
-            | "ui.screen" | "ui.nameplate" | "ui.font" | "ui.page" | "ui.template" | "ui.use"
-            | "ui.text_class" | "ui.button_class" | "ui.class"
+            | "ui.screen" | "ui.nameplate" | "ui.progress_class" | "ui.prompt" | "ui.font"
+            | "ui.page" | "ui.template" | "ui.use" | "ui.text_class" | "ui.button_class"
+            | "ui.class"
                 if busy =>
             {
                 Some("apply or reload the inspector draft first")

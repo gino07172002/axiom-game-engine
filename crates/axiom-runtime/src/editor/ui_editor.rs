@@ -385,6 +385,8 @@ impl Editor {
             "ui.panel" => format!("panel {arg}"),
             "ui.screen" => format!("screen {arg}"),
             "ui.nameplate" => format!("nameplate {arg}"),
+            "ui.progress_class" => format!("progressclass {arg}"),
+            "ui.prompt" => format!("prompt {arg}"),
             "ui.font" => format!("font {arg}"),
             "ui.page" => format!("page {arg}"),
             "ui.template" => format!("template {arg}"),

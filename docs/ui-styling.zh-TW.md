@@ -56,6 +56,10 @@ ui button resume close pause
 | 同一組元件用很多次 | `templates` + `uses`(`{參數}`、`{i}`、`count`) | `ui template`、`ui use` |
 | 選單、彈窗、暫停 | `pages`(modal / pause / escape)、指令 `open` / `close` | `ui page`、`ui button W open|close` |
 | 檢查排版 | `observe` 的 `ui_layout`(視窗像素、重疊、超出畫面) | — |
+| 進度條的樣子 | `theme.progress`(底色、填色、邊框、高度、圓角、要不要顯示百分比) | `ui progressclass`、`ui class 進度條 類別` |
+| 對話選項按鈕 | `classes` 裡給 choices 元件一個按鈕類別,每個選項都套用 | `ui class choices 按鈕類別` |
+| 引擎的互動提示 | `theme.prompt`(文字類別、面板樣式);文件自己有 `prompt` 綁定的文字元件時不畫 | `ui prompt` |
+| 引擎介面文字 | 語系表的 `axiom.save`、`axiom.load`、`axiom.paused` 取代 SAVE / LOAD / PAUSED | `loc set L KEY TEXT` |
 | 角色頭上的名牌 | `theme.nameplate`(預設的文字類別、面板樣式、淡出和隱藏距離);每個 `ui.nameplate` 可以有自己的 `key`、`class`、`style` | `ui nameplate` |
 
 ## 名牌

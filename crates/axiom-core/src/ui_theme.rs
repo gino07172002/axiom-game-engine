@@ -86,6 +86,46 @@ pub struct UiTheme {
     /// In-world name tags (`ui.nameplate`, plan N1): default look and distances.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nameplate: Option<NameplateTheme>,
+    /// Progress class -> look of the progress bars that use it (plan U1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub progress: BTreeMap<String, ProgressClass>,
+    /// The engine's default interaction prompt (plan U1): text class and panel style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<PromptTheme>,
+}
+
+/// Look of a progress bar (`theme.progress`, plan U1); unset fields keep the default bar.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressClass {
+    /// Filled part RGBA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    /// Empty track RGBA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<[u8; 4]>,
+    /// Theme frame drawn over the bar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+    /// Bar height, pixels 4..=64 (default 18).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// Corner radius, pixels 0..=32 (default 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner: Option<f32>,
+    /// Shows the percentage on the bar (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<bool>,
+}
+
+/// `theme.prompt` (plan U1): the default interaction prompt's text class and panel style.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PromptTheme {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 /// Default nameplate distance without a theme: farther plates are not drawn.
@@ -616,6 +656,53 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
                 ));
             }
         }
+        if theme.progress.len() > MAX_CLASSES {
+            return Err(invalid(
+                format!("{DOC}/theme/progress"),
+                format!("at most {MAX_CLASSES} progress classes"),
+            ));
+        }
+        for (class, p) in &theme.progress {
+            let path = format!("{DOC}/theme/progress/{class}");
+            valid_id(class).map_err(|e| invalid(path.clone(), e.to_string()))?;
+            if let Some(f) = p.frame.as_ref().filter(|f| !theme.frames.contains_key(*f)) {
+                return Err(invalid(
+                    format!("{path}/frame"),
+                    format!("frame '{f}' is not in theme.frames"),
+                ));
+            }
+            if let Some(h) = p.height {
+                if !(h.is_finite() && (4.0..=64.0).contains(&h)) {
+                    return Err(invalid(
+                        format!("{path}/height"),
+                        "height is 4..=64 px".into(),
+                    ));
+                }
+            }
+            if let Some(c) = p.corner {
+                if !(c.is_finite() && (0.0..=32.0).contains(&c)) {
+                    return Err(invalid(
+                        format!("{path}/corner"),
+                        "corner is 0..=32 px".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(p) = &theme.prompt {
+            let path = format!("{DOC}/theme/prompt");
+            if let Some(c) = p.class.as_ref().filter(|c| !theme.text.contains_key(*c)) {
+                return Err(invalid(
+                    format!("{path}/class"),
+                    format!("text class '{c}' is not in theme.text"),
+                ));
+            }
+            if let Some(s) = p.style.as_ref().filter(|s| !theme.panel.contains_key(*s)) {
+                return Err(invalid(
+                    format!("{path}/style"),
+                    format!("panel style '{s}' is not in theme.panel"),
+                ));
+            }
+        }
         for (class, t) in &theme.text {
             font_ref(format!("{DOC}/theme/text/{class}/font"), &t.font)?;
         }
@@ -681,20 +768,26 @@ pub fn validate(doc: &UiDocument, widgets: &BTreeSet<&str>) -> Result<()> {
             crate::gameplay::Widget::Text { .. } => {
                 theme.is_some_and(|t| t.text.contains_key(class))
             }
-            crate::gameplay::Widget::Button { .. } => {
+            // Choices: every option button takes the button class (plan U1).
+            crate::gameplay::Widget::Button { .. } | crate::gameplay::Widget::Choices { .. } => {
                 theme.is_some_and(|t| t.button.contains_key(class))
+            }
+            crate::gameplay::Widget::Progress { .. } => {
+                theme.is_some_and(|t| t.progress.contains_key(class))
             }
             _ => {
                 return Err(invalid(
                     path,
-                    format!("classes apply to text and button widgets; '{widget}' is neither"),
+                    format!(
+                        "classes apply to text, button, choices and progress widgets; '{widget}' is none of them"
+                    ),
                 ))
             }
         };
         if !found {
             return Err(invalid(
                 path,
-                format!("class '{class}' is not in theme.text / theme.button for this widget kind"),
+                format!("class '{class}' is not in theme.text / theme.button / theme.progress for this widget kind"),
             ));
         }
     }
@@ -1038,6 +1131,35 @@ pub fn text_class_from(options: &[(String, String)]) -> Result<TextClass> {
         }
     }
     Ok(t)
+}
+
+/// `ui progressclass CLASS fill=.. track=.. frame=ID height=N corner=N value=on|off` options.
+pub fn progress_class_from(options: &[(String, String)]) -> Result<ProgressClass> {
+    let mut p = ProgressClass::default();
+    for (k, v) in options {
+        let number = || -> Result<f32> {
+            v.parse()
+                .map_err(|_| anyhow::anyhow!("{k}='{v}' is not a number"))
+        };
+        match k.as_str() {
+            "fill" => p.fill = Some(parse_rgba(v)?),
+            "track" => p.track = Some(parse_rgba(v)?),
+            "frame" => p.frame = Some(v.clone()),
+            "height" => p.height = Some(number()?),
+            "corner" => p.corner = Some(number()?),
+            "value" => {
+                p.value = Some(match v.as_str() {
+                    "on" | "true" => true,
+                    "off" | "false" => false,
+                    _ => anyhow::bail!("value='{v}' must be on or off"),
+                })
+            }
+            _ => anyhow::bail!(
+                "unknown progress class option '{k}' (fill, track, frame, height, corner, value)"
+            ),
+        }
+    }
+    Ok(p)
 }
 
 /// `ui buttonclass CLASS size=N padding=N STATE.frame=ID STATE.fill=.. STATE.text=..`

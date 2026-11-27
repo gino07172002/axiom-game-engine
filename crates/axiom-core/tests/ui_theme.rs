@@ -603,3 +603,54 @@ fn nameplate_theme_sets_distances_and_defaults_and_checks_them() {
     acl(&mut s, "ui nameplate none").unwrap();
     assert!(doc(&s)["theme"].get("nameplate").is_none());
 }
+
+#[test]
+fn progress_bars_take_classes_and_the_prompt_takes_a_look() {
+    let mut w = hud();
+    let ui_doc = w.resources.get_mut("ui.document").unwrap();
+    let widgets = ui_doc["widgets"].as_array_mut().unwrap();
+    widgets.push(json!({"kind":"progress","id":"bar","variable":"coins","max":10}));
+    let mut s = Store::memory_with(Registry::core(), w).unwrap();
+    acl(&mut s, "ui frame scroll parchment 24 24 24 24").unwrap();
+    acl(
+        &mut s,
+        "ui progressclass coin_bar fill=66F5CD track=101820CC frame=scroll height=12 corner=3 value=off",
+    )
+    .unwrap();
+    acl(&mut s, "ui class bar coin_bar").unwrap();
+    acl(&mut s, "ui textclass hint size=20 color=FFFFFF").unwrap();
+    acl(&mut s, "ui panelstyle hint_box fill=000000AA padding=12").unwrap();
+    acl(&mut s, "ui prompt class=hint style=hint_box").unwrap();
+    let d = doc(&s);
+    assert_eq!(
+        d["theme"]["progress"]["coin_bar"],
+        json!({"fill":[102,245,205,255],"track":[16,24,32,204],"frame":"scroll","height":12.0,"corner":3.0,"value":false})
+    );
+    assert_eq!(d["classes"]["bar"], "coin_bar");
+    assert_eq!(
+        d["theme"]["prompt"],
+        json!({"class":"hint","style":"hint_box"})
+    );
+    let at = rev(&s);
+    for (text, needle) in [
+        (
+            "ui progressclass big height=200",
+            "/theme/progress/big/height",
+        ),
+        ("ui progressclass x frame=nope", "/theme/progress/x/frame"),
+        ("ui progressclass x value=maybe", "on or off"),
+        ("ui progressclass x glow=1", "unknown progress class option"),
+        // A progress widget takes a progress class, not a text class.
+        ("ui class bar hint", "/classes/bar"),
+        ("ui prompt class=nope", "/theme/prompt/class"),
+        ("ui prompt style=nope", "/theme/prompt/style"),
+        // A class still in use cannot be removed.
+        ("ui progressclass coin_bar none", "/classes/bar"),
+    ] {
+        let e = acl(&mut s, text).expect_err(text).to_string();
+        assert!(e.contains(needle), "{text}: {e}");
+    }
+    assert_eq!(rev(&s), at, "refused edits commit nothing");
+    acl(&mut s, "ui prompt none").unwrap();
+    assert!(doc(&s)["theme"].get("prompt").is_none());
+}

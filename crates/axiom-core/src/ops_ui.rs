@@ -802,6 +802,49 @@ pub fn set_ui_use(
 }
 
 /// UI Editor ▸ text class / ACL `ui textclass CLASS [size=] [color=] [shadow=] | none` (plan M2).
+/// UI Editor ▸ progress class / ACL `ui progressclass CLASS … | ui progressclass CLASS none`
+/// (plan U1). Removing a class a progress widget still uses is refused.
+pub fn set_ui_progress_class(
+    world: &World,
+    class: &str,
+    progress: Option<crate::ui_theme::ProgressClass>,
+) -> Result<Vec<Edit>> {
+    let (raw, _) = document(world)?;
+    checked_edits(theme_entry(
+        raw,
+        "progress",
+        class,
+        progress.map(|p| json!(p)),
+    ))
+}
+
+/// UI Editor ▸ prompt / ACL `ui prompt [class=C] [style=S] | ui prompt none` (plan U1): the look
+/// of the engine's default interaction prompt.
+pub fn set_ui_prompt(
+    world: &World,
+    prompt: Option<crate::ui_theme::PromptTheme>,
+) -> Result<Vec<Edit>> {
+    let (mut raw, _) = document(world)?;
+    let before = raw.get("theme").cloned();
+    let object = raw
+        .as_object_mut()
+        .expect("ui.document parsed as an object");
+    let theme = object.entry("theme").or_insert_with(|| json!({}));
+    if let Some(t) = theme.as_object_mut() {
+        match prompt.filter(|p| p != &Default::default()) {
+            Some(p) => t.insert("prompt".into(), json!(p)),
+            None => t.remove("prompt"),
+        };
+    }
+    if theme.as_object().is_some_and(|t| t.is_empty()) {
+        object.remove("theme");
+    }
+    if raw.get("theme") == before.as_ref() {
+        return Ok(vec![]);
+    }
+    checked_edits(put(raw))
+}
+
 pub fn set_ui_text_class(
     world: &World,
     class: &str,

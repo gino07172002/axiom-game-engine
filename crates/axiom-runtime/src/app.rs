@@ -6528,7 +6528,9 @@ mod tests {
     /// before its edit: no write is queued, and revision and entity count stay.
     #[test]
     fn a_full_capture_queue_refuses_editor_view_before_its_edit() {
-        let mut app = writer_app("capture-full.sqlite", None);
+        // Its own file: a_full_capture_queue_refuses_editor_view_before_its_command runs in
+        // parallel in the same process and folder ("database is locked" when they shared one).
+        let mut app = writer_app("capture-full-edit.sqlite", None);
         let base = app.editor.as_ref().unwrap().rev;
         let entities = app.editor.as_ref().unwrap().world.entities.len();
         let dir = std::env::temp_dir().join(format!("axiom-r2c-shots-{}", std::process::id()));

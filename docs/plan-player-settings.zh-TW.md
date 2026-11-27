@@ -229,3 +229,33 @@
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過(第一次 clippy 擋下 `!(distance <= hide)`,改成 `is_nan() || >`);`cargo test --workspace --no-fail-fast` 1163 passed / 1 failed / 7 ignored,失敗的是 `a_full_capture_queue_refuses_editor_view_before_its_edit`(database is locked,之前就記錄過的不穩定測試),單獨重跑通過;editor smoke 通過、world 和 street parity 結果一致、M0 PASS。
   - 截圖 A/B(S2 對 N1):town 以外 9 個包逐位元相同。town 的名牌是刻意改變的,而且舊版執行檔讀不了 `theme.nameplate`,所以 town 不在 A/B 裡,改用上面的 GPU 截圖檢查。
 - **寫進使用者資料庫的順序**:town 用了舊版執行檔讀不了的欄位,必須先合併到本機 main,再寫入 `data\axiom-town.sqlite`。
+
+### 補記 2026-11-27:U1 和 ADR-5 的差異
+
+- 互動提示:ADR-5 寫的是保留類別名稱 `axiom.prompt`。實作改成 `theme.prompt {class, style}`,和 N1 的 `theme.nameplate` 同一種寫法。
+  - 理由:保留名稱可能和作者自己的類別撞名;另外類別 ID 規則不一定允許點號。
+- 進度條:ADR-5 列了 `vertical`(直的進度條)。這次沒做,記為之後再做;其他欄位(fill、track、frame、height、corner、value)都有。
+- 引擎介面文字只做了 SAVE、LOAD、PAUSED 三個(`axiom.save`、`axiom.load`、`axiom.paused`)。開發用的「AXIOM / NARRATIVE」標籤只在開發模式出現,不做。
+- 發現:town 和 street 都用自己的 `prompt` 文字元件,引擎預設的提示在這兩個包裡都不會畫。所以 town 沒有寫 `theme.prompt`,改用 runtime 測試驗證。
+
+### U1 完成(分支 `ui-v2`)
+
+- **資料**:`theme.progress`(進度條類別)、`theme.prompt`;`classes` 允許 choices(按鈕類別)和 progress(進度條類別),種類不對時錯誤路徑是 `/classes/元件`。
+- **編輯路徑**:`ops::set_ui_progress_class`、`ops::set_ui_prompt`;ACL `ui progressclass`、`ui prompt`;編輯器命令 `ui.progress_class`、`ui.prompt`;parity 兩個步驟;parity 表兩列。`ui.document` 的 schema 文字也更新了。
+- **繪製**:
+  - 選項按鈕有類別時用 `themed_button`(和一般按鈕同一個函式);
+  - 進度條有類別時自己畫(底色、填色、邊框、百分比);
+  - 提示有 `theme.prompt` 時用文字類別和面板樣式(底色和邊框畫在文字後面);
+  - 引擎文字用 `chrome()`:語系表有這個鍵就用,沒有就用原本的雙語文字。
+  - 沒有這些設定時都走原本的程式碼。
+- **內容**:town 的對話選項用 emote 按鈕,語系表加了 `axiom.save` / `axiom.load` / `axiom.paused`。
+  - 原本也給好感度進度條一個類別。但多個編輯器測試和 town 的 UI 效果 scenario 會替 `affection` 加文字樣式(樣式和類別只能擇一),所以 town 不放進度條類別,進度條類別由 core 測試驗證。
+- **測試**:core 1 個(進度條類別、提示、9 種錯誤、使用中的類別不能刪);runtime 2 個(選項只接受按鈕類別;street 拿掉自己的提示元件後,引擎提示畫出面板樣式的底色和文字類別的顏色)。
+- **GPU**(新資料庫,port 5316,debug):
+  - 中文版的工作列是「存檔 / 讀檔」,沒按 RUN 時是「暫停中」;英文版是 SAVE / LOAD。
+  - 和 Lumi 對話時五個選項用 emote 按鈕的樣子。
+  - stderr 沒有任何訊息。
+- **未驗證**:進度條類別沒有在 GPU 截圖裡看到(town 不再使用;只有 core 測試和 parity 驗證資料和 ACL)。
+- **順便修掉的不穩定測試**:`a_full_capture_queue_refuses_editor_view_before_its_edit` 和 `…_before_its_command` 用同一個資料庫檔名 `capture-full.sqlite`,同一個行程平行執行時互相刪檔、鎖檔("database is locked")。只跑這兩個時重現失敗;改成各自的檔名後一起跑 4 次都通過。之前 N1 和更早的 gate 記錄的不穩定失敗就是這個原因。
+- **測試期望的更新**(內容刻意改變):`ui_panels.rs` 找對話框邊框時多加「高度 > 120」(選項按鈕現在也有邊框,但很矮);工作列文字改成 town 自己的「存檔 / 讀檔」。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1167 passed / 0 failed / 7 ignored(第一次 7 個失敗,原因和修正見上面);editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 U1):town 以外 9 個包逐位元相同。
