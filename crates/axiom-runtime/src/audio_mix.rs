@@ -61,6 +61,8 @@ pub struct VoiceParams {
     pub left: f32,
     pub right: f32,
     pub looping: bool,
+    /// Follows the music volume (else the sound-effect volume).
+    pub music: bool,
 }
 
 impl VoiceParams {
@@ -101,7 +103,7 @@ impl SharedVoices {
                 v.pitch.to_bits(),
                 v.left.to_bits(),
                 v.right.to_bits(),
-                u32::from(v.looping),
+                u32::from(v.looping) | (u32::from(v.music) << 1),
             ];
             for (a, x) in w.iter().zip(values) {
                 a.store(x, Ordering::Relaxed);
@@ -129,7 +131,8 @@ impl SharedVoices {
                     pitch: f32::from_bits(x[4]),
                     left: f32::from_bits(x[5]),
                     right: f32::from_bits(x[6]),
-                    looping: x[7] != 0,
+                    looping: x[7] & 1 != 0,
+                    music: x[7] & 2 != 0,
                 };
             }
             fence(Ordering::Acquire);
@@ -181,6 +184,7 @@ struct MixVoice {
     left: f32,
     right: f32,
     live: bool,
+    music: bool,
 }
 
 /// Counters of the mixer (read by the audio thread's owner).
@@ -208,9 +212,16 @@ pub struct Mixer {
     voiced_tokens: Tokens,
     shot_tokens: Tokens,
     scratch: Box<[f32; 2 * MAX_FRAMES]>,
-    /// Master gain now and the one it ramps to across the next buffer (player setting).
+    /// Music voices mix here (their own volume), sound effects and cues in `scratch`.
+    music_scratch: Box<[f32; 2 * MAX_FRAMES]>,
+    /// Master / music / sound-effect gains now and the ones they ramp to across the next
+    /// buffer (player settings).
     master: f32,
     master_target: f32,
+    music: f32,
+    music_target: f32,
+    sfx: f32,
+    sfx_target: f32,
     pub stats: MixStats,
 }
 
@@ -227,8 +238,13 @@ impl Default for Mixer {
             voiced_tokens: Tokens::default(),
             shot_tokens: Tokens::default(),
             scratch: Box::new([0.0; 2 * MAX_FRAMES]),
+            music_scratch: Box::new([0.0; 2 * MAX_FRAMES]),
             master: 1.0,
             master_target: 1.0,
+            music: 1.0,
+            music_target: 1.0,
+            sfx: 1.0,
+            sfx_target: 1.0,
             stats: MixStats::default(),
         }
     }
@@ -279,6 +295,11 @@ impl Mixer {
     /// The master gain (0..1) the next buffer ramps to.
     pub fn set_master(&mut self, gain: f32) {
         self.master_target = gain.clamp(0.0, 1.0);
+    }
+    /// The music and sound-effect gains (0..1) the next buffer ramps to.
+    pub fn set_buses(&mut self, music: f32, sfx: f32) {
+        self.music_target = music.clamp(0.0, 1.0);
+        self.sfx_target = sfx.clamp(0.0, 1.0);
     }
     /// Replaces the voice block (from `SharedVoices::read` or a test).
     pub fn set_params(&mut self, params: &[VoiceParams; MAX_VOICES]) {
@@ -333,6 +354,7 @@ impl Mixer {
             left: p.left,
             right: p.right,
             live: true,
+            music: p.music,
         };
     }
     /// A finished cue buffer to drop off the audio thread (call until `None`).
@@ -350,6 +372,8 @@ impl Mixer {
         let frames = (out.len() / 2).min(MAX_FRAMES);
         let mix = &mut self.scratch[..frames * 2];
         mix.fill(0.0);
+        let music = &mut self.music_scratch[..frames * 2];
+        music.fill(0.0);
         let mut voiced = 0;
         let table = self.table.as_deref();
         for (p, v) in self.params.iter().zip(self.voices.iter_mut()) {
@@ -382,12 +406,14 @@ impl Mixer {
                         left: 0.0,
                         right: 0.0,
                         live: pos < len && !shot,
+                        music: p.music,
                     };
                     target = (p.left, p.right);
                 }
             } else if wants {
                 v.pitch = p.pitch;
                 v.looping = p.looping;
+                v.music = p.music;
                 target = (p.left, p.right);
             }
             if !v.live {
@@ -397,7 +423,8 @@ impl Mixer {
                 v.live = false;
                 continue;
             };
-            mix_voice(v, pcm, mix, target);
+            let into = if v.music { &mut *music } else { &mut *mix };
+            mix_voice(v, pcm, into, target);
             voiced += 1;
             if !wants {
                 // Faded out across this buffer.
@@ -407,7 +434,10 @@ impl Mixer {
         }
         for v in self.shots.iter_mut().filter(|v| v.live) {
             match table.and_then(|t| t.get(v.clip)) {
-                Some(pcm) => mix_voice(v, pcm, mix, (v.left, v.right)),
+                Some(pcm) => {
+                    let into = if v.music { &mut *music } else { &mut *mix };
+                    mix_voice(v, pcm, into, (v.left, v.right))
+                }
                 None => v.live = false,
             }
         }
@@ -423,19 +453,25 @@ impl Mixer {
                 *at += 1;
             }
         }
-        // Master gain, ramped across the buffer so a change never clicks.
-        let (from, to) = (self.master, self.master_target);
-        let step = (to - from) / frames.max(1) as f32;
-        for (i, (o, m)) in out.iter_mut().zip(mix.iter()).enumerate() {
-            let gain = from + step * (i / 2) as f32;
-            let x = (m * gain * 32768.0).round();
+        // Player volumes, each ramped across the buffer so a change never clicks:
+        // (sound effects + music) x master.
+        let n = frames.max(1) as f32;
+        let ramp = |from: f32, to: f32| (from, (to - from) / n);
+        let (m0, dm) = ramp(self.master, self.master_target);
+        let (u0, du) = ramp(self.music, self.music_target);
+        let (s0, ds) = ramp(self.sfx, self.sfx_target);
+        for (i, ((o, m), u)) in out.iter_mut().zip(mix.iter()).zip(music.iter()).enumerate() {
+            let f = (i / 2) as f32;
+            let x = ((m * (s0 + ds * f) + u * (u0 + du * f)) * (m0 + dm * f) * 32768.0).round();
             if !(-32768.0..=32767.0).contains(&x) {
                 self.stats.clipped_samples += 1;
             }
             *o = x.clamp(-32768.0, 32767.0) as i16;
         }
         out[frames * 2..].fill(0);
-        self.master = to;
+        self.master = self.master_target;
+        self.music = self.music_target;
+        self.sfx = self.sfx_target;
         self.stats.voices = voiced;
         self.stats.renders += 1;
     }
@@ -457,7 +493,54 @@ mod tests {
             left,
             right,
             looping: true,
+            music: false,
         }
+    }
+
+    /// Plan S2: music voices follow the music volume, sound effects the sfx volume, both
+    /// times the master volume; each change ramps across one buffer.
+    #[test]
+    fn music_and_sound_effect_voices_follow_their_own_volume() {
+        let render = |music: f32, sfx: f32| -> (i16, i16) {
+            let mut m = Mixer::default();
+            m.set_clips(table(vec![10_000; 4096]));
+            let mut block = [VoiceParams::default(); MAX_VOICES];
+            block[0] = voice(0.5, 0.5, 1);
+            block[1] = VoiceParams {
+                music: true,
+                ..voice(0.25, 0.25, 2)
+            };
+            m.set_params(&block);
+            m.set_buses(music, sfx);
+            let mut out = vec![0i16; 512];
+            for _ in 0..3 {
+                m.render(&mut out);
+            }
+            (out[0], out[511])
+        };
+        let both = render(1.0, 1.0);
+        let sfx_only = render(0.0, 1.0);
+        let music_only = render(1.0, 0.0);
+        // 10000 x 0.5 (sfx voice) and 10000 x 0.25 (music voice).
+        assert_eq!(sfx_only, (5000, 5000), "{sfx_only:?}");
+        assert_eq!(music_only, (2500, 2500), "{music_only:?}");
+        assert_eq!(both, (7500, 7500), "{both:?}");
+        assert_eq!(render(0.0, 0.0), (0, 0));
+    }
+
+    #[test]
+    fn the_music_flag_survives_the_voice_block() {
+        let shared = SharedVoices::default();
+        let mut block = [VoiceParams::default(); MAX_VOICES];
+        block[1] = VoiceParams {
+            music: true,
+            looping: false,
+            ..voice(0.3, 0.3, 4)
+        };
+        shared.publish(&block);
+        let mut out = [VoiceParams::default(); MAX_VOICES];
+        assert!(shared.read(&mut out));
+        assert!(out[1].music && !out[1].looping);
     }
 
     #[test]

@@ -1260,6 +1260,7 @@ fn audio_verbs_match_the_ops_and_report_structured_errors() {
         min_distance: Some(2.0),
         max_distance: Some(40.0),
         rolloff: Some(Rolloff::Linear),
+        bus: None,
     };
     let expected = ops::add_audio_source(&clips, &["car".to_owned()], &options).unwrap();
     let car = after(

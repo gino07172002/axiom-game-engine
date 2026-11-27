@@ -152,3 +152,18 @@
 - **主機驗收**(GPU,新資料庫,1920×1080):開始時 `settings.audio.master` 和 `audio.output.master` 都是 0.8(作者預設);bridge 送 `setting audio.master 0.35` 後兩者都是 0.35,設定檔 `settings/axiom-town.json` 寫入;關掉重開後仍是 0.35;設定頁截圖看過。
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1157 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(`3df41f5` 對 S1):9 個內容沒變的包逐位元相同。
 - **未驗證**:沒有實際聽聲音(驗證的是送進音訊執行緒的增益);設定檔寫入的執行緒是分離的(很小的檔案,沒有在關閉時等待它)。
+
+### 補記 2026-11-27:S2 和 ADR-3 的差異
+
+- 滑鼠靈敏度和 Y 反轉只作用在「捕捉滑鼠的視角」(`mouse_look`,動作遊戲與 FPS 的轉視角)。`camera.follow` 的拖曳環繞是在模擬裡用畫面上的絕對位置換算角度,若在主機套用會破壞重播的確定性;這條路徑維持原樣,記為限制。
+
+### S2 完成(分支 `ui-v2`)
+
+- **分軌**:`audio.source.bus`(`sfx` 預設、不寫出;`music`);ACL `audio SEL source … bus=sfx|music`、編輯器「加音源」對話框的 Volume bus 欄位,同一個 `ops::AudioSourceOptions`(既有的對話框 parity 測試照樣通過)。
+- **混音**:`VoiceParams.music`(和 looping 一起打包在同一個字,8 個字不變);音樂聲道混進第二個暫存區(建立時配置一次);最後輸出 =(音效 × 音效音量 + 音樂 × 音樂音量)× 總音量,三個增益都在一個緩衝區內漸變;提示音和單發音效算音效;`observe` 的 `audio.output.music` / `sfx`。
+- **滑鼠**:`look_delta`(靈敏度乘上 dx、dy,反轉只翻 dy)在 `App::mouse_look` 套用,在模擬和錄製之前,重播不需要知道設定。
+- **內容**:town 的設定頁加音樂、音效、滑鼠靈敏度三條滑桿和「反轉 Y 軸 / 不反轉」兩個按鈕(`invert_row` 子面板)。
+- **測試**:混音 2 個(音樂只跟音樂音量、音效只跟音效音量,0.5 / 0.25 的聲道得到 5000 / 2500 / 7500;旗標經過共享區塊後還在)、`look_delta` 1 個、core 1 個(`bus` 預設不寫出、`music` 來回、錯誤的值被擋、ACL 的錯誤訊息)。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored(第一次因為 `tests/ops.rs` 的 `AudioSourceOptions` 少了 `bus` 沒編過,補上後重跑);editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(`3df41f5` 對 S2):9 個包逐位元相同。
+- **GPU**(新資料庫,1920×1080):bridge 送音樂 0.2、音效 0.6、靈敏度 1.7、反轉 Y;`observe` 的 `settings` 和 `audio.output`(music 0.2、sfx 0.6)一致,設定檔寫入;設定頁截圖看過(四條滑桿的值、反轉按鈕、返回)。
+- **未驗證**:沒有實際聽聲音;滑鼠靈敏度只用單元測試驗證(GPU 腳本無法移動實體滑鼠)。

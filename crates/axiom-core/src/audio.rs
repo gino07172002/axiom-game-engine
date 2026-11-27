@@ -435,6 +435,18 @@ pub enum Rolloff {
 fn default_max_distance() -> f32 {
     30.0
 }
+
+/// Which player volume a source follows (`audio.music` or `audio.sfx`, plan S2).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioBus {
+    #[default]
+    Sfx,
+    Music,
+}
+fn is_sfx(b: &AudioBus) -> bool {
+    *b == AudioBus::Sfx
+}
 fn yes() -> bool {
     true
 }
@@ -469,6 +481,9 @@ pub struct AudioSource {
     pub priority: i32,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Player volume it follows; sfx (default) or music.
+    #[serde(default, skip_serializing_if = "is_sfx")]
+    pub bus: AudioBus,
 }
 
 impl AudioSource {
@@ -485,6 +500,7 @@ impl AudioSource {
             rolloff: Rolloff::Inverse,
             priority: 0,
             enabled: true,
+            bus: AudioBus::Sfx,
         }
     }
     pub fn validate(&self) -> Result<()> {

@@ -301,7 +301,7 @@
           "pressed":{"frame":"btn_pressed","text":[255,255,255,255]},"disabled":{"text":[150,140,130,255]}}},
         "reference":[1280,720]
       },
-      "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote","pause_settings":"emote","settings_title":"speaker","settings_back":"emote"},
+      "classes":{"title":"tracker_title","speaker":"speaker","line":"dialog_line","pause_title":"speaker","pause_resume":"emote","pause_en":"emote","pause_zh":"emote","pause_settings":"emote","settings_title":"speaker","settings_back":"emote","settings_invert_on":"emote","settings_invert_off":"emote"},
       "pages":{"pause":{"panels":["pause_menu"],"pause":true,"escape":true},"settings":{"panels":["settings_menu"],"pause":true}},
       "templates":{
         "emote_button":{"params":["name"],
@@ -320,12 +320,14 @@
         {"id":"dialog","anchor":"bottom","offset":[0,-14],"width":900,"style":"dialog","children":["speaker","line","choices"]},
         {"id":"emotes","anchor":"right","offset":[-12,-60],"style":"hud","layout":"grid","columns":3,"gap":8,"children":[]},
         {"id":"pause_menu","anchor":"center","width":360,"style":"dialog","gap":12,"children":["pause_title","pause_resume","pause_settings","pause_en","pause_zh"]},
-        {"id":"settings_menu","anchor":"center","width":420,"style":"dialog","gap":12,"children":["settings_title","settings_master","settings_back"]}
+        {"id":"settings_menu","anchor":"center","width":420,"style":"dialog","gap":12,"children":["settings_title","settings_master","settings_music","settings_sfx","settings_mouse","invert_row","settings_back"]},
+        {"id":"invert_row","anchor":"center","layout":"row","gap":8,"children":["settings_invert_on","settings_invert_off"]}
       ],
       "catalogs":{
         "zh-TW":{
           "pause_title":"暫停","pause_resume":"繼續遊戲","pause_en":"英文 English","pause_zh":"中文",
           "pause_settings":"設定","settings_title":"設定","settings_master":"總音量","settings_back":"返回",
+          "settings_music":"音樂","settings_sfx":"音效","settings_mouse":"滑鼠靈敏度","settings_invert_on":"反轉 Y 軸","settings_invert_off":"不反轉",
           "title":"AXIOM TOWN · 中央廣場","town":"廣場","talk_lumi":"和露米聊聊","talk_rin":"和琳說話","lumi":"露米","rin":"琳 · 可麗餅攤",
           "hub":"WASD 移動 · Z/C 轉視角 · Space 小跳 · R 揮手 · 靠近角色按 E 交談 · 1-6 表情。",
           "sit_choice":"坐下休息","stand_choice":"站起來","pickup_choice":"撿起噴泉旁的紅色髮夾",
@@ -344,6 +346,7 @@
         "en":{
           "pause_title":"PAUSED","pause_resume":"Resume","pause_en":"English","pause_zh":"Chinese 中文",
           "pause_settings":"Settings","settings_title":"SETTINGS","settings_master":"Master volume","settings_back":"Back",
+          "settings_music":"Music","settings_sfx":"Sound effects","settings_mouse":"Mouse sensitivity","settings_invert_on":"Invert Y","settings_invert_off":"Normal Y",
           "title":"AXIOM TOWN · Central Plaza","town":"Plaza","talk_lumi":"Talk to Lumi","talk_rin":"Talk to Rin","lumi":"Lumi","rin":"Rin · Crepe stand",
           "hub":"WASD move · Z/C orbit · Space hop · R wave · E talk when close · 1-6 emotes.",
           "sit_choice":"Sit and rest","stand_choice":"Stand up","pickup_choice":"Pick up the red hair clip by the fountain",
@@ -377,6 +380,11 @@
         {"kind":"button","id":"pause_settings","text":"pause_settings","command":{"kind":"open","page":"settings"}},
         {"kind":"text","id":"settings_title","binding":{"kind":"key","id":"settings_title"}},
         {"kind":"slider","id":"settings_master","text":"settings_master","min":0,"max":1,"step":0.05,"command":{"kind":"setting","key":"audio.master"}},
+        {"kind":"slider","id":"settings_music","text":"settings_music","min":0,"max":1,"step":0.05,"command":{"kind":"setting","key":"audio.music"}},
+        {"kind":"slider","id":"settings_sfx","text":"settings_sfx","min":0,"max":1,"step":0.05,"command":{"kind":"setting","key":"audio.sfx"}},
+        {"kind":"slider","id":"settings_mouse","text":"settings_mouse","min":0.1,"max":3,"step":0.1,"command":{"kind":"setting","key":"mouse.sensitivity"}},
+        {"kind":"button","id":"settings_invert_on","text":"settings_invert_on","command":{"kind":"setting","key":"mouse.invert_y","value":true}},
+        {"kind":"button","id":"settings_invert_off","text":"settings_invert_off","command":{"kind":"setting","key":"mouse.invert_y","value":false}},
         {"kind":"button","id":"settings_back","text":"settings_back","command":{"kind":"close","page":"settings"}}
       ]
     }

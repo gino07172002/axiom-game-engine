@@ -111,3 +111,22 @@ fn acl_sets_author_defaults_and_removing_the_last_one_removes_the_resource() {
         "the resource goes with its last default"
     );
 }
+
+/// Plan S2: an audio source follows the music or the sound-effect volume; `sfx` is the
+/// default and is not written (existing content keeps its exact form).
+#[test]
+fn audio_sources_pick_a_volume_bus() {
+    use axiom_core::audio::{AudioBus, AudioSource};
+    let plain: AudioSource = serde_json::from_value(json!({"clip": "fountain"})).unwrap();
+    assert_eq!(plain.bus, AudioBus::Sfx);
+    assert!(serde_json::to_value(&plain).unwrap().get("bus").is_none());
+    let music: AudioSource =
+        serde_json::from_value(json!({"clip": "theme", "bus": "music"})).unwrap();
+    assert_eq!(music.bus, AudioBus::Music);
+    assert_eq!(serde_json::to_value(&music).unwrap()["bus"], "music");
+    assert!(serde_json::from_value::<AudioSource>(json!({"clip": "x", "bus": "voice"})).is_err());
+    // The ACL option is checked before anything is looked up.
+    let mut s = Store::memory_with(Registry::core(), world()).unwrap();
+    let e = acl(&mut s, "audio obj source bus=voice").expect_err("bad bus");
+    assert!(e.to_string().contains("bus must be sfx or music"), "{e}");
+}

@@ -2071,8 +2071,15 @@ fn audio(tokens: &[String]) -> Result<Statement> {
                             other => bail!("rolloff must be inverse or linear, got '{other}'"),
                         })
                     }
+                    "bus" => {
+                        o.bus = Some(match v {
+                            "sfx" => crate::audio::AudioBus::Sfx,
+                            "music" => crate::audio::AudioBus::Music,
+                            other => bail!("bus must be sfx or music, got '{other}'"),
+                        })
+                    }
                     other => bail!(
-                        "unknown option '{other}' (use clip, volume, loop, autoplay, spatial, min, max, rolloff)"
+                        "unknown option '{other}' (use clip, volume, loop, autoplay, spatial, min, max, rolloff, bus)"
                     ),
                 }
             }

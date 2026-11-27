@@ -196,6 +196,7 @@ impl OptionsDialog {
                             Choice(&["inverse", "linear"]),
                             "inverse",
                         ),
+                        Field::new("bus", "Volume bus", Choice(&["sfx", "music"]), "sfx"),
                     ],
                 )
             }
@@ -626,6 +627,10 @@ impl OptionsDialog {
                     min_distance: self.number("min")?,
                     max_distance: self.number("max")?,
                     rolloff,
+                    bus: self.text("bus").map(|b| match b.as_str() {
+                        "music" => axiom_core::audio::AudioBus::Music,
+                        _ => axiom_core::audio::AudioBus::Sfx,
+                    }),
                 };
                 editor.add_audio_source(&options)
             }

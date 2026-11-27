@@ -724,6 +724,7 @@ impl RuntimeSystem for AudioSpatialSystem {
                                     left: s.left,
                                     right: s.right,
                                     looping: false,
+                                    music: s.def.bus == axiom_core::audio::AudioBus::Music,
                                 },
                             ));
                         }
@@ -809,6 +810,7 @@ impl RuntimeSystem for AudioSpatialSystem {
                 left: s.left,
                 right: s.right,
                 looping: s.def.looping,
+                music: s.def.bus == axiom_core::audio::AudioBus::Music,
             };
         }
     }

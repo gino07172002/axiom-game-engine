@@ -268,6 +268,28 @@ impl BehaviorOverlay {
 /// game area as its screen, pointer events only while `pointer`, keyboard and text only while
 /// `keyboard` (never Esc, which gives the keyboard back to the editor). `left` adds a
 /// `PointerGone` when the pointer just left the game.
+/// Raw mouse-look motion after the player's sensitivity and Y inversion (plan S2).
+pub(crate) fn look_delta(
+    settings: &axiom_core::settings::PlayerSettings,
+    dx: f32,
+    dy: f32,
+) -> (f32, f32) {
+    let flip = if settings.invert_y { -1.0 } else { 1.0 };
+    (dx * settings.sensitivity, dy * settings.sensitivity * flip)
+}
+
+#[cfg(test)]
+mod look_tests {
+    #[test]
+    fn sensitivity_scales_and_invert_flips_only_y() {
+        let mut s = axiom_core::settings::PlayerSettings::default();
+        assert_eq!(super::look_delta(&s, 4.0, -2.0), (4.0, -2.0));
+        s.sensitivity = 2.5;
+        s.invert_y = true;
+        assert_eq!(super::look_delta(&s, 4.0, -2.0), (10.0, 5.0));
+    }
+}
+
 pub(crate) fn game_raw_input(
     mut raw: egui::RawInput,
     rect: egui::Rect,
@@ -1853,7 +1875,8 @@ impl App {
         let (settings, rev) = self.runtime.player_settings();
         let settings = *settings;
         if rev != self.settings_applied {
-            self.audio.set_master(settings.master);
+            self.audio
+                .set_volumes(settings.master, settings.music, settings.sfx);
             self.settings_applied = rev;
         }
         if rev != self.settings_written {
@@ -1973,7 +1996,10 @@ impl App {
     }
 
     /// Raw mouse motion while the pointer is captured (mouse-look), recorded as it applies.
+    /// The player's sensitivity and Y inversion (plan S2) apply here, before the simulation
+    /// and the recorder, so a replay needs no settings.
     fn mouse_look(&mut self, dx: f32, dy: f32) {
+        let (dx, dy) = look_delta(self.runtime.player_settings().0, dx, dy);
         self.runtime.pointer(dx, dy);
         if let Some(recorder) = self.recorder() {
             recorder.look(dx, dy);

@@ -1828,6 +1828,7 @@ pub struct AudioSourceOptions {
     pub min_distance: Option<f32>,
     pub max_distance: Option<f32>,
     pub rolloff: Option<crate::audio::Rolloff>,
+    pub bus: Option<crate::audio::AudioBus>,
 }
 
 /// The authored `audio.library` (empty when the world has none).
@@ -2022,6 +2023,7 @@ pub fn add_audio_source(
     source.min_distance = options.min_distance.unwrap_or(source.min_distance);
     source.max_distance = options.max_distance.unwrap_or(source.max_distance);
     source.rolloff = options.rolloff.unwrap_or(source.rolloff);
+    source.bus = options.bus.unwrap_or(source.bus);
     source.validate().map_err(|e| {
         Diagnostic::error(
             "invalid_value",
