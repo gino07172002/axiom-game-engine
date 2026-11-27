@@ -65,7 +65,15 @@ ui button resume close pause
 - 設定存在玩家自己的設定檔 `settings/<world id>.json`(資料庫旁;打包的遊戲在 `%APPDATA%\Axiom\<id>\settings\`),不進世界的修訂、也不進存檔;重開遊戲時讀回。設定檔壞掉時用預設值並回報。
 - `observe` 的 `settings` 是目前的值(世界有 `game.settings` 或玩家改過時才出現);設定不影響 `state_hash`。
 - 從暫停選單打開的設定頁:模態頁面打開時,在它下面的頁面不畫,只留變暗的 HUD。
-- 目前接上的:總音量。其他鍵已經可以設定和保存,會在之後的 milestone 接上(`docs/plan-player-settings.zh-TW.md`)。
+- 目前接上的:
+  - 音量:總音量、音樂、音效。音源用 `bus=music` 歸到音樂。
+  - 滑鼠:靈敏度、反轉 Y 軸。只影響滑鼠視角,不影響重播。
+  - 視窗:`display.mode`、`display.vsync`,改了立刻套用。
+    - `fullscreen` 用目前螢幕最大的解析度和最高更新率;螢幕沒有列出模式時改用無邊框。
+    - 關掉垂直同步時用 mailbox,不支援就用 immediate,都不支援時維持 FIFO。
+    - `observe` 的 `metrics.display` 回報實際的模式、present mode 和視窗大小。
+    - 編輯器裡不套用視窗模式,編輯器有自己的全螢幕切換。
+- `quality.*` 已經可以設定和保存,會在之後的 milestone 接上(`docs/plan-player-settings.zh-TW.md`)。
 
 ## 在編輯器裡
 

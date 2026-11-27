@@ -73,6 +73,8 @@ pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
+    /// Present modes this surface supports (player `display.vsync`, plan S3).
+    present_modes: Vec<wgpu::PresentMode>,
     pub egui: egui_wgpu::Renderer,
     /// Second egui renderer for the game interface drawn inside the editor's Game tab (its own
     /// egui context, so its own textures); created on first use.
@@ -180,6 +182,7 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let can_capture = caps.usages.contains(wgpu::TextureUsages::COPY_SRC);
+        let present_modes = caps.present_modes.clone();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | if can_capture {
@@ -367,6 +370,7 @@ impl Renderer {
             device,
             queue,
             config,
+            present_modes,
             egui,
             game_egui: None,
             gpu,
@@ -472,6 +476,35 @@ impl Renderer {
         } else {
             Err("mapping the read-back buffer failed".into())
         })
+    }
+
+    /// Player `display.vsync` (plan S3): FIFO when on; otherwise mailbox, else immediate,
+    /// else FIFO (the only mode every surface supports). Reconfigures only on a change.
+    pub fn set_vsync(&mut self, on: bool) {
+        use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+        let mode = if on {
+            Fifo
+        } else {
+            [Mailbox, Immediate]
+                .into_iter()
+                .find(|m| self.present_modes.contains(m))
+                .unwrap_or(Fifo)
+        };
+        if self.config.present_mode != mode {
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    /// The present mode the surface is configured with, as `observe` reports it.
+    pub fn present_mode(&self) -> &'static str {
+        match self.config.present_mode {
+            wgpu::PresentMode::Fifo | wgpu::PresentMode::AutoVsync => "fifo",
+            wgpu::PresentMode::FifoRelaxed => "fifo_relaxed",
+            wgpu::PresentMode::Mailbox => "mailbox",
+            wgpu::PresentMode::Immediate => "immediate",
+            wgpu::PresentMode::AutoNoVsync => "auto_no_vsync",
+        }
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {

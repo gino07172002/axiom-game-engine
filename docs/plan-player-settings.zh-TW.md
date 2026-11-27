@@ -167,3 +167,22 @@
 - **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored(第一次因為 `tests/ops.rs` 的 `AudioSourceOptions` 少了 `bus` 沒編過,補上後重跑);editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(`3df41f5` 對 S2):9 個包逐位元相同。
 - **GPU**(新資料庫,1920×1080):bridge 送音樂 0.2、音效 0.6、靈敏度 1.7、反轉 Y;`observe` 的 `settings` 和 `audio.output`(music 0.2、sfx 0.6)一致,設定檔寫入;設定頁截圖看過(四條滑桿的值、反轉按鈕、返回)。
 - **未驗證**:沒有實際聽聲音;滑鼠靈敏度只用單元測試驗證(GPU 腳本無法移動實體滑鼠)。
+
+### S3 完成(分支 `ui-v2`)
+
+- **垂直同步**:`Renderer::set_vsync`。開:FIFO;關:mailbox,不支援就 immediate,都不支援就維持 FIFO(每個 surface 都支援)。模式沒變時不重新 configure。
+- **視窗模式**:`display.mode` 改了立刻套用(`App::sync_player_settings`,和音量分開記錄已套用的修訂,因為視窗可能還沒建立)。
+  - `fullscreen` 用目前螢幕最大的解析度和最高更新率;螢幕沒列出模式時用無邊框。
+  - 從全螢幕回到視窗時,恢復進全螢幕前的視窗大小。
+  - 編輯器不套用(它有自己的 View ▸ Fullscreen)。
+- **observe**:`display {mode, present_mode, size}`,從視窗和 surface 的實際狀態讀出,不是設定值。
+- **內容**:town 設定頁加「視窗 / 無邊框 / 全螢幕」和「垂直同步 / 不同步」兩列按鈕。
+- **R1 結論**:執行中切換沒有讓 surface 壞掉,不需要退回「下次啟動生效」。
+- **GPU**(新資料庫,port 5313,debug):依序關垂直同步、無邊框、全螢幕、視窗、開垂直同步。
+  - `observe` 依序是 window/mailbox 1440×900 → borderless 1920×1080 → fullscreen 1920×1080 → window 1440×900 → window/fifo。
+  - stderr 只有截圖訊息,沒有 surface 錯誤;五張截圖都看過,畫面正常;設定檔寫入最後的值。
+  - 第一次跑時回到視窗變成 1898×1024(Windows 沒有恢復原本大小),加上恢復大小後重跑才是 1440×900。
+  - 設定頁截圖看過,`ui_layout` 沒有重疊或超出畫面。
+- **Gate(debug)**:fmt、clippy `-D warnings` 通過;`cargo test --workspace --no-fail-fast` 1161 passed / 0 failed / 7 ignored;editor smoke 通過、world 和 street parity 結果一致、M0 PASS;截圖 A/B(S2 對 S3):10 個包逐位元相同。
+- **未驗證**:mailbox 是否真的讓幀率超過螢幕更新率(沒量測幀率);多螢幕;實際按 Alt+Enter 等系統快捷鍵和設定的互動。
+- **已知外觀問題**:設定頁按鈕列之間的空隙偏大(S2 的反轉列就有),留給 U1 一起整理。

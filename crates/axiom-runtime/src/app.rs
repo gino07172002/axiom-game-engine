@@ -141,6 +141,11 @@ struct App {
     settings_world: String,
     settings_applied: u64,
     settings_written: u64,
+    /// Settings change count last applied to the window and surface (plan S3); they may not
+    /// exist yet when the audio volumes are applied.
+    display_applied: u64,
+    /// Window size before the player went fullscreen, restored when they return to a window.
+    windowed_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// File ▸ Exit requested from the editor.
     quit: bool,
     /// Main-thread phases of the last revision reload; reported as `metrics.reload`.
@@ -893,6 +898,8 @@ impl App {
             pad_menu: [false; 7],
             settings_world: String::new(),
             settings_applied: u64::MAX,
+            display_applied: u64::MAX,
+            windowed_size: None,
             settings_written: 0,
             game_ctx: None,
             game_input: false,
@@ -1776,6 +1783,18 @@ impl App {
             if let Some(post) = renderer.post_observation() {
                 observation.metrics.insert("render_post".into(), post);
             }
+            if let Some(window) = &self.window {
+                let mode = match window.fullscreen() {
+                    None => "window",
+                    Some(winit::window::Fullscreen::Borderless(_)) => "borderless",
+                    Some(winit::window::Fullscreen::Exclusive(_)) => "fullscreen",
+                };
+                let size = window.inner_size();
+                observation.metrics.insert(
+                    "display".into(),
+                    serde_json::json!({"mode":mode,"present_mode":renderer.present_mode(),"size":[size.width,size.height]}),
+                );
+            }
         }
         observation
     }
@@ -1878,6 +1897,28 @@ impl App {
             self.audio
                 .set_volumes(settings.master, settings.music, settings.sfx);
             self.settings_applied = rev;
+        }
+        if rev != self.display_applied {
+            if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+                renderer.set_vsync(settings.vsync);
+                // The editor owns its window (View ▸ Fullscreen); the player's display mode
+                // applies to a played game only.
+                if self.editor.is_none() {
+                    let want = fullscreen_for(window, settings.display);
+                    match (window.fullscreen().is_some(), want.is_some()) {
+                        (false, true) => self.windowed_size = Some(window.inner_size()),
+                        (true, false) => {
+                            if let Some(size) = self.windowed_size.take() {
+                                window.set_fullscreen(None);
+                                let _ = window.request_inner_size(size);
+                            }
+                        }
+                        _ => {}
+                    }
+                    window.set_fullscreen(want);
+                }
+                self.display_applied = rev;
+            }
         }
         if rev != self.settings_written {
             self.settings_written = rev;
@@ -3986,6 +4027,36 @@ impl ApplicationHandler for App {
         } else if let Some(window) = &self.window {
             window.request_redraw();
         }
+    }
+}
+
+/// The winit fullscreen state for the player's `display.mode` (plan S3). Exclusive fullscreen
+/// takes the current monitor's largest mode at its highest refresh rate, or borderless when the
+/// monitor lists no modes.
+fn fullscreen_for(
+    window: &Window,
+    mode: axiom_core::settings::DisplayMode,
+) -> Option<winit::window::Fullscreen> {
+    use axiom_core::settings::DisplayMode;
+    use winit::window::Fullscreen;
+    match mode {
+        DisplayMode::Window => None,
+        DisplayMode::Borderless => Some(Fullscreen::Borderless(None)),
+        DisplayMode::Fullscreen => Some(
+            window
+                .current_monitor()
+                .and_then(|m| {
+                    m.video_modes().max_by_key(|v| {
+                        let s = v.size();
+                        (
+                            u64::from(s.width) * u64::from(s.height),
+                            v.refresh_rate_millihertz(),
+                        )
+                    })
+                })
+                .map(Fullscreen::Exclusive)
+                .unwrap_or(Fullscreen::Borderless(None)),
+        ),
     }
 }
 
